@@ -2,6 +2,7 @@
 
 const { spawn } = require('node:child_process');
 const fs = require('node:fs/promises');
+const os = require('node:os');
 const path = require('node:path');
 
 const videoExtensions = new Set(['mp4', 'mov', 'mkv', 'avi', 'webm', 'm4v', 'ts', 'mpeg', 'mpg', 'mts', 'm2ts']);
@@ -134,6 +135,22 @@ async function splitOne(input, options, { signal, onProgress } = {}) {
   return { input, outputDirectory: output, csv, scenes, files: existing };
 }
 
+async function detectSceneCuts(input, { detector = 'content', threshold = 27, minSceneSeconds: minimum = 0.5 } = {}, { signal } = {}) {
+  validateVideo(input);
+  if (!detectors.has(detector) || !Number.isFinite(threshold) || threshold < 0 || threshold > 255
+      || !Number.isFinite(minimum) || minimum < minSceneSeconds || minimum > maxSceneSeconds) throw new Error('场景识别参数无效。');
+  const directory = await fs.mkdtemp(path.join(os.tmpdir(), 'jiajian-scene-cuts-'));
+  const csv = path.join(directory, 'cuts.csv');
+  try {
+    await spawnDetector(['-i', input, '-o', directory, '-m', `${minimum}s`, ...detectorArguments(detector, threshold),
+      'list-scenes', '--filename', 'cuts.csv'], { signal });
+    return parseScenes(await fs.readFile(csv, 'utf8')).slice(1).map((scene) => scene.start);
+  } finally {
+    await fs.rm(csv, { force: true });
+    await fs.rmdir(directory);
+  }
+}
+
 async function splitVideos(inputs, options, { signal, onProgress } = {}) {
   if (!Array.isArray(inputs) || inputs.length < 1 || inputs.length > maxBatch) throw new Error(`一次最多处理 ${maxBatch} 个视频。`);
   const detector = detectors.has(options?.detector) ? options.detector : 'content';
@@ -155,5 +172,5 @@ async function splitVideos(inputs, options, { signal, onProgress } = {}) {
   return results;
 }
 
-module.exports = { splitVideos, parseScenes, validateVideo, videoExtensions, detectors };
+module.exports = { splitVideos, detectSceneCuts, parseScenes, validateVideo, videoExtensions, detectors };
 

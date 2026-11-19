@@ -73,3 +73,19 @@
 .cloud-tts-actions label { margin-right: auto; font-size: 12px; }
 
 @media (max-width: 660px) { .cloud-tts-body { grid-template-columns: 1fr; } }
+
+.cloud-tts-dialog.breeze-voices { width: min(1060px, calc(100vw - 35px)); }
+.breeze-voices .cloud-tts-body { grid-template-columns: minmax(0, 1.25fr) minmax(235px, .85fr); }
+.breeze-voices #cloud-tts-search { width: 100%; margin-top: 8px; padding: 7px 9px; border: 1px solid #ccd6e4; border-radius: 6px; }
+#cloud-tts-filters { display:flex; gap:5px; flex-wrap:wrap; margin-block:7px; }
+#cloud-tts-filters button { padding:3px 8px; border-radius:12px; font-size:12px; }
+#cloud-tts-filters [aria-pressed="true"] { border-color:#7fa4e0; color:#174c9e; background:#eaf2ff; }
+.breeze-voices #cloud-tts-voices { grid-template-columns:repeat(auto-fill,minmax(min(160px,100%),1fr)); max-height:245px; }
+.breeze-voices .cloud-tts-voice-row { min-width:0; min-height:43px; border:1px solid transparent; border-radius:6px; }
+.breeze-voices .cloud-tts-voice-row:has(input:checked) { border-color:#78a1e2; background:#eaf2ff; }
+.breeze-voices .cloud-tts-voice-row label { cursor:pointer; flex:1; }
+.breeze-voices .cloud-tts-voice-row strong, .breeze-voices .cloud-tts-voice-row small { display:block; }
+.breeze-voices .cloud-tts-voice-row small { color:#5c6b80; margin-top:2px; }
+.breeze-voices .cloud-tts-sample { white-space:nowrap; }
+#cloud-tts-more { margin-top:5px; }
+@media (max-width:720px) { .breeze-voices .cloud-tts-body { grid-template-columns:1fr; } }

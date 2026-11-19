@@ -33,6 +33,9 @@
 .cloud-settings-check input { accent-color: #0866ff; }
 .cloud-settings-warning { padding: 6px 8px; border-radius: 4px; background: #fff5e6; color: #795023; }
 .cloud-settings-error, #cloud-settings-status.cloud-settings-error { color: #9b2b25; }
+.cloud-settings-breeze-tools {display:flex;flex-wrap:wrap;gap:8px;}
+.cloud-settings-breeze-tools[hidden] {display:none;}
+.cloud-settings-breeze-tools button {border:1px solid var(--settings-border);border-radius:5px;background:#fff;color:#245387;padding:5px 8px;}
 .cloud-settings-actions { display: flex; justify-content: flex-end; gap: 7px; padding: 9px 17px; border-top: 1px solid var(--settings-border); }
 .cloud-settings-actions button { padding: 6px 12px; border: 1px solid #dce3ef; border-radius: 6px; background: #fff; color: #2c3d57; }
 .cloud-settings-actions button:hover:enabled { background: #eef4ff; }

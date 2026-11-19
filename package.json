@@ -1,7 +1,7 @@
 {
   "name": "jiajian",
   "productName": "佳剪",
-  "version": "0.4.0",
+  "version": "0.6.2",
   "private": true,
   "description": "本地分镜混剪与媒体处理工作台",
   "main": "src/main.cjs",

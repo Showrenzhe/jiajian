@@ -4,22 +4,25 @@ const { randomUUID } = require('node:crypto');
 const fs = require('node:fs/promises');
 const path = require('node:path');
 const { createCloudTts, normalizeCloudTtsBaseUrl, seedAudioEndpoint } = require('./cloud-tts.cjs');
+const { breezeEndpoint, validateBreezeApiKey } = require('./breezeblue.cjs');
 
 const settingsName = 'cloud-tts-settings.json';
 const maxBytes = 32 * 1024;
 const gateway = 'gateway';
 const seedAudio = 'seed-audio';
+const fixedAddresses = new Map([[seedAudio, seedAudioEndpoint], ['breezeblue', breezeEndpoint]]);
 
 function withProvider(values, provider) {
-  return provider === seedAudio ? { ...values, provider } : values;
+  return fixedAddresses.has(provider) ? { ...values, provider } : values;
 }
 
 function validProvider(provider) {
-  return provider === gateway || provider === seedAudio;
+  return provider === gateway || fixedAddresses.has(provider);
 }
 
 function publicSettings(current) {
-  return withProvider({ baseUrl: current?.baseUrl ?? '', hasApiKey: Boolean(current?.baseUrl && current?.apiKey) }, current?.provider);
+  return withProvider({ baseUrl: current?.baseUrl ?? '', hasApiKey: Boolean(current?.baseUrl && current?.apiKey),
+    ...(current?.warning && { warning: current.warning }) }, current?.provider);
 }
 
 function localDirectory(value) {
@@ -44,13 +47,16 @@ async function readEnvelope(file) {
     const entry = JSON.parse(new TextDecoder('utf-8', { fatal: true }).decode(data.subarray(0, length)));
     const provider = entry?.provider === undefined ? gateway : entry.provider;
     if (entry?.version !== 1 || !validProvider(provider) || typeof entry.baseUrl !== 'string'
-        || (provider === seedAudio && entry.baseUrl !== seedAudioEndpoint)
+        || (fixedAddresses.has(provider) && entry.baseUrl !== fixedAddresses.get(provider))
         || (entry.keyCiphertext !== null && typeof entry.keyCiphertext !== 'string')) throw new Error();
-    const baseUrl = provider === seedAudio ? seedAudioEndpoint : normalizeCloudTtsBaseUrl(entry.baseUrl);
+    if (entry.provider === undefined && entry.baseUrl === '' && entry.keyCiphertext === null) {
+      return { provider: 'breezeblue', baseUrl: breezeEndpoint, keyCiphertext: null };
+    }
+    const baseUrl = fixedAddresses.get(provider) ?? normalizeCloudTtsBaseUrl(entry.baseUrl);
     return withProvider({ baseUrl, keyCiphertext: entry.keyCiphertext }, provider);
   } catch (error) {
     if (!reader && error.code === 'ENOENT') {
-      return { provider: seedAudio, baseUrl: seedAudioEndpoint, keyCiphertext: null };
+      return { provider: 'breezeblue', baseUrl: breezeEndpoint, keyCiphertext: null };
     }
     throw new Error('无法读取语音服务设置。请重新保存。');
   } finally {
@@ -122,6 +128,11 @@ function createCloudTtsSettings({ directory, safeStorage } = {}) {
   async function load() {
     const { baseUrl, keyCiphertext, provider = gateway } = await readEnvelope(file);
     const apiKey = keyCiphertext === null ? '' : await decryptKey(baseUrl, keyCiphertext, provider);
+    if (provider === 'breezeblue') {
+      try { validateBreezeApiKey(apiKey); } catch (error) {
+        return {provider, baseUrl, apiKey:'', warning:error.message};
+      }
+    }
     return withProvider({ baseUrl, apiKey }, provider);
   }
 
@@ -129,16 +140,15 @@ function createCloudTtsSettings({ directory, safeStorage } = {}) {
     if (!update || typeof update !== 'object' || Array.isArray(update)) throw new Error('语音服务设置无效。');
     const oldProvider = current?.provider ?? gateway;
     const requestedAddress = typeof update.baseUrl === 'string' ? update.baseUrl.trim() : undefined;
-    const inferGateway = update.provider === undefined && requestedAddress && requestedAddress !== seedAudioEndpoint
-      && (oldProvider === gateway || (!current?.apiKey && current?.baseUrl === seedAudioEndpoint));
+    const inferGateway = update.provider === undefined && requestedAddress && requestedAddress !== fixedAddresses.get(oldProvider)
+      && (oldProvider === gateway || (!current?.apiKey && current?.baseUrl === fixedAddresses.get(oldProvider)));
     const inferredProvider = inferGateway ? gateway : oldProvider;
     const { provider = inferredProvider, baseUrl: address, apiKey: supplied = '', clearKey = false } = update;
     if (!validProvider(provider) || typeof supplied !== 'string' || typeof clearKey !== 'boolean') throw new Error('语音服务设置无效。');
-    if (provider === seedAudio && address !== undefined && address !== seedAudioEndpoint) {
-      throw new Error('Seed Audio 使用固定的火山引擎服务地址。');
+    if (fixedAddresses.has(provider) && address !== undefined && address !== fixedAddresses.get(provider)) {
+      throw new Error('所选配音服务使用固定的服务地址。');
     }
-    const baseUrl = provider === seedAudio ? seedAudioEndpoint
-      : normalizeCloudTtsBaseUrl(address === undefined && provider === oldProvider ? current?.baseUrl : address);
+    const baseUrl = fixedAddresses.get(provider) ?? normalizeCloudTtsBaseUrl(address === undefined && provider === oldProvider ? current?.baseUrl : address);
     const oldKey = current?.apiKey ?? '';
     const newKey = supplied.trim();
     let apiKey = '';
@@ -151,10 +161,13 @@ function createCloudTtsSettings({ directory, safeStorage } = {}) {
         }
       }
       apiKey = clearKey ? '' : newKey || oldKey;
+      if (provider === 'breezeblue') validateBreezeApiKey(apiKey);
       createCloudTts(withProvider({ baseUrl, apiKey }, provider));
     }
     const keyCiphertext = apiKey ? await encryptKey(baseUrl, apiKey, provider) : null;
-    await writeEnvelope(directory, file, withProvider({ version: 1, baseUrl, keyCiphertext }, provider));
+    const entry = withProvider({ version: 1, baseUrl, keyCiphertext }, provider);
+    if (provider === gateway && !baseUrl) entry.provider = gateway;
+    await writeEnvelope(directory, file, entry);
     return withProvider({ baseUrl, apiKey }, provider);
   }
 

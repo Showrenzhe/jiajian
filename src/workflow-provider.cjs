@@ -116,8 +116,12 @@ function describe({ requirements = [], localActions = [], ...definition }) {
   return structuredClone({ ...definition, status, requirements, localActions });
 }
 
-function listWorkflows() {
-  return definitions.map(describe);
+function listWorkflows({ creativeConfigured = false } = {}) {
+  return definitions.map((definition) => {
+    const result = describe(definition);
+    if (creativeConfigured && ['replicate', 'digital-avatar'].includes(result.id)) result.status = 'service-configured';
+    return result;
+  });
 }
 
 function getWorkflow(id) {

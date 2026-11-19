@@ -9,6 +9,10 @@
   <link rel="stylesheet" href="./script-workspace.css">
   <link rel="stylesheet" href="./track-workspace.css">
   <link rel="stylesheet" href="./track-tools.css">
+  <link rel="stylesheet" href="./timeline.css">
+  <link rel="stylesheet" href="./cut-track.css">
+  <link rel="stylesheet" href="./layer-motion.css">
+  <link rel="stylesheet" href="./caption-inspector.css">
   <link rel="stylesheet" href="./cloud-tts-dialog.css">
   <link rel="stylesheet" href="./cloud-tts-settings.css">
   <script src="./script-workspace.js" defer></script>
@@ -18,11 +22,28 @@
   <script src="./cloud-tts-settings.js" defer></script>
   <script src="./panel-layout.js" defer></script>
   <script src="./draft-workspace.js" defer></script>
+  <script src="./player-tools.js" defer></script>
+  <script src="./waveform.js" defer></script>
+  <script src="./draft-transport.js" defer></script>
+  <script src="./audio-tools.js" defer></script>
+  <script src="./subprojects.js" defer></script>
+  <script src="./cut-track.js" defer></script>
+  <script src="./cover-editor.js" defer></script>
+  <script src="./visual-editor.js" defer></script>
+  <script src="./batch-edit.js" defer></script>
+  <script src="./track-organizer.js" defer></script>
+  <script src="./text-presets.js" defer></script>
+  <script src="./caption-inspector.js" defer></script>
+  <script src="./layer-motion.js" defer></script>
+  <script src="./creative-service.js" defer></script>
+  <script src="./timeline-selection.js" defer></script>
+  <script src="./timeline.js" defer></script>
+  <script src="./editor-text.js" defer></script>
   <script src="./app.js" defer></script>
 </head>
 <body>
   <header class="titlebar">
-    <span class="brand"><img class="brand-logo" src="./assets/jiajian-logo.png" alt="">佳剪</span>
+    <span class="brand" title="佳剪 v0.6.2"><img class="brand-logo" src="./assets/jiajian-logo.png" alt="">佳剪 <small>0.6.2</small></span>
     <button type="button" id="title-home" aria-label="返回首页">⌂</button>
     <span id="title-tab" hidden></span>
     <button type="button" id="app-settings" title="云端配音设置"><span aria-hidden="true">⚙</span> 设置</button>
@@ -87,6 +108,7 @@
         </section>
         <section id="recent-work" class="recent-work" aria-labelledby="recent-heading">
           <h2 id="recent-heading">最近导出</h2>
+          <button type="button" class="home-outline" id="rename-outputs" disabled>重命名所选作品</button>
           <p id="history-status" role="status"></p>
           <ul id="history-list"></ul>
         </section>
@@ -183,6 +205,7 @@
             <button type="button" class="timeline-tab" id="timeline-batch-tab" role="tab" aria-selected="false" aria-controls="preview-batch" tabindex="-1" disabled>批量预览</button>
           </div>
           <div id="timeline-view-actions">
+            <output id="timeline-selection-count" hidden></output>
             <button type="button" class="quiet" id="tracks-expand-all">全部展开</button>
             <button type="button" class="quiet" id="tracks-collapse-all">全部折叠</button>
             <span id="shot-summary" class="muted compact"></span>
@@ -196,8 +219,22 @@
         <div id="timeline-tracks-panel" role="tabpanel" aria-labelledby="timeline-tracks-tab" tabindex="0">
           <div class="track-toolbar" role="group" aria-label="分镜轨道工具">
             <div class="track-edit-actions" role="group" aria-label="编辑分镜">
-              <button type="button" class="secondary" id="add-shot" title="新增空分镜，再向其中添加一条或多条候选">＋ 新增分镜</button>
+              <select id="timeline-view" aria-label="轨道视图"><option value="time">时间线</option><option value="cards">分镜卡片</option></select>
+              <button type="button" class="secondary" id="timeline-play" aria-keyshortcuts="Space" aria-pressed="false" title="时间线播放 / 暂停（空格）">▶ 时间线播放</button>
+              <button type="button" class="secondary" id="add-shot" title="新增空分镜，再向其中添加一条或多条候选">＋ 分镜</button>
+              <button type="button" class="secondary" id="timeline-layer-add">＋ 包装轨道</button>
+              <button type="button" class="secondary" id="timeline-scenes">AI 拆分</button>
+              <button type="button" class="secondary" id="timeline-more" popovertarget="timeline-more-menu">轨道工具 ▾</button>
+              <div popover="auto" id="timeline-more-menu">
+              <button type="button" class="secondary" id="timeline-cover">设置封面</button>
+              <button type="button" class="secondary" id="creative-cover">AI 封面</button>
+              <button type="button" class="secondary" id="timeline-appearance">画面处理</button>
+              <button type="button" class="secondary" id="batch-levels">批量音量</button>
+              <button type="button" class="secondary" id="timeline-text-groups">文字组设置</button>
+              <button type="button" class="secondary" id="organize-tracks">一键整理</button>
+              <button type="button" class="secondary" id="timeline-text-tools">批量编辑文字</button>
               <button type="button" class="secondary" id="track-reset">重置</button>
+              </div>
               <button type="button" class="secondary" id="track-undo" title="Ctrl+Z">撤销</button>
               <button type="button" class="secondary" id="track-redo" title="Ctrl+Y">恢复</button>
               <button type="button" class="secondary" id="track-split" title="将单候选视频分镜从播放头拆成两组连续分镜">分割</button>
@@ -210,12 +247,15 @@
             <div class="track-view-options" role="group" aria-label="轨道显示">
               <label class="track-choice">轨道高<select id="track-height"><option value="large">大</option><option value="medium">中</option><option value="small">小</option></select></label>
               <label class="track-choice">缩放<input type="range" id="track-zoom" min="1" max="5" value="3" aria-label="分镜轨道缩放"></label>
+              <button type="button" class="secondary" id="timeline-fit">适配</button>
               <label class="track-choice"><input type="checkbox" id="track-preview-axis" checked>显示播放头</label>
             </div>
         </div>
           <div id="track-selection-info" class="muted compact"></div>
           <label id="track-playhead-row" class="track-playhead">播放头<input type="range" id="track-playhead" min="0" max="1" step="0.001" value="0"><output id="track-playhead-time" for="track-playhead">0.000 秒</output></label>
           <p id="new-shot-drop" aria-label="拖入素材新建分镜">＋ 拖到这里新建分镜，拖到已有分镜添加候选</p>
+          <div id="timeline-cut-editor"></div>
+          <div id="timeline-clock" aria-label="剪辑时间线" tabindex="0"></div>
           <div id="shots">
             <div id="visual-track-lane" class="timeline-lane visual-lane" role="group" aria-label="画面轨道">
               <span class="timeline-lane-label" aria-hidden="true">画面</span>
@@ -248,7 +288,12 @@
               <p id="preview-batch-summary" class="muted compact" role="status"></p>
             </div>
             <div class="project-actions">
-              <button type="button" id="select-all-previews" class="quiet">全选</button>
+              <select id="batch-reuse-filter" aria-label="画面素材重复估值筛选">
+                <option value="low">重复度 0–70%</option><option value="medium">重复度 70%以上至95%以下</option><option value="high">重复度 95–99%</option>
+                <option value="same">画面素材完全相同</option><option value="none">无重复画面素材</option><option value="all">全部重复度</option>
+              </select>
+              <select id="batch-project-filter" aria-label="按子工程筛选" hidden></select>
+              <button type="button" id="select-all-previews" class="quiet">仅选筛选结果</button>
               <button type="button" id="clear-preview-selection" class="quiet">清空</button>
             </div>
           </div>
@@ -270,14 +315,24 @@
 
     <section class="panel editor-materials" aria-labelledby="materials-heading" hidden>
       <div class="panel-heading"><h2 id="materials-heading" title="在素材库空白处按住左键拖动，可框选多个素材">素材库</h2><span id="material-status" class="material-count muted compact" role="status"></span></div>
+      <div class="subproject-picker">
+        <select id="subproject-select" aria-label="当前素材工程"><option value="">主工程 · 公共素材</option></select>
+        <button type="button" class="secondary" id="subproject-new">＋ 子工程</button>
+        <button type="button" class="secondary" id="subproject-materials" hidden>替换素材</button>
+        <button type="button" class="secondary" id="subproject-batch" hidden>子工程批量预览</button>
+        <button type="button" class="secondary" id="subproject-fill" hidden>按分类填充</button>
+        <button type="button" class="secondary" id="subproject-variables" hidden>口播变量</button>
+      </div>
       <div class="materials-toolbar">
         <button type="button" id="material-import" class="secondary" title="选择视频或图片，每个文件直接生成一个分镜">＋ 导入文件</button>
         <button type="button" id="material-folder-import" class="secondary">＋ 添加文件夹</button>
+        <button type="button" id="material-audio-open" class="secondary" title="提取原声、分离人声与伴奏、去气口">音频处理</button>
         <input type="search" id="material-search" placeholder="搜索素材" aria-label="搜索当前素材目录">
       </div>
       <div id="material-selection-actions" hidden>
         <span id="material-selected-count" class="compact" role="status"></span>
         <button type="button" id="material-add-selected" class="secondary">添加所选</button>
+        <button type="button" id="rename-materials" class="secondary">批量重命名</button>
         <button type="button" id="material-clear-selection" class="quiet">清空选择</button>
       </div>
       <p id="material-message" class="muted compact" role="status" hidden></p>
@@ -290,16 +345,36 @@
         <p id="material-empty-hint" class="muted compact">添加文件夹后，可以打开并拖入需要的素材。</p>
       </div>
       <ul id="material-list" class="material-list"></ul>
+      <section id="processed-materials" hidden><h3>已处理素材</h3><ul id="processed-material-list"></ul></section>
     </section>
     <aside class="sidebar" aria-label="预览与导出">
       <section class="panel editor-player" aria-labelledby="preview-heading">
         <div class="panel-heading"><h2 id="preview-heading">素材预览</h2><span id="preview-meta" class="muted"></span></div>
         <div class="viewer preview-stage">
           <p id="preview-hint">在素材库或轨道选择一个素材</p>
-          <video id="preview" controls playsinline preload="metadata" hidden aria-label="素材预览播放器"></video>
-          <img id="still-preview" alt="分镜图片预览" hidden>
+          <div class="player-picture" hidden>
+            <video id="preview" controls playsinline preload="metadata" hidden aria-label="素材预览播放器"></video>
+            <img id="still-preview" alt="分镜图片预览" hidden>
+          </div>
         </div>
         <p id="preview-name" class="muted preview-name preview-footer" hidden></p>
+        <div id="player-transport" hidden>
+          <input id="player-position" type="range" min="0" max="1" step="any" value="0" disabled aria-label="播放器进度">
+          <div class="player-control-row">
+            <span id="player-time" class="compact" title="时:分:秒:帧">00:00:00:00</span>
+            <div class="player-buttons">
+              <button type="button" id="player-previous" title="上一帧（←）" aria-label="上一帧">❮</button>
+              <button type="button" id="player-play" title="播放（空格）" aria-label="播放">▶</button>
+              <button type="button" id="player-stop" title="停止并回到入点" aria-label="停止并回到入点">■</button>
+              <button type="button" id="player-next" title="下一帧（→）" aria-label="下一帧">❯</button>
+            </div>
+            <div class="player-display">
+              <select id="player-ratio" aria-label="成片画幅" title="成片画幅"><option>16:9</option><option>9:16</option><option>1:1</option></select>
+              <button type="button" id="player-float" title="悬浮播放器" aria-label="悬浮播放器" aria-pressed="false">▣</button>
+              <button type="button" id="player-fullscreen" title="全屏（.）" aria-label="全屏" aria-pressed="false">⛶</button>
+            </div>
+          </div>
+        </div>
       </section>
 
       <div class="montage-inspector">
@@ -314,6 +389,21 @@
           </div>
           <fieldset id="montage-settings" class="inspector-body">
             <div id="inspector-panel-visual" data-inspector-panel role="tabpanel" aria-labelledby="inspector-tab-visual" tabindex="0">
+              <fieldset id="clip-inspector" hidden>
+                <legend>所选画面</legend>
+                <strong id="clip-inspector-name"></strong>
+                <p id="clip-inspector-meta" class="muted compact"></p>
+                <label class="check"><input type="checkbox" id="clip-enabled">此候选参与混剪</label>
+                <label class="check"><input type="checkbox" id="clip-track-muted">整条视频轨静音</label>
+                <button type="button" class="secondary" id="clip-motion">变换、蒙版与关键帧</button>
+                <button type="button" class="secondary" id="clip-foreground">AI 前景抠像</button>
+                <button type="button" class="secondary" id="clip-captions">视频字幕</button>
+                <div class="settings-grid">
+                  <label>入点（秒）<input data-clip-field="start" type="number" min="0" step="0.001"></label>
+                  <label><span id="clip-end-label">出点（秒）</span><input data-clip-field="end" type="number" min="0.1" step="0.001"></label>
+                  <label>播放速度（倍）<input data-clip-field="speed" type="number" min="0.5" max="3" step="0.1"></label>
+                </div>
+              </fieldset>
               <h3 class="inspector-section-title">成片画面</h3>
               <div class="settings-grid">
                 <label>画幅<select id="ratio"><option>16:9</option><option>9:16</option><option>1:1</option></select></label>
@@ -342,6 +432,7 @@
                 </label>
                 <p id="narration-source-summary" class="muted compact"></p>
                 <button type="button" class="primary" id="cloud-narration">生成全部口播</button>
+                <button type="button" class="secondary" id="creative-avatar">数字人口播</button>
                 <button type="button" class="secondary narration-subs2srs" id="subs2srs-split">subs2srs：SRT + MP3 分割口播</button>
                 <p id="subs2srs-help" class="muted compact">提供 SRT 和整段 MP3，按字幕时间码切成分段口播并自动放入分段口播轨。</p>
               </div>
@@ -363,6 +454,13 @@
                   </select>
                 </label>
                 <p id="priority-help" class="muted compact"></p>
+                <div id="voice-follow-settings">
+                  <label class="line-field">整段口播轨<select id="voice-follow-track"></select></label>
+                  <label class="line-field">跟随分镜播放<select id="voice-follow-shot"></select></label>
+                </div>
+                <label class="line-field" id="voice-alignment-row">口播优先规则
+                  <select id="voice-alignment"><option value="fill">佳剪 · 补画面并均匀加速</option><option value="reference">教程 · 裁长画面、慢放短画面</option></select>
+                </label>
                 <label class="line-field">成片口播音量（%）<input id="narration-volume" type="number" min="0" max="100" step="1" value="100"></label>
               </div>
               <details id="whole-track-settings" class="narration-section">
@@ -384,6 +482,45 @@
               </details>
             </div>
             <div id="inspector-panel-subtitles" data-inspector-panel role="tabpanel" aria-labelledby="inspector-tab-subtitles" tabindex="0" hidden>
+              <div class="caption-master"><h3 class="inspector-section-title">成片字幕</h3><label class="check"><input id="caption-enabled" type="checkbox" role="switch" checked>导出时显示字幕</label></div>
+              <div id="subtitle-style-settings">
+                <div class="caption-section-head"><h4>预设样式</h4><button type="button" class="quiet" id="caption-save-preset">保存当前预设</button></div>
+                <div id="caption-presets" aria-label="字幕样式预设"></div>
+                <div class="caption-save-row" id="caption-save-row" hidden>
+                  <input id="caption-preset-name" maxlength="36" aria-label="新预设名称" placeholder="预设名称">
+                  <button type="button" class="secondary" id="caption-confirm-preset">保存</button>
+                  <button type="button" class="quiet" id="caption-cancel-preset">取消</button>
+                </div>
+                <div class="caption-section-head"><h4>基础样式</h4></div>
+                <div class="caption-fields">
+                  <label>字体<select id="caption-font"><option value="yahei">微软雅黑</option><option value="heiti">黑体</option><option value="song">宋体</option><option value="kai">楷体</option><option value="fang">仿宋</option><option value="arial">Arial</option></select></label>
+                  <label>字号<input type="number" id="caption-size" min="8" max="72" step="1" value="18"></label>
+                  <div class="caption-type-options" aria-label="字体样式">
+                    <label title="粗体"><input id="caption-bold" type="checkbox" aria-label="粗体"><b>B</b></label>
+                    <label title="斜体"><input id="caption-italic" type="checkbox" aria-label="斜体"><i>I</i></label>
+                    <label title="下划线"><input id="caption-underline" type="checkbox" aria-label="下划线"><u>U</u></label>
+                  </div>
+                  <label>字间距<input type="number" id="caption-spacing" min="0" max="12" step="1" value="0"></label>
+                  <label>文字颜色<input type="color" id="caption-color" value="#ffffff"></label>
+                  <label>描边颜色<input type="color" id="caption-outline" value="#000000"></label>
+                  <label>描边宽度<input type="number" id="caption-outline-width" min="0" max="8" step="1" value="2"></label>
+                </div>
+                <div class="caption-section-head"><h4>画面位置</h4></div>
+                <div class="caption-fields">
+                  <label>垂直<select id="caption-position"><option value="bottom">底部</option><option value="middle">居中</option><option value="top">顶部</option><option value="custom">自由定位</option></select></label>
+                  <label>水平<select id="caption-align"><option value="left">靠左</option><option value="center" selected>居中</option><option value="right">靠右</option></select></label>
+                  <label>安全边距<input id="caption-margin" type="number" min="0" max="64" value="16"></label>
+                  <label id="caption-x-field" hidden>水平 X (%)<input id="caption-x" type="number" min="0" max="100" value="50"></label>
+                  <label id="caption-y-field" hidden>垂直 Y (%)<input id="caption-y" type="number" min="0" max="100" value="85"></label>
+                </div>
+                <details id="caption-preview-pane" open>
+                  <summary>样式预览</summary>
+                  <div id="caption-sample-stage" data-ratio="16:9"><canvas id="caption-preview-canvas" aria-label="当前画幅下的字幕位置和样式"></canvas></div>
+                  <button type="button" id="caption-enlarge" class="quiet">放大预览</button>
+                  <input id="caption-preview-text" type="text" maxlength="320" aria-label="更换预览文字" placeholder="输入预览文字">
+                </details>
+                <p id="caption-feedback" class="compact muted" role="status" hidden></p>
+              </div>
               <h3 class="inspector-section-title">字幕来源</h3>
               <div id="whole-subtitles">
                 <div class="subtitle-row">
@@ -400,12 +537,6 @@
                 </details>
               </div>
               <p id="segment-subtitles-help" class="muted compact" hidden>在分镜轨道的口播条目中点「试听／字幕」编辑台词字幕。</p>
-              <div id="subtitle-style-settings" class="caption-controls" hidden>
-                <label>字幕字号<input type="number" id="caption-size" min="12" max="36" step="1" value="18"></label>
-                <label>字幕位置<select id="caption-position"><option value="bottom">底部</option><option value="middle">居中</option><option value="top">顶部</option></select></label>
-                <label>文字颜色<input type="color" id="caption-color" value="#ffffff"></label>
-                <label>描边颜色<input type="color" id="caption-outline" value="#000000"></label>
-              </div>
             </div>
             <div id="inspector-panel-music" data-inspector-panel role="tabpanel" aria-labelledby="inspector-tab-music" tabindex="0" hidden>
               <h3 class="inspector-section-title">背景配乐</h3>
@@ -452,6 +583,66 @@
 
   <div id="cloud-tts-workspace"></div>
   <div id="cloud-tts-settings-workspace"></div>
+  <dialog id="subproject-batch-dialog" class="narration-review" aria-labelledby="subproject-batch-title">
+    <h2 id="subproject-batch-title">子工程预览范围</h2>
+    <p class="muted compact">勾选参与混剪的子工程，设置各自的成片数量。每批最多 1000 条。</p>
+    <div class="subproject-batch-line"><label>统一数量 <input type="number" id="subproject-common-count" min="1" max="1000" step="1" value="1"></label><button type="button" id="subproject-apply-count" class="secondary">应用到已选</button></div>
+    <div id="subproject-batch-list"></div>
+    <p id="subproject-batch-status" class="muted compact" role="status"></p>
+    <div class="narration-review-actions"><button type="button" id="subproject-batch-close" class="secondary">取消</button><button type="button" id="subproject-batch-confirm" class="primary">生成预览</button></div>
+  </dialog>
+  <dialog id="subproject-new-dialog" class="narration-review" aria-labelledby="subproject-new-title">
+    <form id="subproject-new-form">
+      <h2 id="subproject-new-title">新建子工程</h2>
+      <label class="narration-review-field">子工程名称<textarea id="subproject-name" required rows="3" maxlength="40500" placeholder="每行一个门店或账号"></textarea></label>
+      <p class="muted compact">沿用主工程的分镜和公共素材。进入子工程后，可逐镜替换专属画面。</p>
+      <p id="subproject-error" role="alert" hidden></p>
+      <div class="narration-review-actions"><button type="button" id="subproject-cancel" class="secondary">取消</button><button type="submit" class="primary">创建</button></div>
+    </form>
+  </dialog>
+  <dialog id="subproject-variable-dialog" class="narration-review" aria-labelledby="subproject-variable-title">
+    <h2 id="subproject-variable-title">子工程口播与变量</h2>
+    <label class="narration-review-field">台词变量<textarea id="subproject-variable-text" rows="3" maxlength="36000" placeholder="店名=杭州店&#10;地址=天目里"></textarea></label>
+    <p class="muted compact">脚本中写 {{店名}}、{{地址}}，{{子工程}} 自动取当前子工程名称。修改后重新生成口播。</p>
+    <label class="narration-review-field">专属台词<textarea id="subproject-template-text" rows="4" maxlength="20000" placeholder="留空时沿用主工程脚本。分段式口播每行对应一个分镜。"></textarea></label>
+    <p id="subproject-variable-status" role="status"></p>
+    <div class="narration-review-actions"><button type="button" id="subproject-variable-close">关闭</button><button type="button" class="primary" id="subproject-variable-save">保存</button></div>
+  </dialog>
+  <dialog id="subproject-fill-dialog" class="narration-review" aria-labelledby="subproject-fill-title">
+    <h2 id="subproject-fill-title">按素材分类填充分镜</h2>
+    <p>选择包含门店文件夹的目录。每个门店下按分类放素材，例如「杭州店 / 门头」。通用画面放在「公共素材 / 分类」。</p>
+    <button type="button" id="subproject-fill-folder" class="secondary">选择素材目录</button>
+    <p id="subproject-fill-path" class="muted compact"></p>
+    <fieldset><legend>参与填充</legend><div id="subproject-fill-projects"></div></fieldset>
+    <fieldset><legend>分镜与分类</legend><div id="subproject-fill-mapping"></div></fieldset>
+    <p id="subproject-fill-status" class="muted compact" role="status"></p>
+    <div class="narration-review-actions"><button id="subproject-fill-close" type="button">关闭</button><button id="subproject-fill-apply" type="button" class="primary" disabled>更新到轨道</button></div>
+  </dialog>
+  <dialog id="subproject-material-dialog" class="narration-review" aria-labelledby="subproject-material-title">
+    <h2 id="subproject-material-title">子工程分镜素材</h2>
+    <label class="narration-review-field">选择分镜<select id="subproject-shot"></select></label>
+    <p id="subproject-current" class="muted compact"></p>
+    <div class="narration-review-actions"><button type="button" id="subproject-close" class="secondary">关闭</button><button type="button" id="subproject-revert" class="secondary">用公共素材</button><button type="button" id="subproject-replace" class="primary">选择专属素材</button></div>
+  </dialog>
+  <dialog id="audio-tools-dialog" class="narration-review" aria-labelledby="audio-tools-title">
+    <h2 id="audio-tools-title">音频处理</h2>
+    <label class="line-field">来源素材<select id="audio-tool-source"></select></label>
+    <video id="audio-tool-player" controls playsinline preload="metadata" aria-label="试听素材"></video>
+    <label class="line-field">处理方式<select id="audio-tool-mode"><option value="extract">提取原声</option><option value="both">分离人声和伴奏</option><option value="vocals">只保留人声</option><option value="bed">只保留伴奏</option><option value="trim">去气口 · 移除停顿</option></select></label>
+    <label id="audio-replace-label" hidden><input type="checkbox" id="audio-with-video">同时生成使用分离音轨的视频副本</label>
+    <fieldset id="audio-pause-settings" hidden><legend>停顿检测</legend>
+      <div class="audio-settings-row">
+        <label>静音阈值 (dB)<input id="audio-threshold" type="number" min="-65" max="-15" value="-35"></label>
+        <label>最短停顿 (秒)<input id="audio-minimum" type="number" min="0.1" max="5" step="0.05" value="0.30"></label>
+        <label>两侧各保留 (秒)<input id="audio-padding" type="number" min="0" max="0.5" step="0.01" value="0.06"></label>
+      </div>
+      <div class="audio-settings-row"><button id="audio-detect" type="button">检测停顿</button><label><input type="checkbox" id="audio-skip" checked>试听时跳过勾选区间</label></div>
+      <label><input type="checkbox" id="audio-fillers">同时识别独立的「嗯、呃」等语气词</label>
+      <div id="audio-pauses"></div>
+    </fieldset>
+    <p id="audio-tool-status" class="muted compact" role="status"></p>
+    <div class="narration-review-actions"><button type="button" id="audio-tool-close">关闭</button><button type="button" id="audio-tool-generate" class="primary">生成素材</button></div>
+  </dialog>
   <dialog id="material-add-dialog" class="narration-review" aria-labelledby="material-add-title">
     <form id="material-add-form">
       <h2 id="material-add-title">添加素材到分镜</h2>
@@ -470,8 +661,10 @@
     <label class="narration-review-field">台词字幕<textarea id="narration-review-caption" maxlength="500" rows="4" placeholder="填入该音频的台词"></textarea></label>
     <p id="narration-review-note" class="muted compact"></p>
     <div class="narration-review-actions">
+      <button type="button" id="review-audio-tools" class="secondary">音频处理</button>
       <button type="button" id="narration-review-close" class="secondary">关闭</button>
       <button type="button" id="narration-review-save" class="primary">应用台词字幕</button>
+      <button type="button" id="recognize-voice-captions" class="secondary">识别口播字幕</button>
     </div>
   </dialog>
   <template id="shot-template">
@@ -553,6 +746,7 @@
         <input type="checkbox" class="batch-select">
         <strong class="batch-title"></strong>
         <span class="batch-duration muted compact"></span>
+        <span class="batch-reuse compact" title="与本批前面组合比较，按素材、裁剪区间、镜像和播放帧数估算"></span>
         <span class="batch-whole-track muted compact" hidden></span>
       </label>
       <button type="button" class="preview-composition secondary">播放预览</button>
@@ -576,5 +770,10 @@
       <button type="button" class="remove-asset quiet">移除</button>
     </div>
   </template>
+  <dialog id="caption-zoom-dialog" aria-labelledby="caption-zoom-title">
+    <div class="caption-section-head"><h3 id="caption-zoom-title">字幕预览</h3><button type="button" class="quiet" id="caption-zoom-close">关闭</button></div>
+    <canvas id="caption-zoom-canvas" aria-label="点按或拖动可设置字幕中心点"></canvas>
+    <p class="muted compact">点按或拖动可设置字幕中心点。</p>
+  </dialog>
 </body>
 </html>

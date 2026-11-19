@@ -7,6 +7,7 @@ const https = require('node:https');
 const path = require('node:path');
 const { setTimeout: delay } = require('node:timers/promises');
 const { normalizeSubtitles } = require('./subtitles.cjs');
+const { createBreezeBlue, breezeEndpoint } = require('./breezeblue.cjs');
 
 const maxJson = 1024 * 1024;
 const maxWave = 64 * 1024 * 1024;
@@ -66,14 +67,16 @@ function validId(value) {
   return typeof value === 'string' && identifier.test(value);
 }
 
-function responseError(status) {
+function responseError(status, message) {
+  if (message) return new ServiceError(message);
   if (status === 401 || status === 403) return new ServiceError('语音服务拒绝授权。');
+  if (status === 402) return new ServiceError('语音服务余额或额度不足。');
   if (status === 404) return new ServiceError('语音服务未找到所需接口或资源。');
   if (status === 429) return new ServiceError('语音服务请求过于频繁。');
   return new ServiceError('语音服务响应失败。');
 }
 
-async function requestBytes(url, apiKey, { method = 'GET', body, signal, timeout, maxBytes, accept, additionalHeaders }) {
+async function requestBytes(url, apiKey, { method = 'GET', body, signal, timeout, maxBytes, accept, additionalHeaders, previewRedirects = 0, statusMessage }) {
   signal?.throwIfAborted();
   const deadline = AbortSignal.timeout(timeout);
   const requestSignal = signal ? AbortSignal.any([signal, deadline]) : deadline;
@@ -89,8 +92,18 @@ async function requestBytes(url, apiKey, { method = 'GET', body, signal, timeout
     return await new Promise((resolve, reject) => {
       const request = transport.request(url, { method, agent: false, headers, signal: requestSignal }, (response) => {
         response.once('error', reject);
+        if (previewRedirects > 0 && [301, 302, 303, 307, 308].includes(response.statusCode) && response.headers.location) {
+          response.resume();
+          try {
+            const next = new URL(response.headers.location, url);
+            if (next.protocol !== 'https:' || next.username || next.password) throw new Error();
+            resolve(requestBytes(next, undefined, { signal: requestSignal, timeout, maxBytes, accept, previewRedirects: previewRedirects - 1, statusMessage,
+              ...(next.origin === url.origin && { additionalHeaders }) }));
+          } catch { reject(new ServiceError('语音样本下载地址无效。')); }
+          return;
+        }
         if (response.statusCode < 200 || response.statusCode >= 300) {
-          reject(responseError(response.statusCode));
+          reject(responseError(response.statusCode, statusMessage?.(response.statusCode, url)));
           response.destroy();
           return;
         }
@@ -289,10 +302,10 @@ function createSeedAudio({ apiKey, outputDirectory, timeout }) {
 
 function createCloudTts({
   provider = 'gateway', baseUrl, apiKey, outputDirectory,
-  pollIntervalMs = 700, requestTimeoutMs = provider === seedAudioVoiceId ? 300000 : 15000,
+  pollIntervalMs = 700, requestTimeoutMs = provider === 'gateway' ? 15000 : 300000,
   audioTimeoutMs = 60000, jobTimeoutMs = 300000, cancelTimeoutMs = 2500,
 } = {}) {
-  if (provider !== 'gateway' && provider !== seedAudioVoiceId) throw new Error('语音服务类型无效。');
+  if (!['gateway', seedAudioVoiceId, 'breezeblue'].includes(provider)) throw new Error('语音服务类型无效。');
   const base = parseBase(baseUrl);
   if (apiKey != null && apiKey !== '' && (typeof apiKey !== 'string' || apiKey.length > 4096 || /[^\x21-\x7e]/.test(apiKey))) {
     throw new Error('语音服务 API 密钥格式无效。');
@@ -303,6 +316,11 @@ function createCloudTts({
   if (provider === seedAudioVoiceId) {
     if (base && base.href !== seedAudioEndpoint) throw new Error('Seed Audio 使用官方固定接口地址。');
     return createSeedAudio({ apiKey, outputDirectory, timeout: Math.min(requestTimeoutMs, jobTimeoutMs, 300000) });
+  }
+  if (provider === 'breezeblue') {
+    if (base && base.href !== breezeEndpoint) throw new Error('Breeze Blue 使用固定的服务地址。');
+    return createBreezeBlue({ apiKey, outputDirectory, timeout: Math.min(requestTimeoutMs, jobTimeoutMs),
+      requestBytes, publishAudio, publishWave, parseJson, safeCaptions });
   }
 
   function endpoint(route) {

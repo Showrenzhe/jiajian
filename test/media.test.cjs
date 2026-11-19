@@ -5,9 +5,109 @@ const fs = require('node:fs/promises');
 const os = require('node:os');
 const path = require('node:path');
 const { test } = require('node:test');
-const { inspectAsset, createVideoThumbnail, normalizeSubtitleStyle, planMontage, planExtraction, exportBatch, maxWholeTracks } = require('../src/media.cjs');
+const { inspectAsset, createVideoThumbnail, createTrackProxy, normalizeSubtitleStyle, planMontage, planExtraction, exportBatch, maxWholeTracks } = require('../src/media.cjs');
 const { prepareMontagePlans } = require('../src/preview-plans.cjs');
 const { ffmpeg, fixtures } = require('./fixtures.cjs');
+const { createForeground } = require('../src/foreground.cjs');
+const { detectPauses, processAudio, retained, mergeFillers, retimeCaptions } = require('../src/audio-tools.cjs');
+
+test('音频波形从各声道读出静音、反相高频和裁剪区间，区分无声视频与原声视频', async (t) => {
+  const {extractAudioWaveform} = require('../src/media.cjs');
+  const {catalog,output}=await fixtureDirectory(t);
+  const file=path.join(output,'立体声反相.wav');
+  const gated='sin(2*PI*9000*t)*between(t\\,0.2\\,0.5)';
+  await ffmpeg(['-f','lavfi','-i',`aevalsrc=0.75*${gated}|-0.75*${gated}:d=1:s=48000`,'-c:a','pcm_s16le',file]);
+  const audio=await inspectAsset(file,'audio');
+  const full=await extractAudioWaveform(audio);
+  assert.equal(full.duration,1);
+  assert.equal(full.start,0);
+  assert.equal(full.end,1);
+  assert.equal(full.step,.01);
+  assert.equal(full.peaks.length,100);
+  assert.ok(full.peaks.slice(0,19).every((v)=>v===0));
+  assert.ok(full.peaks.slice(22,48).every((v)=>Math.abs(v-.75)<.001));
+  assert.ok(full.peaks.slice(51).every((v)=>v===0));
+  const cut=await extractAudioWaveform(audio,{start:.41,end:.66});
+  assert.deepEqual(cut.peaks,full.peaks.slice(41,66));
+  assert.equal(cut.start,.41);
+  assert.equal(await extractAudioWaveform(catalog.get('green')),null);
+  assert.equal(await extractAudioWaveform(catalog.get('still')),null);
+  assert.ok((await extractAudioWaveform(catalog.get('red'))).peaks.some((v)=>v>.05));
+  const delayed=path.join(output,'推迟的原声.mkv');
+  await ffmpeg(['-f','lavfi','-i','color=blue:s=64x64:r=10:d=2','-itsoffset','0.3','-i',file,
+    '-map','0:v:0','-map','1:a:0','-c:v','libx264','-threads','1','-c:a','pcm_s16le',delayed]);
+  const wrapped=await inspectAsset(delayed,'video');
+  const offset=await extractAudioWaveform(wrapped,{start:.1,end:1.4});
+  assert.ok(offset.peaks.slice(0,38).every((v)=>v===0));
+  assert.ok(offset.peaks.slice(42,68).every((v)=>Math.abs(v-.75)<.001));
+  assert.ok(offset.peaks.slice(72).every((v)=>v===0));
+  const quiet=path.join(output,'长静音.wav');
+  await ffmpeg(['-f','lavfi','-i','anullsrc=r=8000:cl=mono','-t','50','-c:a','pcm_s16le',quiet]);
+  const flat=await extractAudioWaveform(await inspectAsset(quiet,'audio'));
+  assert.ok(flat.peaks.length<=4096 && flat.step*flat.peaks.length>=50);
+  assert.ok(flat.peaks.every((v)=>v===0),'真正的静音轨保留完整的静音波形');
+});
+
+test('音频波形缓存合并并限制并发，切换工程时丢弃旧解码和排队任务',async()=>{
+  const {createWaveformCache}=require('../src/waveform-cache.cjs');
+  const cache=createWaveformCache();
+  const gate=Promise.withResolvers(), calls=[];
+  const read=(name)=>async(signal)=>{calls.push(name);await gate.promise;return {name,cancelled:signal.aborted};};
+  const a=cache.get('A',read('A')), duplicate=cache.get('A',read('duplicate'));
+  const b=cache.get('B',read('B')), queued=cache.get('C',read('C'));
+  await Promise.resolve();
+  assert.equal(a,duplicate);
+  assert.deepEqual(calls,['A','B']);
+  cache.reset();
+  const fresh=cache.get('A',read('fresh'));
+  gate.resolve();
+  assert.deepEqual(await Promise.all([a,b,queued]),[null,null,null]);
+  const result=await fresh;
+  assert.deepEqual(result,{name:'fresh',cancelled:false});
+  assert.deepEqual(calls,['A','B','fresh']);
+  assert.equal(await cache.get('A',()=>{throw Error('不应再次解码');}),result);
+});
+
+test('语气词只从独立的识别片段中提出，去停顿后重新对应字幕',()=>{
+  const cuts=mergeFillers([{start:0.9,end:1.5}],[
+    {start:1400,end:1600,text:'呃。'},{start:1650,end:2200,text:'嗯，就是这里。'},
+  ],3);
+  assert.deepEqual(cuts,[{start:0.9,end:1.6,label:'语气词「呃。」'}]);
+  assert.deepEqual(retimeCaptions([{start:0,end:450,text:'前'},{start:920,end:1550,text:'嗯'},{start:2000,end:2800,text:'后'}],cuts),
+    [{start:0,end:450,text:'前'},{start:1300,end:2100,text:'后'}]);
+});
+
+test('去气口按可调整的区间同步裁切声画，原声可单独导入', async (t) => {
+  const {output}=await fixtureDirectory(t);
+  const file=path.join(output,'pauses.mp4');
+  await ffmpeg(['-f','lavfi','-i','color=c=red:s=160x120:r=25:d=3','-f','lavfi','-i',
+    'aevalsrc=0.3*sin(2*PI*440*t)*between(t\\,0.2\\,0.8)+0.3*sin(2*PI*600*t)*between(t\\,1.6\\,2.7):d=3:s=44100',
+    '-shortest','-c:a','aac','-c:v','libx264','-threads','1',file]);
+  const asset=await inspectAsset(file,'video'), gaps=await detectPauses(asset);
+  assert.equal(gaps.length,2);assert.ok(Math.abs(gaps[0].start-0.86)<0.01 && Math.abs(gaps[0].end-1.54)<0.01);
+  const [cut]=await processAudio(asset,{mode:'trim',intervals:[{start:0.90,end:1.55}]},output);
+  assert.ok(Math.abs(cut.duration-2.35)<0.05);assert.equal(cut.width,160);assert.notEqual(cut.audioIndex,null);
+  const [sound]=await processAudio(asset,{mode:'extract'},output);
+  assert.equal(sound.kind,'audio');assert.ok(Math.abs(sound.duration-3)<0.04);
+  assert.throws(()=>retained(3,[{start:0,end:3}]),/保留/);
+  assert.throws(()=>retained(3,[{start:1,end:2.5},{start:2,end:3}]),/重叠/);
+});
+
+test('离线人声与伴奏逐样本重合成原混音', {skip:process.platform!=='win32'}, async (t) => {
+  const {output}=await fixtureDirectory(t);
+  const file=path.join(output,'stems.wav');
+  await ffmpeg(['-f','lavfi','-i','aevalsrc=0.12*sin(2*PI*98*t)+0.15*sin(2*PI*460*t)*(0.7+0.3*cos(2*PI*4*t)):s=44100:d=5',
+    '-ac','2','-c:a','pcm_s16le',file]);
+  const [voice,bed]=await processAudio(await inspectAsset(file,'audio'),{mode:'both'},output);
+  const pcm=await Promise.all([file,voice.path,bed.path].map((item)=>ffmpeg(['-i',item,'-ac','1','-f','s16le','-'])));
+  const [original,v,b]=pcm;assert.equal(v.length,original.length);assert.equal(b.length,original.length);
+  let error=0, vocalEnergy=0, bedEnergy=0;
+  for(let i=0;i<original.length;i+=2) {
+    const a=v.readInt16LE(i), bsample=b.readInt16LE(i);
+    error=Math.max(error,Math.abs(original.readInt16LE(i)-a-bsample));vocalEnergy+=a*a;bedEnergy+=bsample*bsample;
+  }
+  assert.ok(error<=2,'两条音轨必须能重构混音');assert.ok(vocalEnergy>1000 && bedEnergy>1000);
+});
 
 async function fixtureDirectory(t) {
   const parent = await fs.realpath(os.tmpdir());
@@ -37,6 +137,28 @@ const montage = {
   musicIds: ['music'], musicVolume: 50, count: 2,
 };
 
+test('anchors whole narration to a reordered shot and burns only the selected video captions',async(t)=>{
+  const {catalog,output}=await fixtureDirectory(t);
+  const caption={name:'重点字',cues:[{start:100,end:450,text:'测试 SALE',highlights:[{word:'SALE',color:'#ffff00'}]}]};
+  const cfg={...montage,ratio:'16:9',musicIds:[],count:1,shots:[[{id:'green',start:0,end:.5,videoSubtitles:caption}],[{id:'blue',start:0,end:.5}]],narrationId:'music',priority:'picture',wholeStartShots:[1],generatedCaptions:{music:'跟随分镜'}};
+  const [plan]=planMontage(cfg,catalog);
+  assert.equal(plan.voiceStart,.5);
+  assert.equal(plan.subtitles.cues[0].start,500);
+  assert.deepEqual(plan.videoSubtitles.cues,caption.cues);
+  const {results,failures}=await exportBatch([plan],output);
+  assert.deepEqual(failures,[]);
+  const file=results[0].path;
+  assert.equal(await toneAt(file,'0.15'),0);
+  assert.ok(Math.abs(await toneAt(file,'0.60')-660)<65);
+  const rgb=await ffmpeg(['-ss','0.25','-i',file,'-vf','crop=640:200:(iw-640)/2:ih-200','-frames:v','1','-an','-pix_fmt','rgb24','-f','rawvideo','pipe:1']);
+  let yellow=0;
+  for(let i=0;i<rgb.length;i+=3) if(rgb[i]>180 && rgb[i+1]>180 && rgb[i+2]<80) yellow++;
+  assert.ok(yellow>50,'指定词应在导出的画面上显示为黄色');
+  const [reordered]=planMontage({...cfg,unordered:true},catalog,()=>0);
+  assert.equal(reordered.clips[0].shotIndex,1);
+  assert.equal(reordered.voiceStart ?? 0,0);
+});
+
 async function frameColor(file, seconds) {
   const [red, green, blue] = await ffmpeg([
     '-ss', String(seconds), '-i', file, '-an', '-frames:v', '1', '-vf', 'scale=1:1', '-f', 'rawvideo', '-pix_fmt', 'rgb24', 'pipe:1',
@@ -58,6 +180,18 @@ async function toneAt(media, position) {
   }
   return peak < 100 ? 0 : crossings * 8000 / (pcm.length / 2);
 }
+
+test('the track proxy contains a smaller seekable picture with the original duration, cadence and sound', async (t) => {
+  const { catalog, output } = await fixtureDirectory(t);
+  const hd = path.join(output, 'hd.mp4'), proxy = path.join(output, 'proxy.mp4');
+  await ffmpeg(['-i', catalog.get('red').path, '-vf', 'scale=960:720', '-c:v', 'libx264', '-threads', '2', '-c:a', 'copy', hd]);
+  const original = await inspectAsset(hd, 'video');
+  await createTrackProxy(original, proxy);
+  const result = await inspectAsset(proxy, 'video');
+  assert.deepEqual([result.width, result.height, result.fps], [640, 480, original.fps]);
+  assert.ok(Math.abs(result.duration - original.duration) <= .04);
+  assert.ok(Math.abs(await toneAt(proxy, '0.3') - 440) < 25);
+});
 
 test('decodes a bounded JPEG thumbnail from the actual video stream', async (t) => {
   const { catalog, output } = await fixtureDirectory(t);
@@ -336,6 +470,142 @@ test('fills short pictures from the same shot and uniformly accelerates full vis
   assert.ok((await frameColor(repeated, 1.03)).green > 85);
 });
 
+test('exports reordered cut ranges, smart trims and both reference narration length rules', async (t) => {
+  const { catalog, output } = await fixtureDirectory(t);
+  const media = path.join(path.dirname(output), '红绿.mp4');
+  await ffmpeg(['-f', 'lavfi', '-i', 'color=red:s=160x90:r=30:d=0.4',
+    '-f', 'lavfi', '-i', 'color=green:s=160x90:r=30:d=0.4',
+    '-filter_complex', '[0:v][1:v]concat=n=2:v=1:a=0', '-c:v', 'libx264', '-threads', '2', media]);
+  catalog.set('source', await inspectAsset(media, 'video'));
+  const clip = { id: 'source', start: 0, end: 0.8 };
+  const config = { ...montage, shots: [[clip]], count: 1, musicIds: [], ratio: '16:9', fps: 30 };
+  const plan = (additional) => planMontage({ ...config, ...additional }, catalog, () => 0.75)[0];
+  const reordered = plan({ shots: [[{ ...clip, ranges: [{ start: 0.55, end: 0.8 }, { start: 0, end: 0.15 }] }]] });
+  const smart = plan({ shotSettings: [{ duration: 0.2, smartTrim: true }] });
+  const fixed = plan({ shotSettings: [{ duration: 0.2 }] });
+  const reference = { narrationId: 'music', priority: 'voice', voiceAlignment: 'reference' };
+  const long = plan(reference);
+  const short = plan({ ...reference, shots: [[{ ...clip, start: 0.3, end: 0.5 }]] });
+  assert.equal(reordered.clips[0].visuals.length, 2);
+  assert.ok(Math.abs(short.clips[0].visuals[0].speed - 0.5) < 1e-6);
+  assert.equal(short.clips[0].visuals[0].repeat, undefined);
+  const batch = await exportBatch([reordered, smart, fixed, long, short], output);
+  assert.deepEqual(batch.failures, []);
+  const [joined, random, beginning, cropped, stretched] = batch.results.map((result) => result.path);
+  assert.ok((await frameColor(joined, 0.1)).green > 85);
+  assert.ok((await frameColor(joined, 0.32)).red > 220);
+  assert.ok((await frameColor(random, 0.05)).green > 85);
+  assert.ok((await frameColor(beginning, 0.05)).red > 220);
+  assert.ok((await frameColor(cropped, 0.30)).red > 220);
+  assert.ok((await frameColor(stretched, 0.08)).red > 220);
+  assert.ok((await frameColor(stretched, 0.31)).green > 85);
+  assert.ok(Math.abs(await toneAt(stretched, '0.22') - 660) < 65);
+});
+
+test('renders per-row narration cuts in edit order and remaps the original SRT timestamps', async (t) => {
+  const { catalog, output } = await fixtureDirectory(t);
+  const voice = path.join(path.dirname(output), '三段语音.wav');
+  await ffmpeg(['-f', 'lavfi', '-i', 'sine=frequency=440:duration=0.2',
+    '-f', 'lavfi', '-i', 'sine=frequency=660:duration=0.2',
+    '-f', 'lavfi', '-i', 'sine=frequency=880:duration=0.2',
+    '-filter_complex', '[0:a][1:a][2:a]concat=n=3:v=0:a=1', voice]);
+  catalog.set('speech', await inspectAsset(voice, 'audio'));
+  const ranges = [{ start: 0.4, end: 0.6 }, { start: 0, end: 0.2 }];
+  const config = { ...montage, count: 1, shots: [[{ id: 'red', start: 0, end: 0.3 }]], musicIds: [],
+    priority: 'voice', narrationMode: 'segmented', segmentNarrationIds: [['speech']],
+    segmentVoiceCuts: [[{ ranges }]], generatedCaptions: { speech: { name: '原始字幕', cues: [
+      { start: 0, end: 200, text: '一' }, { start: 200, end: 400, text: '二' }, { start: 400, end: 600, text: '三' },
+    ] } } };
+  const voicePlan = planMontage(config, catalog)[0];
+  assert.deepEqual(voicePlan.subtitles.cues, [{ start: 0, end: 200, text: '三' }, { start: 200, end: 400, text: '一' }]);
+  assert.equal(voicePlan.duration, 0.4);
+  const picture = planMontage({ ...config, priority: 'picture' }, catalog)[0];
+  assert.deepEqual(picture.subtitles.cues.at(-1), { start: 200, end: 300, text: '一' });
+  const delayed = planMontage({ ...config, segmentVoiceCuts: [[{ ranges, offset: 0.2 }]] }, catalog)[0];
+  assert.equal(delayed.duration, 0.6);
+  assert.deepEqual(delayed.subtitles.cues, [{ start: 200, end: 400, text: '三' }, { start: 400, end: 600, text: '一' }]);
+  const batch = await exportBatch([voicePlan, picture, delayed], output);
+  assert.deepEqual(batch.failures, []);
+  for (const { path: file } of batch.results.slice(0, 2)) {
+    assert.ok(Math.abs(await toneAt(file, '0.05') - 880) < 65);
+    const secondTone = await toneAt(file, '0.20');
+    assert.ok(Math.abs(secondTone - 440) < 65, `第二个保留区间应该是 440 Hz，实测 ${secondTone} Hz`);
+  }
+  const last = batch.results[2].path;
+  assert.equal(await toneAt(last, '0.025'), 0);
+  assert.ok(Math.abs(await toneAt(last, '0.24') - 880) < 65);
+});
+
+test('publishes selected MP4 cover artwork, pins first shot and inserts a real random intro', async (t) => {
+  const { catalog, output } = await fixtureDirectory(t);
+  const config = { ...montage, shots: [[{id:'red',start:0,end:0.5},{id:'green',start:0,end:0.5}],[{id:'red',start:0,end:0.4}]],
+    count:1, fps:30, musicIds:[], unordered:true };
+  const source = (cover) => planMontage({...config,cover},catalog,()=>0.75)[0];
+  const library = source({mode:'library',items:[{id:'blue',time:0.8,title:'佳剪',style:'accent'}],active:0});
+  const first = source({mode:'first-shot',items:[],active:0});
+  assert.equal(first.clips[0].shotIndex,0);
+  assert.throws(()=>planMontage({...config,count:2,cover:{mode:'first-shot',items:[]}},catalog),/生成数量/);
+  const random = source({mode:'random',items:[],active:0});
+  assert.equal(random.cover.frames,10);
+  assert.ok(Math.abs(random.duration-random.contentDuration-10/30)<1e-7);
+  const batch=await exportBatch([library,first,random],output);
+  assert.deepEqual(batch.failures,[]);
+  const {promisify}=require('node:util');
+  const probe=promisify(require('node:child_process').execFile);
+  for (const {path:file} of batch.results) {
+    const {stdout}=await probe(process.env.SUPERDIR_REPLICA_FFPROBE||'ffprobe',['-v','error','-show_streams','-of','json',file]);
+    assert.equal(JSON.parse(stdout).streams.filter((s)=>s.disposition.attached_pic===1 && s.codec_name==='mjpeg').length,1);
+  }
+  const picture=await ffmpeg(['-i',batch.results[0].path,'-map','0:v:1','-frames:v','1','-vf','scale=1:1','-pix_fmt','rgb24','-f','rawvideo','pipe:1']);
+  assert.ok(picture[2]>picture[0]+65,'MP4 中独立的封面图像来自蓝色选帧');
+  assert.ok((await frameColor(batch.results[1].path,0.2)).green>85);
+  assert.ok(Math.abs((await inspectAsset(batch.results[2].path,'video')).duration-random.duration)<.05);
+});
+
+test('renders selective color, timed effects, CUBE overlays and custom backgrounds after trimming', async(t)=>{
+  const {catalog,output}=await fixtureDirectory(t);
+  const {inspectLut,previewLook}=require('../src/visual-style.cjs');
+  const file=path.join(output,"本地风格's.cube");
+  await fs.writeFile(file,'LUT_3D_SIZE 2\n1 1 1\n0 1 1\n1 0 1\n0 0 1\n1 1 0\n0 1 0\n1 0 0\n0 0 0\n');
+  catalog.set('inverse',await inspectLut(file));
+  const config={...montage,count:1,musicIds:[],fps:30,ratio:'16:9',fit:'fill'};
+  const render=(look,id='red',options={})=>planMontage({...config,shots:[[{id,start:0,end:1,look}]],...options},catalog,()=>0)[0];
+  const timed=render({effects:[{kind:'negative',start:.3,end:.7,strength:100}],head:.1,tail:.1});
+  assert.equal(timed.clips[0].start,.1);
+  assert.ok(Math.abs(timed.duration-.8)<1e-7);
+  const background=render({background:{kind:'media',ids:['still','green']}},'blue');
+  assert.equal(background.clips[0].look.backgroundAsset.kind,'image');
+  const pip=render({},'green',{packaging:{composites:[[{kind:'pip',id:'red',scale:1,start:0,end:1,look:{lut:'inverse'}}]]}});
+  const batch=await exportBatch([timed,render({hsl:{red:{h:120}}}),render({filter:'mono'}),background,pip],output);
+  assert.deepEqual(batch.failures,[]);
+  const red=await frameColor(batch.results[0].path,.05),cyan=await frameColor(batch.results[0].path,.4);
+  assert.ok(red.red>200&&red.green<30&&cyan.green>180&&cyan.blue>180&&cyan.red<30,JSON.stringify({red,cyan}));
+  const shifted=await frameColor(batch.results[1].path,.2),grey=await frameColor(batch.results[2].path,.2);
+  assert.ok(shifted.green>180&&shifted.red<50,JSON.stringify(shifted));
+  assert.ok(Math.abs(grey.red-grey.green)<5&&Math.abs(grey.red-grey.blue)<5,JSON.stringify(grey));
+  const sample=(i,x,y)=>ffmpeg(['-ss','0.25','-i',batch.results[i].path,'-frames:v','1','-vf',`crop=2:2:${x}:${y},scale=1:1`,'-pix_fmt','rgb24','-f','rawvideo','pipe:1']);
+  const [edge,center,overlay]=await Promise.all([sample(3,12,100),sample(3,640,360),sample(4,640,360)]);
+  assert.ok(edge[0]>220&&edge[2]>220&&center[0]<35&&center[2]>180);
+  assert.ok(overlay[0]<30&&overlay[1]>190&&overlay[2]>190,JSON.stringify([...overlay]));
+  const still=async(look)=>previewLook(process.env.SUPERDIR_REPLICA_FFMPEG||'ffmpeg',catalog.get('blue'),look,catalog,.1,'16:9');
+  for(const kind of ['blur','sharpen','grain','vignette','chromatic','negative'])assert.ok((await still({effects:[{kind,start:0,end:1,strength:65}]})).length>300,kind);
+  for(const bg of [{kind:'blur',strength:50},{kind:'color',color:'#abcdef'},{kind:'pattern',pattern:'gradient'},{kind:'pattern',pattern:'dots'},{kind:'media',ids:['green']}])assert.ok((await still({background:bg})).length>300,bg.kind);
+});
+
+test('applies independent track gains to music, voice slots, video sound and effects',async(t)=>{
+  const {catalog,output}=await fixtureDirectory(t);
+  const config={...montage,count:1,musicIds:[],keepAudio:false,priority:'picture',shots:[[{id:'red',start:0,end:.35}],[{id:'red',start:0,end:.35}]]};
+  const [segmented]=planMontage({...config,narrationMode:'segmented',segmentNarrationIds:[['music'],['music']],volumeOverrides:[{kind:'segment',id:'music',shot:0,track:0,value:0}]},catalog);
+  const [whole]=planMontage({...config,narrationId:'otherMusic',volumeOverrides:[{kind:'whole',id:'otherMusic',track:0,value:0}]},catalog);
+  const [music]=planMontage({...config,musicIds:['music'],volumeOverrides:[{kind:'music',id:'music',value:0}]},catalog);
+  const [fx]=planMontage({...config,keepAudio:true,shots:[[{id:'red',start:0,end:.35,volume:0,layers:[{kind:'sound',id:'music',volume:0}]}],[{id:'red',start:0,end:.35,volume:100}]]},catalog);
+  const batch=await exportBatch([segmented,whole,music,fx],output);assert.deepEqual(batch.failures,[]);
+  const peak=(i,s)=>toneAt(batch.results[i].path,s);
+  assert.equal(await peak(0,'0.05'),0);assert.ok(await peak(0,'0.45')>550);
+  assert.equal(await peak(1,'0.05'),0);assert.equal(await peak(2,'0.1'),0);
+  assert.equal(await peak(3,'0.05'),0);assert.ok(await peak(3,'0.45')>350);
+});
+
 test('cuts only adjacent narration edge silence and keeps speech, internal pauses and captions at their original tempo', async (t) => {
   const { catalog, output } = await fixtureDirectory(t);
   async function addNarration(id, parts) {
@@ -385,6 +655,19 @@ test('cuts only adjacent narration edge silence and keeps speech, internal pause
   }
   assert.equal(await toneAt(pictureFile, '1.02'), 0);
   assert.ok(Math.abs(await toneAt(pictureFile, '1.52') - 880) < 65);
+});
+
+test('exports enabled picture candidates and mutes original audio only in the selected video lane', async (t) => {
+  const { catalog, output } = await fixtureDirectory(t);
+  const red = { id: 'red', start: 0, end: .5, volume: 80 };
+  const config = { ...montage, count: 1, keepAudio: true, musicIds: [], mutedVideoTracks: [1],
+    shots: [[{ id: 'blue', start: 0, end: .5, enabled: false }, red], [red]] };
+  const batch = await exportBatch(planMontage(config, catalog), output);
+  assert.deepEqual(batch.failures, []);
+  const file = batch.results[0].path;
+  assert.ok((await frameColor(file, .2)).red > 220);
+  assert.equal(await toneAt(file, '0.2'), 0);
+  assert.ok(Math.abs(await toneAt(file, '0.7') - 440) < 25);
 });
 
 test('applies candidate original volume and narration gain to rendered audio', async (t) => {
@@ -689,6 +972,51 @@ test('renders the global subtitle colors and position on an alternate whole narr
   assert.deepEqual(bottom, { text: 0, outline: 0 });
 });
 
+test('subtitle inspector preview matches exported placement and switching captions off keeps packaging text', async (t) => {
+  const { previewSubtitleStyle } = require('../src/media.cjs');
+  const { catalog, output } = await fixtureDirectory(t);
+  const cue = {start:0,end:600,text:'字幕 ABC'};
+  const captions = {name:'口播字幕.srt',cues:[cue]};
+  const style = {enabled:true,font:'song',size:24,textColor:'#ffff00',outlineColor:'#000000',outlineWidth:2,
+    position:'custom',x:73,y:16,margin:24,bold:true,italic:true,underline:true,spacing:2};
+  const config = {...montage,ratio:'1:1',count:1,musicIds:[],shots:[[{id:'blue',start:0,end:.8,
+    videoSubtitles:{name:'画面字幕',cues:[{...cue,start:615,end:760}]}}]],subtitles:captions,subtitleStyle:style,
+    packaging:{global:[{kind:'text',text:'片头标记',color:'#ffffff',fontSize:60,start:0,end:.8}]}};
+  const [on] = planMontage(config,catalog);
+  const [off] = planMontage({...config,subtitleStyle:{...style,enabled:false}},catalog);
+  assert.equal(off.subtitles,null);
+  assert.equal(off.videoSubtitles,undefined);
+  assert.equal(off.layers[0].text,'片头标记');
+  assert.equal(on.videoSubtitles.cues[0].text,cue.text);
+  const png = path.join(output,'preview.png');
+  await fs.writeFile(png,await previewSubtitleStyle({style,ratio:'1:1',cue}));
+  const batch = await exportBatch([on,off],output);
+  assert.deepEqual(batch.failures,[]);
+  const sample = async (file,video) => ffmpeg([...(video?['-ss','0.25']:[]),'-i',file,'-frames:v','1',
+    '-vf','scale=256:256','-pix_fmt','rgba','-f','rawvideo','pipe:1']);
+  function bounds(pixels) {
+    let count=0,left=256,top=256,right=0,bottom=0;
+    for(let pixel=0; pixel<256*256; pixel++) {
+      const i=pixel*4;
+      if (pixels[i]<175 || pixels[i+1]<175 || pixels[i+2]>75 || pixels[i+3]<128) continue;
+      const x=pixel%256, y=Math.floor(pixel/256);
+      count++; left=Math.min(left,x);right=Math.max(right,x);top=Math.min(top,y);bottom=Math.max(bottom,y);
+    }
+    return {count,left,top,right,bottom};
+  }
+  const bitmap=await sample(png,false);
+  assert.equal(bitmap[3],0,'字幕之外的预览像素应为透明');
+  const preview=bounds(bitmap), burned=bounds(await sample(batch.results[0].path,true));
+  assert.ok(preview.count>80 && burned.count>80);
+  assert.ok(preview.left>120 && preview.bottom<90,JSON.stringify(preview));
+  assert.ok(Math.abs((preview.left+preview.right)/2-256*.73)<4 && Math.abs((preview.top+preview.bottom)/2-256*.16)<10,JSON.stringify(preview));
+  for(const side of ['left','top','right','bottom']) assert.ok(Math.abs(preview[side]-burned[side])<=2,side);
+  assert.equal(bounds(await sample(batch.results[1].path,true)).count,0,'关闭后不应残留字幕颜色');
+  for(const bad of [{font:'not-a-font'},{align:'__proto__'},{margin:500},{enabled:'false'}]) {
+    assert.throws(()=>normalizeSubtitleStyle(bad));
+  }
+});
+
 test('extracts real MP3 audio and preserves a same-name file', async (t) => {
   const { catalog, output } = await fixtureDirectory(t);
   t.mock.timers.enable({ apis: ['Date'], now: new Date('2026-11-05T09:00:00Z') });
@@ -704,6 +1032,119 @@ test('extracts real MP3 audio and preserves a same-name file', async (t) => {
   assert.ok(Math.abs(rendered.duration - 1.5) < 0.12);
   assert.throws(() => planExtraction(['blue'], catalog), /没有音轨/);
   assert.throws(() => planMontage({ ...montage, shots: [[{ id: 'red', start: 1, end: 0.5 }]] }, catalog), /有效片段/);
+});
+
+test('renders selected packaging as timed text, sticker, picture-in-picture and sound', async (t) => {
+  const { catalog, output } = await fixtureDirectory(t);
+  const config = { ...montage, ratio: '1:1', count: 1, musicIds: [], shots: [[{
+    id: 'red', start: 0, end: 1.4, layers: [{ kind: 'sticker', id: 'still', start: .1, end: .38, scale: .5 }],
+  }]], packaging: {
+    global: [{ kind: 'text', start: .7, end: 1.3, text: "佳剪 100% ':[]", fontSize: 100 }],
+    composites: [[{ kind: 'pip', id: 'blue', start: .4, end: .68, scale: .5 },
+      { kind: 'sound', id: 'music', start: .55, end: .85, volume: 80 }]],
+  } };
+  const [plan] = planMontage(config, catalog);
+  assert.deepEqual(plan.layers.map((layer) => layer.kind), ['sticker', 'pip', 'sound', 'text']);
+  const batch = await exportBatch([plan], output, {});
+  assert.deepEqual(batch.failures, []);
+  const file = batch.results[0].path;
+  const center = (seconds) => ffmpeg(['-ss', seconds, '-i', file, '-an', '-frames:v', '1', '-vf', 'crop=8:8:356:356,scale=1:1',
+    '-f', 'rawvideo', '-pix_fmt', 'rgb24', 'pipe:1']);
+  const [red, sticker, pip, late] = await Promise.all(['0.04', '0.21', '0.50', '1.35'].map(center));
+  assert.ok(red[0] > 200 && red[2] < 40 && late[0] > 200 && late[2] < 40);
+  assert.ok(sticker[0] > 200 && sticker[2] > 200);
+  assert.ok(pip[2] > 200 && pip[0] < 40);
+  const textFrame = await ffmpeg(['-ss', '0.9', '-i', file, '-an', '-frames:v', '1', '-vf', 'crop=440:130:140:295',
+    '-f', 'rawvideo', '-pix_fmt', 'rgb24', 'pipe:1']);
+  let white = 0;
+  for (let i = 0; i < textFrame.length; i += 3) if (textFrame[i + 1] > 180 && textFrame[i + 2] > 180) white++;
+  assert.ok(white > 50, 'timed white text should be visible on red');
+  assert.equal(await toneAt(file, '0.2'), 0);
+  assert.ok(Math.abs(await toneAt(file, '0.62') - 660) < 35);
+  assert.equal(await toneAt(file, '1.0'), 0);
+});
+
+test('renders font, outline, shadow and background on static and animated packaging text', async (t) => {
+  const {catalog,output} = await fixtureDirectory(t);
+  const textStyle = {font:'bold',outlineWidth:5,outlineColor:'#00ff00',background:true,
+    backgroundColor:'#0000ff',backgroundOpacity:1,shadow:true,shadowColor:'#ff00ff',shadowX:15,shadowY:12};
+  const layer = {kind:'text',text:'佳剪 / Aa',fontSize:84,textStyle};
+  const [plan] = planMontage({...montage,ratio:'1:1',count:1,musicIds:[],shots:[[{id:'red',start:0,end:1.4}]],
+    packaging:{global:[{...layer,start:0,end:.68},{...layer,start:.68,end:1.38,keyframes:[{time:.5,x:.53}]}]}},catalog);
+  const batch = await exportBatch([plan],output,{});
+  assert.deepEqual(batch.failures,[]);
+  for (const time of ['0.3','1.10']) {
+    const buf=await ffmpeg(['-ss',time,'-i',batch.results[0].path,'-an','-frames:v','1','-vf','crop=440:160:140:280','-f','rawvideo','-pix_fmt','rgb24','pipe:1']);
+    const count={white:0,green:0,blue:0,magenta:0};
+    for (let i=0;i<buf.length;i+=3) {
+      const [r,g,b]=buf.subarray(i,i+3);
+      if (r>200 && g>200 && b>200) count.white++;
+      if (g>190 && r<70 && b<70) count.green++;
+      if (b>190 && g<70 && r<70) count.blue++;
+      if (r>170 && b>170 && g<80) count.magenta++;
+    }
+    for (const pixels of Object.values(count)) assert.ok(pixels>80,JSON.stringify({time,count}));
+  }
+});
+
+test('renders interpolated layer position, scale, rotation and opacity at the original keyframe times', async (t) => {
+  const { catalog, output } = await fixtureDirectory(t);
+  const layer = { kind: 'sticker', id: 'still', start: .1, end: 1.3, x: .2, y: .5, scale: .28, opacity: .9,
+    keyframes: [{ time: .9, x: .75, y: .35, scale: .48, rotation: 90, opacity: .35 }] };
+  const [plan] = planMontage({ ...montage, ratio: '1:1', count: 1, musicIds: [],
+    shots: [[{ id: 'red', start: 0, end: 1.4 }]], packaging: { global: [layer] } }, catalog);
+  const batch = await exportBatch([plan], output, {});
+  assert.deepEqual(batch.failures, []);
+  async function region(seconds) {
+    const buf = await ffmpeg(['-ss', seconds, '-i', batch.results[0].path, '-an', '-frames:v', '1', '-vf', 'scale=120:120',
+      '-f', 'rawvideo', '-pix_fmt', 'rgb24', 'pipe:1']);
+    let count = 0, totalBlue = 0, totalX = 0, totalY = 0;
+    let xmin = 120, xmax = 0, ymin = 120, ymax = 0;
+    for (let y = 0; y < 120; y++) for (let x = 0; x < 120; x++) {
+      const blue = buf[(y * 120 + x) * 3 + 2];
+      if (blue < 45) continue;
+      count++; totalX += x; totalY += y; totalBlue += blue;
+      xmin = Math.min(xmin, x); xmax = Math.max(xmax, x); ymin = Math.min(ymin, y); ymax = Math.max(ymax, y);
+    }
+    assert.ok(count > 100, 'colored region should be visible at ' + seconds);
+    return { x: totalX / count, y: totalY / count, blue: totalBlue / count, width: xmax - xmin, height: ymax - ymin, count };
+  }
+  const [early, middle, late] = await Promise.all(['0.15', '0.58', '1.12'].map(region));
+  assert.ok(early.x < 35 && middle.x > 48 && middle.x < 75 && late.x > 82, JSON.stringify([early, middle, late]));
+  assert.ok(early.y > late.y + 10 && early.blue > middle.blue && middle.blue > late.blue);
+  assert.ok(early.width > early.height && late.height > late.width && late.count > early.count * 1.6, JSON.stringify([early, middle, late]));
+});
+
+test('runs the bundled foreground model offline and caches a usable alpha image', { skip: process.platform !== 'win32' || process.arch !== 'x64' }, async (t) => {
+  const { output } = await fixtureDirectory(t);
+  const image = path.join(output, '瓶子.png');
+  await ffmpeg(['-f','lavfi','-i','color=c=white:s=168x128,drawbox=x=60:y=30:w=48:h=72:color=red:t=fill,drawbox=x=66:y=19:w=36:h=15:color=gray:t=fill',
+    '-frames:v','1','-threads','1','-update','1',image]);
+  const source = await inspectAsset(image,'image');
+  const file = await createForeground(source, output);
+  assert.equal(await createForeground(source, output),file);
+  assert.ok((await inspectAsset(file,'image')).alpha);
+  const matte = await ffmpeg(['-i',file,'-vf','alphaextract','-frames:v','1','-f','rawvideo','-pix_fmt','gray','pipe:1']);
+  assert.ok(matte[70*168+80]>235 && matte[3*168+3]<15);
+});
+
+test('applies a candidate transform and feathered geometric mask before composing the timeline', async (t) => {
+  const { catalog, output } = await fixtureDirectory(t);
+  const mask = { shape: 'ellipse', x: .5, y: .5, width: .6, height: .6, feather: .35 };
+  const [plan] = planMontage({ ...montage, ratio: '1:1', count: 1, musicIds: [],
+    shots: [[{ id: 'red', start: 0, end: .8, transform: { x: .3, scale: .7, opacity: .8, mask,
+      keyframes: [{ time: .5, x: .7, rotation: 45 }] } }],
+    [{ id: 'blue', start: 0, end: .5, transform: { mask: { ...mask, shape: 'rectangle', feather: 0, invert: true } } }]] }, catalog);
+  const batch = await exportBatch([plan], output, {});
+  assert.deepEqual(batch.failures, []);
+  const frame = (seconds) => ffmpeg(['-ss', seconds, '-i', batch.results[0].path, '-an', '-frames:v', '1', '-vf', 'scale=100:100',
+    '-f', 'rawvideo', '-pix_fmt', 'rgb24', 'pipe:1']);
+  const [early, late, rect] = await Promise.all(['0.03', '0.63', '1.0'].map(frame));
+  const point = (buf, x, y, channel) => buf[(y * 100 + x) * 3 + channel];
+  assert.ok(point(early, 32, 50, 0) > 170 && point(early, 70, 50, 0) < 20);
+  assert.ok(point(late, 70, 50, 0) > 170 && point(late, 30, 50, 0) < 20);
+  assert.ok(point(late, 88, 50, 0) > 10 && point(late, 88, 50, 0) < 165);
+  assert.ok(point(rect, 50, 50, 2) < 20 && point(rect, 4, 50, 2) > 170);
 });
 
 test('cancels an in-progress output and keeps previously completed media', async (t) => {

@@ -20,7 +20,14 @@
             <select id="cloud-tts-voice-mode"><option value="fixed">固定音色</option><option value="random">随机音色</option></select>
           </label>
           <p id="cloud-tts-voice-hint" class="cloud-tts-muted"></p>
+          <div id="cloud-tts-catalog" hidden>
+            <input id="cloud-tts-search" type="search" aria-label="搜索全部音色" placeholder="搜索名称、描述或音色 ID" maxlength="256">
+            <div id="cloud-tts-filters" aria-label="音色筛选">
+              <button type="button" data-filter="all">全部</button><button type="button" data-filter="zh">中文</button><button type="button" data-filter="female">女声</button><button type="button" data-filter="male">男声</button><button type="button" data-filter="favorites">收藏</button>
+            </div>
+          </div>
           <div id="cloud-tts-voices"></div>
+          <button type="button" id="cloud-tts-more" hidden>加载更多音色</button>
           <audio id="cloud-tts-sample-audio" controls preload="none" aria-label="音色试听" hidden></audio>
           <div class="cloud-tts-parameters">
             <label>语速<input type="number" id="cloud-tts-speed" min="0.5" max="2" step="any" value="1" required></label>
@@ -49,6 +56,7 @@
         <p id="cloud-tts-status" role="status" hidden></p>
         <div class="cloud-tts-actions">
           <label><input id="cloud-tts-captions" type="checkbox" checked>同时添加字幕</label>
+          <label><input id="cloud-tts-trim-pauses" type="checkbox">生成时去气口</label>
           <span id="cloud-tts-job-count" class="cloud-tts-muted"></span>
           <button type="button" id="cloud-tts-cancel" hidden>取消生成</button>
           <button type="button" id="cloud-tts-generate" class="cloud-tts-primary">生成配音</button>
@@ -72,9 +80,14 @@
     return value;
   };
   const jobKey = ({ index, voiceId }) => JSON.stringify([index, voiceId]);
-  const textLimit = (state) => state.seedAudio ? 3000 : 500;
-  const textLength = (state, text) => state.seedAudio ? [...text.trim()].length : text.trim().length;
-  const preferenceProfile = (state) => state.seedAudio ? 'seed-audio' : 'gateway';
+  const textLimit = (state) => state.seedAudio ? 3000 : state.breeze ? 1000 : 500;
+  const textLength = (state, text) => state.seedAudio || state.breeze ? [...text.trim()].length : text.trim().length;
+  const preferenceProfile = (state) => state.seedAudio ? 'seed-audio' : state.breeze ? 'breezeblue' : 'gateway';
+  const languageNames = new Intl.DisplayNames(['zh-CN'], { type: 'language' });
+  const voiceLanguage = (code) => /^[a-z]{2}$/i.test(code) ? languageNames.of(code) : '';
+  const toneNames = { warm:'温暖', calm:'平静', bright:'明亮', gentle:'温柔', energetic:'活力', authoritative:'威严',
+    sincere:'真诚', weary:'疲惫', precise:'精准', refined:'优雅', urgent:'急切', friendly:'亲切', articulate:'清晰',
+    steady:'沉稳', playful:'俏皮', compassionate:'体贴', reflective:'沉思', measured:'从容', rhythmic:'律动', passionate:'热情' };
   const isPromptVoice = (state, { id }) => state.seedAudio && id === 'seed-audio';
 
   window.mountCloudTtsDialog = (container, {
@@ -87,6 +100,7 @@
     const dialog = $('dialog');
     const samplePlayer = $('sample-audio');
     const player = $('audio');
+    const waveforms=new Map([player,samplePlayer].map((audio)=>[audio,window.attachPlayerWaveform(audio)]));
     const speed = $('speed');
     const volume = $('volume');
     const pitch = $('pitch');
@@ -100,6 +114,7 @@
     }
 
     function clearAudio(audio) {
+      waveforms.get(audio)();
       audio.pause();
       if (audio.hasAttribute('src')) { audio.removeAttribute('src'); audio.load(); }
     }
@@ -114,8 +129,10 @@
       const profile = preferenceProfile(state);
       const saved = {
         ...preferences[profile], voiceMode: state.voiceMode, fixedVoice: state.fixedVoice,
-        voicePool: [...state.voicePool], captions: $('captions').checked,
+        voicePool: [...state.voicePool], captions: $('captions').checked, trimPauses:$('trim-pauses').checked,
       };
+      if (state.breeze) saved.names = Object.fromEntries([...new Set([...state.voicePool, state.fixedVoice])].filter(Boolean)
+        .map((id) => [id, state.voices.get(id)?.name || id]));
       for (const input of [speed, volume, pitch]) {
         if (input.validity.valid) saved[input.id.replace('cloud-tts-', '')] = input.valueAsNumber;
       }
@@ -125,6 +142,11 @@
 
     function restorePreferences(state) {
       const saved = preferences[preferenceProfile(state)];
+      if (state.breeze && saved?.names) {
+        for (const [id, name] of Object.entries(saved.names)) {
+          if (!state.voices.has(id) && typeof name === 'string') state.voices.set(id, { id, name });
+        }
+      }
       const presets = [...state.voices.values()].filter((voice) => !isPromptVoice(state, voice)).map(({ id }) => id);
       state.voiceMode = saved?.voiceMode === 'random' ? 'random' : 'fixed';
       state.fixedVoice = state.voices.has(saved?.fixedVoice) ? saved.fixedVoice : presets[0] ?? state.voices.keys().next().value;
@@ -132,6 +154,7 @@
         ? presets.filter((id) => saved.voicePool.includes(id)) : presets);
       voiceMode.value = state.voiceMode;
       $('captions').checked = saved?.captions !== false;
+      $('trim-pauses').checked = saved?.trimPauses === true;
       for (const [input, key, fallback] of [[speed, 'speed', 1], [volume, 'volume', 100], [pitch, 'pitch', 0]]) {
         input.value = Number.isFinite(saved?.[key]) ? saved[key] : fallback;
         if (!input.validity.valid) input.value = fallback;
@@ -147,10 +170,14 @@
       const voices = voiceChoices(state).length;
       $('options').disabled = busy || state.sampling || state.loadingVoices || !state.configured;
       $('source').disabled = busy;
+      $('more').hidden = !state.breeze || !state.next;
+      $('more').disabled = busy || state.loadingVoices || Boolean(state.browsing);
+      $('more').textContent = state.browsing ? '正在加载…' : '加载更多音色';
       $('close').disabled = busy;
       $('open-settings').hidden = typeof openSettings !== 'function';
       $('open-settings').disabled = busy || Boolean(state.sampling);
       $('captions').disabled = busy;
+      $('trim-pauses').disabled = busy;
       $('source-summary').textContent = !valid ? `检查台词 · 单条上限 ${textLimit(state)} 字`
         : count ? `查看或编辑台词 · ${count} 条` : '填写台词或提示词';
       $('source-summary').classList.toggle('cloud-tts-error', !valid);
@@ -173,7 +200,10 @@
       choice.replaceChildren(...state.results.map(({ label, asset }, index) => new Option(
         `${label}${Number.isFinite(asset.duration) ? ` · ${asset.duration.toFixed(2)} 秒` : ''}`, String(index),
       )));
-      if (state.results[0]) player.src = state.results[0].asset.url;
+      if (state.results[0]) {
+        player.src=state.results[0].asset.url;
+        waveforms.get(player)(state.results[0].asset);
+      }
       $('failures').hidden = state.failures.length === 0;
       $('failures').replaceChildren(...state.failures.map(({ label, message }) => element('li', `${label}：${message}`)));
     }
@@ -205,6 +235,7 @@
         if (session !== state || state.sampleRequest !== request || state.working) return;
         if (!isLocalAudio(asset)) throw new Error('服务没有返回可播放的音色样本。');
         samplePlayer.src = asset.url;
+        waveforms.get(samplePlayer)(asset);
         samplePlayer.hidden = false;
         say('');
         await samplePlayer.play().catch(() => {});
@@ -222,7 +253,10 @@
       const random = state.voiceMode === 'random';
       $('voice-hint').textContent = random ? '勾选候选音色。每次生成抽取一个，整批台词共用。'
         : '所有整段和分段台词使用所选音色。设置会自动保存。';
-      const voices = [...state.voices.values()].filter((voice) => !random || !isPromptVoice(state, voice));
+      if (state.breeze && state.configured) $('voice-hint').textContent = random ? '本批从已勾选的 ' + state.voicePool.size + ' 个音色中抽取。'
+        : '全局音色 · ' + (state.voices.get(state.fixedVoice)?.name || '请选择');
+      const shown = state.breeze ? (state.visible || []).map((id) => state.voices.get(id)).filter(Boolean) : [...state.voices.values()];
+      const voices = shown.filter((voice) => !random || !isPromptVoice(state, voice));
       $('voices').replaceChildren(...voices.map((voice, position) => {
         const row = element('div');
         row.className = 'cloud-tts-voice-row';
@@ -239,12 +273,20 @@
           else if (input.checked) state.voicePool.add(voice.id);
           else state.voicePool.delete(voice.id);
           savePreferences(state);
+          if (state.breeze) $('voice-hint').textContent = random ? '本批从已勾选的 ' + state.voicePool.size + ' 个音色中抽取。' : '全局音色 · ' + voice.name;
           changed();
         });
-        label.append(input, element('span', voice.name));
+        const summary = element('span');
+        summary.append(element('strong', voice.name));
+        if (state.breeze) {
+          const tags = [voiceLanguage(voice.language), { male:'男声', female:'女声', neutral:'中性' }[voice.gender], toneNames[voice.tone?.[0]]].filter(Boolean);
+          if (tags.length) summary.append(element('small', tags.join(' · ')));
+          label.title = voice.description || voice.name;
+        }
+        label.append(input, summary);
         row.append(label);
         if (voice.hasSample && typeof sample === 'function') {
-          const button = element('button', '试听');
+          const button = element('button', voice.generatedSample ? '生成试听' : '试听');
           button.type = 'button';
           button.className = 'cloud-tts-sample';
           button.setAttribute('aria-label', `试听${voice.name}`);
@@ -253,18 +295,22 @@
         }
         return row;
       }));
+      if (state.breeze && state.configured && !voices.length) $('voices').append(element('p', '没有匹配的音色'));
+      for (const button of $('filters').children) button.setAttribute('aria-pressed', String(button.dataset.filter === state.filter));
     }
 
     function renderProvider(state) {
-      $('provider').textContent = state.seedAudio ? '火山引擎 · Seed Audio 1.0' : '云端服务';
+      $('provider').textContent = state.breeze ? 'Breeze Blue · TTS 2 多语言' : state.seedAudio ? '火山引擎 · Seed Audio 1.0' : '云端服务';
+      $('catalog').hidden = !state.breeze || !state.configured;
+      dialog.classList.toggle('breeze-voices', Boolean(state.breeze));
       $('source-title').textContent = state.seedAudio ? '音频提示词' : '待配音台词';
       $('source-hint').textContent = state.seedAudio ? '每条最多 3000 字。可描述场景、环境声、配乐和对白。'
-        : '每条最多 500 字，可在这里修改后提交。';
+        : '每条最多 ' + textLimit(state) + ' 字，可在这里修改后提交。';
       $('disclosure').textContent = state.seedAudio ? '生成时会将本批提示词发送到火山引擎。'
         : '点击生成后，本批台词会发送到已配置的云端语音服务。';
       $('pitch-field').hidden = !state.seedAudio;
-      volume.min = state.seedAudio ? '50' : '0';
-      volume.max = state.seedAudio ? '200' : '100';
+      volume.min = state.seedAudio ? '50' : state.breeze ? '1' : '0';
+      volume.max = state.seedAudio || state.breeze ? '200' : '100';
       if (Number.isFinite(volume.valueAsNumber)) {
         volume.value = Math.max(Number(volume.min), Math.min(Number(volume.max), volume.valueAsNumber));
       }
@@ -307,29 +353,33 @@
       const request = Symbol();
       state.voiceRequest = request;
       state.loadingVoices = true;
+      state.browsing = false;
       $('service').textContent = '正在检查云端配音设置…';
       update();
       try {
         const reply = typeof listVoices === 'function' ? await listVoices() : null;
         if (session !== state || state.voiceRequest !== request) return;
         state.configured = reply?.configured === true;
-        const wasSeedAudio = state.seedAudio;
         state.seedAudio = reply?.provider === 'seed-audio';
-        if (state.seedAudio !== wasSeedAudio) {
-          renderProvider(state);
-          renderItems(state);
-        }
+        state.breeze = reply?.provider === 'breezeblue';
+        state.filter = 'all';
+        $('search').value = '';
+        renderProvider(state);
+        renderItems(state);
         const nextVoices = new Map();
         const listedVoices = Array.isArray(reply.voices) && (state.configured || state.seedAudio) ? reply.voices : [];
         for (const item of listedVoices) {
           if (typeof item?.id === 'string' && item.id && typeof item.name === 'string') nextVoices.set(item.id, item);
         }
         state.voices = nextVoices;
+        state.visible = [...nextVoices.keys()];
+        state.next = reply?.next;
         restorePreferences(state);
-        $('service').textContent = state.seedAudio
+        $('service').textContent = state.breeze ? state.configured ? '可用音色 · ' + (reply.total ?? nextVoices.size) : '请在云端配音设置中填写 Breeze Blue API Key。' : state.seedAudio
           ? (state.configured ? 'Seed Audio 1.0 已配置 · MP3 / 48 kHz' : '请在云端配音设置中填写火山引擎 API 密钥。')
           : !state.configured ? '云端配音服务尚未配置。请打开云端配音设置。'
           : state.voices.size ? `服务已配置 · ${state.voices.size} 种音色` : '服务已配置，但没有返回可用音色。';
+        if(!state.configured && reply?.warning) $('service').textContent=reply.warning;
         renderVoices(state);
       } catch (error) {
         if (session !== state || state.voiceRequest !== request) return;
@@ -343,6 +393,48 @@
         if (session === state && state.voiceRequest === request) { state.loadingVoices = false; update(); }
       }
     }
+
+    async function browse(append = false) {
+      const state = session;
+      if (!state?.configured || !state.breeze || state.working || (append && !state.next)) return;
+      const request = Symbol();
+      state.voiceRequest = request;
+      state.browsing = true;
+      if (!append) state.next = null;
+      update();
+      try {
+        const reply = await listVoices({ ...(append ? state.next : {}), search: $('search').value.trim(), filter: state.filter });
+        if (session !== state || state.voiceRequest !== request) return;
+        const ids = new Set(append ? state.visible : []);
+        for (const voice of reply.voices) { state.voices.set(voice.id, voice); ids.add(voice.id); }
+        state.visible = [...ids];
+        state.next = reply.next;
+        $('service').textContent = '可用音色 · ' + (reply.total ?? ids.size);
+        renderVoices(state);
+        if (!append) $('voices').scrollTop = 0;
+        say('');
+      } catch (error) {
+        if (session === state && state.voiceRequest === request) say(error.message || '音色加载失败。', 'error');
+      } finally {
+        if (session === state && state.voiceRequest === request) { state.browsing = false; update(); }
+      }
+    }
+    let searchTimer;
+    $('search').addEventListener('input', () => {
+      clearTimeout(searchTimer);
+      const state = session;
+      state.voiceRequest = Symbol();
+      state.next = null;
+      update();
+      searchTimer = setTimeout(() => { if (session === state) browse(); }, 300);
+    });
+    $('filters').addEventListener('click', (event) => {
+      if (!event.target.dataset.filter || !session) return;
+      clearTimeout(searchTimer);
+      session.filter = event.target.dataset.filter;
+      browse();
+    });
+    $('more').addEventListener('click', () => browse(true));
 
     function refreshVoices() {
       const state = session;
@@ -371,6 +463,7 @@
       $('voice-hint').textContent = '';
       $('progress-row').hidden = true;
       $('captions').checked = true;
+      $('trim-pauses').checked = false;
       speed.value = '1';
       volume.value = '100';
       pitch.value = '0';
@@ -429,7 +522,8 @@
         const enableSubtitles = $('captions').checked;
         const reply = await synthesize({
           jobs, speed: speed.valueAsNumber, volume: volume.valueAsNumber,
-          ...(state.seedAudio && { pitch: pitch.valueAsNumber, enableSubtitles }),
+          ...($('trim-pauses').checked && {trimPauses:true}),
+          ...(state.seedAudio && { pitch: pitch.valueAsNumber }), ...((state.seedAudio || state.breeze) && { enableSubtitles }),
         });
         if (session !== state) return;
         const results = new Map((reply?.results ?? []).filter(({ asset }) => isLocalAudio(asset)).map((item) => [jobKey(item), item]));
@@ -496,6 +590,7 @@
       changed();
     });
     $('captions').addEventListener('change', () => savePreferences(session));
+    $('trim-pauses').addEventListener('change', () => savePreferences(session));
     player.addEventListener('play', () => samplePlayer.pause());
     samplePlayer.addEventListener('play', () => player.pause());
     player.addEventListener('error', () => {
@@ -506,7 +601,7 @@
     });
     $('result-choice').addEventListener('change', () => {
       const asset = session?.results[Number($('result-choice').value)]?.asset;
-      if (asset) player.src = asset.url;
+      if (asset) {player.src=asset.url;waveforms.get(player)(asset);}
     });
     $('generate').addEventListener('click', generate);
     $('use').addEventListener('click', use);

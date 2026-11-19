@@ -238,8 +238,8 @@ async function run() {
       window.dispatchEvent(event('pointerup', x + ${dx}, y + ${dy}));
     })()`);
   }
-  await dragPanel('move', -36, 25);
-  await waitFor(`document.querySelector('#editor-workspace').dataset.panelLayout === 'custom' && (${materialBox}).x < ${defaultMaterial.x - 30}`, '拖动面板手柄应移动素材库');
+  await dragPanel('move', 36, 25);
+  await waitFor(`document.querySelector('#editor-workspace').dataset.panelLayout === 'custom' && (${materialBox}).x > ${defaultMaterial.x + 30}`, '拖动面板手柄应移动素材库');
   const movedMaterial = await runInWindow(materialBox);
   assert.ok(movedMaterial.y > defaultMaterial.y + 18);
   await dragPanel('se', 31, 19);
@@ -322,17 +322,46 @@ async function run() {
     return img?.getAttribute('src')?.startsWith('sd-workbench://asset/thumbnail/') && img.naturalWidth === 240;
   })()`;
   await waitFor(visibleThumbnail, '素材库应解码实际视频缩略图');
+  await waitFor('document.querySelectorAll("#timeline-clock .sequence-shots .sequence-block").length===3', '时间线应与三个分镜一一对应');
+  assert.equal(await runInWindow('document.querySelector("#timeline-view").value'), 'time');
+  await require('./timeline-interaction.cjs')(win, runInWindow, waitFor);
+  await runInWindow('document.querySelector("#timeline-layer-add").click()');
+  await runInWindow(`(() => {const d=document.querySelector(".sequence-dialog[open]");d.querySelector("textarea").value="产品展示";d.querySelector("form").requestSubmit();})()`);
+  await waitFor('document.querySelector("#timeline-clock .kind-text")?.textContent.includes("产品展示")', '全局文字应出现在独立轨道');
+  await runInWindow('document.querySelector("#track-undo").click()');
+  await waitFor('!document.querySelector("#timeline-clock .kind-text")','撤销应同步移除全局文字');
+  await runInWindow('document.querySelector("#timeline-clock .sequence-video .sequence-block").click()');
   assert.ok(await runInWindow(`(() => {
     const [player, materials, inspector, timeline] = ['.editor-player', '.editor-materials', '.montage-inspector', '#montage-pane']
       .map((selector) => document.querySelector(selector).getBoundingClientRect());
     return player.width > 0 && materials.width > 0 && inspector.width > 0 && timeline.height > 0
-      && player.left < materials.left && materials.left < inspector.left
-      && player.top < timeline.top && player.bottom >= timeline.bottom - 2;
-  })()`), '播放器应位于素材库左侧并与下方轨道等高');
+      && materials.right <= player.left && player.right <= inspector.left
+      && Math.max(materials.bottom, player.bottom, inspector.bottom) <= timeline.top
+      && Math.abs(timeline.left - materials.left) < 2 && Math.abs(timeline.right - inspector.right) < 2;
+  })()`), '素材库、播放器与属性应从左到右排列，轨道应横跨其下方');
   await runInWindow('(() => { const search = document.querySelector("#material-search"); search.value = "红色"; search.dispatchEvent(new Event("input")); })()');
   assert.equal(await runInWindow('document.querySelectorAll("#material-list .material-tile").length'), 1);
   await waitFor('document.querySelector("#preview").readyState >= 2', '应能解码 H.264 预览');
   assert.equal(await runInWindow('document.querySelector("#preview").videoWidth'), 320);
+  await runInWindow('document.querySelector("#material-list .material-tile").click()');
+  assert.equal(await runInWindow('document.querySelector("#preview-heading").textContent'), '素材预览');
+  assert.ok(await runInWindow('document.querySelector("#clip-inspector").hidden'), '素材库原片应独立于轨道裁剪参数');
+  await runInWindow('document.querySelector("#shots .asset-name").click()');
+  assert.equal(await runInWindow('document.querySelector("#preview-heading").textContent'), '轨道预览');
+  assert.ok(await runInWindow('!document.querySelector("#clip-inspector").hidden'), '点击轨道素材应打开画面属性');
+  await runInWindow('document.querySelector("#clip-enabled").click()');
+  assert.ok(await runInWindow('document.querySelector("#prepare-preview").disabled && document.querySelector("#combinations").textContent.includes("分镜 1 未勾选")'));
+  await runInWindow('document.querySelector("#clip-enabled").click(); document.querySelector("#clip-track-muted").click()');
+  assert.equal(await runInWindow('document.querySelector("#preview").volume'), 0);
+  await runInWindow('document.querySelector("#clip-track-muted").click()');
+  assert.equal(await runInWindow('document.querySelector("#preview").volume'), 1);
+  await runInWindow('document.querySelector("#player-next").click()');
+  await waitFor('Math.abs(document.querySelector("#preview").currentTime - 1 / selected.asset.fps) < 0.008', '下一帧应按素材帧率前进');
+  await runInWindow('document.querySelector("#player-stop").click()');
+  await waitFor('document.querySelector("#preview").paused && document.querySelector("#preview").currentTime < 0.001', '停止应回到片段入点');
+  await runInWindow('document.querySelector("#player-ratio").value = "9:16"; document.querySelector("#player-ratio").dispatchEvent(new Event("change"))');
+  assert.equal(await runInWindow('document.querySelector("#ratio").value'), '9:16');
+  await runInWindow('document.querySelector("#player-ratio").value = "16:9"; document.querySelector("#player-ratio").dispatchEvent(new Event("change"))');
   await runInWindow('(() => { const video = document.querySelector("#preview"); video.muted = true; return video.play(); })()');
   await waitFor('document.querySelector("#preview").currentTime > 0.1', '素材预览应实际播放');
   await runInWindow('document.querySelector("#preview").pause()');
@@ -446,6 +475,11 @@ async function run() {
   await openInspector('subtitles');
   await runInWindow('document.querySelector("#pick-subtitles").click()');
   await waitFor('document.querySelector("#subtitle-name").textContent.includes("样片字幕.srt")', '应加载 SRT 字幕');
+  await runInWindow('document.querySelector("#caption-presets button[title=醒目黄字]").click()');
+  await waitFor('document.querySelector("#caption-preview-canvas").dataset.rendered === "true" && document.querySelector("#caption-bold").checked', '实际字幕渲染预览应显示所选预设');
+  await runInWindow('document.querySelector("#caption-enabled").click()');
+  assert.match(await runInWindow('document.querySelector("#caption-feedback").textContent'), /关闭/);
+  await runInWindow('document.querySelector("#caption-enabled").click()');
   await runInWindow('(() => { const size = document.querySelector("#caption-size"); size.value = "26"; size.dispatchEvent(new Event("input", { bubbles: true })); document.querySelector("#caption-position").value = "top"; })()');
   const voiceProject = path.join(root, '带口播.sdworkbench');
   saves.push({ title: '保存工程', file: voiceProject });
@@ -462,6 +496,7 @@ async function run() {
   await openInspector('subtitles');
   assert.equal(await runInWindow('document.querySelector("#caption-size").valueAsNumber'), 26);
   assert.equal(await runInWindow('document.querySelector("#caption-position").value'), 'top');
+  assert.equal(await runInWindow('document.querySelector("#caption-color").value'), '#ffe25a');
   await openInspector('narration');
   await runInWindow('document.querySelector("#review-narration").click()');
   assert.equal(await runInWindow('document.querySelector("#narration-review-caption").value'), '保留的整段台词');
@@ -670,6 +705,7 @@ async function run() {
   assert.equal(await runInWindow('document.querySelector("#material-breadcrumb").hidden && document.querySelectorAll("#material-folders .material-folder").length === 0'), true, '目录浏览状态只保留在当前会话');
   await click(`${batchShot} .remove-shot`);
 
+  await runInWindow(`(() => { const view=document.querySelector('#timeline-view');view.value='cards';view.dispatchEvent(new Event('change')); })()`);
   const timelineScroll = `(() => {
     const panel = document.querySelector('#timeline-tracks-panel');
     const shots = document.querySelector('#shots');
@@ -718,6 +754,12 @@ async function run() {
   await runInWindow('document.querySelector("#timeline-tracks-panel").scrollTop = 0;');
   await waitFor(`(() => { const value = ${timelineScroll}; return value.top === 0 && value.lastVisible && value.lastHeadingVisible; })()`, '返回纵向顶部后应能访问最右分镜');
   await screenshot('timeline-scroll.png');
+  await runInWindow(`(() => {const view=document.querySelector('#timeline-view');view.value='time';view.dispatchEvent(new Event('change'));})()`);
+  await waitFor(`(() => {const viewport=document.querySelector('#timeline-clock');return viewport.scrollWidth>viewport.clientWidth+100 && !document.querySelector('#track-horizontal-scroll').hidden;})()`,'时间线模式也应显示底部滚动条');
+  await runInWindow('document.querySelector("#track-horizontal-scroll").scrollLeft = document.querySelector("#track-horizontal-scroll").scrollWidth');
+  await waitFor(`(() => {const view=document.querySelector('#timeline-clock'),last=view.querySelector('.sequence-shots .sequence-block:last-child');
+    return view.scrollLeft>100 && last.getBoundingClientRect().right<=view.getBoundingClientRect().right+2;})()`,'时间线的底部滑块应能到达最后一个分镜');
+  await runInWindow(`(() => {const view=document.querySelector('#timeline-view');view.value='cards';view.dispatchEvent(new Event('change'));})()`);
   await click('#prepare-preview');
   await openBatch(1);
   await waitFor(`(${timelineScroll}).hidden`, '切到批量预览应隐藏轨道滚动条');
@@ -818,6 +860,42 @@ async function run() {
   await waitFor(`[innerWidth, innerHeight].join(',') === ${JSON.stringify(originalViewport)}`, '应恢复默认窗口尺寸');
   await runInWindow('for (let count = 8; count > 1; count -= 1) document.querySelector("#shots .shot:last-child .remove-shot").click();');
   await waitFor(`(() => { const value = ${timelineScroll}; return value.hidden && value.range === 0 && value.left === 0 && value.barLeft === 0; })()`, '删到无横向溢出时应隐藏滚动条并清除旧位置');
+  const wideVideo = path.join(root, '高清素材.mp4');
+  await ffmpeg(['-i', files.red, '-vf', 'scale=960:720', '-c:v', 'libx264', '-threads', '2', '-c:a', 'copy', wideVideo]);
+  await click('#title-home');
+  await click('#home-montage');
+  await click('#project-new');
+  selections.push({ title: '选择分镜素材', files: [wideVideo] });
+  await click('#material-import');
+  await waitFor('document.querySelector("#preview").videoWidth === 640 && document.querySelector("#preview").currentSrc.includes("/track-proxy/")', '高清轨道索引应实际解码本地低分辨率代理');
+  await click('#material-list .material-tile');
+  await waitFor('document.querySelector("#preview").videoWidth === 960 && !document.querySelector("#preview").currentSrc.includes("/track-proxy/")', '回到素材库应恢复原片画质');
+  await click('#subproject-new');
+  await runInWindow('document.querySelector("#subproject-name").value = "杭州门店"; document.querySelector("#subproject-new-form").requestSubmit()');
+  await waitFor('document.querySelector("#subproject-select").selectedOptions[0].textContent === "杭州门店"', '应在刚创建的子工程中编辑');
+  await click('#subproject-materials');
+  selections.push({ title: '选择分镜素材', files: [files.blue] });
+  await click('#subproject-replace');
+  await waitFor('document.querySelector("#shots .asset-name").textContent.includes("蓝色")', '子工程应使用专属画面');
+  const savedBranch = path.join(root, '门店子工程.sdworkbench');
+  saves.push({ title: '保存工程', file: savedBranch });
+  await click('#save-project');
+  await waitFor('document.querySelector("#project-status").textContent.includes("门店子工程")', '选择的子工程应能保存');
+  const branchAsset = await runInWindow('document.querySelector("#material-list .material-tile").dataset.materialId');
+  selections.push({ title: '打开工程', files: [savedBranch] });
+  await click('#open-project');
+  await waitFor(`document.querySelector("#subproject-select").selectedOptions[0].textContent === "杭州门店" && document.querySelector("#material-list .material-tile").dataset.materialId !== ${JSON.stringify(branchAsset)}`, '重开工程应保留子工程选择');
+  await runInWindow('document.querySelector("#subproject-select").selectedIndex = 0; document.querySelector("#subproject-select").dispatchEvent(new Event("change"))');
+  assert.equal(await runInWindow('document.querySelector("#shots .asset-name").textContent'), '高清素材.mp4');
+  await click('#subproject-new');
+  await runInWindow('document.querySelector("#subproject-name").value = "上海门店"; document.querySelector("#subproject-new-form").requestSubmit()');
+  await click('#subproject-batch');
+  await click('#subproject-batch-confirm');
+  await waitFor('document.querySelectorAll("#preview-batch-list .batch-title").length === 2', '选中的两家门店应各生成一份预览');
+  assert.deepEqual(await runInWindow('Array.from(document.querySelectorAll(".batch-title"), (item) => item.textContent)'), ['杭州门店 · 第 1 条', '上海门店 · 第 2 条']);
+  await runInWindow('document.querySelector("#batch-project-filter").selectedIndex = 2; document.querySelector("#batch-project-filter").dispatchEvent(new Event("change"))');
+  await click('#select-all-previews');
+  assert.equal(await runInWindow('document.querySelectorAll(".batch-select:checked").length'), 1);
   assert.deepEqual(selections, []);
   assert.deepEqual(saves, []);
   for (const phase of ['draft-create', 'draft-reopen']) {
