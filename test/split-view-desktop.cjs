@@ -40,16 +40,64 @@ async function run() {
     return { x: point.x, y: point.y };
   }
   wc.debugger.attach();
+  await wc.debugger.sendCommand('Emulation.setFocusEmulationEnabled', { enabled: true });
   const mouse = (type, pos, fields) => wc.debugger.sendCommand('Input.dispatchMouseEvent', { type, ...pos, ...fields });
-  async function move(id, distance) {
-    const pos = await center(`[data-split="${id}"]`);
+  async function checkDivider(id, keyboard = false) {
+    const style = await evaluate(`(() => {
+      const handle = document.querySelector('[data-split="${id}"]');
+      const horizontal = handle.getAttribute('aria-orientation') === 'horizontal';
+      const line = getComputedStyle(handle, '::before');
+      const brush = document.createElement('canvas').getContext('2d');
+      brush.fillStyle = line.backgroundColor;
+      brush.fillRect(0, 0, 1, 1);
+      const [r, g, b, alpha] = brush.getImageData(0, 0, 1, 1).data;
+      return {
+        thickness: parseFloat(horizontal ? line.height : line.width),
+        grip: getComputedStyle(handle, '::after').content,
+        neutral: Math.max(r, g, b) - Math.min(r, g, b) < 48,
+        visible: alpha > 0,
+        focused: document.activeElement === handle,
+        outlined: getComputedStyle(handle).outlineStyle !== 'none',
+        forcedColors: matchMedia('(forced-colors: active)').matches,
+      };
+    })()`);
+    assert.ok(['none', 'normal'].includes(style.grip), id + ' has no central grip');
+    assert.ok(style.visible, id + ' divider remains visible');
+    if (keyboard) {
+      assert.ok(style.focused && (style.outlined || style.thickness > 1), id + ' keyboard focus: ' + JSON.stringify(style));
+    } else {
+      assert.equal(style.thickness, 1, id + ' uses a one-pixel pointer divider');
+      assert.ok(style.forcedColors || style.neutral, id + ' pointer feedback uses a neutral line');
+    }
+  }
+  async function move(id, distance, { offset = 0, cancel = false } = {}) {
+    const selector = `[data-split="${id}"]`;
+    const pos = await center(selector);
+    const axis = id === 'timeline' ? 'y' : 'x';
+    pos[axis] += offset;
+    const before = await snapshot();
+    await mouse('mouseMoved', pos, {});
+    assert.ok(await evaluate(`document.elementFromPoint(${pos.x}, ${pos.y}).matches('${selector}')`), id + ' has a hit area on both sides of the line');
+    await checkDivider(id);
     await mouse('mousePressed', pos, { button: 'left', buttons: 1, clickCount: 1 });
     assert.ok(await evaluate(`document.querySelector('[data-split="${id}"]').hasPointerCapture(1)`), 'drag captures the pointer');
     const end = { ...pos };
-    end[id === 'timeline' ? 'y' : 'x'] += distance;
+    end[axis] += distance;
     await mouse('mouseMoved', end, { buttons: 1 });
+    await settle();
+    await checkDivider(id);
+    joined(await snapshot());
+    if (cancel) {
+      near(size(await snapshot(), id), size(before, id) + distance * (id === 'materials' ? 1 : -1));
+      await press('Escape');
+      samePanes(await snapshot(), before);
+      assert.ok(!await evaluate(`document.querySelector('${selector}').hasPointerCapture(1)`), 'Escape releases the active drag');
+      end[axis] += 12;
+      await mouse('mouseMoved', end, { buttons: 1 });
+    }
     await mouse('mouseReleased', end, { button: 'left', clickCount: 1 });
     await settle();
+    if (cancel) samePanes(await snapshot(), before);
   }
   async function doubleClick(id) {
     const pos = await center(`[data-split="${id}"]`);
@@ -63,8 +111,13 @@ async function run() {
     await evaluate(`document.querySelector('[data-split="${id}"]').focus()`);
     await press(value);
   }
-  async function press(value) {
-    for (const type of ['keyDown', 'keyUp']) await wc.debugger.sendCommand('Input.dispatchKeyEvent', { type, key: value, code: value });
+  async function press(value, modifiers = 0) {
+    const keyCodes = { Tab: 9, Escape: 27, End: 35, Home: 36, ArrowLeft: 37, ArrowUp: 38, ArrowRight: 39, ArrowDown: 40 };
+    for (const type of ['rawKeyDown', 'keyUp']) {
+      await wc.debugger.sendCommand('Input.dispatchKeyEvent', {
+        type, key: value, code: value, modifiers, windowsVirtualKeyCode: keyCodes[value], nativeVirtualKeyCode: keyCodes[value],
+      });
+    }
     await settle();
   }
   async function reopen() {
@@ -141,17 +194,49 @@ async function run() {
   for (const id of ids) {
     const sign = id === 'materials' ? 1 : -1;
     const start = size(await snapshot(), id);
-    await move(id, sign * 40);
+    await checkDivider(id);
+    await move(id, sign * 40, { offset: -5 });
     near(size(await snapshot(), id), start + 40);
-    await move(id, -sign * 22);
+    await move(id, -sign * 22, { offset: 5 });
     near(size(await snapshot(), id), start + 18);
+    await move(id, sign * 30, { cancel: true });
     await key(id, id === 'materials' ? 'ArrowRight' : id === 'inspector' ? 'ArrowLeft' : 'ArrowUp');
     near(size(await snapshot(), id), start + 26);
+    await checkDivider(id, true);
+    if (id === 'materials') {
+      await press('Tab');
+      await press('Tab', 8); // CDP Shift modifier.
+      assert.equal(await evaluate('document.activeElement.dataset.split'), id);
+      await checkDivider(id, true);
+    }
     await doubleClick(id);
     near(size(await snapshot(), id), size(original, id));
     await move(id, sign * 45);
   }
   const changed = await snapshot();
+  await evaluate(`(() => {
+    const search = document.querySelector('#material-search');
+    search.focus();
+    search.value = '四个分镜';
+    search.setSelectionRange(1, 3);
+  })()`);
+  await move('inspector', -34, { cancel: true });
+  assert.deepEqual(await evaluate('[document.activeElement.id, document.activeElement.value, document.activeElement.selectionStart, document.activeElement.selectionEnd]'),
+    ['material-search', '四个分镜', 1, 3], 'resizing and cancelling preserve text focus and selection');
+  await wc.debugger.sendCommand('Emulation.setTouchEmulationEnabled', { enabled: true });
+  const touch = (type, touchPoints) => wc.debugger.sendCommand('Input.dispatchTouchEvent', { type, touchPoints });
+  try {
+    const point = await center('[data-split="timeline"]');
+    await touch('touchStart', [point]);
+    await touch('touchMove', [{ ...point, y: point.y - 28 }]);
+    await settle();
+    near(size(await snapshot(), 'timeline'), size(changed, 'timeline') + 28);
+    await touch('touchCancel', []);
+    await settle();
+    samePanes(await snapshot(), changed);
+  } finally {
+    await wc.debugger.sendCommand('Emulation.setTouchEmulationEnabled', { enabled: false });
+  }
   await reopen();
   for (const id of ids) near(size(await snapshot(), id), size(changed, id));
 

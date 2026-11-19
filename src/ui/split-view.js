@@ -19,6 +19,7 @@
     let drag;
 
     function save() {
+      if (drag) return;
       try {
         if (Object.keys(preferred).length) localStorage.setItem(key, JSON.stringify(preferred));
         else localStorage.removeItem(key);
@@ -70,11 +71,12 @@
 
     function finish(event) {
       if (!drag || (event?.pointerId != null && event.pointerId !== drag.pointerId)) return;
-      const { handle, pointerId } = drag;
+      const { handle, pointerId, before } = drag;
       drag = null;
       handle.removeAttribute('data-dragging');
       if (handle.hasPointerCapture(pointerId)) handle.releasePointerCapture(pointerId);
-      save();
+      if (event?.type === 'pointerup') save();
+      else { preferred = before; render(); }
     }
 
     for (const handle of handles) {
@@ -84,21 +86,30 @@
       // https://github.com/framework7io/framework7/blob/master/src/core/components/panel/resizable-panel.js#L73-L84
       const sign = id === 'materials' ? 1 : -1;
       handle.addEventListener('pointerdown', (event) => {
-        if (event.button !== 0 || drag) return;
-        event.preventDefault();
-        handle.focus({ preventScroll: true });
-        drag = { handle, id, axis, sign, pointerId: event.pointerId, start: event[axis], size: measure().size[id] };
-        handle.setPointerCapture(event.pointerId);
+        if (!event.isPrimary || event.button !== 0 || drag) return;
+        // Keep an editor's caret while resizing. Otherwise let Chromium choose the focus modality.
+        const focused = document.activeElement;
+        if (focused?.matches('input, select, textarea') || focused?.isContentEditable) event.preventDefault();
+        try { handle.setPointerCapture(event.pointerId); } catch { return; }
+        handle.dataset.pointerFocus = '';
+        drag = { handle, id, axis, sign, pointerId: event.pointerId, start: event[axis], size: measure().size[id], before: { ...preferred } };
         handle.dataset.dragging = '';
       });
-      handle.addEventListener('lostpointercapture', finish);
+      handle.addEventListener('focus', () => {
+        if (drag?.handle !== handle) handle.removeAttribute('data-pointer-focus');
+      });
+      handle.addEventListener('blur', () => {
+        handle.removeAttribute('data-pointer-focus');
+        if (drag?.handle === handle) finish();
+      });
+      handle.addEventListener('lostpointercapture', (event) => { if (drag?.handle === handle) finish(event); });
       handle.addEventListener('dblclick', () => {
         delete preferred[id];
         render();
         save();
       });
       handle.addEventListener('keydown', (event) => {
-        if (event.altKey || event.ctrlKey || event.metaKey) return;
+        if (drag || event.altKey || event.ctrlKey || event.metaKey) return;
         const layout = measure();
         const decrease = id === 'timeline' ? 'ArrowUp' : 'ArrowLeft';
         const increase = id === 'timeline' ? 'ArrowDown' : 'ArrowRight';
@@ -107,21 +118,33 @@
         if (!Object.hasOwn(values, event.key)) return;
         event.preventDefault();
         event.stopPropagation();
+        handle.removeAttribute('data-pointer-focus');
         update(id, values[event.key], layout);
         save();
       });
     }
+    window.addEventListener('keydown', (event) => {
+      if (!drag || event.key !== 'Escape' || event.isComposing || event.altKey || event.ctrlKey || event.metaKey || event.shiftKey) return;
+      event.preventDefault();
+      event.stopImmediatePropagation();
+      finish();
+    }, true);
     window.addEventListener('pointermove', (event) => {
-      if (drag && drag.pointerId === event.pointerId) update(drag.id, drag.size + (event[drag.axis] - drag.start) * drag.sign);
+      if (!drag || drag.pointerId !== event.pointerId) return;
+      if (!(event.buttons & 1)) return finish();
+      update(drag.id, drag.size + (event[drag.axis] - drag.start) * drag.sign);
     });
     for (const name of ['pointerup', 'pointercancel']) window.addEventListener(name, finish);
     window.addEventListener('blur', () => finish());
     return {
-      sync(enabled) { if (enabled) render(); else finish(); },
+      sync(enabled) {
+        if (!enabled || workspace.hasAttribute('data-layout-editing')) finish();
+        if (enabled) render();
+      },
       sizes() { return measure().size; },
       resize: update,
       save,
-      snapshot() { return { ...preferred }; },
+      snapshot() { return { ...(drag?.before ?? preferred) }; },
       restore(saved) { finish(); preferred = { ...saved }; save(); },
       get modified() { return Object.keys(preferred).length > 0; },
       reset() { finish(); preferred = {}; save(); },

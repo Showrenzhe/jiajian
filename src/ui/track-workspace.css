@@ -44,7 +44,11 @@
   overflow: auto;
 }
 
-.workspace-divider { display: none; }
+.workspace-divider {
+  display: none;
+  --divider-color: var(--hairline);
+  --divider-thickness: 1px;
+}
 .app-frame[data-mode="montage"] #editor-workspace:not([data-panel-layout="custom"]):not([data-layout-editing]) > .workspace-divider {
   display: block;
   position: relative;
@@ -54,7 +58,7 @@
 }
 .workspace-divider[aria-orientation="vertical"] {
   grid-area: player;
-  width: 10px;
+  width: 12px;
   cursor: col-resize;
 }
 .workspace-divider[data-split="materials"] { justify-self: start; transform: translateX(-50%); }
@@ -62,26 +66,39 @@
 .workspace-divider[data-split="timeline"] {
   grid-area: timeline;
   align-self: start;
-  height: 10px;
+  height: 12px;
   transform: translateY(-50%);
   cursor: row-resize;
 }
-.workspace-divider::before, .workspace-divider::after {
+.workspace-divider::before {
   content: "";
   position: absolute;
   inset: 0;
   margin: auto;
+  background: var(--divider-color);
   pointer-events: none;
 }
-.workspace-divider::before { background: var(--pane-divider); }
-.workspace-divider::after { border-radius: 999px; background: color-mix(in srgb, var(--secondary-ink) 42%, transparent); }
-.workspace-divider[aria-orientation="vertical"]::before { width: 1px; }
-.workspace-divider[aria-orientation="vertical"]::after { width: 3px; height: 20px; }
-.workspace-divider[aria-orientation="horizontal"]::before { height: 1px; }
-.workspace-divider[aria-orientation="horizontal"]::after { height: 3px; width: 24px; }
-.workspace-divider:is(:hover, :focus-visible, [data-dragging])::before,
-.workspace-divider:is(:hover, :focus-visible, [data-dragging])::after { background: var(--system-blue); }
-.app-frame[data-mode="montage"] .workspace-divider:focus-visible { outline-offset: -2px; }
+.workspace-divider[aria-orientation="vertical"]::before { width: var(--divider-thickness); }
+.workspace-divider[aria-orientation="horizontal"]::before { height: var(--divider-thickness); }
+.workspace-divider:hover { --divider-color: color-mix(in srgb, var(--ink) 32%, transparent); }
+.workspace-divider[data-dragging] { --divider-color: color-mix(in srgb, var(--ink) 52%, transparent); }
+.app-frame[data-mode="montage"] .workspace-divider:focus-visible { outline: none; }
+.workspace-divider:focus-visible:not([data-pointer-focus], [data-dragging]) {
+  --divider-color: var(--focus-ring);
+  --divider-thickness: 2px;
+}
+@media (prefers-contrast: more), (forced-colors: active) {
+  .workspace-divider, .workspace-divider:is(:hover, [data-dragging]) { --divider-color: CanvasText; }
+}
+@media (forced-colors: active) {
+  .workspace-divider::before { forced-color-adjust: none; }
+}
+/* Retain the resize cursor over other controls when the seam reaches its limit. */
+body:has(.workspace-divider[data-dragging]) {
+  cursor: col-resize;
+  &:has(.workspace-divider[aria-orientation="horizontal"][data-dragging]) { cursor: row-resize; }
+  * { cursor: inherit !important; }
+}
 #editor-workspace:has(.workspace-divider[data-dragging]) { user-select: none; }
 .app-frame[data-mode="montage"] :is(.editor, .sidebar) { display: contents; }
 .app-frame[data-mode="montage"] :focus-visible { outline: 2px solid var(--focus-ring); outline-offset: 2px; }
