@@ -88,13 +88,24 @@ button:disabled { opacity: .46; cursor: default; }
 .tag { padding: 2px 8px; border-radius: 6px; background: var(--well); color: var(--secondary-ink); font-size: 11px; white-space: nowrap; }
 
 .app-frame { display: grid; grid-template-columns: var(--sidebar-width) minmax(0, 1fr); min-height: calc(100dvh - var(--bar-height)); }
-.app-frame:is([data-mode="script"], [data-navigation="closed"]) { grid-template-columns: minmax(0, 1fr); }
-.work-area { min-width: 0; }
+.app-frame, .tabs { transition-property: none; }
+.app-frame[data-navigation="closed"] { grid-template-columns: 0px minmax(0, 1fr); }
+.app-frame[data-mode="script"] { display: block; }
+.work-area { grid-column: 2; min-width: 0; }
 .tabs {
   isolation: isolate; position: sticky; top: var(--bar-height); align-self: start;
+  width: var(--sidebar-width); justify-self: end;
   height: calc(100dvh - var(--bar-height)); overflow: auto;
   padding: 26px 13px 24px; background: rgba(249,250,253,.53);
   backdrop-filter: var(--glass-filter); color: var(--ink);
+}
+@media (prefers-reduced-motion: no-preference) and (forced-colors: none) {
+  .app-frame.animate-docked-navigation {
+    --sidebar-transition: 260ms cubic-bezier(.42, 0, .28, 1);
+    transition: grid-template-columns var(--sidebar-transition);
+  }
+  /* Keep the full-width sidebar painted until its grid track has slid offscreen. */
+  .app-frame.animate-docked-navigation > .tabs { transition: display var(--sidebar-transition) allow-discrete; }
 }
 .app-frame[data-navigation="floating"] > .tabs {
   display: block; position: fixed; top: calc(var(--bar-height) + 8px); left: 8px; z-index: 25; width: 220px;

@@ -3207,6 +3207,8 @@ const workspaceNavigation = (() => {
 
   function sync() {
     const visible = isEditor() ? drawerOpen : !collapsed;
+    if (!visible && navigation.contains(document.activeElement)) toggle.focus({ preventScroll: true });
+    navigation.inert = !visible;
     navigation.hidden = !visible;
     frame.dataset.navigation = visible ? (isEditor() ? 'floating' : 'docked') : 'closed';
     if (frame.dataset.navigation !== 'docked') stopMotion();
@@ -3214,12 +3216,12 @@ const workspaceNavigation = (() => {
     const label = visible ? '收起侧栏' : '展开侧栏';
     toggle.setAttribute('aria-label', label);
     toggle.title = label + '（Ctrl+\\）';
-    if (!visible && navigation.contains(document.activeElement)) toggle.focus({ preventScroll: true });
   }
 
   function toggleNavigation() {
     if (isEditor()) drawerOpen = !drawerOpen;
     else {
+      frame.classList.add('animate-docked-navigation');
       collapsed = !collapsed;
       try { localStorage.setItem('jiajian.sidebar.collapsed', String(collapsed)); } catch {}
     }
@@ -3232,6 +3234,7 @@ const workspaceNavigation = (() => {
 
   function closeDrawer() {
     drawerOpen = false;
+    if (isEditor()) frame.classList.remove('animate-docked-navigation');
     sync();
   }
 

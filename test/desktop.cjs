@@ -17,6 +17,84 @@ app.disableHardwareAcceleration();
 
 const execFileAsync = promisify(execFile);
 
+async function traceDockedNavigation() {
+  const toggle = document.querySelector('#nav-toggle');
+  const navigation = document.querySelector('#workspace-navigation');
+  const area = document.querySelector('.work-area');
+  const width = () => area.getBoundingClientRect().width;
+  const docked = width();
+  const full = area.parentElement.getBoundingClientRect().width;
+  async function until(reached) {
+    const deadline = performance.now() + 5000;
+    const widths = [width()];
+    while (!reached(widths.at(-1))) {
+      if (performance.now() >= deadline) throw new Error('侧栏未到达预期位置，主区宽度 ' + widths.at(-1));
+      await new Promise(requestAnimationFrame);
+      const areaRect = area.getBoundingClientRect();
+      if (areaRect.width > docked + 1 && areaRect.width < full - 1) {
+        const sideRect = navigation.getBoundingClientRect();
+        if (sideRect.width === 0 || Math.abs(sideRect.right - areaRect.left) > 1) {
+          throw new Error('移动中侧栏应保持可见，其右缘应与主区的左缘相接');
+        }
+      }
+      widths.push(areaRect.width);
+    }
+    return widths;
+  }
+  const home = navigation.querySelector('#tab-home');
+  home.focus();
+  home.dispatchEvent(new KeyboardEvent('keydown', { bubbles: true, ctrlKey: true, code: 'Backslash' }));
+  home.focus();
+  const focusReturned = document.activeElement === toggle && navigation.inert;
+  const closing = await until(w => Math.abs(w - full) < 0.02);
+  toggle.click();
+  const opening = await until(w => Math.abs(w - docked) < 0.02);
+  toggle.click();
+  const halfway = await until(w => w >= (docked + full) / 2);
+  const before = halfway.at(-1);
+  toggle.click();
+  const reversed = await until(w => Math.abs(w - docked) < 0.02);
+  return { docked, full, closing, opening, before, reversed, focusReturned, usable: !navigation.inert };
+}
+
+async function checkDockedNavigation(contents) {
+  const debuggerClient = contents.debugger;
+  const evaluate = (code) => contents.executeJavaScript(code, true);
+  const emulate = (value) => debuggerClient.sendCommand('Emulation.setEmulatedMedia', {
+    features: [{ name: 'prefers-reduced-motion', value }, { name: 'forced-colors', value: 'none' }],
+  });
+  debuggerClient.attach();
+  try {
+    await emulate('no-preference');
+    // Slow the renderer timeline so intermediate frames remain observable on busy machines.
+    await debuggerClient.sendCommand('Animation.setPlaybackRate', { playbackRate: 0.5 });
+    const { docked, full, closing, opening, before, reversed, focusReturned, usable } =
+      await evaluate(`(${traceDockedNavigation})()`);
+    for (const widths of [closing, opening]) {
+      const middle = widths.filter(w => w > docked + 1 && w < full - 1);
+      assert.ok(new Set(middle.map(Math.round)).size >= 2, '侧栏展开和收起都应经过多个不同的主区宽度');
+    }
+    assert.ok(before < full - 1 && Math.abs(before - reversed[0]) < 1, '动画中反向应从当前位置开始');
+    assert.ok(reversed.every(w => w <= before + 1) && usable, '反向后应直接回到可操作的展开状态');
+    assert.ok(focusReturned, '收起时应立即禁止侧栏获得焦点，并将焦点还给开关');
+    await emulate('reduce');
+    await evaluate('new Promise(resolve => requestAnimationFrame(resolve))');
+    assert.equal(await evaluate("matchMedia('(prefers-reduced-motion: reduce)').matches"), true);
+    const widths = await evaluate(`(() => {
+      const toggle = document.querySelector('#nav-toggle');
+      const width = () => document.querySelector('.work-area').getBoundingClientRect().width;
+      toggle.click();
+      const closed = width();
+      toggle.click();
+      return [closed, width()];
+    })()`);
+    assert.deepEqual(widths, [full, docked], '减少动态效果时应在切换当下抵达目标宽度');
+  } finally {
+    await debuggerClient.sendCommand('Animation.setPlaybackRate', { playbackRate: 1 });
+    debuggerClient.detach();
+  }
+}
+
 async function runDraftPhase(phase, root, video, narration) {
   const creating = phase === 'draft-create';
   const profile = path.join(root, 'draft-profile');
@@ -53,6 +131,7 @@ async function runDraftPhase(phase, root, video, narration) {
   })()`);
   const narrationRestored = `document.querySelector('#narration-name').textContent.includes(${JSON.stringify(path.basename(narration))})`;
   if (creating) {
+    await click('#nav-toggle');
     await click('#home-create');
     await waitFor('!document.querySelector("#editor-workspace").hidden && !document.querySelector("#import-materials").disabled', '首页新建应直接进入可编辑的空草稿');
     await click('#empty-import-visual');
@@ -68,6 +147,10 @@ async function runDraftPhase(phase, root, video, narration) {
       input.dispatchEvent(new Event('input', { bubbles: true }));
     }`);
   } else {
+    assert.ok(await evaluate(`document.querySelector('#nav-toggle').getAttribute('aria-expanded') === 'false'
+      && document.querySelector('#workspace-navigation').inert
+      && document.querySelector('.work-area').clientWidth === document.querySelector('.app-frame').clientWidth`),
+    '进程重启时应直接恢复收起的侧栏和整宽主区');
     const draftDirectory = path.join(profile, 'drafts');
     const [draftFile, ...duplicates] = (await fs.readdir(draftDirectory)).filter((name) => name.endsWith('.sdworkbench'));
     assert.ok(draftFile && duplicates.length === 0, '应只写入一个自动草稿快照');
@@ -200,6 +283,7 @@ async function run() {
   assert.ok(await runInWindow(`!document.querySelector('#home .home-shortcuts') &&
     ['home-import', 'tab-script', 'tab-audio', 'tab-scene-split'].every(id =>
       document.querySelector('#workspace-navigation').contains(document.getElementById(id)))`), '创作工具应集中在侧栏');
+  await checkDockedNavigation(win.webContents);
   const files = await fixtures(root);
   const output = path.join(root, 'output');
   await fs.mkdir(output);
@@ -220,8 +304,11 @@ async function run() {
   assert.equal(await scheme('#editor-workspace'), await scheme('.titlebar'), '编辑器和全局工具栏应使用同一外观');
   await openInspector('narration');
   await waitFor(`parseFloat(getComputedStyle(document.querySelector('#inspector-tabs'), '::before').left) > ${initialHighlight} + 10`, '属性页的选中底色应随标签移动');
+  const editorWidth = await runInWindow("document.querySelector('.work-area').getBoundingClientRect().width");
   await click('#nav-toggle');
   await waitFor("document.querySelector('#workspace-navigation').checkVisibility() && document.querySelector('#nav-toggle').getAttribute('aria-expanded') === 'true'", '编辑时应能打开同一个工作区侧栏');
+  assert.ok(await runInWindow(`document.querySelector('#workspace-navigation').contains(document.activeElement)
+    && document.querySelector('.work-area').getBoundingClientRect().width === ${editorWidth}`), '编辑器浮层应接收焦点并保留原有画布宽度');
   await runInWindow("document.activeElement.dispatchEvent(new KeyboardEvent('keydown', {key:'Escape', bubbles:true}))");
   await waitFor("!document.querySelector('#workspace-navigation').checkVisibility() && document.activeElement.id === 'nav-toggle'", 'Esc 应收起浮动侧栏，并将焦点还给原按钮');
   await waitForInspector('narration');
@@ -964,6 +1051,7 @@ async function run() {
   await ffmpeg(['-i', files.red, '-vf', 'scale=960:720', '-c:v', 'libx264', '-threads', '2', '-c:a', 'copy', wideVideo]);
   await click('#title-home');
   await click('#home-create');
+  await waitFor("!document.querySelector('#editor-workspace').hidden && !document.querySelector('#material-import').disabled", '新草稿完成初始化后应启用素材导入');
   selections.push({ title: '选择分镜素材', files: [wideVideo] });
   await click('#material-import');
   await waitFor('document.querySelector("#preview").videoWidth === 640 && document.querySelector("#preview").currentSrc.includes("/track-proxy/")', '高清轨道索引应实际解码本地低分辨率代理');
