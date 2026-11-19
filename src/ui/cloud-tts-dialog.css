@@ -1,16 +1,15 @@
 :is(.cloud-tts-dialog, .cloud-settings-dialog) {
-  --dialog-alert: #9b2934;
-  --dialog-selection: rgba(19,86,152,.08);
-  color-scheme: light;
+  --dialog-alert: var(--destructive-ink);
+  --dialog-selection: var(--selected-fill);
   padding: 0;
   border: 0;
   border-radius: 18px;
-  background: rgba(250,251,253,.82);
+  background: var(--sheet-surface);
   backdrop-filter: blur(25px) saturate(120%);
-  box-shadow: 0 18px 62px #18213134;
+  box-shadow: var(--sheet-shadow);
   color: var(--ink);
 }
-:is(.cloud-tts-dialog, .cloud-settings-dialog)::backdrop { background: #19212e29; }
+:is(.cloud-tts-dialog, .cloud-settings-dialog)::backdrop { background: var(--sheet-scrim); }
 :is(.cloud-tts-dialog, .cloud-settings-dialog) :focus-visible { outline: 2px solid var(--focus-ring); outline-offset: 2px; }
 :is(.cloud-tts-dialog, .cloud-settings-dialog) h2[tabindex="-1"]:focus { outline: none; }
 :is(.cloud-tts-dialog, .cloud-settings-dialog) h2 { margin: 0; font-size: 24px; letter-spacing: -.025em; line-height: 1.35; }
@@ -26,14 +25,14 @@
   background: transparent;
   color: var(--ink);
 }
-:is(.cloud-tts-dialog, .cloud-settings-dialog) button:hover:enabled { background: rgba(43,48,61,.07); }
-:is(.cloud-tts-dialog, .cloud-settings-dialog) :is(.cloud-tts-primary, .cloud-settings-primary):enabled { padding-inline: 15px; background: var(--system-blue); color: white; font-weight: 600; }
+:is(.cloud-tts-dialog, .cloud-settings-dialog) button:hover:enabled { background: var(--hover-tint); }
+:is(.cloud-tts-dialog, .cloud-settings-dialog) :is(.cloud-tts-primary, .cloud-settings-primary):enabled { padding-inline: 15px; background: var(--action-fill); color: white; font-weight: 600; }
 :is(.cloud-tts-dialog, .cloud-settings-dialog) :is(.cloud-tts-primary, .cloud-settings-primary):hover:enabled { background: var(--blue-hover); }
 :is(.cloud-tts-dialog, .cloud-settings-dialog) :is(input[type="number"], input[type="url"], input[type="password"], select, textarea) {
   padding: 6px 9px;
-  border: 1px solid rgba(60,66,76,.20);
+  border: 1px solid var(--hairline);
   border-radius: 5px;
-  background: rgba(255,255,255,.72);
+  background: var(--field-fill);
   color: var(--ink);
 }
 :is(.cloud-tts-dialog, .cloud-settings-dialog) :is(input[type="checkbox"], input[type="radio"], progress) { accent-color: var(--system-blue); }

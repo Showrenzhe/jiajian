@@ -1,0 +1,95 @@
+/* Animate the gradient stops themselves so the wallpaper stays continuous. */
+@property --wallpaper-start { syntax: "<color>"; inherits: true; initial-value: #d9e3eb; }
+@property --wallpaper-end { syntax: "<color>"; inherits: true; initial-value: #f6f7f8; }
+
+html[data-theme-changing] {
+  --appearance-duration: 240ms;
+  --appearance-easing: cubic-bezier(.42, 0, .32, 1);
+  transition-property: --wallpaper-start, --wallpaper-end, background-color, color;
+  transition-duration: var(--appearance-duration);
+  transition-timing-function: var(--appearance-easing);
+}
+
+/* Transition the paint of interface elements. Layout, playback and media pixels
+   keep updating normally, including when a second selection reverses the fade. */
+html[data-theme-changing] :where(
+  body, main, nav, section, aside, dialog, header, footer, fieldset, [popover],
+  label, legend, h1, h2, h3, p, output, small, strong, button, input, select, textarea, th, td,
+  [role="tabpanel"], [role="tablist"], [role="toolbar"], [role="status"],
+  .work-area, .home-content, .home-hero-actions, .draft-search-box, .draft-views, .draft-status,
+  .nav-selection-travel, .script-workspace-body, .empty, .viewer.preview-stage,
+  .panel, .panel-layout-pane, .card, .tag, .toolbar, .track-toolbar, .workbench-actions,
+  .timeline-position, .settings-grid, .editor-output,
+  .material-search-box, .sequence-canvas, .sequence-head, .sequence-row,
+  .sequence-ruler, .sequence-empty, .inspector-tabs
+), html[data-theme-changing] dialog::backdrop {
+  transition-property: background-color, color, border-color, outline-color, box-shadow;
+  transition-duration: var(--appearance-duration);
+  transition-timing-function: var(--appearance-easing);
+}
+html[data-theme-changing] .brand-logo {
+  transition: filter var(--appearance-duration) var(--appearance-easing);
+}
+
+@media (prefers-reduced-motion: reduce), (forced-colors: active) {
+  html[data-theme-changing] { --appearance-duration: 0s; }
+  html[data-theme-changing], html[data-theme-changing] *, html[data-theme-changing] ::before,
+  html[data-theme-changing] ::after, html[data-theme-changing] dialog::backdrop {
+    transition-duration: 0s !important;
+  }
+}
+
+#appearance-settings {
+  padding-block-end: 20px;
+  border-block-end: 1px solid var(--hairline);
+}
+#appearance-settings legend, #cloud-settings-section {
+  padding: 0;
+  margin: 0 0 10px;
+  font-size: 15px;
+  font-weight: 600;
+}
+#cloud-settings-section { margin-bottom: -10px; }
+.appearance-options { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 12px; }
+.appearance-options label {
+  position: relative; display: grid; gap: 7px; justify-items: center;
+  border-radius: 9px; padding: 3px; color: var(--secondary-ink);
+  cursor: pointer; font-size: 13px; line-height: 1.35;
+}
+.appearance-options input {
+  position: absolute; inset: 0; width: 100%; height: 100%; margin: 0; opacity: 0; cursor: pointer;
+}
+.appearance-preview {
+  position: relative; width: 100%; height: 52px; overflow: hidden; border-radius: 7px;
+  background: linear-gradient(125deg, #c9d5e3, #edf0f5);
+  box-shadow: inset 0 0 0 1px rgb(60 70 85 / 14%);
+}
+.appearance-preview::before, .appearance-preview::after {
+  content: ""; position: absolute; inset: 9px 14% -3px;
+  border-radius: 4px 4px 0 0; border: 1px solid rgb(55 67 84 / 20%);
+  background:
+    linear-gradient(var(--swatch-ink), var(--swatch-ink)) 55% 37% / 31% 3px no-repeat,
+    linear-gradient(var(--swatch-line), var(--swatch-line)) 60% 58% / 37% 2px no-repeat,
+    linear-gradient(var(--swatch-line), var(--swatch-line)) 55% 75% / 28% 2px no-repeat,
+    linear-gradient(90deg, var(--swatch-sidebar) 25%, var(--swatch-body) 25%);
+  box-shadow: 0 2px 6px rgb(12 20 32 / 15%);
+}
+.appearance-preview::before {
+  --swatch-ink: #758195; --swatch-line: #d0d6df; --swatch-sidebar: #e4e9ef; --swatch-body: #fafbfd;
+}
+.appearance-preview::after {
+  --swatch-ink: #b3bdcf; --swatch-line: #536071; --swatch-sidebar: #303b4c; --swatch-body: #242c39;
+}
+input[value="light"] + .appearance-preview::after,
+input[value="dark"] + .appearance-preview::before { display: none; }
+input[value="dark"] + .appearance-preview { background: linear-gradient(125deg, #303e53, #181e29); }
+input[value="system"] + .appearance-preview { background: linear-gradient(90deg, #dbe3ed 50%, #293348 50%); }
+input[value="system"] + .appearance-preview::after { clip-path: inset(0 0 0 50%); }
+.appearance-options input:checked + .appearance-preview { outline: 2px solid var(--system-blue); outline-offset: 1px; }
+.appearance-options input:checked ~ span:last-child { color: var(--ink); font-weight: 600; }
+.appearance-options label:has(input:focus-visible) { outline: 2px solid var(--focus-ring); outline-offset: 2px; }
+@media (forced-colors: active) {
+  .appearance-options input:checked ~ span:last-child { text-decoration: underline; }
+  .appearance-options .appearance-preview { forced-color-adjust: none; }
+  .appearance-options input:checked + .appearance-preview { outline-color: Highlight; }
+}

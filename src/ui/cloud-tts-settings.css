@@ -5,12 +5,12 @@
 .cloud-settings-field { display: grid; gap: 5px; }
 .cloud-settings-field > label:first-child { font-weight: 600; }
 .cloud-settings-field > :is(input, select) { width: 100%; min-width: 0; min-height: 36px; }
-.cloud-settings-field > :is(input, select):disabled, .cloud-settings-field > input[readonly] { background: rgba(69,74,84,.06); }
+.cloud-settings-field > :is(input, select):disabled, .cloud-settings-field > input[readonly] { background: var(--hover-tint); }
 .cloud-settings-muted, #cloud-settings-status, .cloud-settings-warning { margin: 0; line-height: 1.55; }
 .cloud-settings-check { display: flex; align-items: center; gap: 7px; margin-top: 4px; font-size: 13px; }
 .cloud-settings-check input { margin: 0; }
 #cloud-settings-status, .cloud-settings-warning { color: var(--secondary-ink); font-size: 12px; overflow-wrap: anywhere; }
-.cloud-settings-warning { padding-left: 10px; border-left: 2px solid #ad792a; color: #71490e; }
+.cloud-settings-warning { padding-left: 10px; border-left: 2px solid light-dark(#ad792a, #c39758); color: var(--warning-ink); }
 .cloud-settings-error, #cloud-settings-status.cloud-settings-error { color: var(--dialog-alert); }
 .cloud-settings-actions { display: flex; justify-content: flex-end; gap: 7px; padding: 12px 26px 15px; border-top: 1px solid var(--hairline); }
 .cloud-settings-breeze-tools { display: flex; gap: 8px; flex-wrap: wrap; }

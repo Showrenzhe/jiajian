@@ -2321,7 +2321,7 @@ function renderNarration() {
   $('#review-narration').hidden = !narration;
 }
 
-function openCloudTtsSettings() {
+function openCloudTtsSettings({ showAppearance = false } = {}) {
   if (operation) return;
   cloudTtsSettingsDialog ??= window.mountCloudTtsSettings($('#cloud-tts-settings-workspace'), {
     load: api.cloudTtsSettings,
@@ -2330,7 +2330,7 @@ function openCloudTtsSettings() {
     openKeys: api.openBreezeKeys,
     onSaved: () => cloudTtsDialog?.refreshVoices(),
   });
-  cloudTtsSettingsDialog.open();
+  cloudTtsSettingsDialog.open({ showAppearance });
 }
 
 function openCloudTts(options) {
@@ -3340,7 +3340,7 @@ $('#tab-drafts').addEventListener('click', () => {
 });
 $('#home-create').addEventListener('click', newProject);
 $('#title-home').addEventListener('click', showHome);
-$('#app-settings').addEventListener('click', openCloudTtsSettings);
+$('#app-settings').addEventListener('click', () => openCloudTtsSettings({ showAppearance: true }));
 const creativeWorkspace = window.createCreativeWorkspace({
   api,
   ratio: () => $('#ratio').value,

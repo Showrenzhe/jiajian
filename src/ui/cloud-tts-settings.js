@@ -15,6 +15,15 @@
           <button type="button" id="creative-settings-entry">云端创作服务</button>
         </header>
         <div class="cloud-settings-body">
+          <fieldset id="appearance-settings" hidden>
+            <legend>外观</legend>
+            <div class="appearance-options">
+              <label><input type="radio" name="appearance" value="light"><span class="appearance-preview" aria-hidden="true"></span><span>浅色</span></label>
+              <label><input type="radio" name="appearance" value="dark"><span class="appearance-preview" aria-hidden="true"></span><span>深色</span></label>
+              <label><input type="radio" name="appearance" value="system"><span class="appearance-preview" aria-hidden="true"></span><span>跟随系统</span></label>
+            </div>
+          </fieldset>
+          <h3 id="cloud-settings-section" hidden>云端配音</h3>
           <div class="cloud-settings-field">
             <label for="cloud-settings-provider">配音服务</label>
             <select id="cloud-settings-provider">
@@ -65,6 +74,8 @@
     container.replaceChildren(template.content);
     const $ = (id) => container.querySelector(`#cloud-settings-${id}`);
     const dialog = $('dialog');
+    const appearance = container.querySelector('#appearance-settings');
+    window.bindAppearancePicker(appearance);
     const provider = $('provider');
     const address = $('base-url');
     const password = $('api-key');
@@ -97,7 +108,7 @@
       $('breeze-tools').hidden = !isBreeze;
       $('verify').disabled = locked || !session.ready || !isBreeze || managementId || clearKey.checked
         || (!password.value.trim() && (providerChanged || !session.hasApiKey));
-      $('save').textContent = session.saving ? '正在保存…' : '保存设置';
+      $('save').textContent = session.saving ? '正在保存…' : session.showAppearance ? '保存配音设置' : '保存设置';
       $('address-help').textContent = isBreeze ? '已选用 Breeze Blue TTS 2 多语言模型。' : isSeed ? '使用火山引擎固定接口地址。' : '填写服务方提供的接口地址。留空并保存会停用云端配音。';
       $('key-label').textContent = isBreeze ? 'Breeze Blue API Key' : isSeed ? '火山引擎 API Key' : 'API 密钥（按服务要求填写）';
       $('key-state').textContent = session.hasApiKey ? (providerChanged ? '原服务已保存密钥。' : '已保存密钥。') : '未保存密钥。';
@@ -110,10 +121,14 @@
       password.setAttribute('aria-invalid',String(managementId));
     }
 
-    async function open() {
+    async function open({ showAppearance = false } = {}) {
       if (dialog.open) { provider.focus(); return; }
-      const state = { loading: true, ready: false, provider: breeze, selection: breeze, gatewayAddress: '', baseUrl: breezeEndpoint, hasApiKey: false };
+      const state = { showAppearance, loading: true, ready: false, provider: breeze, selection: breeze, gatewayAddress: '', baseUrl: breezeEndpoint, hasApiKey: false };
       session = state;
+      appearance.hidden = !showAppearance;
+      $('section').hidden = !showAppearance;
+      $('title').textContent = showAppearance ? '设置' : '云端配音设置';
+      $('cancel').textContent = showAppearance ? '关闭' : '取消';
       provider.value = breeze;
       address.value = breezeEndpoint;
       password.value = '';
@@ -123,6 +138,7 @@
       say('正在读取本机设置…');
       update();
       dialog.showModal();
+      if (showAppearance) appearance.querySelector(':checked').focus({ preventScroll: true });
       try {
         if (typeof load !== 'function') throw new Error('unavailable');
         const stored = await load();
@@ -160,7 +176,7 @@
       state.testing=true;update();say('正在读取 Breeze Blue 音色列表…');
       try {
         await verify(key);
-        if(session===state) say(key ? '音色连接成功。点击「保存设置」即可使用这把密钥。' : '已保存的密钥可以读取音色。');
+        if(session===state) say(key ? '音色连接成功。保存后即可使用这把密钥。' : '已保存的密钥可以读取音色。');
       } catch(error) {
         if(session===state) say(safeSaveError(error,key),true);
       } finally {

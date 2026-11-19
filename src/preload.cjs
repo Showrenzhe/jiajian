@@ -26,6 +26,7 @@ function onBeforeDraftClose(callback) {
 }
 
 contextBridge.exposeInMainWorld('workbench', {
+  setWindowAppearance: (theme) => invoke('workbench:window-appearance', theme),
   history: () => invoke('workbench:history'),
   renameOutputs: (files,prefix) => invoke('workbench:rename-outputs',{files,prefix}),
   workflows: () => invoke('workbench:workflows'),

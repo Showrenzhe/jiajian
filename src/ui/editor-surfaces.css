@@ -80,11 +80,11 @@
   background: var(--surface);
   box-shadow: var(--glass-shadow);
 }
-#timeline-more-menu button { color: var(--ink); }
+#timeline-more-menu button { color: var(--ink); background: var(--control-fill); border-color: var(--hairline); }
+#timeline-more-menu button:hover:enabled { background: var(--control-hover); }
 
 .sequence-dialog, .layer-motion-dialog, .cut-track-editor, .track-organizer,
 .jj-cover-editor, .jj-visual-editor, .jj-batch-editor, #caption-zoom-dialog {
-  color-scheme: light;
   color: var(--ink);
   background: var(--surface);
   border-color: var(--hairline);
@@ -99,10 +99,10 @@
 }
 .sequence-dialog .sequence-primary, .layer-motion-primary {
   color: white;
-  border-color: var(--system-blue);
-  background: var(--system-blue);
+  border-color: var(--action-fill);
+  background: var(--action-fill);
 }
-.sequence-dialog .sequence-message, .jj-batch-editor footer output { color: #8b470e; }
+.sequence-dialog .sequence-message, .jj-batch-editor footer output { color: var(--warning-ink); }
 .creative-service-dialog [role="status"], .cut-track-editor output, .text-presets output { color: var(--secondary-ink); }
 .cut-track-editor button[aria-pressed="true"], .jj-visual-editor nav [aria-pressed="true"],
 .layer-motion-keys button[aria-pressed="true"] {

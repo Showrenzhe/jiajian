@@ -1,6 +1,5 @@
 /* Keep the editing panes on one continuous surface. */
 .app-frame[data-mode="montage"] {
-  color-scheme: light;
   --bg: var(--canvas);
   --panel: var(--surface);
   --well: color-mix(in srgb, var(--surface) 62%, var(--canvas));
@@ -11,11 +10,9 @@
   --control: var(--control-fill);
   --control-edge: var(--hairline);
   --accent: var(--system-blue);
-  --action: var(--system-blue);
-  --accent-hover: color-mix(in srgb, var(--system-blue) 87%, black);
   --selected-surface: color-mix(in srgb, var(--system-blue) 10%, var(--surface));
   --selected-edge: color-mix(in srgb, var(--system-blue) 39%, var(--hairline));
-  --audio-role: #76569c;
+  --audio-role: light-dark(#76569c, #c9a9ef);
   --audio-role-edge: color-mix(in srgb, var(--audio-role) 31%, var(--surface));
   --audio-role-fill: color-mix(in srgb, var(--audio-role) 10%, var(--surface));
   display: block;
@@ -141,8 +138,8 @@ body:has(.workspace-divider[data-dragging]) {
 }
 .app-frame[data-mode="montage"] #workflow-title { flex: none; font-size: 21px; font-weight: 650; letter-spacing: -.035em; }
 .app-frame[data-mode="montage"] #draft-save-status { flex: none; margin: 0; font-size: 11px; white-space: nowrap; }
-.app-frame[data-mode="montage"] #draft-save-status[data-state="saved"] { color: #276545; }
-.app-frame[data-mode="montage"] #draft-save-status[data-state="error"] { color: #9b3d22; }
+.app-frame[data-mode="montage"] #draft-save-status[data-state="saved"] { color: light-dark(#276545, #92d3ad); }
+.app-frame[data-mode="montage"] #draft-save-status[data-state="error"] { color: var(--destructive-ink); }
 .app-frame[data-mode="montage"] .workbench-actions,
 .app-frame[data-mode="montage"] .workbench-actions :is(.project-actions, .export-actions) {
   display: flex;
@@ -177,7 +174,7 @@ body:has(.workspace-divider[data-dragging]) {
 .app-frame[data-mode="montage"] .secondary { border-color: var(--control-edge); background: var(--control); }
 .app-frame[data-mode="montage"] .secondary:hover:enabled { background: var(--well); }
 .app-frame[data-mode="montage"] :is(#material-import, #add-shot) { border-color: var(--control-edge); color: var(--ink); }
-.app-frame[data-mode="montage"] .primary { background: var(--action); color: #fff; }
+.app-frame[data-mode="montage"] .primary { background: var(--action-fill); color: #fff; }
 .app-frame[data-mode="montage"] .primary:hover:enabled { background: var(--accent-hover); }
 .app-frame[data-mode="montage"] #prepare-preview { border-color: transparent; background: transparent; color: var(--ink); }
 .app-frame[data-mode="montage"] #prepare-preview:hover:enabled { background: var(--control); }
@@ -226,10 +223,9 @@ body:has(.workspace-divider[data-dragging]) {
 }
 .app-frame[data-mode="montage"] .preview-stage:has(#preview-hint:not([hidden])) {
   position: relative;
-  background: linear-gradient(148deg, rgb(214 226 238 / 58%), rgb(228 235 240 / 36%) 50%, rgb(174 192 206 / 54%));
-  backdrop-filter: blur(15px) saturate(76%);
+  background: linear-gradient(148deg, var(--wallpaper-start), var(--wallpaper-end) 62%, var(--wallpaper-start));
 }
-.app-frame[data-mode="montage"] .editor-player:has(#preview-hint:not([hidden])) { background: rgb(246 249 252 / 48%); }
+.app-frame[data-mode="montage"] .editor-player:has(#preview-hint:not([hidden])) { background: var(--empty-player-surface, color-mix(in srgb, var(--surface) 52%, transparent)); }
 .app-frame[data-mode="montage"] .preview-placeholder-icon { display: none; }
 .app-frame[data-mode="montage"] .preview-stage:has(#preview-hint:not([hidden])) .preview-placeholder-icon {
   display: block;
@@ -237,11 +233,11 @@ body:has(.workspace-divider[data-dragging]) {
   top: calc(50% - 44px);
   width: 35px;
   height: 35px;
-  color: #52667b;
+  color: var(--secondary-ink);
   stroke-width: 1.25;
 }
 .app-frame[data-mode="montage"] .preview-stage :is(video, img) { min-height: 0; aspect-ratio: auto; }
-.app-frame[data-mode="montage"] .preview-stage #preview-hint { color: #3d5061; font-size: 13px; }
+.app-frame[data-mode="montage"] .preview-stage #preview-hint { color: var(--secondary-ink); font-size: 13px; }
 .preview-readout { display: none; }
 .app-frame[data-mode="montage"] #preview-name.preview-footer { position: absolute; width: 1px; height: 1px; margin: 0; overflow: hidden; clip-path: inset(50%); }
 .app-frame[data-mode="montage"] .preview-stage:has(.player-picture:not([hidden])):not(:has(.draft-transport-preview:not([hidden]))) .preview-readout {
@@ -795,7 +791,7 @@ body:has(.workspace-divider[data-dragging]) {
   border-radius: 6px;
   background: var(--surface);
 }
-.app-frame[data-mode="montage"] #shots .asset.invalid { border-color: #ab4528; }
+.app-frame[data-mode="montage"] #shots .asset.invalid { border-color: var(--destructive-ink); }
 .app-frame[data-mode="montage"] #montage-pane #shots .asset.track-selected { outline-color: var(--accent); border-color: var(--accent); background: var(--selected-surface); }
 .app-frame[data-mode="montage"] #shots .asset .trim-fields { grid-column: 1 / -1; grid-row: 2; }
 .app-frame[data-mode="montage"] #shots .asset .remove-asset { grid-column: 3; grid-row: 1; }
@@ -1006,9 +1002,6 @@ body:has(.workspace-divider[data-dragging]) {
 .app-frame[data-mode="montage"] #background-color { height: 24px; padding: 2px 4px; border: 1px solid var(--hairline); background: var(--surface); }
 .app-frame[data-mode="montage"] .inspector-body .check { font-size: 13px; }
 .app-frame[data-mode="montage"] .timeline-lane-label .ui-icon { width: 16px; height: 16px; }
-@media (prefers-reduced-transparency: reduce) {
-  .app-frame[data-mode="montage"] { --glass-surface: var(--surface); --glass-filter: none; }
-}
 @media (prefers-contrast: more) {
   .app-frame[data-mode="montage"] { --glass-edge: var(--secondary-ink); --control-edge: var(--secondary-ink); }
   .app-frame[data-mode="montage"] [role="tab"][aria-selected="true"] { outline: 1px solid currentColor; outline-offset: -1px; }
@@ -1112,7 +1105,7 @@ body:has(.workspace-divider[data-dragging]) {
   #shots .shot-size { font-size: 10px; }
   #shots .shot:has(.track-selected) .shot-poster { box-shadow: inset 0 0 0 2px var(--system-blue); }
   #shots .shot:has(.track-selected) .shot-poster::after { content: ''; position: absolute; inset: 0; border-bottom: 2px solid var(--system-blue); }
-  .editor-materials, .montage-inspector, #montage-pane { backdrop-filter: blur(10px); }
+  .editor-materials, .montage-inspector, #montage-pane { backdrop-filter: var(--pane-filter, blur(10px)); }
   #notice { padding: 3px 10px; border: 0; border-radius: 6px; background: color-mix(in srgb,var(--surface) 69%,transparent); color: var(--secondary-ink); font-size: 12px; }
   #shots .shot-poster {
     position: relative;
@@ -1145,7 +1138,7 @@ body:has(.workspace-divider[data-dragging]) {
   }
   #shots .asset { margin-top: 2px; border-color: transparent; background: transparent; }
   #shots .asset .trim-fields { gap: 5px; }
-  #shots .asset .trim-fields input { max-width: 100%; padding: 1px 4px; border: 0; border-radius: 4px; background: rgb(255 255 255 / 74%); }
+  #shots .asset .trim-fields input { max-width: 100%; padding: 1px 4px; border: 0; border-radius: 4px; background: var(--field-fill); }
   #shots .asset > .preview-asset { border: 0; color: var(--selected-ink); background: transparent; }
   #shots .shot-transition { margin-top: 2px; padding-top: 1px; border-top-color: var(--pane-divider); }
   #shots .narration-lane > .segment-narration-panel { background: color-mix(in srgb, var(--audio-role) 10%, var(--surface)); }
@@ -1166,9 +1159,10 @@ body:has(.workspace-divider[data-dragging]) {
     .inspector-body { padding-inline: 10px; }
   }
 }
-@media (prefers-reduced-transparency: reduce) {
-  .app-frame[data-mode="montage"] :is(.editor-materials, .editor-player, .montage-inspector, #montage-pane) { background: var(--surface); }
-  .app-frame[data-mode="montage"] { --readout-fill: #27303a; --clear-optics: none; }
+@media (prefers-reduced-transparency: reduce), (prefers-contrast: more), (forced-colors: active) {
+  .app-frame[data-mode="montage"] :is(.editor-materials, .editor-player, .montage-inspector, #montage-pane, #notice) { background: var(--surface); }
+  .app-frame[data-mode="montage"] .preview-stage:has(#preview-hint:not([hidden])) { background: var(--well); }
+  .app-frame[data-mode="montage"] { --readout-fill: #27303a; --empty-player-surface: var(--surface); --pane-filter: none; --pane-divider: var(--hairline); }
 }
 
 #audio-tools-dialog {width:min(600px,90vw);max-height:90vh;overflow:auto}

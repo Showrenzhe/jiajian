@@ -1,6 +1,6 @@
 'use strict';
 
-const { app, BrowserWindow, dialog, ipcMain, net, protocol, safeStorage, session, shell } = require('electron');
+const { app, BrowserWindow, dialog, ipcMain, nativeTheme, net, protocol, safeStorage, session, shell } = require('electron');
 const { createHash, randomUUID } = require('node:crypto');
 const { mkdirSync } = require('node:fs');
 const fs = require('node:fs/promises');
@@ -39,7 +39,7 @@ const uiFiles = new Set(['/index.html', '/app.js', '/styles.css', '/dialog-focus
   '/timeline.js', '/timeline-selection.js', '/timeline.css', '/cut-track.js', '/cut-track.css', '/layer-motion.js', '/layer-motion.css', '/subprojects.js',
   '/track-workspace.css', '/edit-history.js', '/track-tools.js', '/track-tools.css', '/cloud-tts-dialog.js', '/cloud-tts-dialog.css',
   '/cloud-tts-settings.js', '/cloud-tts-settings.css', '/split-view.js', '/panel-layout.js', '/draft-workspace.js', '/player-tools.js', '/assets/jiajian-logo.png',
-  '/glass-material.css', '/inspector-controls.css', '/editor-surfaces.css']);
+  '/glass-material.css', '/inspector-controls.css', '/editor-surfaces.css', '/appearance.js', '/appearance.css']);
 const maxCatalog = (maxShots + 1) * (maxCandidates + maxWholeTracks);
 const maxSubtitleBatchBytes = 1024 * 1024;
 const maxSpeechJobs = maxShots;
@@ -581,23 +581,29 @@ async function launchDesktop({
     return new Response(null, { status: 404 });
   });
 
+  const windowColors = {
+    light: { background: '#e6e9ed', symbols: '#303947' },
+    dark: { background: '#191b1e', symbols: '#e8ecf1' },
+  };
+  const initialColors = windowColors[nativeTheme.shouldUseDarkColors ? 'dark' : 'light'];
   const win = new BrowserWindow({
-    show,
+    show: false,
     width: 1340,
     height: 900,
     minWidth: 850,
     minHeight: 600,
     title: '佳剪',
     icon: path.join(__dirname, 'ui', 'assets', 'jiajian-logo.ico'),
-    backgroundColor: '#e6e9ed',
+    backgroundColor: initialColors.background,
     titleBarStyle: 'hidden',
-    titleBarOverlay: { color: '#00000000', symbolColor: '#303947', height: 44 },
+    titleBarOverlay: { color: '#00000000', symbolColor: initialColors.symbols, height: 44 },
     autoHideMenuBar: true,
     webPreferences: {
       preload: path.join(__dirname, 'preload.cjs'), sandbox: true, contextIsolation: true, nodeIntegration: false,
       backgroundThrottling: show, offscreen: !show,
     },
   });
+  const firstPaint = show && new Promise((resolve) => win.once('ready-to-show', resolve));
   win.webContents.setWindowOpenHandler(() => ({ action: 'deny' }));
   win.webContents.on('will-navigate', (event) => event.preventDefault());
   win.webContents.on('will-attach-webview', (event) => event.preventDefault());
@@ -668,6 +674,14 @@ async function launchDesktop({
   }
 
   handle('workbench:history', () => recent);
+  handle('workbench:window-appearance', (theme) => {
+    if (theme !== 'light' && theme !== 'dark') throw new Error('无效的外观。');
+    const colors = windowColors[theme];
+    win.setBackgroundColor(colors.background);
+    if (process.platform === 'win32' || process.platform === 'linux') {
+      win.setTitleBarOverlay({ symbolColor: colors.symbols });
+    }
+  });
   handle('workbench:rename-outputs',async({files,prefix})=>{
     if(job||pickerOpen)throw new Error('请先完成当前操作。');
     pickerOpen=true;
@@ -1451,6 +1465,10 @@ async function launchDesktop({
   });
 
   await win.loadURL(page);
+  if (show) {
+    await firstPaint;
+    if (!win.isDestroyed()) win.show();
+  }
   return win;
 }
 
