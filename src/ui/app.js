@@ -260,7 +260,15 @@ const draftAutosave = window.createDraftAutosave({
     status.title = error?.message ?? status.textContent;
   },
 });
-api.onBeforeDraftClose(() => draftAutosave.flush());
+api.onBeforeDraftClose(async (purpose) => {
+  if (purpose === 'update') {
+    if (operation) throw new Error('请等待当前任务完成后，再重启更新。');
+    if (cloudTtsSettingsDialog?.hasUnsavedChanges()) throw new Error('请先保存或关闭配音设置，再重启更新。');
+    if (scriptWorkspace && !scriptWorkspace.flush()) throw new Error('脚本草稿保存失败，请检查后重试。');
+    if (mode === 'montage') draftAutosave.stage(draftTitle(), JSON.stringify(montageConfig()));
+  }
+  return draftAutosave.flush();
+});
 const thumbnailQueue = [];
 let thumbnailsLoading = 0;
 const materialFolders = new Map();
@@ -3341,6 +3349,7 @@ $('#tab-drafts').addEventListener('click', () => {
 $('#home-create').addEventListener('click', newProject);
 $('#title-home').addEventListener('click', showHome);
 $('#app-settings').addEventListener('click', () => openCloudTtsSettings({ showAppearance: true }));
+window.bindSoftwareUpdates(api);
 const creativeWorkspace = window.createCreativeWorkspace({
   api,
   ratio: () => $('#ratio').value,

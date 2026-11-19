@@ -1,0 +1,67 @@
+name: 发布佳剪 Windows 正式版
+
+on:
+  push:
+    tags: ['v*.*.*']
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: 已存在的正式版标签，例如 v0.6.3
+        required: true
+        type: string
+
+permissions:
+  contents: write
+
+concurrency:
+  group: release-windows-${{ inputs.tag || github.ref_name }}
+  cancel-in-progress: false
+
+jobs:
+  release:
+    runs-on: windows-2022
+    timeout-minutes: 75
+    env:
+      RELEASE_TAG: ${{ inputs.tag || github.ref_name }}
+    steps:
+      - name: 校验正式版标签
+        shell: pwsh
+        run: |
+          if ($env:RELEASE_TAG -cnotmatch '^v(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)$') {
+            throw '仅接受 v主版本.次版本.修订号'
+          }
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          ref: refs/tags/${{ env.RELEASE_TAG }}
+          fetch-depth: 0
+          persist-credentials: false
+      - name: 确认标签提交已经合入 main
+        run: |
+          git merge-base --is-ancestor HEAD refs/remotes/origin/main
+          if ($LASTEXITCODE -ne 0) { throw '正式标签必须指向已合入 main 的提交。' }
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version: '24'
+          cache: npm
+      - name: 生成此版本的更新说明
+        run: node scripts/release-notes.cjs $env:RELEASE_TAG "$env:RUNNER_TEMP/release-notes.md"
+      - name: 恢复已校验的离线工具
+        run: |
+          ./scripts/prepare-release-tools.ps1
+          $bin = (Resolve-Path 'tools/ffmpeg-8.0-full_build/bin').Path
+          "SUPERDIR_REPLICA_FFMPEG=$bin\ffmpeg.exe" >> $env:GITHUB_ENV
+          "SUPERDIR_REPLICA_FFPROBE=$bin\ffprobe.exe" >> $env:GITHUB_ENV
+          $bin >> $env:GITHUB_PATH
+      - run: npm ci
+      - run: npm test
+      - run: npm run test:updates
+      - run: node --test test/release-workflow.test.cjs
+      - run: ./test/release-publish.test.ps1
+      - name: 构建安装包与自动更新清单
+        run: npm run dist:win -- "-c.releaseInfo.releaseNotesFile=$env:RUNNER_TEMP/release-notes.md"
+      - name: 核对安装包、更新说明与离线引擎
+        run: node scripts/verify-release.cjs "$env:RUNNER_TEMP/release-notes.md"
+      - name: 上传到草稿，校验全部附件后发布
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: ./scripts/publish-release.ps1 -Tag $env:RELEASE_TAG -Notes "$env:RUNNER_TEMP/release-notes.md"

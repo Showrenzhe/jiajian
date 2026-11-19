@@ -150,6 +150,7 @@
     const importInput = $('script-import-input');
     const importError = $('script-import-error');
     let model = storedDraft();
+    let pendingSave = false;
     let importKey;
 
     function activeKey() {
@@ -159,9 +160,13 @@
     function persist() {
       try {
         window.localStorage.setItem(storageKey, JSON.stringify(model));
+        pendingSave = false;
         status.textContent = '已保存到本机';
+        return true;
       } catch {
+        pendingSave = true;
         status.textContent = '当前草稿未能保存到本机';
+        return false;
       }
     }
 
@@ -321,6 +326,7 @@
 
     return {
       getModel: () => normalize(model),
+      flush: () => !pendingSave || persist(),
       restore(value) {
         model = normalize(value);
         title.value = model.title;

@@ -1,6 +1,6 @@
 'use strict';
 
-const { app, BrowserWindow, dialog, ipcMain, nativeTheme, net, protocol, safeStorage, session, shell } = require('electron');
+const { app, BrowserWindow, dialog, ipcMain, nativeTheme, net, powerMonitor, protocol, safeStorage, session, shell } = require('electron');
 const { createHash, randomUUID } = require('node:crypto');
 const { mkdirSync } = require('node:fs');
 const fs = require('node:fs/promises');
@@ -30,6 +30,7 @@ const { createForeground } = require('./foreground.cjs');
 const { detectPauses, processAudio, retimeCaptions } = require('./audio-tools.cjs');
 const { createCreativeSettings, runCreative } = require('./creative-service.cjs');
 const { createWaveformCache } = require('./waveform-cache.cjs');
+const { createAppUpdates } = require('./app-updates.cjs');
 
 const scheme = 'sd-workbench';
 const page = `${scheme}://app/index.html`;
@@ -39,10 +40,11 @@ const uiFiles = new Set(['/index.html', '/app.js', '/styles.css', '/dialog-focus
   '/timeline.js', '/timeline-selection.js', '/timeline.css', '/cut-track.js', '/cut-track.css', '/layer-motion.js', '/layer-motion.css', '/subprojects.js',
   '/track-workspace.css', '/edit-history.js', '/track-tools.js', '/track-tools.css', '/cloud-tts-dialog.js', '/cloud-tts-dialog.css',
   '/cloud-tts-settings.js', '/cloud-tts-settings.css', '/split-view.js', '/panel-layout.js', '/draft-workspace.js', '/player-tools.js', '/assets/jiajian-logo.png',
-  '/glass-material.css', '/inspector-controls.css', '/editor-surfaces.css', '/appearance.js', '/appearance.css']);
+  '/glass-material.css', '/inspector-controls.css', '/editor-surfaces.css', '/appearance.js', '/appearance.css', '/software-updates.js']);
 const maxCatalog = (maxShots + 1) * (maxCandidates + maxWholeTracks);
 const maxSubtitleBatchBytes = 1024 * 1024;
 const maxSpeechJobs = maxShots;
+const updateCheckInterval = 4 * 60 * 60 * 1000;
 const maxThumbnailCache = 96;
 const maxThumbnailRequests = 64;
 const maxThumbnailWorkers = 2;
@@ -165,6 +167,9 @@ async function launchDesktop({
   dialogs = dialog,
   dataDirectory = path.resolve(__dirname, '../run-data'),
   cloudTts,
+  updateFactory = createAppUpdates,
+  checkOnStartup = show,
+  updateClock = Date.now,
 } = {}) {
   app.setName('佳剪');
   mkdirSync(dataDirectory, { recursive: true });
@@ -195,6 +200,7 @@ async function launchDesktop({
   let draftCloseReady = false;
   let draftCloseRequest;
   let draftCloseAllowed = false;
+  let updateLocked = false;
   let previewBatch;
   let activePreview;
   let cloudSettings = { baseUrl: '', apiKey: '' };
@@ -604,6 +610,30 @@ async function launchDesktop({
     },
   });
   const firstPaint = show && new Promise((resolve) => win.once('ready-to-show', resolve));
+  function unlockUpdate() {
+    updateLocked = false;
+    draftCloseAllowed = false;
+    if (!win.isDestroyed()) win.setEnabled(true);
+  }
+  const updates = updateFactory({ app, onState(state) {
+    if (state.status === 'error' && updateLocked) unlockUpdate();
+    if (!win.isDestroyed()) win.webContents.send('workbench:update-state', state);
+  } });
+  let lastUpdateCheck = -Infinity;
+  let updateTimer;
+  function checkUpdates() {
+    lastUpdateCheck = updateClock();
+    updateTimer?.refresh();
+    return updates.check();
+  }
+  function checkUpdatesIfDue() {
+    const { status, retry } = updates.getState();
+    if (win.isDestroyed() || updateLocked || !(status === 'idle' || status === 'current'
+        || status === 'available' || (status === 'error' && retry === 'check'))) return;
+    const elapsed = updateClock() - lastUpdateCheck;
+    if (elapsed >= 0 && elapsed < updateCheckInterval) return;
+    Promise.resolve(checkUpdates()).catch(() => {});
+  }
   win.webContents.setWindowOpenHandler(() => ({ action: 'deny' }));
   win.webContents.on('will-navigate', (event) => event.preventDefault());
   win.webContents.on('will-attach-webview', (event) => event.preventDefault());
@@ -627,6 +657,10 @@ async function launchDesktop({
   }
 
   win.on('close', (event) => {
+    if (updateLocked && !draftCloseAllowed) {
+      event.preventDefault();
+      return;
+    }
     if (job) {
       event.preventDefault();
       if (closing) return;
@@ -658,7 +692,15 @@ async function launchDesktop({
     draftCloseRequest = { token, timer };
     win.webContents.send('workbench:before-draft-close', token);
   });
-  win.once('closed', clearDraftClose);
+  win.once('closed', () => {
+    draftCloseRequest?.finishUpdate?.(false);
+    clearDraftClose();
+  });
+
+  // The renderer can write its final draft while all new editing operations are held.
+  const whileSavingForUpdate = new Set(['workbench:create-draft', 'workbench:save-draft',
+    'workbench:complete-draft-close', 'workbench:get-update']);
+  const pendingSettingsWrites = new Set();
 
   function handle(channel, action) {
     ipcMain.handle(channel, async (event, value) => {
@@ -666,12 +708,45 @@ async function launchDesktop({
         return { ok: false, error: '请求来源无效。' };
       }
       try {
+        if (updateLocked && !whileSavingForUpdate.has(channel)) throw new Error('正在保存草稿并准备更新。');
         return { ok: true, value: await action(value) };
       } catch (error) {
         return { ok: false, error: error.message };
       }
     });
   }
+
+  handle('workbench:get-update', () => updates.getState());
+  handle('workbench:check-update', checkUpdates);
+  handle('workbench:download-update', () => updates.download());
+  handle('workbench:open-update-page', () => shell.openExternal('https://github.com/Showrenzhe/jiajian/releases/latest'));
+  handle('workbench:install-update', async () => {
+    const { status, retry } = updates.getState();
+    if (status !== 'downloaded' && !(status === 'error' && retry === 'install')) throw new Error('请先下载更新。');
+    if (job || pickerOpen || savingCloudSettings || pendingSettingsWrites.size || closing || draftCloseRequest) {
+      throw new Error('请等待当前任务完成后，再重启更新。');
+    }
+    if (!draftCloseReady) throw new Error('编辑器正在启动，请稍后重试。');
+    updateLocked = true;
+    try {
+      win.setEnabled(false);
+      const saved = await new Promise((resolve, reject) => {
+        const token = randomUUID();
+        const timer = setTimeout(() => reject(new Error('草稿保存超时。请查看保存状态后重试。')), 15000);
+        draftCloseRequest = { token, timer, finishUpdate: resolve };
+        win.webContents.send('workbench:before-draft-close', token, 'update');
+      });
+      if (saved !== true) throw new Error(typeof saved === 'string' ? saved : '草稿尚未保存。请检查保存状态后重试。');
+      await win.webContents.session.flushStorageData();
+      draftCloseAllowed = true;
+      return await updates.install();
+    } catch (error) {
+      unlockUpdate();
+      throw error;
+    } finally {
+      clearDraftClose();
+    }
+  });
 
   handle('workbench:history', () => recent);
   handle('workbench:window-appearance', (theme) => {
@@ -699,7 +774,11 @@ async function launchDesktop({
   });
   handle('workbench:workflows', async () => listWorkflows({ creativeConfigured: Boolean((await creativeSettings.public()).baseUrl) }));
   handle('workbench:creative-settings', () => creativeSettings.public());
-  handle('workbench:save-creative-settings', (value) => creativeSettings.save(value));
+  handle('workbench:save-creative-settings', async (value) => {
+    const writing = creativeSettings.save(value);
+    pendingSettingsWrites.add(writing);
+    try { return await writing; } finally { pendingSettingsWrites.delete(writing); }
+  });
   handle('workbench:creative-run', async (request) => {
     if (job || pickerOpen) throw new Error('请先完成当前操作。');
     if (catalog.size >= maxCatalog) throw new Error('本次会话的素材已达到上限。');
@@ -735,6 +814,11 @@ async function launchDesktop({
   handle('workbench:draft-close-ready', () => { draftCloseReady = true; return true; });
   handle('workbench:complete-draft-close', (value) => {
     if (!draftCloseRequest || value?.token !== draftCloseRequest.token || typeof value.ok !== 'boolean') return false;
+    if (draftCloseRequest.finishUpdate) {
+      draftCloseRequest.finishUpdate(value.ok || (typeof value.reason === 'string' && value.reason.slice(0, 500)));
+      clearDraftClose();
+      return true;
+    }
     clearDraftClose();
     if (value.ok) closeAfterDraft();
     else closing = false;
@@ -1465,6 +1549,16 @@ async function launchDesktop({
   });
 
   await win.loadURL(page);
+  if (checkOnStartup && updates.getState().status !== 'unsupported') {
+    checkUpdatesIfDue();
+    updateTimer = setInterval(checkUpdatesIfDue, updateCheckInterval);
+    win.on('focus', checkUpdatesIfDue);
+    powerMonitor.on('resume', checkUpdatesIfDue);
+    win.once('closed', () => {
+      clearInterval(updateTimer);
+      powerMonitor.removeListener('resume', checkUpdatesIfDue);
+    });
+  }
   if (show) {
     await firstPaint;
     if (!win.isDestroyed()) win.show();

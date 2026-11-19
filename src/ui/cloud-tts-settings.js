@@ -23,6 +23,7 @@
               <label><input type="radio" name="appearance" value="system"><span class="appearance-preview" aria-hidden="true"></span><span>跟随系统</span></label>
             </div>
           </fieldset>
+          <button type="button" id="software-update-entry" aria-haspopup="dialog" hidden>软件更新</button>
           <h3 id="cloud-settings-section" hidden>云端配音</h3>
           <div class="cloud-settings-field">
             <label for="cloud-settings-provider">配音服务</label>
@@ -126,6 +127,7 @@
       const state = { showAppearance, loading: true, ready: false, provider: breeze, selection: breeze, gatewayAddress: '', baseUrl: breezeEndpoint, hasApiKey: false };
       session = state;
       appearance.hidden = !showAppearance;
+      container.querySelector('#software-update-entry').hidden = !showAppearance;
       $('section').hidden = !showAppearance;
       $('title').textContent = showAppearance ? '设置' : '云端配音设置';
       $('cancel').textContent = showAppearance ? '关闭' : '取消';
@@ -232,6 +234,11 @@
       say('');
       update();
     });
-    return { open };
+    function hasUnsavedChanges() {
+      return Boolean(dialog.open && session?.ready && (session.saving || session.testing ||
+        provider.value !== session.provider || address.value.trim() !== (fixedAddress(session.provider) || session.baseUrl) ||
+        password.value.trim() || clearKey.checked));
+    }
+    return { open, hasUnsavedChanges };
   };
 })();

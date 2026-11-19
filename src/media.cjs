@@ -15,6 +15,7 @@ const { normalizeLayers, normalizeTransform, normalizePackaging, packagingChoice
 const { composeLayers, writeLayerTexts } = require('./packaging-render.cjs');
 const { visualMotion } = require('./layer-motion.cjs');
 const { fontFamily } = require('./text-style.cjs');
+const vendorPath = require('./vendor-path.cjs');
 
 const ffmpegCommand = process.env.SUPERDIR_REPLICA_FFMPEG || 'ffmpeg';
 const ffmpeg = /[\\/]/.test(ffmpegCommand) ? path.resolve(ffmpegCommand) : ffmpegCommand;
@@ -1249,7 +1250,7 @@ async function exportBatch(plans, directory, { signal, onUpdate = () => {} } = {
 
 async function recognizeLocalSpeech(asset, {signal} = {}) {
   if (!asset || !['video','audio'].includes(asset.kind) || (asset.kind==='video' && asset.audioIndex==null)) throw new Error('所选素材没有音轨。');
-  const model=path.resolve(__dirname,'../vendor/whisper/ggml-base-q5_1.bin');
+  const model=vendorPath('whisper', 'ggml-base-q5_1.bin');
   try {await fs.access(model);} catch {throw new Error('缺少离线字幕识别模型 ggml-base-q5_1.bin。');}
   const dir=await fs.mkdtemp(path.join(require('node:os').tmpdir(),'jiajian-caption-'));
   const localModel=path.join(dir,'model.bin'), result=path.join(dir,'speech.srt');

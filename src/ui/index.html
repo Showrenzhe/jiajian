@@ -26,6 +26,7 @@
   <script src="./track-tools.js" defer></script>
   <script src="./cloud-tts-dialog.js" defer></script>
   <script src="./cloud-tts-settings.js" defer></script>
+  <script src="./software-updates.js" defer></script>
   <script src="./split-view.js" defer></script>
   <script src="./panel-layout.js" defer></script>
   <script src="./draft-workspace.js" defer></script>
@@ -95,10 +96,14 @@
         <symbol id="icon-tracks" viewBox="0 0 24 24"><rect x="3" y="5" width="7" height="6" rx="1.5"/><rect x="12.5" y="5" width="8.5" height="6" rx="1.5"/><rect x="3" y="14" width="13" height="5" rx="1.5"/></symbol>
       </defs>
     </svg>
-    <span class="brand" title="佳剪 v0.6.2"><img class="brand-logo" src="./assets/jiajian-logo.png" alt="">佳剪 <small>0.6.2</small></span>
+    <span class="brand"><img class="brand-logo" src="./assets/jiajian-logo.png" alt="">佳剪 <small id="app-version"></small></span>
     <button type="button" id="nav-toggle" aria-controls="workspace-navigation" aria-expanded="true" aria-label="收起侧栏" title="收起侧栏（Ctrl+\）"><svg class="ui-icon" aria-hidden="true"><use href="#icon-sidebar"></use></svg></button>
     <button type="button" id="title-home" aria-label="返回首页" title="返回首页"><svg class="ui-icon" aria-hidden="true"><use href="#icon-home"></use></svg></button>
     <span id="title-tab">工作台</span>
+    <span id="update-notice" hidden>
+      <button type="button" id="update-notice-open" aria-haspopup="dialog"></button>
+      <button type="button" id="update-notice-dismiss" title="本次稍后提醒" aria-label="收起本次更新提醒">×</button>
+    </span>
     <button type="button" id="app-settings" title="打开设置" aria-haspopup="dialog"><svg class="ui-icon" aria-hidden="true"><use href="#icon-settings"></use></svg>设置</button>
   </header>
   <div class="app-frame" data-mode="home">
@@ -663,6 +668,20 @@
 
   <div id="cloud-tts-workspace"></div>
   <div id="cloud-tts-settings-workspace"></div>
+  <dialog id="update-dialog" class="cloud-settings-dialog" aria-labelledby="update-title">
+    <header class="cloud-settings-heading"><h2 id="update-title" tabindex="-1" autofocus>软件更新</h2></header>
+    <div class="cloud-settings-body">
+      <p id="update-version" class="cloud-settings-muted"></p>
+      <p id="update-status" role="status"></p>
+      <progress id="update-progress" aria-label="更新下载进度" max="100" hidden></progress>
+      <section id="update-details" hidden><h3>更新说明</h3><p id="update-notes"></p></section>
+      <p id="update-error" role="alert" hidden></p>
+    </div>
+    <footer class="cloud-settings-actions">
+      <button type="button" id="update-close">关闭</button>
+      <button type="button" id="update-action"></button>
+    </footer>
+  </dialog>
   <dialog id="subproject-batch-dialog" class="narration-review" aria-labelledby="subproject-batch-title">
     <h2 id="subproject-batch-title">子工程预览范围</h2>
     <p class="muted compact">勾选参与混剪的子工程，设置各自的成片数量。每批最多 1000 条。</p>
