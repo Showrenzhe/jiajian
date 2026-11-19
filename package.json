@@ -1,0 +1,20 @@
+{
+  "name": "jiajian",
+  "productName": "佳剪",
+  "version": "0.4.0",
+  "private": true,
+  "description": "本地分镜混剪与媒体处理工作台",
+  "main": "src/main.cjs",
+  "scripts": {
+    "start": "electron .",
+    "test": "node --test test/media.test.cjs test/scene-splitter.test.cjs test/subs2srs.test.cjs test/preview-plans.test.cjs test/project-format.test.cjs test/subtitles.test.cjs test/workflow-provider.test.cjs test/project-library.test.cjs test/edit-history.test.cjs test/track-tools.test.cjs test/cloud-tts.test.cjs test/cloud-tts-settings.test.cjs",
+    "test:desktop": "electron test/desktop.cjs",
+    "test:cloud-desktop": "electron test/cloud-desktop.cjs"
+  },
+  "engines": {
+    "node": ">=24"
+  },
+  "devDependencies": {
+    "electron": "45.2.3"
+  }
+}

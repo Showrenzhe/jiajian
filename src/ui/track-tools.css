@@ -1,0 +1,104 @@
+.app-frame[data-mode="montage"] .track-toolbar {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 5px;
+  padding: 6px 8px;
+  border-bottom: 1px solid #414650;
+  background: #242832;
+}
+.app-frame[data-mode="montage"] .track-toolbar button {
+  min-height: 27px;
+  padding: 3px 7px;
+  font-size: 12px;
+}
+.app-frame[data-mode="montage"] .track-toolbar [aria-pressed="true"] {
+  border-color: #6583ad;
+  background: #37465d;
+  color: #e2eeff;
+}
+.app-frame[data-mode="montage"] .track-toolbar :is(.track-choice, .track-interval) {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  color: #c4ccda;
+  white-space: nowrap;
+  font-size: 12px;
+}
+.app-frame[data-mode="montage"] .track-toolbar :is(input[type="number"], select) { padding: 3px 4px; }
+.app-frame[data-mode="montage"] .track-interval input { width: 50px; }
+.app-frame[data-mode="montage"] #track-zoom { width: 78px; accent-color: #90b4ef; }
+
+.app-frame[data-mode="montage"] #track-selection-info {
+  padding: 4px 8px;
+  border-bottom: 1px solid #373d48;
+  background: #1e222a;
+  overflow-wrap: anywhere;
+}
+.app-frame[data-mode="montage"] #track-selection-info:empty { display: none; }
+.app-frame[data-mode="montage"] #track-playhead-row {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr) minmax(63px, auto);
+  align-items: center;
+  gap: 8px;
+  min-height: 29px;
+  padding: 4px 8px;
+  color: #d1dbd9;
+  background: #1a2224;
+  font-size: 12px;
+}
+.app-frame[data-mode="montage"] #track-playhead { min-width: 0; margin: 0; accent-color: #75caa8; }
+.app-frame[data-mode="montage"] #track-playhead-time { text-align: right; font-variant-numeric: tabular-nums; }
+
+.app-frame[data-mode="montage"] #shots[data-zoom="1"] { grid-auto-columns: minmax(194px, 220px); }
+.app-frame[data-mode="montage"] #shots[data-zoom="2"] { grid-auto-columns: minmax(220px, 253px); }
+.app-frame[data-mode="montage"] #shots[data-zoom="3"] { grid-auto-columns: minmax(250px, 290px); }
+.app-frame[data-mode="montage"] #shots[data-zoom="4"] { grid-auto-columns: minmax(300px, 355px); }
+.app-frame[data-mode="montage"] #shots[data-zoom="5"] { grid-auto-columns: minmax(365px, 430px); }
+
+.app-frame[data-mode="montage"] #shots[data-height="large"] .asset { min-height: 94px; padding-block: 7px; }
+.app-frame[data-mode="montage"] #shots[data-height="medium"] .asset { min-height: 74px; }
+.app-frame[data-mode="montage"] #shots[data-height="medium"] .asset .trim-fields input { padding-block: 3px; }
+.app-frame[data-mode="montage"] #shots[data-height="small"] .asset { gap: 3px; min-height: 48px; padding-block: 3px; }
+.app-frame[data-mode="montage"] #shots[data-height="small"] .asset-meta { display: none; }
+.app-frame[data-mode="montage"] #shots[data-height="small"] .trim-fields { flex-wrap: wrap; gap: 3px 5px; }
+.app-frame[data-mode="montage"] #shots[data-height="small"] .trim-fields label { display: flex; align-items: center; gap: 2px; }
+.app-frame[data-mode="montage"] #shots[data-height="small"] .trim-fields input { width: 51px; padding: 2px 3px; }
+.app-frame[data-mode="montage"] #shots .asset.track-selected {
+  outline: 1px solid #add7ff;
+  outline-offset: -2px;
+  border-color: #8dbce9;
+  background: #344d54;
+}
+
+.app-frame[data-mode="montage"] .shot-transition {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 5px;
+  margin-top: 6px;
+  padding: 5px 1px 0;
+  border-top: 1px solid #3c3c4b;
+}
+.app-frame[data-mode="montage"] .shot-transition label {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  color: #c4bed5;
+  font-size: 11px;
+}
+.app-frame[data-mode="montage"] .shot-transition :is(select, input) { padding: 2px 4px; }
+.app-frame[data-mode="montage"] .shot-transition input { width: 52px; }
+.app-frame[data-mode="montage"] #track-volume-panel {
+  margin-bottom: 9px;
+  padding: 0 8px 8px;
+  border: 1px solid #435366;
+  border-radius: 5px;
+  background: #222c35;
+}
+.app-frame[data-mode="montage"] #track-volume-panel legend { padding-inline: 4px; color: #d6e4f5; font-size: 12px; }
+.app-frame[data-mode="montage"] #track-volume-name { overflow-wrap: anywhere; }
+.app-frame[data-mode="montage"] #track-volume-apply { margin-top: 7px; padding: 5px 8px; }
+.caption-controls { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 6px 8px; margin-top: 8px; }
+.caption-controls label { display: flex; align-items: center; justify-content: space-between; gap: 4px; min-width: 0; }
+.caption-controls :is(input, select) { min-width: 0; max-width: 58%; }
