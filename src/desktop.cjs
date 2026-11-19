@@ -26,9 +26,10 @@ const { splitNarration: splitNarrationAudio } = require('./subs2srs.cjs');
 
 const scheme = 'sd-workbench';
 const page = `${scheme}://app/index.html`;
-const uiFiles = new Set(['/index.html', '/app.js', '/styles.css', '/script-workspace.js', '/script-workspace.css',
+const uiFiles = new Set(['/index.html', '/app.js', '/styles.css', '/dialog-focus.js', '/script-workspace.js', '/script-workspace.css',
   '/track-workspace.css', '/edit-history.js', '/track-tools.js', '/track-tools.css', '/cloud-tts-dialog.js', '/cloud-tts-dialog.css',
-  '/cloud-tts-settings.js', '/cloud-tts-settings.css', '/panel-layout.js', '/draft-workspace.js', '/assets/jiajian-logo.png']);
+  '/cloud-tts-settings.js', '/cloud-tts-settings.css', '/split-view.js', '/panel-layout.js', '/draft-workspace.js', '/assets/jiajian-logo.png',
+  '/glass-material.css', '/inspector-controls.css']);
 const maxCatalog = (maxShots * 2 + 1) * maxCandidates + maxWholeTracks;
 const maxSubtitleBatchBytes = 1024 * 1024;
 const maxSpeechJobs = maxShots;
@@ -484,9 +485,9 @@ async function launchDesktop({
     minHeight: 600,
     title: '佳剪',
     icon: path.join(__dirname, 'ui', 'assets', 'jiajian-logo.ico'),
-    backgroundColor: '#12151b',
+    backgroundColor: '#e6e9ed',
     titleBarStyle: 'hidden',
-    titleBarOverlay: { color: '#181c24', symbolColor: '#c0c8d6', height: 45 },
+    titleBarOverlay: { color: '#00000000', symbolColor: '#303947', height: 44 },
     autoHideMenuBar: true,
     webPreferences: {
       preload: path.join(__dirname, 'preload.cjs'), sandbox: true, contextIsolation: true, nodeIntegration: false,

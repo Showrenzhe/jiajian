@@ -1,40 +1,15 @@
-.cloud-settings-dialog {
-  --settings-border: #e4eaf3;
-  width: min(560px, calc(100vw - 38px));
-  max-height: calc(100vh - 44px);
-  padding: 0;
-  border: 1px solid var(--settings-border);
-  border-radius: 10px;
-  color-scheme: light;
-  color: #253044;
-  background: #fff;
-  box-shadow: 0 14px 50px #0c1b414d;
-}
-.cloud-settings-dialog::backdrop { background: #111b3373; }
-.cloud-settings-dialog :focus-visible { outline-color: #0866ff; }
-.cloud-settings-heading { padding: 13px 17px; border-bottom: 1px solid var(--settings-border); }
-.cloud-settings-heading h2 { font-size: 18px; }
-.cloud-settings-body { display: grid; gap: 5px; padding: 14px 17px; }
-.cloud-settings-body > label:not(.cloud-settings-check) { font-weight: 600; }
-.cloud-settings-body > :is(input, select) {
-  width: 100%;
-  min-width: 0;
-  padding: 7px 9px;
-  border: 1px solid #cbd6e7;
-  border-radius: 5px;
-  background: #fff;
-  color: #253044;
-}
-.cloud-settings-body > :is(input, select):disabled,
-.cloud-settings-body > input[readonly] { background: #f4f6f9; }
-.cloud-settings-muted, #cloud-settings-status, .cloud-settings-warning { color: #5f6f85; font-size: 12px; overflow-wrap: anywhere; }
-#cloud-settings-address-help { margin-bottom: 6px; }
-.cloud-settings-check { display: flex; align-items: center; gap: 5px; margin-top: 5px; }
-.cloud-settings-check input { accent-color: #0866ff; }
-.cloud-settings-warning { padding: 6px 8px; border-radius: 4px; background: #fff5e6; color: #795023; }
-.cloud-settings-error, #cloud-settings-status.cloud-settings-error { color: #9b2b25; }
-.cloud-settings-actions { display: flex; justify-content: flex-end; gap: 7px; padding: 9px 17px; border-top: 1px solid var(--settings-border); }
-.cloud-settings-actions button { padding: 6px 12px; border: 1px solid #dce3ef; border-radius: 6px; background: #fff; color: #2c3d57; }
-.cloud-settings-actions button:hover:enabled { background: #eef4ff; }
-.cloud-settings-actions .cloud-settings-primary { border-color: #0866ff; background: #0866ff; color: #fff; font-weight: 600; }
-.cloud-settings-actions .cloud-settings-primary:hover:enabled { background: #0058d6; }
+.cloud-settings-dialog { width: min(512px, calc(100vw - 36px)); max-height: calc(100dvh - 42px); overflow: hidden; }
+#cloud-settings-form { display: grid; grid-template-rows: auto minmax(0, 1fr) auto; max-height: calc(100dvh - 43px); }
+.cloud-settings-heading { padding: 24px 26px 16px; }
+.cloud-settings-body { display: grid; gap: 19px; min-height: 0; padding: 3px 26px 21px; overflow: auto; overscroll-behavior: contain; }
+.cloud-settings-field { display: grid; gap: 5px; }
+.cloud-settings-field > label:first-child { font-weight: 600; }
+.cloud-settings-field > :is(input, select) { width: 100%; min-width: 0; min-height: 36px; }
+.cloud-settings-field > :is(input, select):disabled, .cloud-settings-field > input[readonly] { background: rgba(69,74,84,.06); }
+.cloud-settings-muted, #cloud-settings-status, .cloud-settings-warning { margin: 0; line-height: 1.55; }
+.cloud-settings-check { display: flex; align-items: center; gap: 7px; margin-top: 4px; font-size: 13px; }
+.cloud-settings-check input { margin: 0; }
+#cloud-settings-status, .cloud-settings-warning { color: var(--secondary-ink); font-size: 12px; overflow-wrap: anywhere; }
+.cloud-settings-warning { padding-left: 10px; border-left: 2px solid #ad792a; color: #71490e; }
+.cloud-settings-error, #cloud-settings-status.cloud-settings-error { color: var(--dialog-alert); }
+.cloud-settings-actions { display: flex; justify-content: flex-end; gap: 7px; padding: 12px 26px 15px; border-top: 1px solid var(--hairline); }

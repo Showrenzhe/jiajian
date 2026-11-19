@@ -7,21 +7,27 @@
   const markup = `
     <dialog id="cloud-settings-dialog" class="cloud-settings-dialog" aria-labelledby="cloud-settings-title">
       <form id="cloud-settings-form">
-        <header class="cloud-settings-heading"><h2 id="cloud-settings-title">云端配音设置</h2></header>
+        <header class="cloud-settings-heading"><h2 id="cloud-settings-title" tabindex="-1" autofocus>云端配音设置</h2></header>
         <div class="cloud-settings-body">
-          <label for="cloud-settings-provider">配音服务</label>
-          <select id="cloud-settings-provider">
-            <option value="gateway">通用接口</option>
-            <option value="seed-audio">火山引擎 Seed Audio 1.0</option>
-          </select>
-          <label for="cloud-settings-base-url">服务地址</label>
-          <input id="cloud-settings-base-url" type="url" autocomplete="off" spellcheck="false" placeholder="https://voice.example.com" aria-describedby="cloud-settings-address-help">
-          <p id="cloud-settings-address-help" class="cloud-settings-muted">填写服务方提供的接口地址。留空并保存会停用云端配音。</p>
-          <label for="cloud-settings-api-key" id="cloud-settings-key-label">API 密钥（按服务要求填写）</label>
-          <input id="cloud-settings-api-key" type="password" autocomplete="new-password" spellcheck="false" placeholder="留空保留已保存的密钥" aria-describedby="cloud-settings-key-state cloud-settings-key-help">
-          <p id="cloud-settings-key-state" class="cloud-settings-muted"></p>
-          <p id="cloud-settings-key-help" class="cloud-settings-muted">同一服务地址留空会保留密钥。换用不同服务时，请填新密钥或清除旧密钥。</p>
-          <label class="cloud-settings-check"><input id="cloud-settings-clear-key" type="checkbox">清除已保存的密钥</label>
+          <div class="cloud-settings-field">
+            <label for="cloud-settings-provider">配音服务</label>
+            <select id="cloud-settings-provider">
+              <option value="gateway">通用接口</option>
+              <option value="seed-audio">火山引擎 Seed Audio 1.0</option>
+            </select>
+          </div>
+          <div class="cloud-settings-field">
+            <label for="cloud-settings-base-url">服务地址</label>
+            <input id="cloud-settings-base-url" type="url" autocomplete="off" spellcheck="false" placeholder="https://voice.example.com" aria-describedby="cloud-settings-address-help">
+            <p id="cloud-settings-address-help" class="cloud-settings-muted">填写服务方提供的接口地址。留空并保存会停用云端配音。</p>
+          </div>
+          <div class="cloud-settings-field">
+            <label for="cloud-settings-api-key" id="cloud-settings-key-label">API 密钥（按服务要求填写）</label>
+            <input id="cloud-settings-api-key" type="password" autocomplete="new-password" spellcheck="false" placeholder="留空保留已保存的密钥" aria-describedby="cloud-settings-key-state cloud-settings-key-help">
+            <p id="cloud-settings-key-state" class="cloud-settings-muted"></p>
+            <p id="cloud-settings-key-help" class="cloud-settings-muted">同一服务地址留空会保留密钥。换用不同服务时，请填新密钥或清除旧密钥。</p>
+            <label class="cloud-settings-check"><input id="cloud-settings-clear-key" type="checkbox">清除已保存的密钥</label>
+          </div>
           <p id="cloud-settings-warning" class="cloud-settings-warning" role="status" hidden></p>
           <p id="cloud-settings-status" role="status" hidden></p>
         </div>
@@ -121,7 +127,7 @@
         if (session === state) {
           state.loading = false;
           update();
-          if (state.ready) provider.focus();
+          if (state.ready && document.activeElement === $('title')) provider.focus();
         }
       }
     }

@@ -88,6 +88,7 @@
       return [id, { id, label, minWidth, minHeight, element, overlay }];
     }));
     const defaultOrder = [...panes.keys()];
+    const splitView = window.mountSplitView(workspace, bounds);
     let state = readLayout();
     let editing = false;
     let active = state?.order.at(-1) ?? defaultOrder[0];
@@ -130,17 +131,20 @@
       toggle.textContent = editing ? '完成布局' : '调整布局';
       choose.hidden = !editing && !state;
       choose.value = active;
-      resetButton.hidden = !state;
+      resetButton.hidden = !state && !(editing && splitView.modified);
       layer.hidden = !editing;
     }
 
     function layout() {
       scheduled = 0;
       const visible = frame?.dataset.mode === 'montage' && !workspace.hidden && workspace.clientWidth > 0;
-      if (!visible) { layer.hidden = true; return; }
+      if (!visible) { layer.hidden = true; splitView.sync(false); return; }
       refreshControls();
+      workspace.toggleAttribute('data-layout-editing', editing);
       if (state) workspace.dataset.panelLayout = 'custom';
       else delete workspace.dataset.panelLayout;
+      // Entering free layout takes its initial geometry from the current split view.
+      splitView.sync(!state);
       const canvas = bounds();
       for (const pane of panes.values()) {
         const box = currentBox(pane, canvas);
@@ -251,6 +255,8 @@
     function reset() {
       state = null;
       drag = undefined;
+      editing = false;
+      splitView.reset();
       workspace.classList.remove('panel-layout-dragging');
       delete workspace.dataset.panelLayout;
       save();

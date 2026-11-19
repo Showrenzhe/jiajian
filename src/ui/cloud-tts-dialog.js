@@ -8,8 +8,8 @@
   const markup = `
     <dialog id="cloud-tts-dialog" class="cloud-tts-dialog" aria-labelledby="cloud-tts-title">
       <header class="cloud-tts-header">
-        <h2 id="cloud-tts-title">智能配音</h2><span id="cloud-tts-provider" class="cloud-tts-badge">云端服务</span>
-        <button type="button" id="cloud-tts-open-settings" hidden>打开云端配音设置</button>
+        <div class="cloud-tts-heading-group"><h2 id="cloud-tts-title" tabindex="-1" autofocus>智能配音</h2><span id="cloud-tts-provider" class="cloud-tts-badge">云端服务</span></div>
+        <button type="button" id="cloud-tts-open-settings" aria-label="打开云端配音设置" hidden><svg class="ui-icon" aria-hidden="true"><use href="#icon-settings"></use></svg>配音设置</button>
         <button type="button" id="cloud-tts-close" aria-label="关闭配音">×</button>
       </header>
       <div class="cloud-tts-body">
