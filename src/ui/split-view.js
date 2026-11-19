@@ -118,6 +118,11 @@
     window.addEventListener('blur', () => finish());
     return {
       sync(enabled) { if (enabled) render(); else finish(); },
+      sizes() { return measure().size; },
+      resize: update,
+      save,
+      snapshot() { return { ...preferred }; },
+      restore(saved) { finish(); preferred = { ...saved }; save(); },
       get modified() { return Object.keys(preferred).length > 0; },
       reset() { finish(); preferred = {}; save(); },
     };

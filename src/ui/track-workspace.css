@@ -952,6 +952,9 @@
 .app-frame[data-mode="montage"] .panel-layout-handle:is([data-edge="e"], [data-edge="ne"], [data-edge="se"]) { right: 0; }
 .app-frame[data-mode="montage"] .panel-layout-handle:is([data-edge="nw"], [data-edge="se"]) { cursor: nwse-resize; }
 .app-frame[data-mode="montage"] .panel-layout-handle:is([data-edge="ne"], [data-edge="sw"]) { cursor: nesw-resize; }
+#editor-workspace:not([data-panel-layout="custom"]) .panel-layout-handle[data-split-axes="none"] { display: none; }
+#editor-workspace:not([data-panel-layout="custom"]) .panel-layout-handle[data-split-axes="x"] { cursor: ew-resize; }
+#editor-workspace:not([data-panel-layout="custom"]) .panel-layout-handle[data-split-axes="y"] { cursor: ns-resize; }
 
 .app-frame[data-mode="montage"] :is(.workbench-actions, .materials-toolbar, .timeline-empty-actions, .timeline-header, .track-toolbar) button:has(.ui-icon) {
   display: inline-flex;
