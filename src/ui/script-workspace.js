@@ -10,44 +10,49 @@
   const markup = `
     <header class="script-workspace-header">
       <div class="script-title-area">
-        <button id="script-back" type="button" aria-label="返回工作台" hidden>←</button>
-        <input id="script-title" maxlength="100" aria-label="脚本名称">
-        <span id="script-save-status" class="script-subtle" role="status"></span>
+        <button id="script-back" type="button" aria-label="返回工作台" title="返回工作台" hidden><svg class="ui-icon" aria-hidden="true"><use href="#icon-chevron"></use></svg></button>
+        <h1>脚本编辑</h1>
       </div>
       <div class="script-header-actions">
-        <button id="script-import-dialogue" type="button">批量导入台词</button>
-        <button id="script-import-text-groups" type="button">批量导入文字组</button>
         <button id="script-share" type="button" disabled title="云端分享尚未接入">分享脚本</button>
-        <button id="script-cloud-read-all" type="button">全部台词朗读</button>
-        <button id="script-go-montage" type="button" class="script-blue">前往混剪</button>
+        <button id="script-cloud-read-all" type="button"><svg class="ui-icon" aria-hidden="true"><use href="#icon-audio"></use></svg>全部台词朗读</button>
+        <button id="script-go-montage" type="button" class="script-blue">前往混剪<svg class="ui-icon" aria-hidden="true"><use href="#icon-chevron"></use></svg></button>
       </div>
     </header>
     <div class="script-workspace-body">
-      <nav class="script-rail" aria-label="脚本工具">
-        <div class="script-rail-current" aria-current="page"><span aria-hidden="true">✦</span>AI助手</div>
-      </nav>
-      <aside class="script-assistant" aria-labelledby="script-assistant-heading">
-        <h2 id="script-assistant-heading">AI助手</h2>
-        <div class="script-model-status">AI 服务待接入</div>
-        <h3>你好，欢迎使用 AI 助手</h3>
-        <p class="script-subtle script-assistant-intro">服务接入后，可生成台词并应用到右侧脚本。</p>
+      <aside id="script-assistant" class="script-assistant" aria-labelledby="script-assistant-heading" popover>
+        <h2 id="script-assistant-heading">AI 助手</h2>
+        <p class="script-model-status script-subtle">以下工具等待接入 AI 服务。</p>
         <div class="script-ai-tools">
-          <button type="button" disabled><span>AI模板</span><small>待接入</small></button>
-          <button type="button" disabled><span>爆款复刻</span><small>待接入</small></button>
-          <button type="button" disabled><span>解析台词</span><small>待接入</small></button>
-          <button type="button" disabled><span>文字组脚本</span><small>待接入</small></button>
-          <button type="button" disabled><span>仿写</span><small>待接入</small></button>
+          <button type="button" disabled>AI 模板</button>
+          <button type="button" disabled>爆款复刻</button>
+          <button type="button" disabled>解析台词</button>
+          <button type="button" disabled>文字组脚本</button>
+          <button type="button" disabled>仿写</button>
         </div>
       </aside>
       <section class="script-content" aria-label="脚本编辑">
-        <nav class="script-content-tabs" aria-label="编辑内容">
-          <button id="script-content-tab" type="button">脚本内容</button>
-          <button id="script-text-group-tab" type="button">文字组（大字报）组</button>
-        </nav>
+        <div class="script-document-heading">
+          <div class="script-document-name">
+            <input id="script-title" maxlength="100" aria-label="脚本名称" title="编辑脚本名称" placeholder="脚本名称">
+            <span id="script-save-status" class="script-subtle" role="status"></span>
+          </div>
+          <div class="script-rail" role="group" aria-label="脚本工具">
+            <button id="script-import-dialogue" type="button">批量导入台词</button>
+            <button id="script-import-text-groups" type="button">批量导入文字组</button>
+            <button type="button" id="script-assistant-toggle" class="script-rail-current" popovertarget="script-assistant"><svg class="ui-icon" aria-hidden="true"><use href="#icon-spark"></use></svg>AI 助手</button>
+          </div>
+        </div>
         <div class="script-sheet">
-          <div id="script-mode-options" class="script-mode-options" role="group" aria-label="口播脚本类型">
-            <button id="script-mode-whole" type="button">整段式口播脚本</button>
-            <button id="script-mode-segmented" type="button">分段式口播脚本</button>
+          <div class="script-sheet-controls">
+            <nav class="script-content-tabs" aria-label="编辑内容">
+              <button id="script-content-tab" type="button">脚本内容</button>
+              <button id="script-text-group-tab" type="button">文字组（大字报）</button>
+            </nav>
+            <div id="script-mode-options" class="script-mode-options" role="group" aria-label="口播脚本类型">
+              <button id="script-mode-whole" type="button">整段式口播</button>
+              <button id="script-mode-segmented" type="button">分段式口播</button>
+            </div>
           </div>
           <div class="script-grid-wrap">
             <table class="script-grid" aria-label="脚本内容表格">
@@ -184,6 +189,7 @@
         model[key].splice(index, 1);
         if (!model[key].length) model[key].push(emptyRow());
         renderRows();
+        body.rows[Math.min(index, body.rows.length - 1)].querySelector('.script-dialogue').focus();
         persist();
       });
       indexCell.append(number, remove);

@@ -1,0 +1,130 @@
+/* The editor's tools use the same surfaces as the workspace. Media previews
+   and clips keep their own backgrounds so footage and waveforms stay readable. */
+.brand small, .batch-reuse, .processed-used { color: var(--secondary-ink); }
+#timeline-selection-count { color: var(--system-blue); }
+.app-frame[data-mode="montage"] #player-transport {
+  padding: 0 10px 6px;
+  background: transparent;
+}
+.player-control-row { gap: 2px 5px; }
+.player-control-row :is(select, button), #player-time { color: var(--ink); }
+.player-control-row button:hover:enabled, .player-control-row button[aria-pressed="true"] {
+  color: var(--system-blue);
+  background: var(--control-fill);
+}
+.app-frame[data-mode="montage"] .editor-player:popover-open {
+  background: var(--surface);
+  border: 1px solid var(--hairline);
+  border-radius: 12px;
+}
+.app-frame[data-mode="montage"] .materials-toolbar {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+}
+.app-frame[data-mode="montage"] .material-search-box { flex: 1 0 100%; min-width: 0; }
+.app-frame[data-mode="montage"] #material-audio-open {
+  padding: 2px 4px;
+  border: 0;
+  background: transparent;
+  color: var(--system-blue);
+}
+.app-frame[data-mode="montage"] #timeline-tracks-panel[data-view="time"]:has(#shots-empty:not([hidden])) {
+  display: block;
+}
+.app-frame[data-mode="montage"] #timeline-tracks-panel[data-view="time"] #shots-empty:not([hidden]) {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: flex-start;
+  gap: 6px 12px;
+  min-height: 0;
+  margin: 0;
+  padding: 6px 12px;
+  border: 0;
+}
+#timeline-tracks-panel[data-view="time"] #shots-empty > span { display: none; }
+.batch-heading, .batch-heading .project-actions { flex-wrap: wrap; }
+.batch-heading .project-actions { min-width: 0; }
+
+#timeline-clock .sequence-canvas { background: var(--surface); }
+#timeline-clock .sequence-row { border-color: var(--hairline); }
+#timeline-clock .sequence-head, #timeline-clock .sequence-ruler {
+  color: var(--secondary-ink);
+  background: var(--well);
+  border-color: var(--hairline);
+}
+#timeline-clock .sequence-head button:hover { color: var(--ink); background: var(--control-hover); }
+#timeline-clock .sequence-tick { border-color: var(--hairline); }
+#timeline-clock .sequence-block.sequence-empty {
+  border-color: color-mix(in srgb, var(--secondary-ink) 48%, var(--surface));
+  background: var(--control-fill);
+  color: var(--secondary-ink);
+}
+#timeline-clock .sequence-cursor {
+  background: linear-gradient(to right, transparent 4px, var(--system-blue) 4px 5px, transparent 5px);
+}
+#timeline-clock .sequence-cursor::before, #timeline-clock .sequence-hover { background: var(--system-blue); }
+.app-frame[data-mode="montage"] #timeline-more-menu:popover-open {
+  position-area: block-end span-inline-start;
+  position-try-fallbacks: flip-block, flip-inline, flip-block flip-inline;
+  inset: auto;
+  margin: 6px 0;
+  padding: 9px;
+  width: max-content;
+  max-width: 85vw;
+  max-height: 80vh;
+  overflow: auto;
+  border: 1px solid var(--hairline);
+  border-radius: 12px;
+  background: var(--surface);
+  box-shadow: var(--glass-shadow);
+}
+#timeline-more-menu button { color: var(--ink); background: var(--control-fill); border-color: var(--hairline); }
+#timeline-more-menu button:hover:enabled { background: var(--control-hover); }
+
+.sequence-dialog, .layer-motion-dialog, .cut-track-editor, .track-organizer,
+.jj-cover-editor, .jj-visual-editor, .jj-batch-editor, #caption-zoom-dialog {
+  color: var(--ink);
+  background: var(--surface);
+  border-color: var(--hairline);
+}
+.sequence-dialog h2 { color: inherit; }
+.sequence-dialog :is(header, footer, .text-presets),
+.cut-track-editor header, .jj-look-controls fieldset, .layer-motion-mask { border-color: var(--hairline); }
+.sequence-dialog :is(input, textarea, select, button) {
+  border-color: var(--hairline);
+  background: var(--control-fill);
+  color: var(--ink);
+}
+.sequence-dialog .sequence-primary, .layer-motion-primary {
+  color: white;
+  border-color: var(--action-fill);
+  background: var(--action-fill);
+}
+.sequence-dialog .sequence-message, .jj-batch-editor footer output { color: var(--warning-ink); }
+.creative-service-dialog [role="status"], .cut-track-editor output, .text-presets output { color: var(--secondary-ink); }
+.cut-track-editor button[aria-pressed="true"], .jj-visual-editor nav [aria-pressed="true"],
+.layer-motion-keys button[aria-pressed="true"] {
+  color: var(--system-blue);
+  background: var(--control-fill);
+  border-color: var(--system-blue);
+}
+.layer-motion-keys button[aria-pressed="true"], .jj-cover-grid button[aria-pressed="true"] { outline-color: var(--system-blue); }
+.caption-type-options :is(b, i, u) { color: var(--ink); background: var(--control-fill); }
+#caption-presets button { color: var(--ink); background: var(--well); border-color: var(--hairline); }
+#caption-presets button strong { width: 100%; background: #343a43; border-radius: 3px; }
+#caption-presets button[aria-pressed="true"] { background: var(--selected-surface); border-color: var(--system-blue); }
+
+@media (max-width: 940px) {
+  .app-frame[data-mode="montage"] #timeline-view-actions button:disabled { display: none; }
+}
+@media (prefers-contrast: more) {
+  #timeline-clock .sequence-head, #timeline-clock .sequence-ruler,
+  #timeline-clock .sequence-empty { color: var(--ink); }
+  .sequence-dialog :is(button, select, input), .caption-type-options :is(b, i, u) { border-color: currentColor; }
+}
+@media (forced-colors: active) {
+  #timeline-clock .sequence-cursor { border-inline-start: 2px solid Highlight; background: transparent; }
+  #timeline-clock .sequence-block[aria-pressed="true"], #timeline-clock .sequence-marked { outline: 2px solid Highlight; }
+}

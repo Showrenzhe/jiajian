@@ -21,7 +21,7 @@
 .cut-track-body video { width: 100%; max-height: 155px; align-self: center; background: #101214; border-radius: 3px; }
 .cut-track-body audio { width: 100%; align-self: center; }
 .cut-track-work { min-width: 0; display: grid; align-content: start; gap: 6px; }
-.cut-track-scrub input { width: 0; flex: 1; accent-color: #59ced3; }
+.cut-track-scrub input { width: 0; flex: 1; accent-color: var(--system-blue); }
 .cut-source-overview {flex:1;min-width:0;display:grid;}
 .cut-track-scrub .cut-source-overview input {width:100%;margin:0;}
 .cut-source-overview .audio-waveform {border-radius:3px;}
@@ -40,7 +40,7 @@
 .track-organizer form { display: grid; gap: 12px; }
 .track-organizer h3 { margin: 0 0 3px; }
 .track-organizer label { display: flex; gap: 8px; align-items: center; }
-.track-organizer input { accent-color: #52c6cb; }
+.track-organizer input { accent-color: var(--system-blue); }
 .track-organizer footer { display: flex; justify-content: flex-end; gap: 8px; margin-top: 4px; }
 .jj-cover-editor { width: min(640px, 90vw); max-height: 84vh; overflow: auto; background: #25292b; color: #e6eeee; border: 1px solid #455055; border-radius: 8px; padding: 16px; }
 .jj-cover-editor header, .jj-cover-editor footer, .jj-cover-actions { display:flex; align-items:center; justify-content:space-between; gap:8px; margin:8px 0; }
@@ -70,6 +70,6 @@
 .jj-look-preview canvas{display:block;width:100%;height:230px;object-fit:contain;background:#151819}
 .jj-look-controls{max-height:52vh;overflow:auto;display:grid;align-content:start;gap:7px;padding:0 5px;}
 .jj-visual-editor label{display:flex;align-items:center;gap:7px;justify-content:space-between;}
-.jj-look-controls label input[type=range]{width:48%;accent-color:#63c9cf;}
+.jj-look-controls label input[type=range]{width:48%;accent-color:var(--system-blue);}
 .jj-look-controls input[type=number]{width:82px;}
 .jj-look-controls fieldset{min-width:0;display:grid;gap:5px;border:1px solid #465152;}

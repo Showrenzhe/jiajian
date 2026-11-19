@@ -5,7 +5,9 @@
   <meta name="viewport" content="width=device-width,initial-scale=1">
   <meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'self'; style-src 'self'; media-src sd-workbench://asset; img-src 'self' sd-workbench://asset; base-uri 'none'; form-action 'none'">
   <title>佳剪</title>
+  <script src="./appearance.js"></script>
   <link rel="stylesheet" href="./styles.css">
+  <link rel="stylesheet" href="./glass-material.css">
   <link rel="stylesheet" href="./script-workspace.css">
   <link rel="stylesheet" href="./track-workspace.css">
   <link rel="stylesheet" href="./track-tools.css">
@@ -15,11 +17,16 @@
   <link rel="stylesheet" href="./caption-inspector.css">
   <link rel="stylesheet" href="./cloud-tts-dialog.css">
   <link rel="stylesheet" href="./cloud-tts-settings.css">
+  <link rel="stylesheet" href="./inspector-controls.css">
+  <link rel="stylesheet" href="./editor-surfaces.css">
+  <link rel="stylesheet" href="./appearance.css">
+  <script src="./dialog-focus.js" defer></script>
   <script src="./script-workspace.js" defer></script>
   <script src="./edit-history.js" defer></script>
   <script src="./track-tools.js" defer></script>
   <script src="./cloud-tts-dialog.js" defer></script>
   <script src="./cloud-tts-settings.js" defer></script>
+  <script src="./split-view.js" defer></script>
   <script src="./panel-layout.js" defer></script>
   <script src="./draft-workspace.js" defer></script>
   <script src="./player-tools.js" defer></script>
@@ -43,92 +50,141 @@
 </head>
 <body>
   <header class="titlebar">
+    <svg class="icon-definitions" aria-hidden="true" focusable="false">
+      <defs>
+        <filter id="clear-rim" x="0" y="0" width="100%" height="100%" primitiveUnits="objectBoundingBox" color-interpolation-filters="sRGB">
+          <feFlood flood-color="#808080" result="base"/>
+          <feFlood x="0%" y="0%" width="2.3%" height="100%" flood-color="#f08080" result="left"/>
+          <feFlood x="97.7%" y="0%" width="2.3%" height="100%" flood-color="#108080" result="right"/>
+          <feFlood x="0%" y="0%" width="100%" height="8%" flood-color="#80f080" result="top"/>
+          <feFlood x="0%" y="92%" width="100%" height="8%" flood-color="#801080" result="bottom"/>
+          <feMerge>
+            <feMergeNode in="base"/><feMergeNode in="left"/><feMergeNode in="right"/>
+            <feMergeNode in="top"/><feMergeNode in="bottom"/>
+          </feMerge>
+          <feGaussianBlur stdDeviation=".003 .019" edgeMode="duplicate" result="lens"/>
+          <feDisplacementMap in="SourceGraphic" in2="lens" scale=".095" xChannelSelector="R" yChannelSelector="G"/>
+        </filter>
+        <symbol id="icon-home" viewBox="0 0 24 24"><path d="m3 10 9-7 9 7v9a2 2 0 0 1-2 2h-4v-7H9v7H5a2 2 0 0 1-2-2z"/></symbol>
+        <symbol id="icon-sidebar" viewBox="0 0 24 24"><rect x="3" y="4.5" width="18" height="15" rx="3"/><path d="M9.5 5v14M6 9h.5m-.5 3h.5"/></symbol>
+        <symbol id="icon-folder" viewBox="0 0 24 24"><path d="M3 7a2 2 0 0 1 2-2h5l2 2h7a2 2 0 0 1 2 2v9a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"/></symbol>
+        <symbol id="icon-folderOpen" viewBox="0 0 24 24"><path d="M3 16V7a2 2 0 0 1 2-2h5l2 2h7a2 2 0 0 1 2 2M4 19l2-8h16l-2 8z"/></symbol>
+        <symbol id="icon-clapper" viewBox="0 0 24 24"><rect x="3" y="7" width="18" height="14" rx="2"/><path d="M3 11h18M5 7l3 4m3-4 3 4m3-4 3 4"/></symbol>
+        <symbol id="icon-scene" viewBox="0 0 24 24"><rect x="3" y="4" width="18" height="16" rx="2"/><path d="M8 4v16M3 9h5m-5 6h5m6-11v16m0-11h7m-7 6h7"/></symbol>
+        <symbol id="icon-script" viewBox="0 0 24 24"><path d="M5 5h10m-10 4h7M5 13h5m3 6-4 1 1-4 8-8 3 3zM16 10l3 3"/></symbol>
+        <symbol id="icon-audio" viewBox="0 0 24 24"><path d="M3 10v4m4-8v12m5-16v20m5-16v12m4-8v4"/></symbol>
+        <symbol id="icon-plus" viewBox="0 0 24 24"><path d="M12 5v14M5 12h14"/></symbol>
+        <symbol id="icon-import" viewBox="0 0 24 24"><path d="M12 3v12m-5-5 5 5 5-5M4 15v4a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2v-4"/></symbol>
+        <symbol id="icon-layers" viewBox="0 0 24 24"><path d="m3 8 9-5 9 5-9 5zm0 5 9 5 9-5m-18 5 9 5 9-5"/></symbol>
+        <symbol id="icon-spark" viewBox="0 0 24 24"><path d="m13 3 1.8 5.2L20 10l-5.2 1.8L13 17l-1.8-5.2L6 10l5.2-1.8zM5 15l.9 2.1L8 18l-2.1.9L5 21l-.9-2.1L2 18l2.1-.9z"/></symbol>
+        <symbol id="icon-grid" viewBox="0 0 24 24"><rect x="3" y="3" width="7" height="7" rx="1.6"/><rect x="14" y="3" width="7" height="7" rx="1.6"/><rect x="3" y="14" width="7" height="7" rx="1.6"/><rect x="14" y="14" width="7" height="7" rx="1.6"/></symbol>
+        <symbol id="icon-rows" viewBox="0 0 24 24"><path d="M8 5h13M8 12h13M8 19h13M3 5h.1M3 12h.1M3 19h.1"/></symbol>
+        <symbol id="icon-search" viewBox="0 0 24 24"><circle cx="10.5" cy="10.5" r="6.5"/><path d="m16 16 4.5 4.5"/></symbol>
+        <symbol id="icon-more" viewBox="0 0 24 24"><circle cx="5" cy="12" r="1"/><circle cx="12" cy="12" r="1"/><circle cx="19" cy="12" r="1"/></symbol>
+        <symbol id="icon-chevron" viewBox="0 0 24 24"><path d="m9 5 7 7-7 7"/></symbol>
+        <symbol id="icon-settings" viewBox="0 0 24 24"><path d="M4 6h6m5 0h5M4 12h11m4 0h1M4 18h3m5 0h8"/><circle cx="12" cy="6" r="2"/><circle cx="17" cy="12" r="2"/><circle cx="9" cy="18" r="2"/></symbol>
+        <symbol id="icon-person" viewBox="0 0 24 24"><circle cx="12" cy="8" r="4"/><path d="M4 21v-2a7 7 0 0 1 7-6h2a7 7 0 0 1 7 6v2"/></symbol>
+        <symbol id="icon-share" viewBox="0 0 24 24"><path d="M12 15V3m-4 4 4-4 4 4M7 10H5v10h14V10h-2"/></symbol>
+        <symbol id="icon-chart" viewBox="0 0 24 24"><path d="M4 4v16h17M8 16v-4m5 4V7m5 9v-6"/></symbol>
+        <symbol id="icon-image" viewBox="0 0 24 24"><rect x="3" y="4" width="18" height="16" rx="2"/><circle cx="8" cy="9" r="1.5"/><path d="m4 17 4-4 3 3 5-6 5 5"/></symbol>
+        <symbol id="icon-film" viewBox="0 0 24 24"><rect x="3" y="4" width="18" height="16" rx="2"/><path d="M7 4v16M17 4v16M3 9h4m-4 6h4M17 9h4m-4 6h4"/></symbol>
+              <symbol id="icon-save-project" viewBox="0 0 24 24"><path d="M5 3h11l4 4v13H4V3zM7 3v6h9V3M8 20v-7h8v7"/></symbol>
+        <symbol id="icon-undo-edit" viewBox="0 0 24 24"><path d="m8 5-5 5 5 5m-5-5h10a7 7 0 0 1 7 7"/></symbol>
+        <symbol id="icon-redo-edit" viewBox="0 0 24 24"><path d="m16 5 5 5-5 5m5-5H11a7 7 0 0 0-7 7"/></symbol>
+        <symbol id="icon-monitor" viewBox="0 0 24 24"><rect x="2.5" y="3.5" width="19" height="13.5" rx="2.5"/><path d="M12 17v4m-4 0h8"/></symbol>
+        <symbol id="icon-tracks" viewBox="0 0 24 24"><rect x="3" y="5" width="7" height="6" rx="1.5"/><rect x="12.5" y="5" width="8.5" height="6" rx="1.5"/><rect x="3" y="14" width="13" height="5" rx="1.5"/></symbol>
+      </defs>
+    </svg>
     <span class="brand" title="佳剪 v0.6.2"><img class="brand-logo" src="./assets/jiajian-logo.png" alt="">佳剪 <small>0.6.2</small></span>
-    <button type="button" id="title-home" aria-label="返回首页">⌂</button>
-    <span id="title-tab" hidden></span>
-    <button type="button" id="app-settings" title="云端配音设置"><span aria-hidden="true">⚙</span> 设置</button>
+    <button type="button" id="nav-toggle" aria-controls="workspace-navigation" aria-expanded="true" aria-label="收起侧栏" title="收起侧栏（Ctrl+\）"><svg class="ui-icon" aria-hidden="true"><use href="#icon-sidebar"></use></svg></button>
+    <button type="button" id="title-home" aria-label="返回首页" title="返回首页"><svg class="ui-icon" aria-hidden="true"><use href="#icon-home"></use></svg></button>
+    <span id="title-tab">工作台</span>
+    <button type="button" id="app-settings" title="打开设置" aria-haspopup="dialog"><svg class="ui-icon" aria-hidden="true"><use href="#icon-settings"></use></svg>设置</button>
   </header>
   <div class="app-frame" data-mode="home">
-    <nav class="tabs" aria-label="工作台导航">
-      <button type="button" id="tab-home" aria-current="page"><span aria-hidden="true">⌂</span>首页工作台</button>
-      <button type="button" id="tab-drafts"><span aria-hidden="true">▤</span>本地草稿</button>
+    <nav id="workspace-navigation" class="tabs" aria-label="工作台导航">
+      <p>资料库</p>
+      <button type="button" id="tab-home" aria-current="page"><svg class="ui-icon" aria-hidden="true"><use href="#icon-home"></use></svg>工作台</button>
+      <button type="button" id="tab-drafts"><svg class="ui-icon" aria-hidden="true"><use href="#icon-folder"></use></svg>本地草稿</button>
       <p>本地创作</p>
-      <button type="button" id="tab-montage"><span aria-hidden="true">✂</span>视频混剪</button>
-      <button type="button" id="tab-scene-split"><span aria-hidden="true">◫</span>视频场景 AI 分割</button>
-      <button type="button" id="tab-script"><span aria-hidden="true">▤</span>我的创意</button>
-      <button type="button" id="tab-audio"><span aria-hidden="true">♪</span>音频提取</button>
+      <button type="button" id="home-import"><svg class="ui-icon" aria-hidden="true"><use href="#icon-import"></use></svg>导入素材</button>
+      <button type="button" id="tab-montage"><svg class="ui-icon" aria-hidden="true"><use href="#icon-clapper"></use></svg>视频混剪</button>
+      <button type="button" id="tab-scene-split"><svg class="ui-icon" aria-hidden="true"><use href="#icon-scene"></use></svg>视频场景 AI 分割</button>
+      <button type="button" id="tab-script"><svg class="ui-icon" aria-hidden="true"><use href="#icon-script"></use></svg>脚本编辑</button>
+      <button type="button" id="tab-audio"><svg class="ui-icon" aria-hidden="true"><use href="#icon-audio"></use></svg>音频提取</button>
       <details class="nav-more">
-      <summary>更多工具</summary>
-      <p>视频制作</p>
-      <button type="button" data-workflow="ai-video"><span aria-hidden="true">✦</span>AI 成片</button>
-      <button type="button" data-workflow="smart-slice"><span aria-hidden="true">▤</span>智能切片</button>
-      <p>开始制作素材</p>
-      <button type="button" data-workflow="assets"><span aria-hidden="true">▧</span>AIGC 素材生产</button>
-      <button type="button" data-workflow="digital-avatar"><span aria-hidden="true">◉</span>数字分身</button>
-      <button type="button" data-workflow="voice-clone"><span aria-hidden="true">≋</span>声音克隆</button>
-      <button type="button" data-workflow="face-fusion"><span aria-hidden="true">◎</span>人脸融合</button>
-      <p>开始矩阵分发</p>
-      <button type="button" data-workflow="distribution"><span aria-hidden="true">↗</span>矩阵分发</button>
-      <button type="button" data-workflow="analytics"><span aria-hidden="true">▥</span>数据看板</button>
-      <p>工作台</p>
-      <button type="button" data-workflow="tasks"><span aria-hidden="true">☷</span>任务中心</button>
-      <button type="button" data-workflow="teams"><span aria-hidden="true">♧</span>团队／门店</button>
+        <summary><svg class="ui-icon" aria-hidden="true"><use href="#icon-more"></use></svg>更多工具<svg class="ui-icon disclosure" aria-hidden="true"><use href="#icon-chevron"></use></svg></summary>
+        <p>视频制作</p>
+        <button type="button" data-workflow="replicate"><svg class="ui-icon" aria-hidden="true"><use href="#icon-layers"></use></svg>爆款复刻</button>
+        <button type="button" data-workflow="ai-video"><svg class="ui-icon" aria-hidden="true"><use href="#icon-spark"></use></svg>AI 成片</button>
+        <button type="button" data-workflow="smart-slice"><svg class="ui-icon" aria-hidden="true"><use href="#icon-scene"></use></svg>智能切片</button>
+        <p>素材生产</p>
+        <button type="button" data-workflow="assets"><svg class="ui-icon" aria-hidden="true"><use href="#icon-image"></use></svg>AIGC 素材生产</button>
+        <button type="button" data-workflow="digital-avatar"><svg class="ui-icon" aria-hidden="true"><use href="#icon-person"></use></svg>数字分身</button>
+        <button type="button" data-workflow="voice-clone"><svg class="ui-icon" aria-hidden="true"><use href="#icon-audio"></use></svg>声音克隆</button>
+        <button type="button" data-workflow="face-fusion"><svg class="ui-icon" aria-hidden="true"><use href="#icon-layers"></use></svg>人脸融合</button>
+        <p>矩阵分发</p>
+        <button type="button" data-workflow="distribution"><svg class="ui-icon" aria-hidden="true"><use href="#icon-share"></use></svg>矩阵分发</button>
+        <button type="button" data-workflow="analytics"><svg class="ui-icon" aria-hidden="true"><use href="#icon-chart"></use></svg>数据看板</button>
+        <p>管理</p>
+        <button type="button" data-workflow="tasks"><svg class="ui-icon" aria-hidden="true"><use href="#icon-rows"></use></svg>任务中心</button>
+        <button type="button" data-workflow="teams"><svg class="ui-icon" aria-hidden="true"><use href="#icon-person"></use></svg>团队/门店设置</button>
       </details>
+      <span class="nav-selection-travel" aria-hidden="true" hidden></span>
     </nav>
     <div class="work-area">
       <main id="home" class="home home-dashboard" aria-label="首页工作台">
-        <button type="button" id="home-create" class="home-create-banner">
-          <span class="home-create-icon" aria-hidden="true">＋</span>
-          <span class="home-create-copy"><strong>开始创作</strong><small>新建剪辑，自动保存到本地草稿</small></span>
-        </button>
-        <section class="home-tools" aria-label="创作工具">
-          <button type="button" class="home-tool" id="home-import"><span class="home-tool-icon" aria-hidden="true">↥</span><strong>导入素材</strong><small>视频和图片</small></button>
-          <button type="button" class="home-tool" id="home-script"><span class="home-tool-icon" aria-hidden="true">▤</span><strong>脚本创作</strong><small>台词和分镜备注</small></button>
-          <button type="button" class="home-tool" id="home-montage"><span class="home-tool-icon" aria-hidden="true">✂</span><strong>工程管理</strong><small>已保存的工程文件</small></button>
-          <button type="button" class="home-tool" id="home-scene-split"><span class="home-tool-icon" aria-hidden="true">◫</span><strong>视频场景 AI 分割</strong><small>批量切分独立场景</small></button>
-          <button type="button" class="home-tool" id="home-audio"><span class="home-tool-icon" aria-hidden="true">♪</span><strong>音频提取</strong><small>导出原声音轨</small></button>
-          <button type="button" class="home-tool" data-workflow="replicate"><span class="home-tool-icon" aria-hidden="true">↻</span><strong>爆款复刻</strong><small>查看创作流程</small></button>
-        </section>
-        <section id="draft-library" class="draft-library" aria-labelledby="draft-heading">
-          <div class="draft-toolbar">
-            <h2 id="draft-heading" tabindex="-1">本地草稿 <span id="draft-count"></span></h2>
-            <div class="draft-toolbar-controls">
-              <input id="draft-search" type="search" placeholder="搜索草稿" aria-label="搜索草稿名称">
-              <select id="draft-sort" aria-label="草稿排序">
-                <option value="recent">最近编辑</option><option value="name">按名称</option>
-              </select>
-              <button type="button" id="draft-grid" aria-label="网格视图" title="网格视图" aria-pressed="true">▦</button>
-              <button type="button" id="draft-rows" aria-label="列表视图" title="列表视图" aria-pressed="false">☷</button>
-              <button type="button" id="home-open-project" title="打开已保存的 .sdworkbench 工程">打开工程</button>
-            </div>
+        <header class="home-hero">
+          <h1 id="home-heading">剪辑工作台</h1>
+          <div class="home-hero-actions">
+            <button type="button" id="home-create"><svg class="ui-icon" aria-hidden="true"><use href="#icon-plus"></use></svg>新建剪辑</button>
+            <button type="button" id="home-open-project" class="glass-clear" title="打开已保存的 .sdworkbench 工程"><svg class="ui-icon" aria-hidden="true"><use href="#icon-folderOpen"></use></svg>打开工程</button>
           </div>
-          <p id="home-project-status" role="status" hidden></p>
-          <p id="draft-list-status" class="draft-status" role="status">正在读取本地草稿…</p>
-          <ul id="draft-list" class="draft-list" data-view="grid" aria-label="本地草稿"></ul>
-        </section>
-        <section id="recent-work" class="recent-work" aria-labelledby="recent-heading">
-          <h2 id="recent-heading">最近导出</h2>
-          <button type="button" class="home-outline" id="rename-outputs" disabled>重命名所选作品</button>
-          <p id="history-status" role="status"></p>
-          <ul id="history-list"></ul>
-        </section>
+        </header>
+        <div class="home-content">
+          <section id="draft-library" class="draft-library" aria-labelledby="draft-heading">
+            <div class="draft-toolbar">
+              <h2 id="draft-heading" tabindex="-1"><span id="draft-heading-label">最近草稿</span><span id="draft-count"></span></h2>
+              <div class="draft-toolbar-controls">
+                <label class="draft-search-box"><svg class="ui-icon" aria-hidden="true"><use href="#icon-search"></use></svg><input id="draft-search" type="search" placeholder="搜索草稿" aria-label="搜索草稿名称"></label>
+                <select id="draft-sort" aria-label="草稿排序"><option value="recent">最近编辑</option><option value="name">按名称</option></select>
+                <div class="draft-views" role="group" aria-label="草稿显示方式">
+                  <button type="button" id="draft-grid" aria-label="网格视图" title="网格视图" aria-pressed="true"><svg class="ui-icon" aria-hidden="true"><use href="#icon-grid"></use></svg></button>
+                  <button type="button" id="draft-rows" aria-label="列表视图" title="列表视图" aria-pressed="false"><svg class="ui-icon" aria-hidden="true"><use href="#icon-rows"></use></svg></button>
+                </div>
+              </div>
+            </div>
+            <p id="home-project-status" role="status" hidden></p>
+            <div id="draft-list-status" class="draft-status">
+              <svg class="ui-icon" aria-hidden="true"><use href="#icon-film"></use></svg><div role="status"><strong id="draft-status-title">正在读取本地草稿…</strong><p id="draft-status-detail" hidden></p></div>
+              <button type="button" id="draft-status-action" class="home-link" hidden></button>
+            </div>
+            <ul id="draft-list" class="draft-list" data-view="grid" aria-label="本地草稿"></ul>
+          </section>
+          <section id="recent-work" class="recent-work" aria-labelledby="recent-heading">
+            <h2 id="recent-heading">最近导出</h2>
+            <button type="button" class="home-outline" id="rename-outputs" disabled>重命名所选作品</button>
+            <p id="history-status" role="status"></p>
+            <ul id="history-list"></ul>
+          </section>
+        </div>
       </main>
 
       <main id="project-workspace" class="home project-workspace" hidden>
-        <div class="workspace-heading"><h1>视频混剪</h1><button type="button" id="project-new" class="blue-button">＋ 新建剪辑</button></div>
+        <div class="workspace-heading"><h1>视频混剪</h1><button type="button" id="project-new" class="blue-button"><svg class="ui-icon" aria-hidden="true"><use href="#icon-plus"></use></svg>新建剪辑</button></div>
         <div class="page-tabs"><span>我的项目</span><button type="button" id="project-open-file" class="home-outline">打开本地工程</button><button type="button" id="project-continue" class="home-outline" hidden>返回当前编辑</button></div>
         <p id="project-list-status" role="status"></p>
         <ul id="project-list" class="project-list"></ul>
       </main>
       <main id="scene-split-workspace" class="home scene-split-workspace" hidden aria-labelledby="scene-split-title">
         <div class="workspace-heading">
-          <div><p class="eyebrow">视频制作</p><h1 id="scene-split-title">视频场景 AI 分割</h1></div>
+          <div><h1 id="scene-split-title">视频场景 AI 分割</h1></div>
           <button type="button" id="scene-split-submit" class="blue-button">提交分割任务</button>
         </div>
         <p class="service-summary">按画面内容变化识别场景切点，将每个场景输出为独立视频。支持单个视频、多选视频和视频文件夹。</p>
         <div class="scene-split-layout">
           <section class="scene-split-card">
-            <h2>1、选择视频或文件夹</h2>
+            <h2>视频来源</h2>
             <div class="home-hero-actions">
               <button type="button" id="scene-pick-files" class="home-outline">选择视频</button>
               <button type="button" id="scene-pick-folder" class="home-outline">选择文件夹</button>
@@ -137,7 +193,7 @@
             <ul id="scene-input-list" class="scene-input-list"></ul>
           </section>
           <section class="scene-split-card">
-            <h2>2、选择保存位置</h2>
+            <h2>输出与检测</h2>
             <div class="home-hero-actions">
               <button type="button" id="scene-pick-output" class="home-outline">选择保存目录</button>
               <span id="scene-output-path" class="scene-output-path muted compact">尚未选择</span>
@@ -173,6 +229,9 @@
       <main id="script-workspace" hidden></main>
 
   <main id="editor-workspace" class="workspace" hidden>
+    <div class="workspace-divider" data-split="materials" role="separator" aria-label="素材库宽度" aria-controls="materials-pane" aria-orientation="vertical" tabindex="0" title="拖动调整素材库宽度，按 Esc 取消拖动，双击恢复默认宽度"></div>
+    <div class="workspace-divider" data-split="inspector" role="separator" aria-label="属性面板宽度" aria-controls="montage-inspector" aria-orientation="vertical" tabindex="0" title="拖动调整属性面板宽度，按 Esc 取消拖动，双击恢复默认宽度"></div>
+    <div class="workspace-divider" data-split="timeline" role="separator" aria-label="分镜轨道高度" aria-controls="montage-pane" aria-orientation="horizontal" tabindex="0" title="拖动调整轨道高度，按 Esc 取消拖动，双击恢复默认高度"></div>
     <section class="editor" aria-labelledby="workflow-title">
       <div class="editor-heading">
         <div class="workbench-project">
@@ -187,8 +246,8 @@
         </div>
         <div id="workbench-actions" class="workbench-actions" hidden>
           <div class="project-actions" role="group" aria-label="工程操作">
-            <button type="button" id="open-project" class="secondary">打开工程</button>
-            <button type="button" id="save-project" class="secondary">保存工程</button>
+            <button type="button" id="open-project" class="secondary"><svg class="ui-icon" aria-hidden="true"><use href="#icon-folderOpen"></use></svg>打开工程</button>
+            <button type="button" id="save-project" class="secondary"><svg class="ui-icon" aria-hidden="true"><use href="#icon-save-project"></use></svg>保存工程</button>
           </div>
         </div>
         <div id="audio-toolbar" class="toolbar" hidden>
@@ -201,8 +260,47 @@
       <div id="montage-pane">
         <div class="timeline-header">
           <div role="tablist" aria-label="混剪轨道与预览">
-            <button type="button" class="timeline-tab" id="timeline-tracks-tab" role="tab" aria-selected="true" aria-controls="timeline-tracks-panel">分镜轨道</button>
-            <button type="button" class="timeline-tab" id="timeline-batch-tab" role="tab" aria-selected="false" aria-controls="preview-batch" tabindex="-1" disabled>批量预览</button>
+            <button type="button" class="timeline-tab" id="timeline-tracks-tab" role="tab" aria-selected="true" aria-controls="timeline-tracks-panel"><svg class="ui-icon" aria-hidden="true"><use href="#icon-tracks"></use></svg>分镜轨道</button>
+            <button type="button" class="timeline-tab" id="timeline-batch-tab" role="tab" aria-selected="false" aria-controls="preview-batch" tabindex="-1" disabled><svg class="ui-icon" aria-hidden="true"><use href="#icon-layers"></use></svg>批量预览</button>
+          </div>
+          <div class="track-toolbar" role="group" aria-label="分镜轨道工具">
+            <div class="track-edit-actions" role="group" aria-label="编辑分镜">
+              <select id="timeline-view" aria-label="轨道视图"><option value="time">时间线</option><option value="cards">分镜卡片</option></select>
+              <button type="button" class="secondary" id="timeline-play" aria-keyshortcuts="Space" aria-pressed="false" title="时间线播放 / 暂停（空格）">▶ 时间线播放</button>
+              <button type="button" class="secondary" id="add-shot" title="新增空分镜，再向其中添加一条或多条候选"><svg class="ui-icon" aria-hidden="true"><use href="#icon-plus"></use></svg>新增分镜</button>
+              <button type="button" class="secondary" id="timeline-layer-add">＋ 包装轨道</button>
+              <button type="button" class="secondary" id="track-undo" aria-label="撤销" title="撤销（Ctrl+Z）"><svg class="ui-icon" aria-hidden="true"><use href="#icon-undo-edit"></use></svg></button>
+              <button type="button" class="secondary" id="track-redo" aria-label="恢复" title="恢复（Ctrl+Y）"><svg class="ui-icon" aria-hidden="true"><use href="#icon-redo-edit"></use></svg></button>
+              <button type="button" class="secondary" id="track-split" title="将单候选视频分镜从播放头拆成两组连续分镜">分割</button>
+              <button type="button" class="secondary" id="track-toggle-audio" aria-pressed="true">原声</button>
+            </div>
+            <button type="button" class="secondary" id="timeline-more" popovertarget="timeline-more-menu">制作工具</button>
+            <div popover="auto" id="timeline-more-menu" role="group" aria-label="制作工具">
+              <button type="button" class="secondary" id="timeline-scenes">AI 拆分</button>
+              <button type="button" class="secondary" id="timeline-cover">设置封面</button>
+              <button type="button" class="secondary" id="creative-cover">AI 封面</button>
+              <button type="button" class="secondary" id="timeline-appearance">画面处理</button>
+              <button type="button" class="secondary" id="batch-levels">批量音量</button>
+              <button type="button" class="secondary" id="timeline-text-groups">文字组设置</button>
+              <button type="button" class="secondary" id="organize-tracks">一键整理</button>
+              <button type="button" class="secondary" id="timeline-text-tools">批量编辑文字</button>
+            </div>
+            <button type="button" id="track-more" class="secondary" popovertarget="track-more-options"><svg class="ui-icon" aria-hidden="true"><use href="#icon-more"></use></svg>编辑工具</button>
+            <div id="track-more-options" popover="auto" role="group" aria-label="更多轨道工具">
+              <div class="track-edit-actions" role="group" aria-label="切片与清理">
+                <label class="track-interval">每段 <input type="number" id="track-slice-interval" min="0.1" step="0.1" value="1" aria-label="原素材切片间隔秒数"> 秒</label>
+                <button type="button" class="secondary" id="track-slice" title="按时长切成连续分镜">自动切片</button>
+                <button type="button" class="secondary" id="track-delete">删除素材</button>
+                <button type="button" class="secondary" id="track-clean">清理空分镜</button>
+                <button type="button" class="secondary" id="track-reset">重置</button>
+              </div>
+              <div class="track-view-options" role="group" aria-label="轨道显示">
+                <label class="track-choice">轨道高<select id="track-height"><option value="large">大</option><option value="medium">中</option><option value="small">小</option></select></label>
+                <label class="track-choice" title="在轨道上按住 Ctrl（Mac 也可用 ⌘）并滚动鼠标滚轮来缩放">缩放<input type="range" id="track-zoom" min="1" max="5" value="3" aria-label="分镜轨道缩放"></label>
+                <button type="button" class="secondary" id="timeline-fit">适配</button>
+                <label class="track-choice"><input type="checkbox" id="track-preview-axis" checked>显示播放头</label>
+              </div>
+            </div>
           </div>
           <div id="timeline-view-actions">
             <output id="timeline-selection-count" hidden></output>
@@ -217,58 +315,29 @@
           <button type="button" id="cancel-preview" class="secondary">取消预览</button>
         </div>
         <div id="timeline-tracks-panel" role="tabpanel" aria-labelledby="timeline-tracks-tab" tabindex="0">
-          <div class="track-toolbar" role="group" aria-label="分镜轨道工具">
-            <div class="track-edit-actions" role="group" aria-label="编辑分镜">
-              <select id="timeline-view" aria-label="轨道视图"><option value="time">时间线</option><option value="cards">分镜卡片</option></select>
-              <button type="button" class="secondary" id="timeline-play" aria-keyshortcuts="Space" aria-pressed="false" title="时间线播放 / 暂停（空格）">▶ 时间线播放</button>
-              <button type="button" class="secondary" id="add-shot" title="新增空分镜，再向其中添加一条或多条候选">＋ 分镜</button>
-              <button type="button" class="secondary" id="timeline-layer-add">＋ 包装轨道</button>
-              <button type="button" class="secondary" id="timeline-scenes">AI 拆分</button>
-              <button type="button" class="secondary" id="timeline-more" popovertarget="timeline-more-menu">轨道工具 ▾</button>
-              <div popover="auto" id="timeline-more-menu">
-              <button type="button" class="secondary" id="timeline-cover">设置封面</button>
-              <button type="button" class="secondary" id="creative-cover">AI 封面</button>
-              <button type="button" class="secondary" id="timeline-appearance">画面处理</button>
-              <button type="button" class="secondary" id="batch-levels">批量音量</button>
-              <button type="button" class="secondary" id="timeline-text-groups">文字组设置</button>
-              <button type="button" class="secondary" id="organize-tracks">一键整理</button>
-              <button type="button" class="secondary" id="timeline-text-tools">批量编辑文字</button>
-              <button type="button" class="secondary" id="track-reset">重置</button>
-              </div>
-              <button type="button" class="secondary" id="track-undo" title="Ctrl+Z">撤销</button>
-              <button type="button" class="secondary" id="track-redo" title="Ctrl+Y">恢复</button>
-              <button type="button" class="secondary" id="track-split" title="将单候选视频分镜从播放头拆成两组连续分镜">分割</button>
-              <label class="track-interval">每段 <input type="number" id="track-slice-interval" min="0.1" step="0.1" value="1" aria-label="原素材切片间隔秒数"> 秒</label>
-              <button type="button" class="secondary" id="track-slice" title="按时长切成连续分镜">自动切片</button>
-              <button type="button" class="secondary" id="track-delete">删除素材</button>
-              <button type="button" class="secondary" id="track-clean">清理空分镜</button>
-              <button type="button" class="secondary" id="track-toggle-audio" aria-pressed="true">原声</button>
+          <div id="shots-empty" class="empty">
+            <strong>添加第一个分镜</strong>
+            <span>可以先导入画面，也可以用 SRT 字幕和 MP3 录音建立口播轨。</span>
+            <div class="timeline-empty-actions">
+              <button type="button" class="primary" id="empty-import-visual"><svg class="ui-icon" aria-hidden="true"><use href="#icon-import"></use></svg>导入画面</button>
+              <button type="button" class="secondary" id="empty-split-narration"><svg class="ui-icon" aria-hidden="true"><use href="#icon-audio"></use></svg>按字幕切分口播</button>
             </div>
-            <div class="track-view-options" role="group" aria-label="轨道显示">
-              <label class="track-choice">轨道高<select id="track-height"><option value="large">大</option><option value="medium">中</option><option value="small">小</option></select></label>
-              <label class="track-choice">缩放<input type="range" id="track-zoom" min="1" max="5" value="3" aria-label="分镜轨道缩放"></label>
-              <button type="button" class="secondary" id="timeline-fit">适配</button>
-              <label class="track-choice"><input type="checkbox" id="track-preview-axis" checked>显示播放头</label>
-            </div>
-        </div>
-          <div id="track-selection-info" class="muted compact"></div>
-          <label id="track-playhead-row" class="track-playhead">播放头<input type="range" id="track-playhead" min="0" max="1" step="0.001" value="0"><output id="track-playhead-time" for="track-playhead">0.000 秒</output></label>
-          <p id="new-shot-drop" aria-label="拖入素材新建分镜">＋ 拖到这里新建分镜，拖到已有分镜添加候选</p>
+          </div>
+          <div class="timeline-position">
+            <div id="track-selection-info" class="muted compact"></div>
+            <label id="track-playhead-row" class="track-playhead">播放头<input type="range" id="track-playhead" min="0" max="1" step="0.001" value="0"><output id="track-playhead-time" for="track-playhead">0.000 秒</output></label>
+          </div>
           <div id="timeline-cut-editor"></div>
           <div id="timeline-clock" aria-label="剪辑时间线" tabindex="0"></div>
           <div id="shots">
             <div id="visual-track-lane" class="timeline-lane visual-lane" role="group" aria-label="画面轨道">
-              <span class="timeline-lane-label" aria-hidden="true">画面</span>
+              <span class="timeline-lane-label" aria-hidden="true"><svg class="ui-icon" aria-hidden="true"><use href="#icon-film"></use></svg>画面</span>
             </div>
             <div id="narration-track-lane" class="timeline-lane narration-lane" role="group" aria-label="分段口播轨道" hidden>
-              <span class="timeline-lane-label" aria-hidden="true">分段口播</span>
+              <span class="timeline-lane-label" aria-hidden="true"><svg class="ui-icon" aria-hidden="true"><use href="#icon-audio"></use></svg>分段口播</span>
             </div>
           </div>
-          <div id="shots-empty" class="empty">
-            <div class="empty-icon" aria-hidden="true">▤</div>
-            <strong>轨道还是空的</strong>
-            <span>从素材库拖入素材，或点击「新增分镜」。</span>
-          </div>
+          <p id="new-shot-drop" aria-label="拖入素材新建分镜">＋ 拖到这里新建分镜，拖到已有分镜添加候选</p>
           <section id="script-brief" class="panel script-brief" hidden>
             <div class="list-heading">
               <button type="button" class="track-disclosure script-brief-toggle"></button>
@@ -306,15 +375,15 @@
         <div class="list-heading"><h2>待提取视频</h2><span id="audio-summary" class="muted"></span></div>
         <div id="audio-list"></div>
         <div id="audio-empty" class="empty">
-          <div class="empty-icon" aria-hidden="true">♪</div>
+          <svg class="ui-icon" aria-hidden="true"><use href="#icon-audio"></use></svg>
           <strong>添加带原声的视频</strong>
           <span>每条视频会生成一个 MP3 文件。</span>
         </div>
       </div>
     </section>
 
-    <section class="panel editor-materials" aria-labelledby="materials-heading" hidden>
-      <div class="panel-heading"><h2 id="materials-heading" title="在素材库空白处按住左键拖动，可框选多个素材">素材库</h2><span id="material-status" class="material-count muted compact" role="status"></span></div>
+    <section id="materials-pane" class="panel editor-materials" aria-labelledby="materials-heading" hidden>
+      <div class="panel-heading"><h2 id="materials-heading" title="按住 Ctrl 滚动可缩放缩略图（macOS 也可用 ⌘）。拖动空白处可框选素材。">素材库</h2><span id="material-status" class="material-count muted compact" role="status"></span></div>
       <div class="subproject-picker">
         <select id="subproject-select" aria-label="当前素材工程"><option value="">主工程 · 公共素材</option></select>
         <button type="button" class="secondary" id="subproject-new">＋ 子工程</button>
@@ -324,10 +393,10 @@
         <button type="button" class="secondary" id="subproject-variables" hidden>口播变量</button>
       </div>
       <div class="materials-toolbar">
-        <button type="button" id="material-import" class="secondary" title="选择视频或图片，每个文件直接生成一个分镜">＋ 导入文件</button>
-        <button type="button" id="material-folder-import" class="secondary">＋ 添加文件夹</button>
+        <button type="button" id="material-import" class="secondary" title="选择视频或图片，每个文件直接生成一个分镜"><svg class="ui-icon" aria-hidden="true"><use href="#icon-import"></use></svg>导入文件</button>
+        <button type="button" id="material-folder-import" class="secondary"><svg class="ui-icon" aria-hidden="true"><use href="#icon-folder"></use></svg>添加文件夹</button>
         <button type="button" id="material-audio-open" class="secondary" title="提取原声、分离人声与伴奏、去气口">音频处理</button>
-        <input type="search" id="material-search" placeholder="搜索素材" aria-label="搜索当前素材目录">
+        <label class="material-search-box"><svg class="ui-icon" aria-hidden="true"><use href="#icon-search"></use></svg><input type="search" id="material-search" placeholder="搜索素材" aria-label="搜索当前素材目录"></label>
       </div>
       <div id="material-selection-actions" hidden>
         <span id="material-selected-count" class="compact" role="status"></span>
@@ -341,6 +410,7 @@
         <ul id="material-folders" aria-label="素材文件夹"></ul>
       </div>
       <div id="material-empty" class="material-empty">
+        <svg class="ui-icon empty-material-glyph" aria-hidden="true"><use href="#icon-folder"></use></svg>
         <strong id="material-empty-title">暂无素材</strong>
         <p id="material-empty-hint" class="muted compact">添加文件夹后，可以打开并拖入需要的素材。</p>
       </div>
@@ -351,10 +421,16 @@
       <section class="panel editor-player" aria-labelledby="preview-heading">
         <div class="panel-heading"><h2 id="preview-heading">素材预览</h2><span id="preview-meta" class="muted"></span></div>
         <div class="viewer preview-stage">
+          <svg class="ui-icon preview-placeholder-icon" aria-hidden="true"><use href="#icon-monitor"></use></svg>
           <p id="preview-hint">在素材库或轨道选择一个素材</p>
           <div class="player-picture" hidden>
             <video id="preview" controls playsinline preload="metadata" hidden aria-label="素材预览播放器"></video>
             <img id="still-preview" alt="分镜图片预览" hidden>
+          </div>
+          <div class="preview-readout" aria-hidden="true">
+            <svg class="ui-icon"><use href="#icon-film"></use></svg>
+            <span class="preview-readout-name"></span>
+            <span class="preview-timecode"></span>
           </div>
         </div>
         <p id="preview-name" class="muted preview-name preview-footer" hidden></p>
@@ -377,10 +453,10 @@
         </div>
       </section>
 
-      <div class="montage-inspector">
+      <div id="montage-inspector" class="montage-inspector">
         <section class="panel editor-properties" aria-labelledby="export-heading">
           <div class="panel-heading"><h2 id="export-heading">导出设置</h2><span class="tag" id="output-format">MP4</span></div>
-          <div id="inspector-tabs" class="inspector-tabs" role="tablist" aria-label="混剪设置分类" hidden>
+          <div id="inspector-tabs" class="inspector-tabs p-segmented" role="tablist" aria-label="混剪设置分类" hidden>
             <button type="button" class="inspector-tab" id="inspector-tab-visual" role="tab" aria-controls="inspector-panel-visual" aria-selected="true">画面</button>
             <button type="button" class="inspector-tab" id="inspector-tab-narration" role="tab" aria-controls="inspector-panel-narration" aria-selected="false" tabindex="-1">口播</button>
             <button type="button" class="inspector-tab" id="inspector-tab-subtitles" role="tab" aria-controls="inspector-panel-subtitles" aria-selected="false" tabindex="-1">字幕</button>
@@ -412,7 +488,7 @@
                 <label>填充方式<select id="fit"><option value="fit">适应（留黑边）</option><option value="fill">铺满（居中裁切）</option></select></label>
               </div>
               <label id="background-color-row" class="line-field">留边背景<input type="color" id="background-color" value="#000000"></label>
-              <label class="check"><input type="checkbox" id="keep-audio" checked>保留视频原声</label>
+              <label class="p-switch">保留视频原声<input type="checkbox" role="switch" id="keep-audio" checked><span aria-hidden="true"></span></label>
               <fieldset id="track-volume-panel" class="track-volume-panel" hidden>
                 <legend>所选素材原声</legend>
                 <p id="track-volume-name" class="muted compact"></p>
@@ -423,18 +499,22 @@
             </div>
             <div id="inspector-panel-narration" data-inspector-panel role="tabpanel" aria-labelledby="inspector-tab-narration" tabindex="0" hidden>
               <div class="narration-section">
-                <h3 class="inspector-section-title">批量配音</h3>
+                <h3 class="inspector-section-title">口播来源</h3>
                 <label class="line-field">口播模式
                   <select id="narration-mode">
                     <option value="whole">整段式口播</option>
                     <option value="segmented">分段式口播</option>
                   </select>
                 </label>
-                <p id="narration-source-summary" class="muted compact"></p>
-                <button type="button" class="primary" id="cloud-narration">生成全部口播</button>
                 <button type="button" class="secondary" id="creative-avatar">数字人口播</button>
-                <button type="button" class="secondary narration-subs2srs" id="subs2srs-split">subs2srs：SRT + MP3 分割口播</button>
-                <p id="subs2srs-help" class="muted compact">提供 SRT 和整段 MP3，按字幕时间码切成分段口播并自动放入分段口播轨。</p>
+                <div class="narration-source">
+                  <button type="button" class="secondary" id="subs2srs-split" aria-describedby="subs2srs-help">按字幕切分口播</button>
+                  <p id="subs2srs-help" class="muted compact">选择 SRT 和整段 MP3，每条字幕会生成一段口播，依次放入对应分镜。</p>
+                </div>
+                <div class="narration-source">
+                  <button type="button" class="secondary" id="cloud-narration" aria-describedby="narration-source-summary">生成全部口播</button>
+                  <p id="narration-source-summary" class="muted compact"></p>
+                </div>
               </div>
               <div id="segment-narration-settings" class="narration-section" hidden>
                 <label class="line-field">分段匹配
@@ -551,7 +631,7 @@
             <div id="inspector-panel-montage" data-inspector-panel role="tabpanel" aria-labelledby="inspector-tab-montage" tabindex="0" hidden>
               <h3 class="inspector-section-title">组合规则</h3>
               <p class="muted compact">每组分镜抽取一个候选，按轨道顺序拼接。</p>
-              <label class="check"><input type="checkbox" id="unordered">打乱分镜顺序</label>
+              <label class="p-switch">打乱分镜顺序<input type="checkbox" role="switch" id="unordered"><span aria-hidden="true"></span></label>
               <div class="source-options">
                 <label class="check"><input type="checkbox" id="use-original" checked>轨道原素材</label>
                 <label class="check"><input type="checkbox" id="use-mirrors">水平镜像素材</label>
@@ -669,6 +749,10 @@
   </dialog>
   <template id="shot-template">
     <section class="shot panel">
+      <button type="button" class="shot-poster" hidden>
+        <span class="shot-poster-image" aria-hidden="true"></span>
+        <span class="shot-poster-caption"></span>
+      </button>
       <div class="shot-heading">
         <button type="button" class="track-disclosure shot-toggle"></button>
         <div><h3 class="shot-name"></h3><span class="shot-size muted"></span></div>
@@ -703,6 +787,7 @@
       </div>
       <div class="segment-narration-body">
         <div class="segment-narration-tracks"></div>
+        <button type="button" class="secondary match-shot-visual" hidden>给此分镜添加画面</button>
       </div>
     </section>
   </template>
@@ -712,6 +797,7 @@
       <button type="button" class="track-disclosure segment-track-toggle"></button>
       <span class="segment-track-number compact"></span>
       <span class="segment-narration-name muted compact"></span>
+      <p class="segment-caption" hidden></p>
       <div class="segment-track-actions">
         <button type="button" class="quiet pick-segment-narration"></button>
         <button type="button" class="quiet review-segment-narration" hidden>试听／字幕</button>

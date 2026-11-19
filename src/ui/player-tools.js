@@ -181,10 +181,14 @@ window.mountPlayerTools = ({ panel, getClip, isEditor, isTrack, validClip, notif
   for (const name of ['loadedmetadata', 'loadeddata', 'pause', 'ended', 'error', 'seeked']) video.addEventListener(name, sync);
   image.addEventListener('load', sync);
   window.addEventListener('keydown', (event) => {
+    const { target, key } = event;
     if (!isEditor() || event.defaultPrevented || event.isComposing || event.altKey || event.ctrlKey || event.metaKey
-      || event.shiftKey || document.querySelector('dialog[open]') || event.target.isContentEditable
-      || event.target.closest?.('input, textarea, select, [role="tab"], #panel-layout-layer')) return;
-    const key = event.key;
+      || event.shiftKey || document.querySelector('dialog[open], :popover-open, .app-frame[data-navigation="floating"]')
+      || !(target instanceof Element) || target.isContentEditable
+      || target.closest('input, textarea, select, [role="textbox"], [role="tab"], [role="separator"]')) return;
+    const onPlayer = panel.contains(target) && (!target.closest('button, a') || target.closest('.player-buttons'));
+    const onTimeline = target.matches('#timeline-clock, #timeline-tracks-panel, #timeline-clock .sequence-block:not(.sequence-empty)');
+    if (target !== document.body && !onPlayer && !onTimeline) return;
     if (key === '.' && !event.repeat) toggleFullscreen();
     else if (!ready(getClip())) return;
     else if (key === 'ArrowLeft' || key === 'ArrowRight') step(key === 'ArrowRight' ? 1 : -1);
@@ -192,5 +196,5 @@ window.mountPlayerTools = ({ panel, getClip, isEditor, isTrack, validClip, notif
     else return;
     event.preventDefault();
   });
-  return { sync, reset, closeFloating, pause, seek };
+  return { sync, reset, closeFloating, pause, seek, step, togglePlay };
 };

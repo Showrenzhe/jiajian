@@ -1,6 +1,6 @@
 'use strict';
 
-const { app, BrowserWindow, dialog, ipcMain, net, protocol, safeStorage, session, shell } = require('electron');
+const { app, BrowserWindow, dialog, ipcMain, nativeTheme, net, protocol, safeStorage, session, shell } = require('electron');
 const { createHash, randomUUID } = require('node:crypto');
 const { mkdirSync } = require('node:fs');
 const fs = require('node:fs/promises');
@@ -33,12 +33,13 @@ const { createWaveformCache } = require('./waveform-cache.cjs');
 
 const scheme = 'sd-workbench';
 const page = `${scheme}://app/index.html`;
-const uiFiles = new Set(['/index.html', '/app.js', '/styles.css', '/creative-service.js', '/script-workspace.js', '/script-workspace.css',
+const uiFiles = new Set(['/index.html', '/app.js', '/styles.css', '/dialog-focus.js', '/creative-service.js', '/script-workspace.js', '/script-workspace.css',
   '/editor-text.js', '/text-presets.js', '/caption-inspector.js', '/caption-inspector.css', '/audio-tools.js', '/waveform.js', '/draft-transport.js',
   '/track-organizer.js', '/cover-editor.js', '/visual-editor.js', '/batch-edit.js',
   '/timeline.js', '/timeline-selection.js', '/timeline.css', '/cut-track.js', '/cut-track.css', '/layer-motion.js', '/layer-motion.css', '/subprojects.js',
   '/track-workspace.css', '/edit-history.js', '/track-tools.js', '/track-tools.css', '/cloud-tts-dialog.js', '/cloud-tts-dialog.css',
-  '/cloud-tts-settings.js', '/cloud-tts-settings.css', '/panel-layout.js', '/draft-workspace.js', '/player-tools.js', '/assets/jiajian-logo.png']);
+  '/cloud-tts-settings.js', '/cloud-tts-settings.css', '/split-view.js', '/panel-layout.js', '/draft-workspace.js', '/player-tools.js', '/assets/jiajian-logo.png',
+  '/glass-material.css', '/inspector-controls.css', '/editor-surfaces.css', '/appearance.js', '/appearance.css']);
 const maxCatalog = (maxShots + 1) * (maxCandidates + maxWholeTracks);
 const maxSubtitleBatchBytes = 1024 * 1024;
 const maxSpeechJobs = maxShots;
@@ -580,23 +581,29 @@ async function launchDesktop({
     return new Response(null, { status: 404 });
   });
 
+  const windowColors = {
+    light: { background: '#e6e9ed', symbols: '#303947' },
+    dark: { background: '#191b1e', symbols: '#e8ecf1' },
+  };
+  const initialColors = windowColors[nativeTheme.shouldUseDarkColors ? 'dark' : 'light'];
   const win = new BrowserWindow({
-    show,
+    show: false,
     width: 1340,
     height: 900,
     minWidth: 850,
     minHeight: 600,
     title: '佳剪',
     icon: path.join(__dirname, 'ui', 'assets', 'jiajian-logo.ico'),
-    backgroundColor: '#12151b',
+    backgroundColor: initialColors.background,
     titleBarStyle: 'hidden',
-    titleBarOverlay: { color: '#181c24', symbolColor: '#c0c8d6', height: 45 },
+    titleBarOverlay: { color: '#00000000', symbolColor: initialColors.symbols, height: 44 },
     autoHideMenuBar: true,
     webPreferences: {
       preload: path.join(__dirname, 'preload.cjs'), sandbox: true, contextIsolation: true, nodeIntegration: false,
       backgroundThrottling: show, offscreen: !show,
     },
   });
+  const firstPaint = show && new Promise((resolve) => win.once('ready-to-show', resolve));
   win.webContents.setWindowOpenHandler(() => ({ action: 'deny' }));
   win.webContents.on('will-navigate', (event) => event.preventDefault());
   win.webContents.on('will-attach-webview', (event) => event.preventDefault());
@@ -655,7 +662,7 @@ async function launchDesktop({
 
   function handle(channel, action) {
     ipcMain.handle(channel, async (event, value) => {
-      if (event.sender !== win.webContents || event.senderFrame?.url !== page || event.senderFrame.parent) {
+      if (win.isDestroyed() || event.sender !== win.webContents || event.senderFrame?.url !== page || event.senderFrame.parent) {
         return { ok: false, error: '请求来源无效。' };
       }
       try {
@@ -667,6 +674,14 @@ async function launchDesktop({
   }
 
   handle('workbench:history', () => recent);
+  handle('workbench:window-appearance', (theme) => {
+    if (theme !== 'light' && theme !== 'dark') throw new Error('无效的外观。');
+    const colors = windowColors[theme];
+    win.setBackgroundColor(colors.background);
+    if (process.platform === 'win32' || process.platform === 'linux') {
+      win.setTitleBarOverlay({ symbolColor: colors.symbols });
+    }
+  });
   handle('workbench:rename-outputs',async({files,prefix})=>{
     if(job||pickerOpen)throw new Error('请先完成当前操作。');
     pickerOpen=true;
@@ -1450,6 +1465,10 @@ async function launchDesktop({
   });
 
   await win.loadURL(page);
+  if (show) {
+    await firstPaint;
+    if (!win.isDestroyed()) win.show();
+  }
   return win;
 }
 

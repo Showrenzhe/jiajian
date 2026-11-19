@@ -3,36 +3,39 @@
   align-items: center;
   flex-wrap: wrap;
   gap: 5px;
-  padding: 6px 8px;
-  border-bottom: 1px solid #414650;
-  background: #242832;
+  margin: 0;
+  padding: 2px 4px;
+  border: 0;
+  border-radius: 12px;
+  background: var(--glass-surface);
+  backdrop-filter: var(--glass-filter);
 }
 .app-frame[data-mode="montage"] .track-toolbar button {
   min-height: 27px;
   padding: 3px 7px;
+  border-radius: 999px;
   font-size: 12px;
 }
 .app-frame[data-mode="montage"] .track-toolbar [aria-pressed="true"] {
-  border-color: #6583ad;
-  background: #37465d;
-  color: #e2eeff;
+  border-color: var(--selected-edge);
+  background: var(--selected-surface);
+  color: var(--system-blue);
 }
 .app-frame[data-mode="montage"] .track-toolbar :is(.track-choice, .track-interval) {
   display: inline-flex;
   align-items: center;
   gap: 4px;
-  color: #c4ccda;
+  color: var(--muted);
   white-space: nowrap;
   font-size: 12px;
 }
 .app-frame[data-mode="montage"] .track-toolbar :is(input[type="number"], select) { padding: 3px 4px; }
 .app-frame[data-mode="montage"] .track-interval input { width: 50px; }
-.app-frame[data-mode="montage"] #track-zoom { width: 78px; accent-color: #90b4ef; }
+.app-frame[data-mode="montage"] #track-zoom { width: 78px; accent-color: var(--accent); }
 
 .app-frame[data-mode="montage"] #track-selection-info {
-  padding: 4px 8px;
-  border-bottom: 1px solid #373d48;
-  background: #1e222a;
+  padding: 4px 11px;
+  background: var(--well);
   overflow-wrap: anywhere;
 }
 .app-frame[data-mode="montage"] #track-selection-info:empty { display: none; }
@@ -43,11 +46,11 @@
   gap: 8px;
   min-height: 29px;
   padding: 4px 8px;
-  color: #d1dbd9;
-  background: #1a2224;
+  color: var(--text);
+  background: var(--well);
   font-size: 12px;
 }
-.app-frame[data-mode="montage"] #track-playhead { min-width: 0; margin: 0; accent-color: #75caa8; }
+.app-frame[data-mode="montage"] #track-playhead { min-width: 0; margin: 0; accent-color: var(--accent); }
 .app-frame[data-mode="montage"] #track-playhead-time { text-align: right; font-variant-numeric: tabular-nums; }
 
 .app-frame[data-mode="montage"] #shots[data-zoom="1"] { grid-auto-columns: minmax(194px, 220px); }
@@ -65,10 +68,10 @@
 .app-frame[data-mode="montage"] #shots[data-height="small"] .trim-fields label { display: flex; align-items: center; gap: 2px; }
 .app-frame[data-mode="montage"] #shots[data-height="small"] .trim-fields input { width: 51px; padding: 2px 3px; }
 .app-frame[data-mode="montage"] #shots .asset.track-selected {
-  outline: 1px solid #add7ff;
+  outline: 1px solid var(--accent);
   outline-offset: -2px;
-  border-color: #8dbce9;
-  background: #344d54;
+  border-color: var(--accent);
+  background: var(--selected-surface);
 }
 
 .app-frame[data-mode="montage"] .shot-transition {
@@ -78,13 +81,13 @@
   gap: 5px;
   margin-top: 6px;
   padding: 5px 1px 0;
-  border-top: 1px solid #3c3c4b;
+  border-top: 1px solid var(--edge);
 }
 .app-frame[data-mode="montage"] .shot-transition label {
   display: inline-flex;
   align-items: center;
   gap: 4px;
-  color: #c4bed5;
+  color: var(--muted);
   font-size: 11px;
 }
 .app-frame[data-mode="montage"] .shot-transition :is(select, input) { padding: 2px 4px; }
@@ -92,13 +95,83 @@
 .app-frame[data-mode="montage"] #track-volume-panel {
   margin-bottom: 9px;
   padding: 0 8px 8px;
-  border: 1px solid #435366;
-  border-radius: 5px;
-  background: #222c35;
+  border: 1px solid var(--edge);
+  border-radius: 9px;
+  background: var(--well);
 }
-.app-frame[data-mode="montage"] #track-volume-panel legend { padding-inline: 4px; color: #d6e4f5; font-size: 12px; }
+.app-frame[data-mode="montage"] #track-volume-panel legend { padding-inline: 4px; color: var(--text); font-size: 12px; }
 .app-frame[data-mode="montage"] #track-volume-name { overflow-wrap: anywhere; }
 .app-frame[data-mode="montage"] #track-volume-apply { margin-top: 7px; padding: 5px 8px; }
 .caption-controls { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 6px 8px; margin-top: 8px; }
 .caption-controls label { display: flex; align-items: center; justify-content: space-between; gap: 4px; min-width: 0; }
 .caption-controls :is(input, select) { min-width: 0; max-width: 58%; }
+
+.app-frame[data-mode="montage"] .track-toolbar .track-edit-actions { gap: 2px; }
+.app-frame[data-mode="montage"] .track-toolbar button.secondary:not([aria-pressed="true"]) { border-color: transparent; background: transparent; }
+.app-frame[data-mode="montage"] .track-toolbar button.secondary:hover:enabled { background: var(--control); }
+.app-frame[data-mode="montage"] .track-toolbar :is(#track-undo, #track-redo) { min-width: 28px; padding-inline: 5px; }
+.app-frame[data-mode="montage"] .track-toolbar .track-interval { margin-inline-start: 4px; }
+.app-frame[data-mode="montage"] :is(#track-playhead, #track-zoom) { cursor: pointer; }
+.app-frame[data-mode="montage"] #timeline-tracks-panel:has(#shots-empty:not([hidden])) {
+  display: flex;
+  flex-direction: column;
+}
+.app-frame[data-mode="montage"] #timeline-tracks-panel:has(#shots-empty:not([hidden])) :is(#new-shot-drop, #track-playhead-row) { display: none; }
+.app-frame[data-mode="montage"] #timeline-tracks-panel #shots-empty {
+  flex: 1;
+  align-content: center;
+  min-height: 100px;
+  margin: 6px 9px 9px;
+  padding: 9px;
+}
+.app-frame[data-mode="montage"] .timeline-empty-actions button { border-radius: 999px; }
+
+.app-frame[data-mode="montage"] #track-more-options:not([popover]) { display: contents; }
+.app-frame[data-mode="montage"] #track-more { margin-inline-start: auto; anchor-name: --track-more-button; }
+.app-frame[data-mode="montage"] #track-more-options:popover-open {
+  position: fixed;
+  position-anchor: --track-more-button;
+  position-area: block-end span-inline-start;
+  position-try-fallbacks: flip-block, flip-inline, flip-block flip-inline;
+  align-self: start;
+  justify-self: end;
+  inset: auto;
+  margin: 6px 0;
+  display: grid;
+  gap: 9px;
+  width: min(290px, 85vw);
+  max-height: 80dvh;
+  overflow: auto;
+  padding: 12px;
+  border: 1px solid var(--glass-edge);
+  border-radius: 16px;
+  background: var(--glass-surface);
+  backdrop-filter: var(--glass-filter);
+  box-shadow: var(--glass-shadow), 0 9px 24px color-mix(in srgb, var(--ink) 13%, transparent);
+  color: var(--ink);
+}
+.app-frame[data-mode="montage"] #track-more-options:popover-open .track-view-options { padding-top: 6px; border-top: 1px solid var(--hairline); }
+.app-frame[data-mode="montage"] .timeline-position {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding-inline: 12px;
+  background: color-mix(in srgb, var(--surface) 72%, transparent);
+}
+.app-frame[data-mode="montage"] .timeline-position #track-selection-info {
+  min-width: 0;
+  padding: 3px 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  background: transparent;
+}
+.app-frame[data-mode="montage"] .timeline-position #track-playhead-row {
+  flex: 1;
+  min-width: 100px;
+  background: transparent;
+}
+.app-frame[data-mode="montage"] .timeline-position:has(#track-playhead-row:not([hidden])) #track-selection-info {
+  max-width: 42%;
+}
+.app-frame[data-mode="montage"] #montage-pane:has(#shots-empty:not([hidden])) .track-toolbar:has(#track-reset:disabled) #track-more { display: none; }

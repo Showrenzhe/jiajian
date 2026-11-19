@@ -49,7 +49,7 @@ async function run() {
     throw new Error(message);
   };
   try {
-    await js('document.querySelector("#home-scene-split").click()');
+    await js('document.querySelector("#tab-scene-split").click()');
     await waitFor('!document.querySelector("#scene-split-workspace").hidden', '应打开场景分割工作区');
     await js('document.querySelector("#scene-pick-files").click()');
     await waitFor('document.querySelectorAll("#scene-input-list li").length === 1', '应显示已选择的视频');

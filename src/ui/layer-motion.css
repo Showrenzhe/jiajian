@@ -8,7 +8,6 @@
   background: #202428;
   border: 1px solid #4b555d;
   border-radius: 10px;
-  color-scheme: dark;
 }
 .layer-motion-dialog::backdrop { background: rgb(0 0 0 / 55%); }
 .layer-motion-dialog h2 { margin: 0 0 16px; font-size: 18px; }
@@ -28,13 +27,13 @@
 .layer-motion-dialog input[type=number] { box-sizing: border-box; min-width: 0; width: 100%; }
 .layer-motion-dialog button { cursor: pointer; }
 .layer-motion-time { display: grid; grid-template-columns: auto 1fr 64px auto; align-items: center; gap: 8px; margin: 15px 0 10px; }
-.layer-motion-time input[type=range] { width: 100%; accent-color: #5dd1d1; }
+.layer-motion-time input[type=range] { width: 100%; accent-color: var(--system-blue); }
 .layer-motion-actions, .layer-motion-keys, .layer-motion-dialog footer { display: flex; align-items: center; flex-wrap: wrap; gap: 7px; }
 .layer-motion-keys { margin-top: 8px; max-height: 90px; overflow: auto; }
 .layer-motion-keys button[aria-pressed=true] { outline: 1px solid #5dd1d1; color: #7bdcdd; }
 .layer-motion-dialog footer { justify-content: flex-end; margin-top: 16px; }
 .layer-motion-primary { background: #5dd1d1; color: #0c2022; }
-.foreground-progress { display: block; width: 100%; margin: 14px 0; accent-color: #5dd1d1; }
+.foreground-progress { display: block; width: 100%; margin: 14px 0; accent-color: var(--system-blue); }
 .creative-service-dialog label { display: grid; gap: 5px; margin: 11px 0; }
 .creative-service-dialog label input[type=checkbox] { justify-self: start; }
 .creative-service-dialog textarea { resize: vertical; min-height: 60px; }

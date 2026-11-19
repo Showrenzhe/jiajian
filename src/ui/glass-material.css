@@ -1,0 +1,14 @@
+/* Small transparent surfaces can sample the page or video directly beneath them.
+   The displacement map lives in the document so the app makes no asset request. */
+:root { --clear-optics: saturate(112%) blur(1px); }
+
+@supports (backdrop-filter: url("#clear-rim")) {
+  :root { --clear-optics: url("#clear-rim"); }
+}
+
+.glass-clear { backdrop-filter: var(--clear-optics); }
+
+@media (prefers-reduced-transparency: reduce), (prefers-contrast: more), (forced-colors: active) {
+  :root { --clear-optics: none; }
+  .glass-clear { background: var(--clear-solid, Canvas); }
+}

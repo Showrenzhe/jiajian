@@ -9,6 +9,12 @@
     ['timeline', '#montage-pane', '分镜轨道', 290, 165],
   ];
   const edges = { n: '上边', ne: '右上角', e: '右边', se: '右下角', s: '下边', sw: '左下角', w: '左边', nw: '左上角' };
+  const sharedEdges = {
+    materials: { e: 'materials', s: 'timeline' },
+    player: { w: 'materials', e: 'inspector', s: 'timeline' },
+    inspector: { w: 'inspector', s: 'timeline' },
+    timeline: { n: 'timeline' },
+  };
   const clamp = (number, min, max) => Math.min(max, Math.max(min, number));
 
   function readLayout() {
@@ -24,6 +30,18 @@
       }
       return state;
     } catch { return null; }
+  }
+
+  // Older versions saved even a docked edge resize as four independent rectangles.
+  // Only recover the grid when all outer anchors and the timeline still line up.
+  function splitFromBoxes({ materials, player, inspector, timeline }) {
+    const near = (a, b) => Math.abs(a - b) < .0005;
+    const playerRight = player.x + player.width;
+    if (!near(materials.x, 0) || !near(inspector.x + inspector.width, 1)
+        || !near(timeline.x, 0) || !near(timeline.width, 1) || !near(timeline.y + timeline.height, 1)
+        || ![materials, player, inspector].every(box => near(box.y, 0) && near(box.y + box.height, timeline.y))
+        || materials.x + materials.width > player.x + .0005 || playerRight > inspector.x + .0005) return null;
+    return { materials: player.x, inspector: 1 - playerRight, timeline: timeline.height };
   }
 
   function create(tag, properties) { return Object.assign(document.createElement(tag), properties); }
@@ -66,7 +84,6 @@
     const notice = workspace.querySelector('#notice');
     const controls = create('div', { className: 'panel-layout-controls' });
     const toggle = create('button', { id: 'panel-layout-toggle', type: 'button', className: 'secondary', textContent: '调整布局' });
-    toggle.title = '拖动面板顶端移动，拖动任意边缘或角调整大小。方向键也可操作。';
     const resetButton = create('button', { id: 'panel-layout-reset', type: 'button', className: 'secondary', textContent: '恢复默认布局' });
     const choose = create('select', { id: 'panel-layout-target', title: '将选定面板置顶' });
     choose.setAttribute('aria-label', '选择要置顶的面板');
@@ -88,13 +105,23 @@
       return [id, { id, label, minWidth, minHeight, element, overlay }];
     }));
     const defaultOrder = [...panes.keys()];
+    const splitView = window.mountSplitView(workspace, bounds);
     let state = readLayout();
     let editing = false;
+    let beforeEdit;
     let active = state?.order.at(-1) ?? defaultOrder[0];
     let drag;
     let scheduled = 0;
 
+    const legacySplit = state && splitFromBoxes(state.boxes);
+    if (legacySplit) {
+      splitView.restore(legacySplit);
+      state = null;
+      save();
+    }
+
     function save() {
+      splitView.save();
       try {
         if (state) window.localStorage.setItem(storageKey, JSON.stringify(state));
         else window.localStorage.removeItem(storageKey);
@@ -128,19 +155,23 @@
     function refreshControls() {
       toggle.setAttribute('aria-pressed', String(editing));
       toggle.textContent = editing ? '完成布局' : '调整布局';
+      toggle.title = editing ? '保留本次调整并退出。按 Esc 可取消本次调整。' : '拖动面板顶端移动，拖动边缘或角调整大小。方向键也可操作。';
       choose.hidden = !editing && !state;
       choose.value = active;
-      resetButton.hidden = !state;
+      resetButton.hidden = !state && !(editing && splitView.modified);
       layer.hidden = !editing;
     }
 
     function layout() {
       scheduled = 0;
       const visible = frame?.dataset.mode === 'montage' && !workspace.hidden && workspace.clientWidth > 0;
-      if (!visible) { layer.hidden = true; return; }
+      if (!visible) { layer.hidden = true; splitView.sync(false); return; }
       refreshControls();
+      workspace.toggleAttribute('data-layout-editing', editing);
       if (state) workspace.dataset.panelLayout = 'custom';
       else delete workspace.dataset.panelLayout;
+      // Entering free layout takes its initial geometry from the current split view.
+      splitView.sync(!state);
       const canvas = bounds();
       for (const pane of panes.values()) {
         const box = currentBox(pane, canvas);
@@ -174,17 +205,30 @@
       state = { version: 1, boxes, order: [...defaultOrder] };
     }
 
+    function resizeDocked(id, edge, size, dx, dy) {
+      const displacement = { materials: dx, inspector: -dx, timeline: -dy };
+      for (const direction of edge) {
+        const split = sharedEdges[id][direction];
+        if (split) splitView.resize(split, size[split] + displacement[split]);
+      }
+    }
+
     function nudge(pane, edge, event) {
       const directions = { ArrowLeft: [-1, 0], ArrowRight: [1, 0], ArrowUp: [0, -1], ArrowDown: [0, 1] };
       const direction = directions[event.key];
       if (!editing || !direction || event.altKey || event.ctrlKey || event.metaKey) return;
       if (edge !== 'move' && ((direction[0] && /^[ns]$/.test(edge)) || (direction[1] && /^[ew]$/.test(edge)))) return;
       event.preventDefault();
-      startCustom();
-      raise(pane);
-      const canvas = bounds();
       const step = event.shiftKey ? 24 : 8;
-      state.boxes[pane.id] = normalize(pointerBox(currentBox(pane, canvas), edge, direction[0] * step, direction[1] * step, canvas, pane), canvas);
+      const dx = direction[0] * step, dy = direction[1] * step;
+      if (edge === 'move') startCustom();
+      raise(pane);
+      if (state) {
+        const canvas = bounds();
+        state.boxes[pane.id] = normalize(pointerBox(currentBox(pane, canvas), edge, dx, dy, canvas, pane), canvas);
+      } else {
+        resizeDocked(pane.id, edge, splitView.sizes(), dx, dy);
+      }
       save();
       sync();
     }
@@ -194,7 +238,8 @@
       event.preventDefault();
       raise(pane);
       const canvas = bounds();
-      drag = { pane, edge, pointerId: event.pointerId, x: event.clientX, y: event.clientY,
+      drag = { pane, edge, handle, split: !state && edge !== 'move' ? splitView.sizes() : null,
+        pointerId: event.pointerId, x: event.clientX, y: event.clientY,
         box: fit(currentBox(pane, canvas), canvas, pane), changed: false };
       handle.focus({ preventScroll: true });
       try { handle.setPointerCapture(event.pointerId); } catch { /* Window listeners also handle uncaptured drags. */ }
@@ -209,10 +254,14 @@
       const dx = event.clientX - x;
       const dy = event.clientY - y;
       if (!drag.changed && !dx && !dy) return;
-      startCustom();
-      raise(pane);
-      const canvas = bounds();
-      state.boxes[pane.id] = normalize(pointerBox(fit(box, canvas, pane), edge, dx, dy, canvas, pane), canvas);
+      if (drag.split) {
+        resizeDocked(pane.id, edge, drag.split, dx, dy);
+      } else {
+        startCustom();
+        raise(pane);
+        const canvas = bounds();
+        state.boxes[pane.id] = normalize(pointerBox(fit(box, canvas, pane), edge, dx, dy, canvas, pane), canvas);
+      }
       drag.changed = true;
       sync();
     }
@@ -223,9 +272,16 @@
         live.textContent = `已调整${drag.pane.label}。`;
         save();
       }
+      releaseDrag();
+      sync();
+    }
+
+    function releaseDrag() {
+      if (!drag) return;
+      const { handle, pointerId } = drag;
       drag = undefined;
       workspace.classList.remove('panel-layout-dragging');
-      sync();
+      if (handle.hasPointerCapture(pointerId)) handle.releasePointerCapture(pointerId);
     }
 
     for (const pane of panes.values()) {
@@ -233,6 +289,11 @@
         const label = edge === 'move' ? `移动${pane.label}` : `调整${pane.label}${direction}`;
         const handle = create('button', { type: 'button', className: 'panel-layout-handle', title: `${label}（可用方向键）` });
         handle.dataset.edge = edge;
+        if (edge !== 'move') {
+          const axes = [...edge].filter(direction => sharedEdges[pane.id][direction])
+            .map(direction => 'ns'.includes(direction) ? 'y' : 'x');
+          handle.dataset.splitAxes = axes.join('') || 'none';
+        }
         handle.setAttribute('aria-label', label);
         handle.addEventListener('pointerdown', (event) => startDrag(pane, edge, handle, event));
         handle.addEventListener('lostpointercapture', finish);
@@ -249,20 +310,49 @@
     }
 
     function reset() {
+      releaseDrag();
       state = null;
-      drag = undefined;
-      workspace.classList.remove('panel-layout-dragging');
+      editing = false;
+      beforeEdit = undefined;
+      splitView.reset();
       delete workspace.dataset.panelLayout;
       save();
       live.textContent = '已恢复默认布局。';
       sync();
     }
 
+    function endEditing(cancel) {
+      releaseDrag();
+      if (cancel) {
+        state = beforeEdit.state;
+        active = beforeEdit.active;
+        splitView.restore(beforeEdit.split);
+      }
+      editing = false;
+      beforeEdit = undefined;
+      save();
+      toggle.focus({ preventScroll: true });
+      live.textContent = cancel ? '已取消本次布局调整。' : '已完成布局调整。';
+      sync();
+    }
+
     toggle.addEventListener('click', () => {
-      editing = !editing;
-      live.textContent = editing ? '拖动面板顶端移动，拖动边缘或角调整大小。' : '已退出布局编辑。';
+      if (editing) return endEditing(false);
+      beforeEdit = { state: structuredClone(state), active, split: splitView.snapshot() };
+      editing = true;
+      live.textContent = '拖动面板顶端移动，拖动边缘或角调整大小。按 Esc 取消本次调整。';
       sync();
     });
+    document.addEventListener('keydown', (event) => {
+      if (!editing || frame?.dataset.mode !== 'montage' || event.key !== 'Escape' || event.defaultPrevented
+          || event.repeat || event.isComposing || event.altKey || event.ctrlKey || event.metaKey || event.shiftKey) return;
+      if (frame.dataset.navigation === 'floating' || document.fullscreenElement
+          || document.querySelector('dialog[open], :popover-open:not([popover="manual"]), select:open')
+          || (event.target.closest?.('#timeline-cut-editor') && !event.target.closest('input, select, textarea'))) return;
+      event.preventDefault();
+      event.stopImmediatePropagation();
+      endEditing(true);
+    }, true);
     choose.addEventListener('change', () => {
       const pane = panes.get(choose.value);
       if (!pane) return;

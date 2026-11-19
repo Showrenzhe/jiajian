@@ -1,91 +1,126 @@
-.cloud-tts-dialog {
-  --cloud-tts-blue: #0866ff;
-  --cloud-tts-border: #e6ebf3;
-  width: min(820px, calc(100vw - 35px));
-  max-height: calc(100vh - 45px);
+:is(.cloud-tts-dialog, .cloud-settings-dialog) {
+  --dialog-alert: var(--destructive-ink);
+  --dialog-selection: var(--selected-fill);
   padding: 0;
-  border: 1px solid var(--cloud-tts-border);
-  border-radius: 10px;
-  color-scheme: light;
-  color: #253044;
-  background: #fff;
-  box-shadow: 0 14px 50px #0c1b414d;
+  border: 0;
+  border-radius: 18px;
+  background: var(--sheet-surface);
+  backdrop-filter: blur(25px) saturate(120%);
+  box-shadow: var(--sheet-shadow);
+  color: var(--ink);
 }
+:is(.cloud-tts-dialog, .cloud-settings-dialog)::backdrop { background: var(--sheet-scrim); }
+:is(.cloud-tts-dialog, .cloud-settings-dialog) :focus-visible { outline: 2px solid var(--focus-ring); outline-offset: 2px; }
+:is(.cloud-tts-dialog, .cloud-settings-dialog) h2[tabindex="-1"]:focus { outline: none; }
+:is(.cloud-tts-dialog, .cloud-settings-dialog) h2 { margin: 0; font-size: 24px; letter-spacing: -.025em; line-height: 1.35; }
+:is(.cloud-tts-dialog, .cloud-settings-dialog) button {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  min-height: 34px;
+  padding: 5px 10px;
+  border: 0;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--ink);
+}
+:is(.cloud-tts-dialog, .cloud-settings-dialog) button:hover:enabled { background: var(--hover-tint); }
+:is(.cloud-tts-dialog, .cloud-settings-dialog) :is(.cloud-tts-primary, .cloud-settings-primary):enabled { padding-inline: 15px; background: var(--action-fill); color: white; font-weight: 600; }
+:is(.cloud-tts-dialog, .cloud-settings-dialog) :is(.cloud-tts-primary, .cloud-settings-primary):hover:enabled { background: var(--blue-hover); }
+:is(.cloud-tts-dialog, .cloud-settings-dialog) :is(input[type="number"], input[type="url"], input[type="password"], select, textarea) {
+  padding: 6px 9px;
+  border: 1px solid var(--hairline);
+  border-radius: 5px;
+  background: var(--field-fill);
+  color: var(--ink);
+}
+:is(.cloud-tts-dialog, .cloud-settings-dialog) :is(input[type="checkbox"], input[type="radio"], progress) { accent-color: var(--system-blue); }
+.cloud-tts-dialog { width: min(780px, calc(100vw - 36px)); max-height: calc(100dvh - 42px); }
 .cloud-tts-dialog[open] { display: grid; grid-template-rows: auto minmax(0, 1fr) auto; overflow: hidden; }
-.cloud-tts-dialog::backdrop { background: #111b3373; }
-.cloud-tts-dialog :focus-visible { outline-color: var(--cloud-tts-blue); }
-.cloud-tts-dialog h2 { font-size: 18px; }
-.cloud-tts-muted { color: #607087; font-size: 12px; overflow-wrap: anywhere; }
-.cloud-tts-error, #cloud-tts-status[data-kind="error"] { color: #9b2b25; }
-.cloud-tts-header { display: flex; align-items: center; gap: 8px; padding: 10px 15px; border-bottom: 1px solid var(--cloud-tts-border); }
-.cloud-tts-header h2 { flex: 1; }
-.cloud-tts-badge { padding: 3px 7px; border-radius: 4px; background: #edf3ff; color: #24579b; font-size: 12px; }
-.cloud-tts-dialog button { padding: 6px 11px; border: 1px solid #dce3ef; border-radius: 6px; background: #fff; color: #2c3d57; }
-.cloud-tts-dialog button:hover:enabled { background: #edf3ff; }
-.cloud-tts-dialog .cloud-tts-primary { border-color: var(--cloud-tts-blue); background: var(--cloud-tts-blue); color: #fff; font-weight: 600; }
-.cloud-tts-dialog .cloud-tts-primary:hover:enabled { background: #0058d6; }
-.cloud-tts-dialog #cloud-tts-open-settings { padding: 5px 8px; border-color: #b7cced; color: #1b5cb8; font-size: 12px; }
-#cloud-tts-close { padding: 3px 7px; border-color: transparent; font-size: 20px; line-height: 1.1; }
+.cloud-tts-muted, .cloud-settings-muted { color: var(--secondary-ink); font-size: 12px; overflow-wrap: anywhere; }
+.cloud-tts-error, #cloud-tts-status[data-kind="error"] { color: var(--dialog-alert); }
+.cloud-tts-header { display: flex; align-items: center; gap: 6px; padding: 21px 24px 17px; }
+.cloud-tts-heading-group { flex: 1; display: flex; flex-wrap: wrap; align-items: baseline; gap: 3px 11px; }
+.cloud-tts-badge { color: var(--secondary-ink); font-size: 12px; }
+#cloud-tts-open-settings { font-size: 13px; }
+#cloud-tts-open-settings svg { width: 16px; height: 16px; }
+#cloud-tts-close { width: 32px; padding: 0; font-size: 23px; font-weight: 400; line-height: 1; }
 
-.cloud-tts-body { display: grid; grid-template-columns: minmax(195px, .47fr) minmax(0, 1fr); gap: 10px; padding: 12px 15px; overflow: auto; background: #f8faff; }
-.cloud-tts-body :is(fieldset, section) { min-width: 0; padding: 9px; border: 1px solid var(--cloud-tts-border); border-radius: 6px; background: #fff; }
-.cloud-tts-body:not(:has(#cloud-tts-source-details[open])) > fieldset { grid-column: 1 / -1; }
-.cloud-tts-body:not(:has(#cloud-tts-source-details[open])) #cloud-tts-voices {
-  grid-template-columns: repeat(auto-fit, minmax(144px, 1fr));
+.cloud-tts-body {
+  display: grid;
+  grid-template-columns: minmax(218px,.8fr) minmax(0,1fr);
+  gap: 17px 26px;
+  min-height: 0;
+  padding: 4px 24px 20px;
+  overflow: auto;
+  overscroll-behavior: contain;
 }
-.cloud-tts-body:not(:has(#cloud-tts-source-details[open])) .cloud-tts-parameters { max-width: 510px; }
-.cloud-tts-body legend { padding-inline: 4px; font-weight: 600; }
-#cloud-tts-voice-hint { margin-top: 4px; }
-.cloud-tts-voice-mode { display: flex; align-items: center; justify-content: space-between; gap: 6px; margin-top: 7px; font-size: 12px; }
+.cloud-tts-body :is(fieldset, section) { min-width: 0; margin: 0; padding: 0; border: 0; }
+.cloud-tts-body:not(:has(#cloud-tts-source-details[open])) > fieldset { grid-column: 1 / -1; }
+.cloud-tts-body:not(:has(#cloud-tts-source-details[open])) #cloud-tts-voices { grid-template-columns: repeat(auto-fit, minmax(145px, 1fr)); }
+.cloud-tts-body:not(:has(#cloud-tts-source-details[open])) .cloud-tts-voice-mode { justify-content: flex-start; }
+.cloud-tts-body :is(legend, h3) { padding: 0; margin: 0 0 5px; font-size: 15px; font-weight: 650; }
+#cloud-tts-voice-hint { margin-top: 7px; }
+.cloud-tts-voice-mode { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin-top: 9px; font-size: 13px; }
 #cloud-tts-source-details { margin-top: 8px; }
-#cloud-tts-source-details summary { cursor: pointer; font-size: 13px; }
-#cloud-tts-source-details summary:not(.cloud-tts-error) { color: #1b5cb8; }
-#cloud-tts-voices, #cloud-tts-items { display: grid; gap: 5px; max-height: 260px; margin-top: 7px; overflow: auto; }
-#cloud-tts-voices { max-height: 185px; }
+#cloud-tts-source-details summary { width: fit-content; padding-block: 3px; cursor: pointer; font-size: 13px; font-weight: 550; }
+#cloud-tts-source-details summary:not(.cloud-tts-error) { color: var(--system-blue); }
+#cloud-tts-voices, #cloud-tts-items { display: grid; gap: 5px; max-height: 260px; margin-top: 7px; overflow: auto; scrollbar-width: thin; }
+#cloud-tts-voices { max-height: 180px; padding: 3px; }
 .cloud-tts-voice-row, .cloud-tts-item-heading { display: flex; align-items: center; justify-content: space-between; gap: 6px; }
-.cloud-tts-voice-row { padding: 4px 5px; border-radius: 4px; background: #f4f7fc; }
+.cloud-tts-voice-row { padding: 3px 6px; border-radius: 4px; }
+.cloud-tts-voice-row:has(input:checked) { background: var(--dialog-selection); }
 .cloud-tts-voice-row label, .cloud-tts-item-heading label, .cloud-tts-actions label { display: flex; align-items: center; gap: 5px; }
 .cloud-tts-voice-row label { min-width: 0; overflow-wrap: anywhere; }
-.cloud-tts-dialog .cloud-tts-sample { padding: 3px 6px; font-size: 12px; }
-.cloud-tts-dialog :is(input[type="checkbox"], input[type="radio"], progress) { accent-color: var(--cloud-tts-blue); }
-.cloud-tts-parameters { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 8px; }
-.cloud-tts-parameters label { display: flex; flex: 1; justify-content: space-between; align-items: center; gap: 4px; font-size: 12px; white-space: nowrap; }
-.cloud-tts-dialog :is(input[type="number"], select, textarea) { padding: 5px; border: 1px solid #cbd6e7; border-radius: 4px; background: #fff; color: #253044; }
-.cloud-tts-parameters input { width: 65px; }
-.cloud-tts-item { padding: 6px; border-radius: 5px; background: #f4f7fc; }
+.cloud-tts-dialog .cloud-tts-sample { min-height: 27px; padding: 3px 6px; color: var(--system-blue); font-size: 12px; }
+.cloud-tts-parameters { display: flex; flex-wrap: wrap; gap: 8px 18px; margin-top: 12px; }
+.cloud-tts-parameters label { display: flex; align-items: center; gap: 6px; font-size: 13px; white-space: nowrap; }
+.cloud-tts-parameters input { width: 68px; }
+.cloud-tts-item { padding: 4px 3px; }
 .cloud-tts-item-count { white-space: nowrap; }
-.cloud-tts-text { display: block; width: 100%; margin-top: 4px; resize: vertical; line-height: 1.45; }
-.cloud-tts-text[aria-invalid="true"] { border-color: #d2756d; }
-
+.cloud-tts-text { display: block; width: 100%; margin-top: 5px; resize: vertical; line-height: 1.6; }
+.cloud-tts-dialog .cloud-tts-text[aria-invalid="true"] { border-color: var(--dialog-alert); }
 .cloud-tts-results, #cloud-tts-failures { grid-column: 1 / -1; }
 .cloud-tts-results label { display: flex; align-items: center; flex-wrap: wrap; gap: 6px; margin: 5px 0; font-size: 12px; }
 #cloud-tts-result-choice { max-width: min(100%, 440px); }
 .cloud-tts-dialog audio { display: block; width: 100%; height: 36px; }
 #cloud-tts-sample-audio { margin-top: 5px; }
-#cloud-tts-failures { max-height: 115px; margin: 0; padding: 6px 8px 6px 25px; overflow: auto; overflow-wrap: anywhere; border-radius: 5px; background: #fff1ee; color: #8a302b; font-size: 12px; }
-
-.cloud-tts-footer { padding: 9px 15px 11px; border-top: 1px solid var(--cloud-tts-border); }
-.cloud-tts-disclosure { margin-bottom: 6px; color: #65738a; font-size: 12px; }
-#cloud-tts-progress-row { display: grid; grid-template-columns: auto minmax(0, 1fr); align-items: center; gap: 8px; margin-bottom: 5px; color: #305783; font-size: 12px; }
+#cloud-tts-failures { max-height: 115px; margin: 0; padding: 5px 5px 5px 22px; overflow: auto; overflow-wrap: anywhere; color: var(--dialog-alert); font-size: 12px; }
+.cloud-tts-footer { padding: 12px 24px 15px; border-top: 1px solid var(--hairline); }
+.cloud-tts-disclosure { margin-bottom: 8px; color: var(--secondary-ink); font-size: 12px; }
+#cloud-tts-progress-row { display: grid; grid-template-columns: auto minmax(0, 1fr); align-items: center; gap: 8px; margin-bottom: 5px; color: var(--system-blue); font-size: 12px; }
 #cloud-tts-progress-row progress { min-width: 0; margin: 0; }
-#cloud-tts-status { margin-bottom: 6px; color: #285493; font-size: 13px; overflow-wrap: anywhere; }
+#cloud-tts-status { margin-bottom: 6px; color: var(--system-blue); font-size: 13px; overflow-wrap: anywhere; }
 .cloud-tts-actions { display: flex; align-items: center; flex-wrap: wrap; justify-content: flex-end; gap: 6px; }
-.cloud-tts-actions label { margin-right: auto; font-size: 12px; }
+.cloud-tts-actions label { margin-right: auto; font-size: 13px; }
 
 @media (max-width: 660px) { .cloud-tts-body { grid-template-columns: 1fr; } }
 
 .cloud-tts-dialog.breeze-voices { width: min(1060px, calc(100vw - 35px)); }
 .breeze-voices .cloud-tts-body { grid-template-columns: minmax(0, 1.25fr) minmax(235px, .85fr); }
-.breeze-voices #cloud-tts-search { width: 100%; margin-top: 8px; padding: 7px 9px; border: 1px solid #ccd6e4; border-radius: 6px; }
+.breeze-voices #cloud-tts-search { width: 100%; margin-top: 8px; padding: 7px 9px; border: 1px solid var(--hairline); border-radius: 6px; }
 #cloud-tts-filters { display:flex; gap:5px; flex-wrap:wrap; margin-block:7px; }
 #cloud-tts-filters button { padding:3px 8px; border-radius:12px; font-size:12px; }
-#cloud-tts-filters [aria-pressed="true"] { border-color:#7fa4e0; color:#174c9e; background:#eaf2ff; }
+#cloud-tts-filters [aria-pressed="true"] { border-color:var(--system-blue); color:var(--selected-ink); background:var(--selected-fill); }
 .breeze-voices #cloud-tts-voices { grid-template-columns:repeat(auto-fill,minmax(min(160px,100%),1fr)); max-height:245px; }
 .breeze-voices .cloud-tts-voice-row { min-width:0; min-height:43px; border:1px solid transparent; border-radius:6px; }
-.breeze-voices .cloud-tts-voice-row:has(input:checked) { border-color:#78a1e2; background:#eaf2ff; }
+.breeze-voices .cloud-tts-voice-row:has(input:checked) { border-color:var(--system-blue); background:var(--selected-fill); }
 .breeze-voices .cloud-tts-voice-row label { cursor:pointer; flex:1; }
 .breeze-voices .cloud-tts-voice-row strong, .breeze-voices .cloud-tts-voice-row small { display:block; }
-.breeze-voices .cloud-tts-voice-row small { color:#5c6b80; margin-top:2px; }
+.breeze-voices .cloud-tts-voice-row small { color:var(--secondary-ink); margin-top:2px; }
 .breeze-voices .cloud-tts-sample { white-space:nowrap; }
 #cloud-tts-more { margin-top:5px; }
 @media (max-width:720px) { .breeze-voices .cloud-tts-body { grid-template-columns:1fr; } }
+
+@media (prefers-reduced-motion: no-preference) {
+  :is(.cloud-tts-dialog, .cloud-settings-dialog, .script-import-dialog)[open] { animation: sheet-in 160ms ease-out; }
+  @keyframes sheet-in { from { transform: translateY(5px); } to { transform: translateY(0); } }
+}
+@media (prefers-reduced-transparency: reduce), (prefers-contrast: more), (forced-colors: active) {
+  :is(.cloud-tts-dialog, .cloud-settings-dialog) { backdrop-filter: none; background: var(--surface); }
+}
+@media (forced-colors: active) {
+  :is(.cloud-tts-dialog, .cloud-settings-dialog) { border: 1px solid CanvasText; }
+  .cloud-tts-voice-row:has(input:checked) { outline: 1px solid Highlight; outline-offset: -1px; }
+}

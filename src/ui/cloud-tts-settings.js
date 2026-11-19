@@ -10,26 +10,44 @@
   const markup = `
     <dialog id="cloud-settings-dialog" class="cloud-settings-dialog" aria-labelledby="cloud-settings-title">
       <form id="cloud-settings-form">
-        <header class="cloud-settings-heading"><h2 id="cloud-settings-title">云端配音设置</h2><button type="button" id="creative-settings-entry">云端创作服务</button></header>
+        <header class="cloud-settings-heading">
+          <h2 id="cloud-settings-title" tabindex="-1" autofocus>云端配音设置</h2>
+          <button type="button" id="creative-settings-entry">云端创作服务</button>
+        </header>
         <div class="cloud-settings-body">
-          <label for="cloud-settings-provider">配音服务</label>
-          <select id="cloud-settings-provider">
-            <option value="breezeblue">Breeze Blue · TTS 2 多语言（默认）</option>
-            <option value="gateway">通用接口</option>
-            <option value="seed-audio">火山引擎 Seed Audio 1.0</option>
-          </select>
-          <label for="cloud-settings-base-url">服务地址</label>
-          <input id="cloud-settings-base-url" type="url" autocomplete="off" spellcheck="false" placeholder="https://voice.example.com" aria-describedby="cloud-settings-address-help">
-          <p id="cloud-settings-address-help" class="cloud-settings-muted">填写服务方提供的接口地址。留空并保存会停用云端配音。</p>
-          <label for="cloud-settings-api-key" id="cloud-settings-key-label">API 密钥（按服务要求填写）</label>
-          <input id="cloud-settings-api-key" type="password" autocomplete="new-password" spellcheck="false" placeholder="留空保留已保存的密钥" aria-describedby="cloud-settings-key-state cloud-settings-key-help">
-          <p id="cloud-settings-key-state" class="cloud-settings-muted"></p>
-          <p id="cloud-settings-key-help" class="cloud-settings-muted">同一服务地址留空会保留密钥。换用不同服务时，请填新密钥或清除旧密钥。</p>
-          <div class="cloud-settings-breeze-tools" id="cloud-settings-breeze-tools" hidden>
-            <button type="button" id="cloud-settings-verify">测试音色连接</button>
-            <button type="button" id="cloud-settings-keys">打开 Breeze Blue 密钥管理</button>
+          <fieldset id="appearance-settings" hidden>
+            <legend>外观</legend>
+            <div class="appearance-options">
+              <label><input type="radio" name="appearance" value="light"><span class="appearance-preview" aria-hidden="true"></span><span>浅色</span></label>
+              <label><input type="radio" name="appearance" value="dark"><span class="appearance-preview" aria-hidden="true"></span><span>深色</span></label>
+              <label><input type="radio" name="appearance" value="system"><span class="appearance-preview" aria-hidden="true"></span><span>跟随系统</span></label>
+            </div>
+          </fieldset>
+          <h3 id="cloud-settings-section" hidden>云端配音</h3>
+          <div class="cloud-settings-field">
+            <label for="cloud-settings-provider">配音服务</label>
+            <select id="cloud-settings-provider">
+              <option value="breezeblue">Breeze Blue · TTS 2 多语言（默认）</option>
+              <option value="gateway">通用接口</option>
+              <option value="seed-audio">火山引擎 Seed Audio 1.0</option>
+            </select>
           </div>
-          <label class="cloud-settings-check"><input id="cloud-settings-clear-key" type="checkbox">清除已保存的密钥</label>
+          <div class="cloud-settings-field">
+            <label for="cloud-settings-base-url">服务地址</label>
+            <input id="cloud-settings-base-url" type="url" autocomplete="off" spellcheck="false" placeholder="https://voice.example.com" aria-describedby="cloud-settings-address-help">
+            <p id="cloud-settings-address-help" class="cloud-settings-muted">填写服务方提供的接口地址。留空并保存会停用云端配音。</p>
+          </div>
+          <div class="cloud-settings-field">
+            <label for="cloud-settings-api-key" id="cloud-settings-key-label">API 密钥（按服务要求填写）</label>
+            <input id="cloud-settings-api-key" type="password" autocomplete="new-password" spellcheck="false" placeholder="留空保留已保存的密钥" aria-describedby="cloud-settings-key-state cloud-settings-key-help">
+            <p id="cloud-settings-key-state" class="cloud-settings-muted"></p>
+            <p id="cloud-settings-key-help" class="cloud-settings-muted">同一服务地址留空会保留密钥。换用不同服务时，请填新密钥或清除旧密钥。</p>
+            <div class="cloud-settings-breeze-tools" id="cloud-settings-breeze-tools" hidden>
+              <button type="button" id="cloud-settings-verify">测试音色连接</button>
+              <button type="button" id="cloud-settings-keys">打开 Breeze Blue 密钥管理</button>
+            </div>
+            <label class="cloud-settings-check"><input id="cloud-settings-clear-key" type="checkbox">清除已保存的密钥</label>
+          </div>
           <p id="cloud-settings-warning" class="cloud-settings-warning" role="status" hidden></p>
           <p id="cloud-settings-status" role="status" hidden></p>
         </div>
@@ -56,6 +74,8 @@
     container.replaceChildren(template.content);
     const $ = (id) => container.querySelector(`#cloud-settings-${id}`);
     const dialog = $('dialog');
+    const appearance = container.querySelector('#appearance-settings');
+    window.bindAppearancePicker(appearance);
     const provider = $('provider');
     const address = $('base-url');
     const password = $('api-key');
@@ -88,7 +108,7 @@
       $('breeze-tools').hidden = !isBreeze;
       $('verify').disabled = locked || !session.ready || !isBreeze || managementId || clearKey.checked
         || (!password.value.trim() && (providerChanged || !session.hasApiKey));
-      $('save').textContent = session.saving ? '正在保存…' : '保存设置';
+      $('save').textContent = session.saving ? '正在保存…' : session.showAppearance ? '保存配音设置' : '保存设置';
       $('address-help').textContent = isBreeze ? '已选用 Breeze Blue TTS 2 多语言模型。' : isSeed ? '使用火山引擎固定接口地址。' : '填写服务方提供的接口地址。留空并保存会停用云端配音。';
       $('key-label').textContent = isBreeze ? 'Breeze Blue API Key' : isSeed ? '火山引擎 API Key' : 'API 密钥（按服务要求填写）';
       $('key-state').textContent = session.hasApiKey ? (providerChanged ? '原服务已保存密钥。' : '已保存密钥。') : '未保存密钥。';
@@ -101,10 +121,14 @@
       password.setAttribute('aria-invalid',String(managementId));
     }
 
-    async function open() {
+    async function open({ showAppearance = false } = {}) {
       if (dialog.open) { provider.focus(); return; }
-      const state = { loading: true, ready: false, provider: breeze, selection: breeze, gatewayAddress: '', baseUrl: breezeEndpoint, hasApiKey: false };
+      const state = { showAppearance, loading: true, ready: false, provider: breeze, selection: breeze, gatewayAddress: '', baseUrl: breezeEndpoint, hasApiKey: false };
       session = state;
+      appearance.hidden = !showAppearance;
+      $('section').hidden = !showAppearance;
+      $('title').textContent = showAppearance ? '设置' : '云端配音设置';
+      $('cancel').textContent = showAppearance ? '关闭' : '取消';
       provider.value = breeze;
       address.value = breezeEndpoint;
       password.value = '';
@@ -114,6 +138,7 @@
       say('正在读取本机设置…');
       update();
       dialog.showModal();
+      if (showAppearance) appearance.querySelector(':checked').focus({ preventScroll: true });
       try {
         if (typeof load !== 'function') throw new Error('unavailable');
         const stored = await load();
@@ -137,7 +162,7 @@
         if (session === state) {
           state.loading = false;
           update();
-          if (state.ready) provider.focus();
+          if (state.ready && document.activeElement === $('title')) provider.focus();
         }
       }
     }
@@ -151,7 +176,7 @@
       state.testing=true;update();say('正在读取 Breeze Blue 音色列表…');
       try {
         await verify(key);
-        if(session===state) say(key ? '音色连接成功。点击「保存设置」即可使用这把密钥。' : '已保存的密钥可以读取音色。');
+        if(session===state) say(key ? '音色连接成功。保存后即可使用这把密钥。' : '已保存的密钥可以读取音色。');
       } catch(error) {
         if(session===state) say(safeSaveError(error,key),true);
       } finally {
