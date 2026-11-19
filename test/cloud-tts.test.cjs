@@ -117,7 +117,7 @@ function mockSeed(t, respond) {
   t.mock.method(https, 'request', (url, options, receive) => {
     const request = new EventEmitter();
     request.end = (payload) => {
-      const call = { url: url.href, method: options.method, headers: options.headers, body: JSON.parse(payload) };
+      const call = { url: url.href, method: options.method, headers: options.headers, body: payload ? JSON.parse(payload) : undefined };
       calls.push(call);
       const result = respond(call);
       if (!result) {
@@ -128,12 +128,99 @@ function mockSeed(t, respond) {
       response.statusCode = result.status ?? 200;
       response.headers = result.headers ?? {};
       receive(response);
-      response.end(JSON.stringify(result.body));
+      response.end(Buffer.isBuffer(result.body) ? result.body : JSON.stringify(result.body));
     };
     return request;
   });
   return calls;
 }
+
+test('Breeze Blue pages all account voices, auditions redirected samples without credentials, and generates timed or plain WAV', async (t) => {
+  const directory = await outputFixture(t);
+  const audio = wave();
+  const voice = { voice_id: 'voc_01', name: '阿晴', language_code: 'zh', gender: 'female', preview_url: '/demo.wav' };
+  const calls = mockSeed(t, ({ url, body, headers }) => {
+    const address = new URL(url);
+    if (address.hostname === 'samples.example.test') {
+      assert.equal(headers['xi-api-key'], undefined);
+      return { body: audio };
+    }
+    assert.equal(address.origin, 'https://api.breeze.blue');
+    assert.equal(headers['xi-api-key'], 'breeze-test-only');
+    assert.equal(headers.Authorization, undefined);
+    if (address.pathname === '/v1/voices') {
+      assert.equal(address.searchParams.get('page_size'), '100');
+      if (!address.searchParams.has('next_page_token')) return { body: { voices: [voice], has_more: true, next_page_token: 'opaque+token', total: 2 } };
+      assert.equal(address.searchParams.get('next_page_token'), 'opaque+token');
+      return { body: { voices: [{ ...voice, voice_id: 'voc_02', preview_url: null }], has_more: false, total: 2 } };
+    }
+    if (address.pathname === '/demo.wav') return { status: 302, headers: { location: 'https://samples.example.test/signed' } };
+    assert.equal(address.searchParams.get('output_format'), 'wav');
+    assert.equal(body.model_id, 'breeze-tts-2-multilingual');
+    if (address.pathname === '/v1/text-to-speech/voc_01/with-timestamps') {
+      assert.deepEqual(body.voice_settings, { speed: 1.25, volume: 0.65 });
+      return { body: { audio_base64: audio.toString('base64'), content_type: 'audio/wav',
+        word_timestamps: [{ word: '你好', start: .1, end: .3 }, { word: '再见', start: .4, end: .8 }] } };
+    }
+    assert.equal(address.pathname, '/v1/text-to-speech/voc_02');
+    return { body: audio };
+  });
+  const provider = createCloudTts({ provider: 'breezeblue', apiKey: 'breeze-test-only', outputDirectory: directory });
+  const first = await provider.listVoices({ search: '晴', filter: 'female' });
+  assert.equal(new URL(calls[0].url).searchParams.get('search'), '晴');
+  assert.equal(new URL(calls[0].url).searchParams.get('gender'), 'female');
+  assert.equal(first.voices[0].generatedSample, false);
+  const second = await provider.listVoices({ ...first.next, search: '晴', filter: 'female' });
+  assert.equal(second.next, null);
+  assert.equal(second.voices[0].generatedSample, true);
+  for (const id of ['voc_01', 'voc_02']) assert.deepEqual(await fs.readFile((await provider.sample(id)).path), audio);
+  const result = await provider.synthesize({ voiceId: 'voc_01', text: '你好。再见！', speed: 1.25, volume: 65 });
+  assert.deepEqual(await fs.readFile(result.path), audio);
+  assert.deepEqual(result.captions, [{ start: 100, end: 300, text: '你好。' }, { start: 400, end: 800, text: '再见！' }]);
+  await assert.rejects(provider.synthesize({ voiceId: 'voc_01', text: '字'.repeat(1001) }), /1000/);
+  await assert.rejects(createCloudTts({ provider: 'breezeblue' }).listVoices(), /API Key/);
+});
+
+test('Breeze credential checks use one read-only voice query and report authentication, permission and credit failures separately', async (t) => {
+  let status=200, payload={voices:[],has_more:false};
+  const fixture='fixture-credential';
+  const calls=mockSeed(t, ({url,method,headers})=>{
+    assert.equal(url,'https://api.breeze.blue/v1/voices?page_size=1');
+    assert.equal(method,'GET');
+    assert.equal(headers['xi-api-key'],fixture);
+    return {status,body:payload};
+  });
+  const provider=createCloudTts({provider:'breezeblue',apiKey:fixture});
+  assert.equal(await provider.verifyAccess(),true);
+  payload={error:{message:'server-'+fixture}};
+  for (const [code,text] of [[401,/身份验证.*401/],[403,/权限.*403/],[402,/余额.*402/]]) {
+    status=code;
+    await assert.rejects(provider.verifyAccess(),(error)=>text.test(error.message) && !error.message.includes(fixture));
+  }
+  status=200;
+  await assert.rejects(provider.verifyAccess(),/音色目录格式/);
+  const bad=createCloudTts({provider:'breezeblue',apiKey:'key_exampleid'});
+  await assert.rejects(bad.listVoices(),/管理编号.*brz_/);
+  await assert.rejects(bad.verifyAccess(),/管理编号.*brz_/);
+  assert.equal(calls.length,5);
+});
+
+test('a forbidden CDN preview offers to reload the sample without exposing signed URLs or suggesting a new API key', async (t) => {
+  const directory=await outputFixture(t);
+  const calls=mockSeed(t,({url,headers})=>{
+    if (new URL(url).hostname==='samples.example.test') {
+      assert.equal(headers['xi-api-key'],undefined);
+      return {status:403,body:{detail:'sensitive-server-detail'}};
+    }
+    if (new URL(url).pathname==='/demo.wav') return {status:302,headers:{location:'https://samples.example.test/demo.wav?signature=private-test-value'}};
+    return {body:{voices:[{voice_id:'voice1',name:'测试',preview_url:'/demo.wav'}],has_more:false}};
+  });
+  const provider=createCloudTts({provider:'breezeblue',apiKey:'fixture-key',outputDirectory:directory});
+  await provider.listVoices();
+  await assert.rejects(provider.sample('voice1'),(error)=>/试听链接.*403/.test(error.message)
+    && !/API Key|signature|private-test-value|sensitive-server-detail/.test(error.message));
+  assert.equal(calls.length,3);
+});
 
 test('Seed Audio sends the official request and saves only genuine timed MP3 output', async (t) => {
   const directory = await outputFixture(t);

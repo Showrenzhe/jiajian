@@ -16,6 +16,8 @@ const { ffmpeg } = require('./fixtures.cjs');
 app.disableHardwareAcceleration();
 
 const seedEndpoint = new URL('https://openspeech.bytedance.com/api/v3/tts/create');
+const breezeEndpoint = new URL('https://api.breeze.blue/');
+const breezeTestKey = 'fixture-breeze-settings-only';
 
 async function readJson(request) {
   const chunks = [];
@@ -37,6 +39,22 @@ function fixtureServer(wave, captions, fixtureKey, seed) {
       response.writeHead(200, { 'Content-Type': 'audio/wav', 'Content-Length': data.length }).end(data);
     };
     try {
+      if (request.url.startsWith('/breeze/')) {
+        assert.equal(request.headers['xi-api-key'], breezeTestKey);
+        assert.equal(request.headers.authorization, undefined);
+        const url = new URL(request.url, 'http://localhost');
+        if (url.pathname === '/breeze/v1/voices') {
+          const second = url.searchParams.has('next_page_token') || url.searchParams.has('search');
+          return json({ voices: [{ voice_id: second ? 'voc_two' : 'voc_one', name: second ? '晚晴' : '小风', language_code: 'zh', preview_url: '/preview.wav' }],
+            total: 2, has_more: !second, next_page_token: second ? null : 'cursor-A' });
+        }
+        if (url.pathname === '/breeze/preview.wav') return await audio();
+        assert.equal(url.pathname, '/breeze/v1/text-to-speech/voc_two/with-timestamps');
+        const payload = await readJson(request);
+        assert.equal(payload.model_id, 'breeze-tts-2-multilingual');
+        return json({ audio_base64: (await wave).toString('base64'), content_type: 'audio/wav',
+          word_timestamps: [{ index: 0, word: payload.text, start: .2, end: 1.1 }] });
+      }
       if (request.method === 'POST' && request.url === seedEndpoint.pathname) {
         assert.equal(request.headers['x-api-key'], seed.key);
         assert.equal(request.headers.authorization, undefined);
@@ -118,7 +136,11 @@ async function run() {
   const save = [{ title: '保存工程', file: project }];
   const requestHttps = https.request;
   https.request = (url, options, onResponse) => {
+    if (url.origin === breezeEndpoint.origin) {
+      return http.request('http://127.0.0.1:' + fixture.server.address().port + '/breeze' + url.pathname + url.search, options, onResponse);
+    }
     if (String(url) !== seedEndpoint.href) {
+      assert.notEqual(options?.headers?.['xi-api-key'], breezeTestKey);
       assert.notEqual(options?.headers?.['X-Api-Key'], seedKey, '测试密钥不能发送到外部地址');
       return requestHttps(url, options, onResponse);
     }
@@ -194,7 +216,7 @@ async function run() {
     }
 
     await click('#app-settings');
-    await checkSettings(seedEndpoint.href, false);
+    await checkSettings(breezeEndpoint.href, false);
     await click('#cloud-settings-cancel');
     await click('#home-import');
     await waitFor('document.querySelectorAll("#shots .asset").length === 1 && document.querySelector("#inspector-panel-visual").getClientRects().length > 0', '应导入测试画面并默认显示画面属性');
@@ -207,7 +229,33 @@ async function run() {
     await waitFor('document.querySelector("#cloud-tts-dialog").open && document.querySelector("#cloud-tts-service").textContent.includes("填写") && !document.querySelector("#cloud-tts-open-settings").hidden', '未配置时应显示配音窗口内的设置入口');
     assert.deepEqual(fixture.requests, [], '未配置时不应请求模拟服务');
     await click('#cloud-tts-open-settings');
-    await checkSettings(seedEndpoint.href, false);
+    await checkSettings(breezeEndpoint.href, false);
+    assert.equal(await js('document.querySelector("#cloud-settings-base-url").readOnly'), true);
+    await setFields([['#cloud-settings-api-key', 'key_fixture_identifier']]);
+    assert.ok(await js('document.querySelector("#cloud-settings-save").disabled && document.querySelector("#cloud-settings-verify").disabled && document.querySelector("#cloud-settings-key-help").textContent.includes("管理编号")'));
+    assert.deepEqual(fixture.requests, [], '填写管理编号时不会发出云端请求');
+    await setFields([['#cloud-settings-api-key', breezeTestKey]]);
+    await click('#cloud-settings-verify');
+    await waitFor('document.querySelector("#cloud-settings-status").textContent.includes("音色连接成功")','测试音色访问应通过未保存的密钥完成只读请求');
+    assert.deepEqual(fixture.requests, ['GET /breeze/v1/voices?page_size=1']);
+    assert.equal((await js('window.workbench.cloudTtsSettings()')).hasApiKey,false,'测试连接不会保存或替换密钥');
+    await click('#cloud-settings-save');
+    await waitFor('document.querySelector("#cloud-tts-voice-1")?.value === "voc_one"', '填入 Key 后应显示账号音色');
+    await click('#cloud-tts-more');
+    await waitFor('document.querySelectorAll(".cloud-tts-voice").length === 2', '音色目录应展示下一页');
+    await setFields([['#cloud-tts-search', '晚晴']]);
+    await waitFor('document.querySelectorAll(".cloud-tts-voice").length === 1 && document.querySelector(".cloud-tts-voice").value === "voc_two"', '搜索应覆盖整个账号音色目录');
+    await click(voiceChoice('voc_two'));
+    await click('.cloud-tts-sample');
+    await play('#cloud-tts-sample-audio');
+    await setFields([['#cloud-tts-text', '风从海上来。']]);
+    await click('#cloud-tts-generate');
+    await waitFor('!document.querySelector("#cloud-tts-use").disabled', 'Breeze 音色应生成带字词时间码的配音');
+    await play('#cloud-tts-audio');
+    await click('#cloud-tts-open-settings');
+    await checkSettings(breezeEndpoint.href, true);
+    await click('#cloud-settings-verify');
+    await waitFor('document.querySelector("#cloud-settings-status").textContent.includes("已保存的密钥可以读取音色")','留空时应验证已保存的 Breeze 凭据');
     await setFields([['#cloud-settings-provider', 'gateway', 'change'], ['#cloud-settings-base-url', baseUrl], ['#cloud-settings-api-key', fixtureKey]]);
     await click('#cloud-settings-save');
     await waitFor('!document.querySelector("#cloud-settings-dialog").open && document.querySelector("#cloud-tts-dialog").open && document.querySelectorAll(".cloud-tts-voice").length === 2', '保存后应在原配音窗口立即刷新音色');
@@ -388,6 +436,13 @@ async function run() {
     })));
     await captureScreen('seed-segmented-batch.png');
     await click('#cloud-tts-use');
+    await waitFor(`(() => {
+      const shots=[...document.querySelectorAll('#timeline-clock .sequence-shots .sequence-block')];
+      const speech=[...document.querySelectorAll('#timeline-clock .sequence-voice .sequence-block')];
+      return shots.length===2 && speech.length===2 && speech.every((cell,index)=>cell.textContent.includes('配音-') &&
+        Math.abs(cell.getBoundingClientRect().left-shots[index].getBoundingClientRect().left)<2);
+    })()`, '时间线应把两段配音放在对应分镜起点');
+    await js(`(() => {const view=document.querySelector('#timeline-view');view.value='cards';view.dispatchEvent(new Event('change'));})()`);
     const segmentedLanes = `(() => {
       const visual = [...document.querySelectorAll('.timeline-lane.visual-lane .shot')];
       const narration = [...document.querySelectorAll('.timeline-lane.narration-lane .segment-narration-panel')];

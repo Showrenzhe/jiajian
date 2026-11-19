@@ -1,7 +1,7 @@
 'use strict';
 
 const { app, BrowserWindow, dialog, ipcMain, net, protocol, safeStorage, session, shell } = require('electron');
-const { randomUUID } = require('node:crypto');
+const { createHash, randomUUID } = require('node:crypto');
 const { mkdirSync } = require('node:fs');
 const fs = require('node:fs/promises');
 const os = require('node:os');
@@ -10,27 +10,37 @@ const { Readable } = require('node:stream');
 const { pathToFileURL } = require('node:url');
 const {
   audioExtensions, imageExtensions, videoExtensions, maxExports, maxShots, maxCandidates, maxWholeTracks,
-  inspectAsset, createVideoThumbnail, planExtraction, exportBatch,
+  inspectAsset, createVideoThumbnail, createTrackProxy, extractAudioWaveform, previewSubtitleStyle, planExtraction, exportBatch,
 } = require('./media.cjs');
-const { readHistory, remember } = require('./history.cjs');
-const { createPreviewBatch, selectPreviewPlans, prepareMontagePlans } = require('./preview-plans.cjs');
+const { readHistory, remember, renameOutputs, resolveOutput } = require('./history.cjs');
+const { createPreviewBatch, selectPreviewPlans, prepareMontagePlans, prepareSubprojectPlans } = require('./preview-plans.cjs');
 const { loadProject, saveProject } = require('./project-format.cjs');
 const { readSubtitles } = require('./subtitles.cjs');
 const { listWorkflows } = require('./workflow-provider.cjs');
 const { readProjectLibrary, rememberProject } = require('./project-library.cjs');
+const { normalizeSubprojects } = require('./subprojects.cjs');
 const { createDraftStore } = require('./draft-store.cjs');
 const { createCloudTts, isSeedAudioVoiceId } = require('./cloud-tts.cjs');
 const { createCloudTtsSettings, publicSettings } = require('./cloud-tts-settings.cjs');
-const { splitVideos, videoExtensions: sceneVideoExtensions } = require('./scene-splitter.cjs');
+const { splitVideos, detectSceneCuts, videoExtensions: sceneVideoExtensions } = require('./scene-splitter.cjs');
 const { splitNarration: splitNarrationAudio } = require('./subs2srs.cjs');
+const { normalizeLayers, normalizePackaging } = require('./packaging.cjs');
+const {normalizeLook,inspectLut,previewLook} = require('./visual-style.cjs');
+const { createForeground } = require('./foreground.cjs');
+const { detectPauses, processAudio, retimeCaptions } = require('./audio-tools.cjs');
+const { createCreativeSettings, runCreative } = require('./creative-service.cjs');
+const { createWaveformCache } = require('./waveform-cache.cjs');
 
 const scheme = 'sd-workbench';
 const page = `${scheme}://app/index.html`;
-const uiFiles = new Set(['/index.html', '/app.js', '/styles.css', '/dialog-focus.js', '/script-workspace.js', '/script-workspace.css',
+const uiFiles = new Set(['/index.html', '/app.js', '/styles.css', '/dialog-focus.js', '/creative-service.js', '/script-workspace.js', '/script-workspace.css',
+  '/editor-text.js', '/text-presets.js', '/caption-inspector.js', '/caption-inspector.css', '/audio-tools.js', '/waveform.js', '/draft-transport.js',
+  '/track-organizer.js', '/cover-editor.js', '/visual-editor.js', '/batch-edit.js',
+  '/timeline.js', '/timeline-selection.js', '/timeline.css', '/cut-track.js', '/cut-track.css', '/layer-motion.js', '/layer-motion.css', '/subprojects.js',
   '/track-workspace.css', '/edit-history.js', '/track-tools.js', '/track-tools.css', '/cloud-tts-dialog.js', '/cloud-tts-dialog.css',
-  '/cloud-tts-settings.js', '/cloud-tts-settings.css', '/split-view.js', '/panel-layout.js', '/draft-workspace.js', '/assets/jiajian-logo.png',
-  '/glass-material.css', '/inspector-controls.css']);
-const maxCatalog = (maxShots * 2 + 1) * maxCandidates + maxWholeTracks;
+  '/cloud-tts-settings.js', '/cloud-tts-settings.css', '/split-view.js', '/panel-layout.js', '/draft-workspace.js', '/player-tools.js', '/assets/jiajian-logo.png',
+  '/glass-material.css', '/inspector-controls.css', '/editor-surfaces.css']);
+const maxCatalog = (maxShots + 1) * (maxCandidates + maxWholeTracks);
 const maxSubtitleBatchBytes = 1024 * 1024;
 const maxSpeechJobs = maxShots;
 const maxThumbnailCache = 96;
@@ -61,7 +71,7 @@ try {
 
 function describeAsset(id, asset) {
   const { kind, name, duration, width, height, codec, fps, audioIndex } = asset;
-  return { id, kind, name, duration, width, height, codec, fps, hasAudio: audioIndex !== null, url: `${scheme}://asset/${id}` };
+  return { id, kind, name, duration, width, height, codec, fps, ...(asset.path && {sourceKey: materialSourceKey(asset.path)}), ...(asset.alpha && { alpha: true }), hasAudio: audioIndex !== null, url: `${scheme}://asset/${id}` };
 }
 
 function localMaterialPath(file) {
@@ -72,6 +82,10 @@ function localMaterialPath(file) {
 function materialPathKey(file) {
   const normalized = path.normalize(file);
   return process.platform === 'win32' ? normalized.toLowerCase() : normalized;
+}
+
+function materialSourceKey(file) {
+  return createHash('sha256').update(materialPathKey(file)).digest('hex');
 }
 
 function assetPathKey(kind, file) {
@@ -172,7 +186,8 @@ async function launchDesktop({
   const lookupByPath = new Map();
   const recent = await readHistory(dataDirectory);
   const projects = await readProjectLibrary(dataDirectory);
-  const drafts = createDraftStore(path.join(dataDirectory, 'drafts'));
+  const resolveOutputFile=(file)=>resolveOutput(recent,file);
+  const drafts = createDraftStore(path.join(dataDirectory, 'drafts'),resolveOutputFile);
   const published = new Set(recent.map((item) => item.path));
   let job;
   let pickerOpen = false;
@@ -186,6 +201,7 @@ async function launchDesktop({
   let cloudSettingsWarning;
   let savingCloudSettings = false;
   const cloudSettingsStore = createCloudTtsSettings({ directory: dataDirectory, safeStorage });
+  const creativeSettings = createCreativeSettings(dataDirectory, safeStorage);
   const voiceoverDirectory = path.join(dataDirectory, 'cloud-voiceovers');
   try {
     cloudSettings = await cloudSettingsStore.load();
@@ -244,7 +260,7 @@ async function launchDesktop({
         if (!item) { limited = true; continue; }
         const { id, name } = item;
         if (kind === 'folder') folders.push({ id, name });
-        else files.push({ id, name, kind, ...(kind === 'image' && { previewUrl: `${scheme}://asset/folder-image/${id}` }) });
+        else files.push({ id, name, kind, sourceKey: materialSourceKey(child), ...(lookupByPath.has(assetPathKey(kind,child)) && {assetId:lookupByPath.get(assetPathKey(kind,child))}), ...(kind === 'image' && { previewUrl: `${scheme}://asset/folder-image/${id}` }) });
       }
     } catch {
       throw new Error('无法读取这个素材文件夹。');
@@ -325,6 +341,10 @@ async function launchDesktop({
     for (const plan of plans) {
       const sources = plan.kind === 'montage'
         ? plan.clips.flatMap((clip) => (clip.visuals ?? [clip]).map(({ asset }) => asset)) : [plan.asset];
+      for (const layer of plan.layers ?? []) if (layer.asset) sources.push(layer.asset);
+      for (const layer of plan.layers ?? []) if (layer.look?.backgroundAsset) sources.push(layer.look.backgroundAsset);
+      if (plan.cover?.asset) sources.push(plan.cover.asset);
+      for (const clip of plan.clips??[]) for (const part of clip.visuals??[clip]) if(part.look?.backgroundAsset)sources.push(part.look.backgroundAsset);
       for (const asset of sources) {
         const record = folderAssetOrigins.get(asset);
         if (record) origins.add(record);
@@ -337,6 +357,80 @@ async function launchDesktop({
   }
 
   const thumbnails = new Map();
+  const waveforms = createWaveformCache();
+  async function audioWaveform({id,range} = {}) {
+    const asset = catalog.get(id) ?? voiceSamples.get(id);
+    if (!asset || !Number.isInteger(asset.audioIndex) || asset.audioIndex < 0) return null;
+    const start = range?.start ?? 0, end = Math.min(range?.end ?? asset.duration,asset.duration);
+    if (!Number.isFinite(start) || !Number.isFinite(end) || start < 0 || end <= start) return null;
+    const scope = thumbnailScope.signal;
+    const record = folderAssetOrigins.get(asset);
+    if (record) await checkedMaterialPath(record);
+    const info = await fs.stat(asset.path).catch(()=>null);
+    if (!info?.isFile() || scope.aborted) return null;
+    const key = JSON.stringify([id,info.size,info.mtimeMs,start,end]);
+    const waveform = await waveforms.get(key,async(signal)=>{
+      const result=await extractAudioWaveform(asset,{start,end},{signal});
+      if (record) await checkedMaterialPath(record);
+      const latest=await fs.stat(asset.path);
+      return latest.size===info.size && latest.mtimeMs===info.mtimeMs ? result : null;
+    });
+    return !scope.aborted && (catalog.get(id) ?? voiceSamples.get(id)) === asset ? waveform : null;
+  }
+  const trackProxies = new Map();
+  let pendingProxy;
+
+  async function clearTrackProxies() {
+    const pending = pendingProxy;
+    pending?.controller.abort();
+    const entries = [...trackProxies.values()];
+    trackProxies.clear();
+    await Promise.all([pending?.promise, ...entries.map(({ directory, file }) => cleanPreviewFiles(directory, file))]);
+  }
+
+  async function trackProxyUrl(id) {
+    const asset = catalog.get(id);
+    if (asset?.kind !== 'video' || Math.max(asset.width, asset.height) <= 640) return null;
+    const record = folderAssetOrigins.get(asset);
+    if (record) await checkedMaterialPath(record);
+    const source = await fs.stat(asset.path);
+    if (asset !== catalog.get(id)) return null;
+    const version = `${source.size}-${source.mtimeMs}`;
+    const cached = trackProxies.get(id);
+    if (cached?.version === version) {
+      trackProxies.delete(id);
+      trackProxies.set(id, cached);
+      return cached.url;
+    }
+    if (pendingProxy?.id === id && pendingProxy.version === version) return pendingProxy.promise;
+    pendingProxy?.controller.abort();
+    const task = { id, version, controller: new AbortController() };
+    pendingProxy = task;
+    task.promise = (async () => {
+      let directory, file;
+      try {
+        directory = await fs.mkdtemp(path.join(os.tmpdir(), 'jiajian-track-'));
+        file = path.join(directory, 'preview.mp4');
+        await createTrackProxy(asset, file, task.controller.signal);
+        const after = await fs.stat(asset.path);
+        if (task.controller.signal.aborted || catalog.get(id) !== asset || version !== `${after.size}-${after.mtimeMs}`) return null;
+        if (cached) void cleanPreviewFiles(cached.directory, cached.file);
+        const url = `${scheme}://asset/track-proxy/${id}`;
+        trackProxies.set(id, { directory, file, url, version });
+        directory = file = undefined;
+        if (trackProxies.size > 4) {
+          const [key, oldest] = trackProxies.entries().next().value;
+          trackProxies.delete(key);
+          await cleanPreviewFiles(oldest.directory, oldest.file);
+        }
+        return url;
+      } catch { return null; } finally {
+        if (task === pendingProxy) pendingProxy = undefined;
+        await cleanPreviewFiles(directory, file);
+      }
+    })();
+    return task.promise;
+  }
   const thumbnailPending = new Map();
   const thumbnailQueue = [];
   let thumbnailScope = new AbortController();
@@ -350,9 +444,10 @@ async function launchDesktop({
   const thumbnailFolderRecord = (source) => source.root ? source : folderAssetOrigins.get(source);
 
   async function checkedDraftCover(source) {
-    const info = await fs.lstat(source.path);
-    if (!info.isFile() || materialPathKey(await fs.realpath(source.path)) !== materialPathKey(source.path)) throw new Error('草稿封面不可用。');
-    return source.path;
+    const file=await resolveOutputFile(source.path);
+    const info = await fs.lstat(file);
+    if (!info.isFile() || materialPathKey(await fs.realpath(file)) !== materialPathKey(file)) throw new Error('草稿封面不可用。');
+    return file;
   }
 
   function drainThumbnails() {
@@ -366,16 +461,16 @@ async function launchDesktop({
           const draftSource = draftThumbnailSource(task.id);
           const file = record ? await checkedMaterialPath(record) : draftSource ? await checkedDraftCover(draftSource) : null;
           const asset = task.asset.root || draftSource ? await inspectFolderFile(file, task.asset.kind, task.signal) : task.asset;
-          const bytes = await createVideoThumbnail(asset, { signal: task.signal });
+          const bytes = await createVideoThumbnail(asset, { signal: task.signal, time:task.time ?? draftSource?.time });
           if (bytes && !task.signal.aborted && thumbnailSource(task.id) === task.asset) {
-            thumbnails.set(task.id, bytes);
+            thumbnails.set(task.key, bytes);
             if (thumbnails.size > maxThumbnailCache) thumbnails.delete(thumbnails.keys().next().value);
-            url = thumbnailUrl(task.id);
+            url = thumbnailUrl(task.key);
           }
         } catch {
           // A missing or undecodable source uses the library tile's placeholder.
         } finally {
-          if (thumbnailPending.get(task.id) === task) thumbnailPending.delete(task.id);
+          if (thumbnailPending.get(task.key) === task) thumbnailPending.delete(task.key);
           thumbnailWorkers -= 1;
           task.resolve(url);
           drainThumbnails();
@@ -384,34 +479,37 @@ async function launchDesktop({
     }
   }
 
-  async function videoThumbnail(id) {
+  async function videoThumbnail(id, time) {
     const asset = thumbnailSource(id);
     if (asset?.kind !== 'video') return null;
     const signal = thumbnailScope.signal;
-    const cached = thumbnails.get(id);
+    if(time!=null && (!Number.isFinite(time) || time<0 || time>864000)) return null;
+    const key=time==null ? id : id+'@'+Math.round(time*1000);
+    const cached = thumbnails.get(key);
     if (cached) {
       const record = thumbnailFolderRecord(asset);
       const available = record ? await checkedMaterialPath(record).then(() => true, () => false)
         : await fs.stat(asset.path).then((info) => info.isFile(), () => false);
       if (signal.aborted || thumbnailSource(id) !== asset) return null;
-      thumbnails.delete(id);
+      thumbnails.delete(key);
       if (!available) return null;
-      thumbnails.set(id, cached);
+      thumbnails.set(key, cached);
       if (thumbnails.size > maxThumbnailCache) thumbnails.delete(thumbnails.keys().next().value);
-      return thumbnailUrl(id);
+      return thumbnailUrl(key);
     }
-    const pending = thumbnailPending.get(id);
+    const pending = thumbnailPending.get(key);
     if (pending) return pending.promise;
     if (thumbnailPending.size >= maxThumbnailRequests) return null;
     const { promise, resolve } = Promise.withResolvers();
-    const task = { id, asset, signal, promise, resolve };
-    thumbnailPending.set(id, task);
+    const task = { id,key,time, asset, signal, promise, resolve };
+    thumbnailPending.set(key, task);
     thumbnailQueue.push(task);
     drainThumbnails();
     return promise;
   }
 
   function resetThumbnails() {
+    waveforms.reset();
     thumbnailScope.abort();
     thumbnailScope = new AbortController();
     thumbnails.clear();
@@ -452,11 +550,17 @@ async function launchDesktop({
       return net.fetch(pathToFileURL(path.join(__dirname, 'ui', url.pathname.slice(1))).href);
     }
     if (url.hostname === 'asset') {
+      if (url.pathname.startsWith('/track-proxy/')) {
+        const id = url.pathname.slice('/track-proxy/'.length);
+        const proxy = catalog.has(id) && trackProxies.get(id);
+        return proxy ? mediaResponse(proxy.file, request.headers.get('range')) : new Response(null, { status: 404 });
+      }
       const draftCover = /^\/draft-cover\/([a-f0-9-]{36})\/(\d{1,16})$/.exec(url.pathname);
       if (draftCover) return draftCoverResponse(draftCover[1], Number(draftCover[2]));
       if (url.pathname.startsWith('/thumbnail/')) {
         const id = url.pathname.slice('/thumbnail/'.length);
-        const bytes = (catalog.get(id) ?? materialFiles.get(id))?.kind === 'video' && thumbnails.get(id);
+        const base=id.replace(/@\d+$/,'');
+        const bytes = (catalog.get(base) ?? materialFiles.get(base))?.kind === 'video' && thumbnails.get(id);
         return jpegResponse(bytes);
       }
       if (url.pathname.startsWith('/folder-image/')) {
@@ -499,7 +603,7 @@ async function launchDesktop({
   win.webContents.on('will-attach-webview', (event) => event.preventDefault());
   app.on('window-all-closed', () => {
     resetThumbnails();
-    discardPreview().finally(() => app.quit());
+    Promise.allSettled([discardPreview(), clearTrackProxies()]).finally(() => app.quit());
   });
   app.on('second-instance', () => {
     if (win.isMinimized()) win.restore();
@@ -552,7 +656,7 @@ async function launchDesktop({
 
   function handle(channel, action) {
     ipcMain.handle(channel, async (event, value) => {
-      if (event.sender !== win.webContents || event.senderFrame?.url !== page || event.senderFrame.parent) {
+      if (win.isDestroyed() || event.sender !== win.webContents || event.senderFrame?.url !== page || event.senderFrame.parent) {
         return { ok: false, error: '请求来源无效。' };
       }
       try {
@@ -564,8 +668,47 @@ async function launchDesktop({
   }
 
   handle('workbench:history', () => recent);
-  handle('workbench:workflows', listWorkflows);
+  handle('workbench:rename-outputs',async({files,prefix})=>{
+    if(job||pickerOpen)throw new Error('请先完成当前操作。');
+    pickerOpen=true;
+    try{
+      const result=await renameOutputs(dataDirectory,recent,files,prefix);
+      for(const {from,to,name} of result.changes) {
+        published.delete(from);published.add(to);
+        for(const [id,asset] of catalog)if(asset.path===from){
+          lookupByPath.delete(assetPathKey(asset.kind,from));asset.path=to;asset.name=name;lookupByPath.set(assetPathKey(asset.kind,to),id);
+          folderAssetOrigins.delete(asset);
+        }
+      }
+      return result;
+    }finally{pickerOpen=false;}
+  });
+  handle('workbench:workflows', async () => listWorkflows({ creativeConfigured: Boolean((await creativeSettings.public()).baseUrl) }));
+  handle('workbench:creative-settings', () => creativeSettings.public());
+  handle('workbench:save-creative-settings', (value) => creativeSettings.save(value));
+  handle('workbench:creative-run', async (request) => {
+    if (job || pickerOpen) throw new Error('请先完成当前操作。');
+    if (catalog.size >= maxCatalog) throw new Error('本次会话的素材已达到上限。');
+    job = new AbortController();
+    try {
+      for (const id of [request?.imageId, request?.videoId, request?.voiceId]) {
+        const origin = id && folderAssetOrigins.get(catalog.get(id));
+        if (origin) await checkedMaterialPath(origin);
+      }
+      const result = await runCreative(await creativeSettings.read(), request, catalog, path.join(dataDirectory, 'creative-media'), { signal: job.signal });
+      if (result.asset) {
+        const id = randomUUID(); catalog.set(id, result.asset);
+        lookupByPath.set(assetPathKey(result.asset.kind, result.asset.path), id);
+        return { ...result, asset: describeAsset(id, result.asset) };
+      }
+      return result;
+    } finally { finishJob(); }
+  });
   handle('workbench:video-thumbnail', (id) => (catalog.has(id) || materialFiles.has(id)) ? videoThumbnail(id) : null);
+  handle('workbench:clip-thumbnail', ({id,time}={})=>catalog.has(id) ? videoThumbnail(id,time) : null);
+  handle('workbench:audio-waveform', audioWaveform);
+  handle('workbench:track-proxy', trackProxyUrl);
+  handle('workbench:subtitle-style-preview', previewSubtitleStyle);
   handle('workbench:list-drafts', async () => (await drafts.list()).map(publicDraft));
   handle('workbench:create-draft', async (value) => {
     if (!value || typeof value !== 'object' || Array.isArray(value)) throw new Error('草稿请求无效。');
@@ -585,6 +728,54 @@ async function launchDesktop({
   });
   handle('workbench:browse-material-folder', browseMaterialFolder);
   handle('workbench:load-material-file', loadMaterialFile);
+  for (const channel of ['detect-pauses', 'process-audio']) {
+    handle('workbench:' + channel, async (request) => {
+      if (job || pickerOpen) throw new Error('请先完成当前操作。');
+      const source = catalog.get(request?.id);
+      if (!source) throw new Error('素材尚未载入。');
+      const outputCount=(request.mode==='both'?2:1)*(request.withVideo?2:1);
+      if (channel === 'process-audio' && catalog.size + outputCount > maxCatalog) throw new Error('本次会话的素材已达到上限。');
+      job = new AbortController();
+      try {
+        const origin = folderAssetOrigins.get(source);
+        if (origin) await checkedMaterialPath(origin);
+        if (channel === 'detect-pauses') return await detectPauses(source, request, {signal:job.signal});
+        const results = await processAudio(source, request, path.join(dataDirectory,'processed-audio'), {signal:job.signal});
+        if (origin) await checkedMaterialPath(origin);
+        return results.map((asset) => {
+          const id = randomUUID();
+          catalog.set(id,asset); lookupByPath.set(assetPathKey(asset.kind,asset.path),id);
+          return describeAsset(id,asset);
+        });
+      } finally { finishJob(); }
+    });
+  }
+  handle('workbench:foreground', async (id) => {
+    if (job || pickerOpen) throw new Error('请先完成当前操作。');
+    const source = catalog.get(id);
+    if (!source || !['image', 'video'].includes(source.kind)) throw new Error('请选择一个图片或视频素材。');
+    if (catalog.size >= maxCatalog) throw new Error('本次会话的素材已达到上限。');
+    job = new AbortController();
+    try {
+      const origin = folderAssetOrigins.get(source);
+      if (origin) await checkedMaterialPath(origin);
+      const file = await createForeground(source, path.join(dataDirectory, 'foreground-media'), {
+        signal: job.signal, onProgress: (fraction) => {
+          if (!win.isDestroyed()) win.webContents.send('workbench:progress', { kind: 'foreground', fraction });
+        },
+      });
+      if (origin) await checkedMaterialPath(origin);
+      const key = assetPathKey(source.kind, file);
+      const known = lookupByPath.get(key);
+      if (known) return describeAsset(known, catalog.get(known));
+      const asset = await inspectAsset(file, source.kind, { signal: job.signal });
+      const outputId = randomUUID();
+      catalog.set(outputId, asset); lookupByPath.set(key, outputId);
+      return describeAsset(outputId, asset);
+    } finally {
+      finishJob();
+    }
+  });
   handle('workbench:pick-material-folder', async () => {
     if (pickerOpen || job) throw new Error('请先完成当前操作。');
     pickerOpen = true;
@@ -631,7 +822,15 @@ async function launchDesktop({
     return cloudTts;
   }
 
-  handle('workbench:cloud-tts-settings', () => ({ ...publicSettings(cloudSettings), warning: cloudSettingsWarning }));
+  handle('workbench:cloud-tts-settings', () => ({ ...publicSettings(cloudSettings), warning: cloudSettingsWarning || cloudSettings.warning }));
+  handle('workbench:open-breeze-keys', () => shell.openExternal('https://breezeblue.ai/app/developer/api-keys'));
+  handle('workbench:verify-breeze-access', async (input) => {
+    if (typeof input !== 'string' || input.length>4096) throw new Error('请输入 Breeze Blue API 密钥。');
+    const apiKey = input.trim() || (cloudSettings.provider==='breezeblue' ? cloudSettings.apiKey : '');
+    if (!apiKey) throw new Error(cloudSettings.warning || '请输入 Breeze Blue 完整密钥。');
+    const connection=createCloudTts({provider:'breezeblue',apiKey,requestTimeoutMs:12000});
+    return connection.verifyAccess();
+  });
   handle('workbench:cloud-tts-save-settings', async (update) => {
     if (job || pickerOpen || savingCloudSettings) throw new Error('请先完成当前操作。');
     savingCloudSettings = true;
@@ -649,14 +848,16 @@ async function launchDesktop({
     }
   });
 
-  handle('workbench:cloud-tts-voices', async () => {
+  handle('workbench:cloud-tts-voices', async (options) => {
     const provider = cloudTts;
     const status = provider?.status();
     if (!status || (!status.configured && status.provider !== 'seed-audio')) {
-      return { ...status, configured: false, voices: [] };
+      return { ...status, configured: false, voices: [], warning:cloudSettingsWarning || cloudSettings.warning };
     }
-    const manifest = await provider.listVoices();
-    return { ...status, voices: manifest.voices };
+    const manifest = await provider.listVoices(status.provider === 'breezeblue' ? {
+      page: options?.page, token: options?.token, search: options?.search, filter: options?.filter,
+    } : undefined);
+    return { ...status, ...manifest };
   });
 
   handle('workbench:cloud-tts-sample', async (voiceId) => {
@@ -682,17 +883,19 @@ async function launchDesktop({
   handle('workbench:cloud-tts-synthesize', async (value) => {
     const provider = requireCloudTts();
     const seedAudio = provider.status().provider === 'seed-audio';
+    const breeze = provider.status().provider === 'breezeblue';
     if (job || pickerOpen || savingCloudSettings) throw new Error('请先完成当前操作。');
-    const { jobs, speed = 1, volume = 100, pitch = 0, enableSubtitles = true } = value ?? {};
+    const { jobs, speed = 1, volume = 100, pitch = 0, enableSubtitles = true, trimPauses = false } = value ?? {};
     if (!Array.isArray(jobs) || !jobs.length || jobs.length > maxSpeechJobs
       || jobs.some((item) => !Number.isInteger(item?.index) || item.index < 0 || item.index >= maxShots
         || typeof item.voiceId !== 'string' || !item.voiceId || item.voiceId.length > 128
         || (seedAudio && !isSeedAudioVoiceId(item.voiceId))
         || typeof item.text !== 'string' || !item.text.trim()
-        || (seedAudio ? item.text.length > 6000 || [...item.text].length > 3000 : item.text.length > 500))
+        || (seedAudio || breeze ? [...item.text].length > (seedAudio ? 3000 : 1000) : item.text.length > 500))
       || new Set(jobs.map(({ index, voiceId }) => JSON.stringify([index, voiceId]))).size !== jobs.length
-      || !Number.isFinite(speed) || speed < 0.5 || speed > 2
-      || !Number.isFinite(volume) || volume < (seedAudio ? 50 : 0) || volume > (seedAudio ? 200 : 100)
+      || typeof trimPauses!=='boolean' || !Number.isFinite(speed) || speed < 0.5 || speed > 2
+      || !Number.isFinite(volume) || volume < (seedAudio ? 50 : breeze ? 1 : 0) || volume > (seedAudio || breeze ? 200 : 100)
+      || (breeze && typeof enableSubtitles !== 'boolean')
       || (seedAudio && (!Number.isInteger(pitch) || pitch < -12 || pitch > 12 || typeof enableSubtitles !== 'boolean'))) {
       throw new Error(seedAudio ? '请检查提示词、语速、音量和音调。' : '请检查台词、音色、语速和音量。');
     }
@@ -714,17 +917,25 @@ async function launchDesktop({
         try {
           generated = await provider.synthesize({
             text, voiceId, speed, volume, signal, onProgress: (fraction) => progress(position, fraction),
-            ...(seedAudio && { pitch, enableSubtitles }),
+            ...(seedAudio && { pitch }), ...((seedAudio || breeze) && { enableSubtitles }),
           });
-          const asset = await inspectAsset(generated.path, 'audio', { signal });
+          let asset = await inspectAsset(generated.path, 'audio', { signal });
           if (seedAudio && asset.codec !== 'mp3') throw new Error('Seed Audio 未返回有效的 MP3。');
+          let timedCaptions=generated.captions;
+          if(trimPauses) {
+            const intervals=await detectPauses(asset,{}, {signal});
+            if(intervals.length && asset.duration-intervals.reduce((sum,range)=>sum+range.end-range.start,0)>=0.1) {
+              [asset]=await processAudio(asset,{mode:'trim',intervals},path.join(dataDirectory,'processed-audio'),{signal});
+              timedCaptions=retimeCaptions(timedCaptions,intervals);
+            }
+          }
           signal.throwIfAborted();
           const id = randomUUID();
           catalog.set(id, asset);
           lookupByPath.set(`audio:${path.normalize(asset.path)}`, id);
           results.push({
             index, voiceId, asset: {
-              ...describeAsset(id, asset), ...(!seedAudio && { scriptText: text.trim() }), timedCaptions: generated.captions,
+              ...describeAsset(id, asset), ...(!seedAudio && { scriptText: text.trim() }), timedCaptions,
             },
           });
         } catch (error) {
@@ -873,11 +1084,26 @@ async function launchDesktop({
 
   async function restoreCatalog(config, assets) {
     const ids = new Map([...assets.keys()].map((id) => [id, randomUUID()]));
+    const remap = (id) => ids.get(id);
+    const remapShot = (shot) => shot.map((clip) => ({
+      ...clip, id: remap(clip.id), ...(clip.layers && { layers: normalizeLayers(clip.layers, remap) }),
+      ...(clip.look && {look:normalizeLook(clip.look,remap)}),
+    }));
     const descriptions = [...assets].map(([id, asset]) => describeAsset(ids.get(id), asset));
+    await clearTrackProxies();
     const restoredConfig = {
       ...config,
-      shots: config.shots.map((shot) => shot.map((clip) => ({ ...clip, id: ids.get(clip.id) }))),
+      shots: config.shots.map(remapShot),
+      ...(config.subprojects && { subprojects: normalizeSubprojects(config.subprojects, config.shots.length, remapShot,remap) }),
+      ...(config.packaging && { packaging: normalizePackaging(config.packaging, remap, config.shots.length) }),
       musicIds: config.musicIds.map((id) => ids.get(id)),
+      ...(config.materialBins && {materialBins:config.materialBins.map((bin)=>({...bin,ids:bin.ids.map(remap)}))}),
+      ...(config.processedLibrary && {processedLibrary:config.processedLibrary.map((item)=>({...item,id:ids.get(item.id)}))}),
+      ...(config.cover && {cover:{...config.cover,items:config.cover.items.map((item)=>({...item,id:ids.get(item.id)}))}}),
+      ...(config.filterLibrary && {filterLibrary:config.filterLibrary.map(remap)}),
+      ...(config.assetAliases && {assetAliases:config.assetAliases.map(a=>({...a,id:remap(a.id)}))}),
+      ...(config.volumeOverrides && {volumeOverrides:config.volumeOverrides.map(a=>({...a,id:remap(a.id)}))}),
+      ...(config.sceneCuts && { sceneCuts: config.sceneCuts.map((item) => ({ ...item, assetId: ids.get(item.assetId) })) }),
       narrationId: config.narrationId ? ids.get(config.narrationId) : null,
       segmentNarrationIds: config.segmentNarrationIds?.map((row) => row.map((id) => id === null ? null : ids.get(id))),
       extraWholeTracks: config.extraWholeTracks?.map((track) => ({
@@ -925,7 +1151,7 @@ async function launchDesktop({
         projectPath = projects.find((project) => project.id === id)?.path;
         if (!projectPath) throw new Error('找不到这个本地项目。');
       }
-      const { config, assets } = await loadProject(projectPath);
+      const { config, assets } = await loadProject(projectPath,resolveOutputFile);
       const restored = await restoreCatalog(config, assets);
       const libraryWarning = await trackProject(projectPath);
       return { name: path.basename(projectPath, path.extname(projectPath)), ...restored, libraryWarning };
@@ -934,10 +1160,41 @@ async function launchDesktop({
     }
   });
 
+  handle('workbench:pick-lut',async()=>{
+    if(job || pickerOpen)throw new Error('请先完成当前操作。');
+    pickerOpen=true;
+    try{
+      const reply=await dialogs.showOpenDialog(win,{title:'导入 LUT',properties:['openFile'],filters:[{name:'三维 LUT',extensions:['cube']}]});
+      if(reply.canceled || !reply.filePaths.length)return null;
+      const asset=await inspectLut(reply.filePaths[0]);const key=assetPathKey('lut',asset.path);
+      let id=lookupByPath.get(key);
+      if(!id){id=randomUUID();catalog.set(id,asset);lookupByPath.set(key,id);}
+      return {id,kind:'lut',name:asset.name};
+    }finally{pickerOpen=false;}
+  });
+  let lookRequest;
+  handle('workbench:preview-look',async(value)=>{
+    const asset=catalog.get(value?.id);
+    if(!['video','image'].includes(asset?.kind)||!['9:16','16:9','1:1'].includes(value.ratio)||!Number.isFinite(value.time)) throw new Error('请选择有效画面。');
+    const look=normalizeLook(value.look,(id,role)=>{
+      const item=catalog.get(id);
+      if(role==='lut' ? item?.kind!=='lut' : !['video','image'].includes(item?.kind))throw new Error('画面素材不可用。');
+      return id;
+    });
+    const origins=[asset,...(look.background?.ids??[]).map((id)=>catalog.get(id))];
+    for(const item of origins){const origin=folderAssetOrigins.get(item);if(origin)await checkedMaterialPath(origin);}
+    lookRequest?.abort();const request=new AbortController();lookRequest=request;
+    const at=asset.kind==='image'?0:Math.max(0,Math.min(value.time,asset.duration-1/(asset.fps||30)));
+    try{
+      return await previewLook(process.env.SUPERDIR_REPLICA_FFMPEG||'ffmpeg',asset,look,catalog,at,value.ratio,request.signal,Number.isFinite(value.origin)?Math.max(0,value.origin):0);
+    }catch(error){if(request.signal.aborted)return null;throw error;}
+    finally{if(lookRequest===request)lookRequest=undefined;}
+  });
+
   handle('workbench:pick', async (value) => {
     const { kind, limit } = value || {};
-    if (!['visual', 'video', 'audio', 'narration'].includes(kind) || !Number.isInteger(limit)
-      || limit < 1 || limit > maxExports || (kind === 'narration' && limit !== 1)) {
+    if (!['visual', 'video', 'image', 'audio', 'narration'].includes(kind) || !Number.isInteger(limit)
+      || limit < 1 || limit > maxCandidates || (kind === 'narration' && limit !== 1)) {
       throw new Error('素材选择参数无效。');
     }
     if (pickerOpen || job) throw new Error('请先完成当前操作。');
@@ -946,10 +1203,11 @@ async function launchDesktop({
       const filters = {
         visual: { name: '视频和图片', extensions: [...videoExtensions, ...imageExtensions] },
         video: { name: '视频', extensions: videoExtensions },
+        image: { name:'封面图片', extensions:imageExtensions },
         audio: { name: '音频', extensions: audioExtensions },
       };
       const mediaKind = kind === 'narration' ? 'audio' : kind;
-      const titles = { visual: '选择分镜素材', video: '选择视频素材', audio: '选择配乐', narration: '选择口播音频' };
+      const titles = { visual: '选择分镜素材', video: '选择视频素材', image:'选择封面图片', audio: '选择配乐', narration: '选择口播音频' };
       const { canceled, filePaths } = await dialogs.showOpenDialog(win, {
         title: titles[kind],
         properties: limit === 1 ? ['openFile'] : ['openFile', 'multiSelections'],
@@ -1039,6 +1297,32 @@ async function launchDesktop({
     }
   });
 
+  handle('workbench:detect-scene-cuts', async (value) => {
+    if (job || pickerOpen) throw new Error('请先完成当前操作。');
+    const asset = catalog.get(value?.assetId);
+    if (asset?.kind !== 'video') throw new Error('请从素材库选择一个视频。');
+    job = new AbortController();
+    try {
+      const origin = folderAssetOrigins.get(asset);
+      if (origin) await checkedMaterialPath(origin);
+      return await detectSceneCuts(asset.path, value.options, { signal: job.signal });
+    } finally {
+      finishJob();
+    }
+  });
+
+  handle('workbench:recognize-speech', async (id)=>{
+    if(job || pickerOpen) throw new Error('请先完成当前操作。');
+    const asset=catalog.get(id);
+    if(!asset) throw new Error('请先添加素材。');
+    job=new AbortController();
+    try {
+      const origin=folderAssetOrigins.get(asset);
+      if(origin) await checkedMaterialPath(origin);
+      return await require('./media.cjs').recognizeLocalSpeech(asset,{signal:job.signal});
+    } finally {finishJob();}
+  });
+
   handle('workbench:scene-split', async (value) => {
     if (job || pickerOpen) throw new Error('请先完成当前操作。');
     const inputs = Array.isArray(value?.inputs) ? value.inputs : [];
@@ -1068,12 +1352,14 @@ async function launchDesktop({
     if (closing && !win.isDestroyed()) setImmediate(() => win.close());
   }
 
-  handle('workbench:prepare-preview', async (config) => {
+  handle('workbench:prepare-preview', async (request) => {
     if (job || pickerOpen) throw new Error('请先完成当前操作。');
     job = new AbortController();
     const { signal } = job;
     try {
-      const plans = await prepareMontagePlans(config, catalog, { signal });
+      const { config, scope } = request?.scope === undefined ? { config: request } : request;
+      const plans = scope === undefined ? await prepareMontagePlans(config, catalog, { signal })
+        : await prepareSubprojectPlans(config, scope, catalog, { signal });
       if (signal.aborted) return null;
       previewBatch = createPreviewBatch(config, catalog, plans);
       return { id: previewBatch.id, entries: previewBatch.entries };

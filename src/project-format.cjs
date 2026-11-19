@@ -5,16 +5,22 @@ const fs = require('node:fs/promises');
 const path = require('node:path');
 const {
   audioExtensions, imageExtensions, videoExtensions, maxShots, maxCandidates, maxExports, maxWholeTracks,
-  inspectAsset, planMontage, normalizeSubtitleStyle, normalizeGeneratedCaptions,
+  inspectAsset, planMontage, normalizeSubtitleStyle, normalizeGeneratedCaptions, normalizeMutedVideoTracks,
 } = require('./media.cjs');
 const { normalizeSubtitles } = require('./subtitles.cjs');
+const { normalizeSubprojects } = require('./subprojects.cjs');
+const { normalizeLayers, normalizeTransform, normalizePackaging } = require('./packaging.cjs');
+const { normalizeShotSettings, normalizeRanges, candidateKey, normalizeSegmentVoiceCuts, normalizeSceneCuts } = require('./shot-timing.cjs');
+const { normalizeCover } = require('./cover.cjs');
+const { normalizeVolumeOverrides } = require('./shot-timing.cjs');
+const { normalizeLook, inspectLut } = require('./visual-style.cjs');
 
 const format = 'sdworkbench';
 const version = 1;
 const maxBytes = 1024 * 1024;
 const maxScriptBytes = 256 * 1024;
 const maxScriptRows = 1000;
-const extensions = { audio: audioExtensions, image: imageExtensions, video: videoExtensions };
+const extensions = { audio: audioExtensions, image: imageExtensions, video: videoExtensions, lut:['cube'] };
 
 function localPath(file) {
   if (typeof file !== 'string' || !path.isAbsolute(file) || file.includes('\0') || /^[\\/]{2}/.test(file)) return false;
@@ -91,12 +97,12 @@ function cleanConfig(config) {
     references.set(id, role);
     return id;
   }
-  const shots = Array.from(config.shots, (shot, index) => {
+  const recordLayer = (id, kind) => record(id, kind === 'sound' ? 'audio' : kind === 'lut' ? 'lut' : 'visual');
+  function cleanShot(shot, index) {
     if (!Array.isArray(shot) || shot.length > maxCandidates) throw new Error(`第 ${index + 1} 组分镜的候选素材数量无效。`);
     const seen = new Set();
     return Array.from(shot, (clip) => {
       const id = record(clip?.id, 'visual');
-      if (seen.has(id)) throw new Error(`第 ${index + 1} 组分镜有重复素材。`);
       if (![clip.start, clip.end].every(Number.isFinite) || clip.start < 0 || clip.end < clip.start) {
         throw new Error(`第 ${index + 1} 组分镜的裁切时间无效。`);
       }
@@ -106,17 +112,67 @@ function cleanConfig(config) {
       if (clip.speed !== undefined && (!Number.isFinite(clip.speed) || clip.speed < 0.5 || clip.speed > 3)) {
         throw new Error(`第 ${index + 1} 组分镜的素材速度无效。`);
       }
-      seen.add(id);
+      if (clip.enabled !== undefined && typeof clip.enabled !== 'boolean') throw new Error('候选参与状态无效。');
+      const ranges = clip.ranges === undefined ? undefined : normalizeRanges(clip.ranges, clip.start, clip.end);
+      const key = candidateKey({ ...clip, ranges });
+      if (seen.has(key)) throw new Error(`第 ${index + 1} 组分镜有重复素材。`);
+      seen.add(key);
       return {
         id, start: clip.start, end: clip.end,
+        ...(clip.enabled !== undefined && { enabled: clip.enabled }),
+        ...(clip.layers !== undefined && { layers: normalizeLayers(clip.layers, recordLayer) }),
+        ...(clip.transform !== undefined && { transform: normalizeTransform(clip.transform) }),
+        ...(clip.look !== undefined && {look:normalizeLook(clip.look,record)}),
+        ...(clip.videoSubtitles && {videoSubtitles:normalizeSubtitles(clip.videoSubtitles)}),
+        ...(ranges && { ranges }),
         ...(clip.volume !== undefined && { volume: clip.volume }),
         ...(clip.speed !== undefined && { speed: clip.speed }),
       };
     });
-  });
+  }
+  const shots = Array.from(config.shots, cleanShot);
   const musicIds = Array.from(config.musicIds, (id) => record(id, 'audio'));
   if (new Set(musicIds).size !== musicIds.length) throw new Error('工程中有重复的配乐。');
   const projectConfig = { shots, ratio, resolution, fps, fit, keepAudio, unordered, useOriginal, useMirrors, musicIds, musicVolume, count };
+  if (config.processedLibrary !== undefined) {
+    if (!Array.isArray(config.processedLibrary) || config.processedLibrary.length > 2000) throw new Error('已处理素材库无效。');
+    projectConfig.processedLibrary = config.processedLibrary.map(({id,kind}) => {
+      if (!['video','audio'].includes(kind)) throw new Error('已处理素材类型无效。');
+      return { id:record(id,kind==='audio'?'audio':'visual'), kind };
+    });
+  }
+  if (config.mutedVideoTracks !== undefined) projectConfig.mutedVideoTracks = normalizeMutedVideoTracks(config.mutedVideoTracks);
+  if (config.subprojects !== undefined) projectConfig.subprojects = normalizeSubprojects(config.subprojects, shots.length, cleanShot,(id)=>record(id,'audio'));
+  if (config.materialBins !== undefined) {
+    const scopes = new Set([null, ...(projectConfig.subprojects?.projects ?? []).map((p) => p.id)]);
+    if (!Array.isArray(config.materialBins) || config.materialBins.length > scopes.size) throw new Error('工程素材库无效。');
+    projectConfig.materialBins = config.materialBins.map(({scope, ids, hidden}) => {
+      if (!scopes.delete(scope) || !Array.isArray(ids) || !Array.isArray(hidden)
+          || !hidden.every((key) => typeof key === 'string' && /^[a-f0-9]{64}$/.test(key))) throw new Error('工程素材库条目无效。');
+      return {scope, ids: [...new Set(ids.map((id) => record(id,'visual')))], hidden: [...new Set(hidden)]};
+    });
+  }
+  if (config.packaging !== undefined) projectConfig.packaging = normalizePackaging(config.packaging, recordLayer, shots.length);
+  if (config.shotSettings !== undefined) projectConfig.shotSettings = normalizeShotSettings(config.shotSettings, shots.length);
+  if (config.voiceAlignment !== undefined) {
+    if (!['fill', 'reference'].includes(config.voiceAlignment)) throw new Error('口播对齐规则无效。');
+    projectConfig.voiceAlignment = config.voiceAlignment;
+  }
+  if (config.sceneCuts !== undefined) projectConfig.sceneCuts = normalizeSceneCuts(config.sceneCuts, record);
+  if (config.cover !== undefined) projectConfig.cover = normalizeCover(config.cover,(id)=>record(id,'visual'));
+  if (config.filterLibrary !== undefined) {
+    if (!Array.isArray(config.filterLibrary)||config.filterLibrary.length>200) throw new Error('LUT 库无效。');
+    projectConfig.filterLibrary=[...new Set(config.filterLibrary.map((id)=>record(id,'lut')))];
+  }
+  if(config.assetAliases!==undefined){
+    if(!Array.isArray(config.assetAliases)||config.assetAliases.length>4096)throw new Error('素材名称数量无效。');
+    projectConfig.assetAliases=config.assetAliases.map(({id,kind,name})=>{
+      if(!['image','video','audio'].includes(kind)||typeof name!=='string'||!name.trim()||name.length>150||/[\\/\x00-\x1f]/.test(name))throw new Error('素材名称无效。');
+      return {id:record(id,kind==='audio'?'audio':'visual'),kind,name};
+    });
+  }
+  if(config.volumeOverrides!==undefined)projectConfig.volumeOverrides=normalizeVolumeOverrides(config.volumeOverrides,record,shots.length);
+  if (config.segmentVoiceCuts !== undefined) projectConfig.segmentVoiceCuts = normalizeSegmentVoiceCuts(config.segmentVoiceCuts, segmentNarrationIds);
   if (config.musicStartShot !== undefined) {
     const start = config.musicStartShot;
     if (start !== null && (!Number.isInteger(start) || start < 0 || start >= shots.length)) {
@@ -133,7 +189,7 @@ function cleanConfig(config) {
       throw new Error('分段口播轨道数量与分镜数量不匹配。');
     }
     projectConfig.segmentNarrationIds = Array.from(segmentNarrationIds, (row, index) => {
-      if (!Array.isArray(row) || row.length > maxCandidates) throw new Error(`第 ${index + 1} 组的口播轨道无效。`);
+      if (!Array.isArray(row) || row.length > maxWholeTracks) throw new Error(`第 ${index + 1} 组的口播轨道无效。`);
       return Array.from(row, (id) => id === null ? null : record(id, 'audio'));
     });
   }
@@ -175,6 +231,11 @@ function cleanConfig(config) {
     });
   }
   if (config.script !== undefined) projectConfig.script = normalizeScriptModel(config.script);
+  if (config.wholeStartShots !== undefined) {
+    if (!Array.isArray(config.wholeStartShots) || config.wholeStartShots.length!==1+(config.extraWholeTracks?.length ?? 0)
+      || config.wholeStartShots.some((i)=>i!==null && (!Number.isInteger(i) || i<0 || i>=shots.length))) throw new Error('整段口播的跟随分镜无效。');
+    projectConfig.wholeStartShots=[...config.wholeStartShots];
+  }
   if (config.generatedCaptions !== undefined) {
     projectConfig.generatedCaptions = normalizeGeneratedCaptions(config.generatedCaptions, projectConfig);
   }
@@ -184,7 +245,7 @@ function cleanConfig(config) {
 function mediaDeclaration(id, asset, role) {
   const file = asset?.path;
   const kind = asset?.kind;
-  const validKind = role === 'audio' ? kind === 'audio' : ['image', 'video'].includes(kind);
+  const validKind = role === 'visual' ? ['image','video'].includes(kind) : role === kind;
   if (!role || !validKind || !localPath(file) || !extensions[kind].includes(path.extname(file).slice(1).toLowerCase())) {
     throw new Error(`工程素材 ${id} 缺失或类型不匹配，请重新选择素材。`);
   }
@@ -192,17 +253,38 @@ function mediaDeclaration(id, asset, role) {
 }
 
 function validateCuts(config, assets) {
+  for (const item of config.cover?.items ?? []) {
+    const asset = assets.get(item.id);
+    if (!asset || (asset.kind === 'image' ? item.time !== 0 : asset.kind !== 'video' || item.time > asset.duration)) throw new Error('封面帧超出素材范围。');
+  }
+  normalizeSegmentVoiceCuts(config.segmentVoiceCuts, config.segmentNarrationIds, assets);
+  for (const { assetId, points, used, hidden = [] } of config.sceneCuts ?? []) {
+    const asset = assets.get(assetId);
+    if (asset?.kind !== 'video' || points.some((point) => point >= asset.duration)
+        || [...used, ...hidden].some((range) => range.end > asset.duration + 1e-6)) throw new Error('AI 拆分点超出视频范围。');
+  }
   const populated = config.shots.flatMap((shot, index) => shot.length ? [index] : []);
   // Empty shots are useful while editing but cannot be part of a render plan.
   if (populated.length) {
     const count = populated.length === config.shots.length ? config.count : 1;
     planMontage({
       ...config,
-      shots: populated.map((index) => config.shots[index]),
+      // Inspect the cuts of every saved candidate, including tracks excluded from the current export.
+      shots: populated.map((index) => config.shots[index].map((clip) => ({ ...clip, enabled: true }))),
+      ...(config.packaging && { packaging: {
+        ...config.packaging,
+        segmentNarration: populated.map((index) => config.packaging.segmentNarration[index] ?? []),
+        textGroups: config.packaging.textMode === 'whole' ? config.packaging.textGroups :
+          config.packaging.textGroups.map((row) => populated.map((index) => row[index] ?? [])),
+      } }),
+      shotSettings: config.shotSettings && populated.map((index) => config.shotSettings[index]),
+      volumeOverrides:config.volumeOverrides?.flatMap(row=>row.kind!=='segment'?[row]:populated.includes(row.shot)?[{...row,shot:populated.indexOf(row.shot)}]:[]),
       segmentNarrationIds: config.segmentNarrationIds && populated.map((index) => config.segmentNarrationIds[index]),
+      segmentVoiceCuts: config.segmentVoiceCuts && populated.map((index) => config.segmentVoiceCuts[index]),
       generatedCaptions: undefined, // Already validated before removing empty draft shots for this render check.
       shotTransitions: config.shotTransitions && populated.map((index) => config.shotTransitions[index]),
       musicStartShot: populated.includes(config.musicStartShot) ? populated.indexOf(config.musicStartShot) : null,
+      wholeStartShots: config.wholeStartShots?.map((i)=>populated.includes(i) ? populated.indexOf(i) : null),
       count,
     }, assets, () => 0);
   }
@@ -265,7 +347,7 @@ async function readProject(file) {
   }
 }
 
-async function loadProject(file) {
+async function loadProject(file,resolvePath) {
   requireProjectPath(file);
   const project = await readProject(file);
   if (project?.format !== format || project.version !== version) throw new Error('不支持此工程文件格式或版本。');
@@ -286,7 +368,8 @@ async function loadProject(file) {
     for (let index = 0; index < rows.length; index += 4) {
       const batch = await Promise.all(rows.slice(index, index + 4).map(async (row) => {
         try {
-          return [row.id, await inspectAsset(row.path, row.kind, { signal })];
+          const source=resolvePath ? await resolvePath(row.path) : row.path;
+          return [row.id, row.kind==='lut' ? await inspectLut(source) : await inspectAsset(source, row.kind, { signal })];
         } catch (error) {
           const name = path.basename(row.path);
           if (error.code === 'ENOENT') throw new Error(`找不到工程素材「${name}」。请将它放回原位置后重试。`);

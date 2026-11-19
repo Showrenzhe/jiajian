@@ -7,6 +7,7 @@ const path = require('node:path');
 const { test } = require('node:test');
 const { createCloudTtsSettings, publicSettings } = require('../src/cloud-tts-settings.cjs');
 const { createCloudTts, seedAudioEndpoint } = require('../src/cloud-tts.cjs');
+const { breezeEndpoint } = require('../src/breezeblue.cjs');
 
 function mockStorage() {
   const secret = randomBytes(32);
@@ -42,7 +43,7 @@ async function settingsFixture(t) {
 test('stores ciphertext and keeps a key on same-origin gateway edits', async (t) => {
   const { settings, file, directory } = await settingsFixture(t);
   const empty = await settings.load();
-  assert.deepEqual(empty, { provider: 'seed-audio', baseUrl: seedAudioEndpoint, apiKey: '' });
+  assert.deepEqual(empty, { provider: 'breezeblue', baseUrl: breezeEndpoint, apiKey: '' });
   const first = await settings.save(empty, { baseUrl: 'HTTPS://speech.example.test:443/gateway/', apiKey: '  test-key-example  ' });
   assert.deepEqual(settings.publicSettings(first), { baseUrl: 'https://speech.example.test/gateway/', hasApiKey: true });
   assert.equal(Object.hasOwn(publicSettings(first), 'apiKey'), false);
@@ -69,7 +70,7 @@ test('requires explicit key replacement or clearing when moving to another origi
   const fourth = await settings.save(third, { apiKey: 'test-key-three' });
   assert.deepEqual(await settings.save(fourth, { baseUrl: '' }), { baseUrl: '', apiKey: '' });
   assert.deepEqual(await settings.load(), { baseUrl: '', apiKey: '' });
-  assert.deepEqual(JSON.parse(await fs.readFile(file, 'utf8')), { version: 1, baseUrl: '', keyCiphertext: null });
+  assert.deepEqual(JSON.parse(await fs.readFile(file, 'utf8')), { version: 1, baseUrl: '', keyCiphertext: null, provider: 'gateway' });
 });
 
 test('rejects origin tampering and reports unavailable secure storage without disclosing keys', async (t) => {
@@ -99,6 +100,43 @@ test('Seed Audio stores the fixed address, encrypts its key, and can be disabled
   assert.deepEqual(await settings.load(), { provider: 'seed-audio', baseUrl: seedAudioEndpoint, apiKey: '' });
   assert.deepEqual(publicSettings(disabled), { provider: 'seed-audio', baseUrl: seedAudioEndpoint, hasApiKey: false });
   assert.equal(createCloudTts(disabled).status().configured, false);
+});
+
+test('an empty legacy setup opens Breeze Blue, while saved provider selections retain their own credential', async (t) => {
+  const { settings, file } = await settingsFixture(t);
+  await fs.writeFile(file, JSON.stringify({ version: 1, baseUrl: '', keyCiphertext: null }));
+  const defaults = await settings.load();
+  assert.equal(defaults.provider, 'breezeblue');
+  const chosen = await settings.save(defaults, { apiKey: 'fictional-breeze-test' });
+  assert.equal(chosen.baseUrl, breezeEndpoint);
+  assert.equal((await settings.load()).apiKey, chosen.apiKey);
+  assert.deepEqual(publicSettings(chosen), { provider: 'breezeblue', baseUrl: breezeEndpoint, hasApiKey: true });
+  assert.ok(!(await fs.readFile(file, 'utf8')).includes(chosen.apiKey));
+  await assert.rejects(settings.save(chosen, { baseUrl: 'https://other.example.test/' }), /固定/);
+  await assert.rejects(settings.save(chosen, { provider: 'seed-audio' }), /协议已变更/);
+});
+
+test('Breeze management IDs cannot replace a saved credential and legacy IDs can be corrected without losing the provider', async (t) => {
+  const {settings,file,safeStorage}=await settingsFixture(t);
+  const saved=await settings.save(await settings.load(),{apiKey:'test-credential'});
+  const before=await fs.readFile(file);
+  const incorrect='key_fixtureonly';
+  const matchesHint=(error)=>/管理编号.*brz_/.test(error.message) && !error.message.includes(incorrect);
+  await assert.rejects(settings.save(saved,{apiKey:incorrect}),matchesHint);
+  assert.deepEqual(await fs.readFile(file),before);
+  const envelope=JSON.parse(before);
+  envelope.keyCiphertext=(await safeStorage.encryptStringAsync(JSON.stringify({
+    provider:'breezeblue',origin:new URL(breezeEndpoint).origin,apiKey:incorrect,
+  }))).toString('base64');
+  await fs.writeFile(file,JSON.stringify(envelope));
+  const legacy=await settings.load();
+  assert.equal(legacy.provider,'breezeblue');
+  assert.equal(legacy.apiKey,'');
+  assert.match(publicSettings(legacy).warning,/管理编号.*brz_/);
+  assert.equal(publicSettings(legacy).hasApiKey,false);
+  const replacement=await settings.save(legacy,{apiKey:'new-format-allowed'});
+  assert.equal((await settings.load()).apiKey,'new-format-allowed');
+  assert.equal(publicSettings(replacement).warning,undefined);
 });
 
 test('switching provider cannot reuse a saved key on the same origin', async (t) => {

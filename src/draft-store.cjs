@@ -35,13 +35,16 @@ async function readDocument(file) {
 
 function firstVisual(document) {
   if (!Array.isArray(document.config?.shots) || !Array.isArray(document.assets)) return null;
-  const clip = document.config.shots.find((shot) => Array.isArray(shot) && shot.length)?.[0];
+  const cover = document.config.cover;
+  const chosen = cover?.mode === 'library' && cover.items?.[Math.max(0,cover.active ?? 0)];
+  const clip = chosen || document.config.shots.find((shot) => Array.isArray(shot) && shot.length)?.[0];
   const asset = clip && document.assets.find((item) => item?.id === clip.id);
   const file = asset?.path;
   if (typeof file !== 'string' || !path.isAbsolute(file) || file.includes('\0') || /^[\\/]{2}/.test(file)
       || (process.platform === 'win32' && (!/^[a-z]:[\\/]/i.test(file) || file.slice(2).includes(':')))) return null;
   const allowed = asset.kind === 'image' ? imageExtensions : asset.kind === 'video' ? videoExtensions : [];
-  return allowed.includes(path.extname(file).slice(1).toLowerCase()) ? { path: file, kind: asset.kind } : null;
+  const time = chosen?.time ?? (cover?.mode === 'first-shot' ? clip.ranges?.[0]?.start ?? clip.start : undefined);
+  return allowed.includes(path.extname(file).slice(1).toLowerCase()) ? { path: file, kind: asset.kind, ...(asset.kind === 'video' && Number.isFinite(time) && {time}) } : null;
 }
 
 function readDraftRecord(id, document) {
@@ -56,14 +59,16 @@ function readDraftRecord(id, document) {
 
 function estimateDuration(config) {
   let seconds = 0;
-  for (const [clip] of config.shots) {
+  for (const [i,shot] of config.shots.entries()) {
+    const clip=shot.find((candidate)=>candidate.enabled!==false);
     if (!clip) continue;
-    seconds += (clip.end - clip.start) / (clip.speed ?? 1);
+    const source=clip.ranges?.reduce((sum,r)=>sum+r.end-r.start,0)??(clip.end-clip.start);
+    seconds += config.shotSettings?.[i]?.duration ?? Math.max(0,source-(clip.look?.head??0)-(clip.look?.tail??0))/(clip.speed??1);
   }
   return Number.isFinite(seconds) && seconds > 0 ? Math.round(seconds * 1000) / 1000 : undefined;
 }
 
-function createDraftStore(directory) {
+function createDraftStore(directory,resolvePath) {
   const records = new Map();
   let ready;
   let writes = Promise.resolve();
@@ -151,7 +156,7 @@ function createDraftStore(directory) {
       const { meta } = find(id);
       const file = snapshotPath(id);
       if (!(await fs.lstat(file)).isFile()) throw new Error('找不到这个本地草稿。');
-      return { ...meta, ...(await loadProject(file)) };
+      return { ...meta, ...(await loadProject(file,resolvePath)) };
     });
   }
 

@@ -7,7 +7,7 @@ const os = require('node:os');
 const path = require('node:path');
 const { promisify } = require('node:util');
 const { test } = require('node:test');
-const { splitVideos } = require('../src/scene-splitter.cjs');
+const { splitVideos, detectSceneCuts } = require('../src/scene-splitter.cjs');
 
 const execFileAsync = promisify(execFile);
 const ffmpeg = process.env.SUPERDIR_REPLICA_FFMPEG || 'ffmpeg';
@@ -36,6 +36,8 @@ test('splits a video into content scenes with the bundled PySceneDetect engine',
     assert.equal((await fs.stat(file)).isFile(), true);
   }
   assert.ok((await fs.stat(result.csv)).isFile());
+  const cuts = await detectSceneCuts(input, { detector: 'content', threshold: 10, minSceneSeconds: 0.2 });
+  assert.deepEqual(cuts, [1, 2], '编辑轨道识别返回原片时间，不输出转码片段');
   await fs.rm(root, { recursive: true, force: true });
 });
 

@@ -16,8 +16,8 @@ function formatTime(value) {
     + ',' + String(value % 1000).padStart(3, '0');
 }
 
-function formatCue({ start, end, text }, index) {
-  return (index + 1) + '\n' + formatTime(start) + ' --> ' + formatTime(end) + '\n' + text + '\n\n';
+function formatCue({ start, end, text }, index, coordinates = '') {
+  return (index + 1) + '\n' + formatTime(start) + ' --> ' + formatTime(end) + coordinates + '\n' + text + '\n\n';
 }
 
 function normalizeSubtitles(value) {
@@ -42,6 +42,13 @@ function normalizeSubtitles(value) {
       throw new Error('第 ' + (index + 1) + ' 条字幕缺少文本或含有空行。');
     }
     const normalized = { start, end, text: cleaned };
+    if (cue.highlights?.length) {
+      if (!Array.isArray(cue.highlights) || cue.highlights.length>64) throw new Error('每句最多支持 64 个重点词。');
+      normalized.highlights=cue.highlights.map(({word,color})=>{
+        if(typeof word!=='string' || !word.trim() || word.length>100 || !/^#[0-9a-f]{6}$/i.test(color)) throw new Error('字幕重点词或颜色无效。');
+        return {word,color};
+      });
+    }
     bytes += Buffer.byteLength(formatCue(normalized, index));
     if (bytes > maxBytes) throw new Error(sizeError);
     return normalized;
@@ -101,8 +108,34 @@ async function readSubtitles(file) {
   }
 }
 
-function formatSubtitles(track) {
-  return normalizeSubtitles(track)?.cues.map(formatCue).join('') ?? '';
+function markedText(cue) {
+  const marks=cue.highlights ?? [];
+  if (!marks.length) return cue.text;
+  const escape=(word)=>word.replaceAll('&','&amp;').replaceAll('<','&lt;').replaceAll('>','&gt;');
+  let output='',pos=0;
+  while(pos<cue.text.length) {
+    let next=cue.text.length, active;
+    for (const entry of marks) {
+      const i=cue.text.indexOf(entry.word,pos);
+      if(i>=0 && (i<next || i===next && entry.word.length>(active?.word.length ?? 0))) {next=i;active=entry;}
+    }
+    output+=escape(cue.text.slice(pos,next));
+    if (!active) break;
+    output+='<font color="'+active.color+'"><b>'+escape(active.word)+'</b></font>';
+    pos=next+active.word.length;
+  }
+  return output;
 }
 
-module.exports = { readSubtitles, normalizeSubtitles, formatSubtitles };
+function formatSubtitles(track, style) {
+  // FFmpeg maps the SubRip 720×480 coordinate space to the actual output frame.
+  // A non-empty rectangle makes its center the text anchor in libass.
+  let coordinates = '';
+  if (style?.position === 'custom') {
+    const x = Math.round((style.x ?? 50) * 7.2), y = Math.round((style.y ?? 85) * 4.8);
+    coordinates = ` X1:${Math.max(0,x-1)} X2:${x+1} Y1:${Math.max(0,y-1)} Y2:${y+1}`;
+  }
+  return normalizeSubtitles(track)?.cues.map((cue,index)=>formatCue({...cue,text:markedText(cue)},index,coordinates)).join('') ?? '';
+}
+
+module.exports = { readSubtitles, parseSubtitles, normalizeSubtitles, formatSubtitles };

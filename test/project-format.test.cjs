@@ -29,6 +29,109 @@ function editingConfig(overrides = {}) {
   };
 }
 
+test('persists packaging-only assets and voice, text-group and candidate layers in partially filled drafts', async (t) => {
+  const root = await testDirectory(t);
+  const file = path.join(root, '图层工程.sdworkbench');
+  const files = await fixtures(root);
+  const catalog = new Map(await Promise.all([['red', 'video'], ['still', 'image'], ['music', 'audio']]
+    .map(async ([id, kind]) => [id, await inspectAsset(files[id], kind)])));
+  const text = { kind: 'text', text: '第二镜', start: .1, end: null,
+    textStyle: { font: 'song', outlineWidth: 3, background: true, backgroundOpacity: .42, shadow: true } };
+  const sticker = { kind: 'sticker', id: 'still', start: 0, end: null };
+  const config = editingConfig({
+    shots: [[], [{ id: 'red', start: .1, end: 1.2, layers: [sticker] }]],
+    narrationMode: 'segmented', segmentNarrationIds: [[], ['music']], useMirrors: false,
+    packaging: { global: [], composites: [[sticker]], textMode: 'segmented', textSelection: 'random', textGroups: [[[], [text]]],
+      segmentNarration: [[], [[text]]], wholeNarration: [[text]] },
+  });
+  await saveProject(file, config, catalog);
+  const loaded = await loadProject(file);
+  assert.equal(loaded.assets.get('still').path, files.still);
+  assert.equal(loaded.config.shots[1][0].layers[0].id, 'still');
+  assert.equal(loaded.config.packaging.textGroups[0][1][0].text, text.text);
+  const style = loaded.config.packaging.textGroups[0][1][0].textStyle;
+  assert.deepEqual([style.font,style.outlineWidth,style.backgroundOpacity,style.shadow],['song',3,.42,true]);
+  assert.equal(loaded.config.packaging.segmentNarration[1][0][0].text, text.text);
+  assert.equal(loaded.config.packaging.wholeNarration[0][0].end, null);
+  const invalid = { ...config, packaging: { global: [{ ...sticker, id: 'absent' }] } };
+  await assert.rejects(saveProject(file, invalid, catalog, { overwrite: true }), /缺失|找不到|缺少/);
+  assert.deepEqual((await loadProject(file)).config, loaded.config);
+});
+
+test('a draft with every visual excluded keeps muted tracks, clips and original volume', async (t) => {
+  const root = await testDirectory(t);
+  const file = path.join(root, '未参与剪辑.sdworkbench');
+  const files = await fixtures(root);
+  const catalog = new Map([['red', await inspectAsset(files.red, 'video')]]);
+  const config = editingConfig({ shots: [[{ id: 'red', start: .1, end: .8, volume: 42, enabled: false }]], mutedVideoTracks: [0] });
+  await saveProject(file, config, catalog);
+  assert.deepEqual((await loadProject(file)).config, config);
+  await assert.rejects(saveProject(file, { ...config, mutedVideoTracks: [-1] }, catalog), /静音/);
+});
+
+test('deleting inherited footage in one store persists its empty shot without removing the shared footage', async (t) => {
+  const {createSubprojects}=require('../src/ui/subprojects.js');
+  const {resolveSubprojectShots}=require('../src/subprojects.cjs');
+  const root=await testDirectory(t), files=await fixtures(root);
+  const catalog=new Map([['red',await inspectAsset(files.red,'video')]]);
+  const shots=[[{asset:{id:'red'},start:0,end:.5}]];
+  const serialize=({asset,start,end})=>({id:asset.id,start,end});
+  const revive=({id,start,end})=>({asset:{id},start,end});
+  const state=createSubprojects({shots,serialize,revive});
+  state.create('杭州店\n上海店');
+  const branch=state.active.id;
+  state.removeMaterialReferences(new Set(['red']));
+  state.applyFallbacks();
+  assert.equal(shots[0].length,0);
+  const file=path.join(root,'library.sdworkbench');
+  const bins=[{scope:null,ids:['red'],hidden:[]},{scope:branch,ids:[],hidden:['a'.repeat(64)]}];
+  await saveProject(file,editingConfig({shots:shots.map(shot=>shot.map(serialize)),subprojects:state.pack(),materialBins:bins}),catalog);
+  const loaded=await loadProject(file), stores=resolveSubprojectShots(loaded.config);
+  assert.deepEqual(loaded.config.materialBins,bins);
+  assert.equal(stores.get(branch).effective[0].length,0);
+  assert.equal(stores.get(state.projects[1].id).effective[0][0].id,'red');
+  state.select(null);
+  assert.equal(shots[0][0].asset.id,'red');
+  state.select(branch);
+  assert.deepEqual(shots,[[]]);
+});
+
+test('subprojects keep their isolated candidates and inherit public edits across switches, reordering and disk reload', async (t) => {
+  const { createSubprojects } = require('../src/ui/subprojects.js');
+  const root = await testDirectory(t);
+  const file = path.join(root, '门店.sdworkbench');
+  const files = await fixtures(root);
+  const catalog = new Map(await Promise.all(['red', 'green', 'blue'].map(async (id) => [id, await inspectAsset(files[id], 'video')])));
+  const clip = (id) => ({ id, start: 0, end: 1 });
+  const first = [clip('red')], second = [clip('green')], shots = [first, second];
+  const state = createSubprojects({ shots, serialize: (item) => item, revive: structuredClone });
+  state.create('杭州店');
+  const hangzhou = state.active.id;
+  first.splice(0, 1, clip('blue'));
+  state.create('上海店');
+  assert.equal(first[0].id, 'red');
+  state.select(null);
+  second[0].start = .2;
+  shots.reverse();
+  state.select(hangzhou);
+  assert.deepEqual(shots.map((s) => s[0].id), ['green', 'blue']);
+  assert.equal(second[0].start, .2);
+  const config = editingConfig({ shots, subprojects: state.pack() });
+  await saveProject(file, config, catalog);
+  const loaded = await loadProject(file);
+  assert.deepEqual([...loaded.assets.keys()].sort(), ['blue', 'green', 'red']);
+  const restored = createSubprojects({ shots: loaded.config.shots, serialize: (item) => item, revive: structuredClone });
+  restored.restore(loaded.config.subprojects);
+  assert.equal(restored.active.name, '杭州店');
+  assert.ok(planMontage({ ...loaded.config, unordered: false }, loaded.assets)[0].clips[1].asset.name.includes('蓝色'));
+  restored.select(null);
+  assert.deepEqual(loaded.config.shots.map((s) => s[0].id), ['green', 'red']);
+  restored.select(hangzhou);
+  restored.revert(loaded.config.shots[1]);
+  assert.equal(loaded.config.shots[1][0].id, 'red');
+  assert.deepEqual(restored.pack().main, []);
+});
+
 test('accepts more than the legacy sixteen shot groups', async (t) => {
   const root = await testDirectory(t);
   const file = path.join(root, 'large-shot-project.sdworkbench');
@@ -43,6 +146,31 @@ test('accepts more than the legacy sixteen shot groups', async (t) => {
     textGroups: [{ dialogue: '', note: '' }],
   });
   assert.equal(script.segmented.length, 17);
+});
+
+test('saves shot timing, range alternatives and AI source cut marks in a partially filled draft', async (t) => {
+  const root = await testDirectory(t);
+  const files = await fixtures(root);
+  const catalog = new Map([['red', await inspectAsset(files.red, 'video')], ['blue', await inspectAsset(files.blue, 'video')], ['voice', await inspectAsset(files.music, 'audio')]]);
+  const lut=path.join(root,'颜色.cube');
+  await fs.writeFile(lut,'LUT_3D_SIZE 2\n'+'1 1 1\n'.repeat(8));
+  catalog.set('lut',await require('../src/visual-style.cjs').inspectLut(lut));
+  const config = editingConfig({
+    shots: [[], [{ id: 'red', start: 0, end: 1, ranges: [{ start: 0.5, end: 1 }, { start: 0, end: 0.2 }] },
+      { id: 'red', start: 0.2, end: 0.5, look:{head:.05,tail:.05,grade:{brightness:10},lut:'lut',background:{kind:'media',ids:['blue']}} }]], musicIds: [], filterLibrary:['lut'],
+    shotSettings: [null, { name: '细节', description: '转身', duration: 0.6, smartTrim: true }], voiceAlignment: 'reference',
+    narrationMode: 'segmented', segmentNarrationIds: [[], ['voice']], segmentVoiceCuts: [[], [{ ranges: [{ start: 0.1, end: 0.3 }] }]],
+    sceneCuts: [{ assetId: 'blue', points: [0.5, 1], used: [{ start: 0, end: 0.5 }] }],
+    assetAliases:[{id:'red',kind:'video',name:'主题镜头-01.mp4'}],volumeOverrides:[{kind:'segment',id:'voice',shot:1,track:0,value:42}],
+    cover: {mode:'library',items:[{id:'blue',time:0.6,title:'本地封面',style:'bold'}],active:0},
+  });
+  const file = path.join(root, '带裁剪的分镜.sdworkbench');
+  await saveProject(file, config, catalog);
+  const restored = await loadProject(file);
+  assert.deepEqual(restored.config, config);
+  assert.ok(restored.assets.has('blue'));
+  assert.equal(restored.assets.get('lut').path,lut);
+  await assert.rejects(saveProject(file, { ...config, sceneCuts: [{ assetId: 'blue', points: [3], used: [] }] }, catalog), /超出视频范围/);
 });
 
 test('round-trips a legacy project and restores narration that shares its music asset', async (t) => {
@@ -169,4 +297,27 @@ test('bounds manifest input before parsing and rejects damaged JSON', async (t) 
   await fs.writeFile(file, '{');
   await assert.rejects(loadProject(file), /无效或已损坏/);
   await assert.rejects(loadProject('relative.sdworkbench'), /请选择本地的/);
+});
+
+test('renames published files without overwriting and opens an old draft through two subsequent names',async(t)=>{
+  const root=await testDirectory(t),files=await fixtures(root);
+  const {remember,readHistory,renameOutputs,resolveOutput}=require('../src/history.cjs');
+  const original=path.join(root,'混剪-20261119123456-01.mp4'),other=path.join(root,'混剪-20261119123456-02.mp4');
+  await fs.copyFile(files.red,original);await fs.copyFile(files.blue,other);
+  const recent=[];
+  await remember(root,recent,[original,other].map(file=>({name:path.basename(file),path:file})));
+  const draft=path.join(root,'仍引用旧名称.sdworkbench');
+  await saveProject(draft,editingConfig({shots:[[{id:'clip',start:0,end:.7}]],musicIds:[]}),new Map([['clip',await inspectAsset(original,'video')]]));
+  const taken=path.join(root,'同名-02.mp4');await fs.writeFile(taken,'保持原有文件内容');
+  await assert.rejects(renameOutputs(root,recent,[original,other],'同名'),/已存在/);
+  assert.equal(await fs.readFile(taken,'utf8'),'保持原有文件内容');
+  await assert.rejects(fs.access(path.join(root,'同名-01.mp4')),{code:'ENOENT'});
+  assert.equal((await renameOutputs(root,recent,[original,other],'新作品')).changes.length,2);
+  const first=path.join(root,'新作品-01.mp4');
+  await renameOutputs(root,recent,[first],'最终标题');
+  const reload=await readHistory(root);
+  const restored=await loadProject(draft,file=>resolveOutput(reload,file));
+  assert.equal(restored.assets.get('clip').path,path.join(root,'最终标题.mp4'));
+  assert.ok(reload.some(r=>r.name==='最终标题.mp4'));
+  await assert.rejects(fs.access(original),{code:'ENOENT'});
 });

@@ -1,6 +1,6 @@
 .cloud-settings-dialog { width: min(512px, calc(100vw - 36px)); max-height: calc(100dvh - 42px); overflow: hidden; }
 #cloud-settings-form { display: grid; grid-template-rows: auto minmax(0, 1fr) auto; max-height: calc(100dvh - 43px); }
-.cloud-settings-heading { padding: 24px 26px 16px; }
+.cloud-settings-heading { display: flex; align-items: center; justify-content: space-between; gap: 8px; padding: 24px 26px 16px; }
 .cloud-settings-body { display: grid; gap: 19px; min-height: 0; padding: 3px 26px 21px; overflow: auto; overscroll-behavior: contain; }
 .cloud-settings-field { display: grid; gap: 5px; }
 .cloud-settings-field > label:first-child { font-weight: 600; }
@@ -13,3 +13,4 @@
 .cloud-settings-warning { padding-left: 10px; border-left: 2px solid #ad792a; color: #71490e; }
 .cloud-settings-error, #cloud-settings-status.cloud-settings-error { color: var(--dialog-alert); }
 .cloud-settings-actions { display: flex; justify-content: flex-end; gap: 7px; padding: 12px 26px 15px; border-top: 1px solid var(--hairline); }
+.cloud-settings-breeze-tools { display: flex; gap: 8px; flex-wrap: wrap; }
