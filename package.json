@@ -8,7 +8,7 @@
   "scripts": {
     "start": "electron .",
     "test": "node --test test/media.test.cjs test/scene-splitter.test.cjs test/subs2srs.test.cjs test/preview-plans.test.cjs test/project-format.test.cjs test/subtitles.test.cjs test/workflow-provider.test.cjs test/project-library.test.cjs test/edit-history.test.cjs test/track-tools.test.cjs test/cloud-tts.test.cjs test/cloud-tts-settings.test.cjs",
-    "test:desktop": "electron test/desktop.cjs && electron test/split-view-desktop.cjs && electron test/timeline-space-desktop.cjs && electron test/timeline-selection-desktop.cjs && electron test/waveform-desktop.cjs",
+    "test:desktop": "electron test/desktop.cjs && electron test/split-view-desktop.cjs && electron test/timeline-space-desktop.cjs && electron test/timeline-selection-desktop.cjs && electron test/waveform-desktop.cjs && electron test/wheel-zoom-desktop.cjs",
     "test:cloud-desktop": "electron test/cloud-desktop.cjs"
   },
   "engines": {

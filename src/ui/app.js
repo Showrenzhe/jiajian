@@ -83,6 +83,36 @@ const playerTools = window.mountPlayerTools({
 const notice = $('#notice');
 const countField = $('#count');
 
+// Discrete wheel notches and precision touchpad deltas drive the same zoom controls.
+function bindWheelZoom(element, onZoom) {
+  const isMac = navigator.platform.startsWith('Mac');
+  let pending = 0, previousTime = -Infinity;
+  element.addEventListener('wheel', (event) => {
+    const mode = event.deltaMode;
+    if (!(event.ctrlKey || (isMac && event.metaKey)) || event.altKey || event.shiftKey
+        || !event.deltaY || Math.abs(event.deltaX) > Math.abs(event.deltaY)) {
+      pending = 0;
+      return;
+    }
+    event.preventDefault();
+    const unit = mode === WheelEvent.DOM_DELTA_PAGE ? 100 : mode === WheelEvent.DOM_DELTA_LINE ? 100 / 3 : 1;
+    const distance = -event.deltaY * unit;
+    if (Math.abs(distance) >= 80 || (mode !== WheelEvent.DOM_DELTA_PIXEL && Math.abs(event.deltaY) >= 1)) {
+      pending = 0;
+      onZoom(Math.sign(distance) * Math.max(1, Math.round(Math.abs(distance) / 100)), event);
+    } else {
+      if (event.timeStamp - previousTime > 220 || pending * distance < 0) pending = 0;
+      pending += distance;
+      const steps = Math.trunc(pending / 48);
+      if (steps) {
+        pending -= steps * 48;
+        onZoom(steps, event);
+      }
+    }
+    previousTime = event.timeStamp;
+  }, { passive: false });
+}
+
 function setupTabs(tablist, onChange) {
   const tabs = [...tablist.querySelectorAll('[role="tab"]')];
   const segmented = tablist.classList.contains('p-segmented');
@@ -239,6 +269,28 @@ const materialPanel = $('.editor-materials');
 const libraryWaves = window.mountWaveforms(materialPanel);
 const reviewWaveform = window.attachPlayerWaveform($('#narration-review-audio'));
 const materialList = $('#material-list');
+bindWheelZoom(materialPanel, (steps, event) => {
+  const style = getComputedStyle(materialList);
+  const width = materialList.clientWidth;
+  if (!width) return;
+  const gap = parseFloat(style.columnGap);
+  const columns = style.gridTemplateColumns.split(' ').length;
+  const minimum = parseFloat(style.getPropertyValue('--material-min-width'));
+  const maxColumns = Math.max(1, Math.floor((width + gap) / (minimum + gap)));
+  const next = Math.max(1, Math.min(maxColumns, columns - steps));
+  if (next === columns) return;
+
+  const tile = document.elementFromPoint(event.clientX, event.clientY)?.closest('#material-list > li');
+  const before = tile?.getBoundingClientRect();
+  const fraction = before ? (event.clientY - before.top) / before.height : 0;
+  // Leave room for a scrollbar to appear without immediately dropping another column.
+  const targetWidth = Math.max(minimum, (width + gap) / (next + .5) - gap);
+  materialList.style.setProperty('--material-tile-width', `${targetWidth}px`);
+  if (tile) {
+    const after = tile.getBoundingClientRect();
+    materialPanel.scrollTop += after.top + fraction * after.height - event.clientY;
+  }
+});
 const materialItems = new WeakMap();
 const materialMarquee = document.createElement('div');
 materialMarquee.className = 'material-marquee';
@@ -882,7 +934,7 @@ function changedSubproject() {
   materialFolderPath = [];
   $('#material-search').value = '';
   cutEditor?.close();
-  timeline?.reset();
+  timeline?.reset(true);
   renderNarration();renderSubtitles();renderWholeTracks();renderScriptBrief();
   renderLists();
 }
@@ -2990,7 +3042,7 @@ function restoreProject({ name, config, assets = [] }, { retainHistory = false, 
   sceneCuts = structuredClone(config.sceneCuts ?? []);
   editCover = config.cover && structuredClone(config.cover);
   cutEditor?.close();
-  timeline?.reset();
+  timeline?.reset(!retainHistory);
   mutedVideoTracks.clear();
   for (const index of config.mutedVideoTracks ?? []) mutedVideoTracks.add(index);
   for (const [index, shot] of shots.entries()) {
@@ -3553,10 +3605,15 @@ $('#track-preview-axis').addEventListener('change', updateTrackSelection);
 $('#tracks-expand-all').addEventListener('click', () => setAllTrackDisclosures(true));
 $('#tracks-collapse-all').addEventListener('click', () => setAllTrackDisclosures(false));
 $('#track-height').addEventListener('change', (event) => { $('#shots').dataset.height = event.target.value; });
-$('#track-zoom').addEventListener('input', (event) => {
-  shotViewport.dataset.zoom = event.target.value;
-  updateTrackScrollbar();
-});
+const trackZoom = $('#track-zoom');
+function showTrackZoom(level, maximum) {
+  trackZoom.max = maximum;
+  trackZoom.valueAsNumber = level;
+}
+function setCardZoom(level) {
+  shotViewport.dataset.zoom = level;
+  if ($('#timeline-view').value === 'cards') showTrackZoom(level, 5);
+}
 $('#track-volume').addEventListener('input', updateTrackSelection);
 $('#track-volume-apply').addEventListener('click', applyTrackVolume);
 $('#track-toggle-audio').addEventListener('click', () => {
@@ -3823,7 +3880,8 @@ timeline = window.mountEditTimeline($('#timeline-clock'), {
   recognize:(asset)=>api.recognizeSpeech(asset.id),importSrt:()=>api.pickSubtitles(),cancelRecognition:()=>api.cancel(),
   captions:editVideoCaptions,slices:(asset)=>cutEditor.openSlices(asset),
   state:timelineState, busy:()=>Boolean(operation), thumbnail:(id,time)=>api.clipThumbnail(id,time), asset:(id)=>editAssets.get(id),
-  change:renderLists, scroll:updateTrackScrollbar, zoom:()=>$('#track-zoom').value, showAxis:()=>$('#track-preview-axis').checked,
+  change:renderLists, scroll:updateTrackScrollbar, showZoom:showTrackZoom, setCardZoom,
+  showAxis:()=>$('#track-preview-axis').checked,
   shotSettings:(shot,value)=>shotProperties.set(shot,value), newShot:()=>$('#add-shot').click(),
   createAt:(i)=>{if(!operation && i>=0 && i<maxShots){while(shots.length<=i) shots.push([]);renderLists();}},
   move:(shot,to)=>{const from=shots.indexOf(shot);if(operation || from<0 || to===from || !shots[to]) return; shots.splice(from,1);shots.splice(to,0,shot);renderLists();},
@@ -3854,6 +3912,7 @@ timeline = window.mountEditTimeline($('#timeline-clock'), {
   },
 });
 function setTrackView() {
+  if ($('#timeline-view').value === 'cards') showTrackZoom(Number(shotViewport.dataset.zoom || 3), 5);
   if($('#timeline-view').value!=='time') timeline.clearSelection();
   $('#timeline-tracks-panel').dataset.view=$('#timeline-view').value;
   $('#timeline-clock').hidden=$('#timeline-view').value!=='time';
@@ -3952,8 +4011,38 @@ $('#timeline-scenes').addEventListener('click',()=>{
     editAssets.set(selected.asset.id,selected.asset);cutEditor.openScenes(selected.asset);
   } else pick('video',1,([asset])=>{if(asset) cutEditor.openScenes(asset);});
 });
-$('#track-zoom').addEventListener('input',()=>timeline.zoom());
-$('#timeline-fit').addEventListener('click',()=>timeline.fit());
+trackZoom.addEventListener('input', () => {
+  if ($('#timeline-view').value === 'time') timeline.zoom(trackZoom.valueAsNumber);
+  else timeline.zoomFromCards(trackZoom.valueAsNumber);
+  updateTrackScrollbar();
+});
+for (const viewport of [$('#timeline-clock'), shotViewport]) {
+  bindWheelZoom(viewport, (steps, event) => {
+    const level = Math.max(Number(trackZoom.min), Math.min(Number(trackZoom.max), trackZoom.valueAsNumber + steps));
+    if (level === trackZoom.valueAsNumber) return;
+    const cards = viewport === shotViewport;
+    let anchorCard, anchorX, fraction;
+    if (cards && visualTrackLane.children.length > 1) {
+      const columns = visualTrackLane.children;
+      const first = columns[1].getBoundingClientRect();
+      const stride = columns[2] ? columns[2].getBoundingClientRect().left - first.left : first.width;
+      anchorX = Math.max(event.clientX, columns[0].getBoundingClientRect().right);
+      const index = Math.max(0, Math.min(columns.length - 2, Math.floor((anchorX - first.left) / stride)));
+      anchorCard = columns[index + 1];
+      const box = anchorCard.getBoundingClientRect();
+      fraction = (anchorX - box.left) / box.width;
+    }
+    trackZoom.valueAsNumber = level;
+    if (cards) timeline.zoomFromCards(level);
+    else timeline.zoom(level, event.clientX);
+    if (anchorCard) {
+      const box = anchorCard.getBoundingClientRect();
+      viewport.scrollLeft += box.left + fraction * box.width - anchorX;
+    }
+    if (cards) updateTrackScrollbar();
+  });
+}
+$('#timeline-fit').addEventListener('click', () => timeline.fit());
 $('#track-height').addEventListener('change',()=>timeline.setHeight($('#track-height').value));
 $('#track-preview-axis').addEventListener('change',()=>timeline.refresh());
 player.addEventListener('timeupdate',()=>{if(selected?.asset.kind!=='image') timeline.syncPlayer(selected,player.currentTime);});

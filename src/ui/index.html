@@ -294,7 +294,7 @@
               </div>
               <div class="track-view-options" role="group" aria-label="轨道显示">
                 <label class="track-choice">轨道高<select id="track-height"><option value="large">大</option><option value="medium">中</option><option value="small">小</option></select></label>
-                <label class="track-choice">缩放<input type="range" id="track-zoom" min="1" max="5" value="3" aria-label="分镜轨道缩放"></label>
+                <label class="track-choice" title="在轨道上按住 Ctrl（Mac 也可用 ⌘）并滚动鼠标滚轮来缩放">缩放<input type="range" id="track-zoom" min="1" max="5" value="3" aria-label="分镜轨道缩放"></label>
                 <button type="button" class="secondary" id="timeline-fit">适配</button>
                 <label class="track-choice"><input type="checkbox" id="track-preview-axis" checked>显示播放头</label>
               </div>
@@ -381,7 +381,7 @@
     </section>
 
     <section id="materials-pane" class="panel editor-materials" aria-labelledby="materials-heading" hidden>
-      <div class="panel-heading"><h2 id="materials-heading" title="在素材库空白处按住左键拖动，可框选多个素材">素材库</h2><span id="material-status" class="material-count muted compact" role="status"></span></div>
+      <div class="panel-heading"><h2 id="materials-heading" title="按住 Ctrl 滚动可缩放缩略图（macOS 也可用 ⌘）。拖动空白处可框选素材。">素材库</h2><span id="material-status" class="material-count muted compact" role="status"></span></div>
       <div class="subproject-picker">
         <select id="subproject-select" aria-label="当前素材工程"><option value="">主工程 · 公共素材</option></select>
         <button type="button" class="secondary" id="subproject-new">＋ 子工程</button>

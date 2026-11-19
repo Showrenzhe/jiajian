@@ -102,7 +102,19 @@ window.mountEditTimeline = function (host, ctx) {
   }
   let playTime = 0, fit = null, refreshFrame, lastState, lastKey;
   let focusShot, focusClip, voiceTarget, rowDrag;
-  let timeScale = 55, totalTime = 0, shotTimes = [], widths = [];
+  let timeScale = 60, totalTime = 0, shotTimes = [], widths = [];
+  const standardScales = [16, 32, 60, 100, 180];
+  let zoomScales = standardScales, manualScale = 60, zoomAnchor;
+  function scalesAround(scale) {
+    // Fit can be far outside the editing presets. Bridge the two with individual wheel stops.
+    const scales=[...standardScales];
+    while (scales[0] > scale / 1.5) scales.unshift(scales[0] / 2);
+    while (scales.at(-1) < scale * 1.8) scales.push(scales.at(-1) * 1.8);
+    const near=scales.findIndex(value=>Math.max(value/scale,scale/value)<1.15);
+    if (near<0) scales.push(scale);
+    else scales[near]=scale;
+    return scales.sort((a,b)=>a-b);
+  }
   const draftTransport=window.draftTimeline.transport(document.querySelector('.preview-stage'),{
     tick:(time)=>{playTime=time;syncCursor();}, changed:(playing)=>ctx.draftPlaybackChanged?.(playing),
   });
@@ -290,7 +302,9 @@ window.mountEditTimeline = function (host, ctx) {
     const columns=s.shots.length || 3;
     ({widths,starts:shotTimes,total:totalTime}=window.draftTimeline.timing(s,clipSpan,ctx.asset));
     const fitted=Math.max(.002,(host.clientWidth-102)/totalTime);
-    timeScale=fit===true ? fitted : fit===null ? Math.max(60,Math.min(180,fitted)) : [16,32,60,100,180][Number(ctx.zoom())-1];
+    timeScale=fit===false ? manualScale : fit===true ? fitted : Math.max(60,Math.min(180,fitted));
+    if (fit!==false) zoomScales=scalesAround(timeScale);
+    ctx.showZoom(zoomScales.indexOf(timeScale)+1,zoomScales.length);
     const timelineWidth=Math.max(host.clientWidth-98,totalTime*timeScale);
     const canvas=el('div','sequence-canvas');
     waveforms.clear();
@@ -585,7 +599,25 @@ window.mountEditTimeline = function (host, ctx) {
     if(restoreFocus && document.activeElement===document.body) host.focus({preventScroll:true});
     selection.attach(canvas);
     for (const thumb of canvas.querySelectorAll('[data-thumb]')) thumbObserver.observe(thumb);
+    if (zoomAnchor) {
+      host.scrollLeft=zoomAnchor.time*timeScale-zoomAnchor.offset;
+      zoomAnchor=undefined;
+    }
     syncCursor();ctx.scroll();
+  }
+  function zoom(level, clientX) {
+    const next=zoomScales[level-1];
+    if (!next) return;
+    manualScale=next;
+    const nearest=standardScales.reduce((best,scale)=>Math.abs(Math.log(scale/next))<Math.abs(Math.log(best/next)) ? scale : best);
+    ctx.setCardZoom(standardScales.indexOf(nearest)+1);
+    fit=false;
+    zoomAnchor=undefined;
+    if (clientX!==undefined && host.clientWidth) {
+      const offset=Math.max(0,clientX-host.getBoundingClientRect().left-96);
+      zoomAnchor={offset,time:(host.scrollLeft+offset)/timeScale};
+    }
+    refresh();
   }
   function syncCursor() {
     const cursor=host.querySelector('.sequence-cursor');
@@ -805,7 +837,11 @@ window.mountEditTimeline = function (host, ctx) {
     toggleDraftPlayback:()=>draftTransport.toggle(draftTransport.playing()?[]:draftPlan(),playTime),
     stopDraftPlayback:draftTransport.stop,isDraftPlaying:draftTransport.playing,
     canPlayDraft:()=>draftPlan().length>0,get playheadTime(){return playTime;},
-    zoom:()=>{fit=false;refresh();},fit:()=>{fit=true;refresh();},
+    zoom,zoomFromCards(level) {
+      const scale=standardScales[level-1];
+      zoomScales=scalesAround(scale);
+      zoom(zoomScales.indexOf(scale)+1);
+    },fit:()=>{zoomAnchor=undefined;fit=true;refresh();},
     setHeight(value) {
       host.dataset.height=value;
       heights.clear();
@@ -816,5 +852,16 @@ window.mountEditTimeline = function (host, ctx) {
       ctx.scroll();
     },
     fold(expanded){folded.clear();for(const node of host.querySelectorAll('[data-lane-key]')) setFold(node,node.dataset.laneKey,!expanded);ctx.scroll();},
-    reset(){draftTransport.stop();selection.clear();focusShot=focusClip=voiceTarget=activeSeek=undefined;folded.clear();heights.clear();playTime=0;refresh();}};
+    reset(newProject=false) {
+      draftTransport.stop();selection.clear();focusShot=focusClip=voiceTarget=activeSeek=undefined;
+      folded.clear();heights.clear();playTime=0;zoomAnchor=undefined;
+      if (newProject && fit===false) {
+        // An extreme close-up of a short clip should not carry into another project's timeline.
+        if (manualScale<standardScales[0] || manualScale>standardScales.at(-1)) {
+          fit=null;
+          ctx.setCardZoom(3);
+        } else zoomScales=scalesAround(manualScale);
+      }
+      refresh();
+    }};
 };

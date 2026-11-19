@@ -406,8 +406,10 @@ body:has(.workspace-divider[data-dragging]) {
   font-size: 12px;
 }
 .app-frame[data-mode="montage"] .material-list {
+  --material-min-width: 56px;
+  --material-default-width: clamp(var(--material-min-width), calc((100% - 8px) / 2), var(--material-default-max-width, 104px));
   display: grid;
-  grid-template-columns: repeat(auto-fill, minmax(min(100%, 104px), 1fr));
+  grid-template-columns: repeat(auto-fill, minmax(min(100%, var(--material-tile-width, var(--material-default-width))), 1fr));
   align-content: start;
   gap: 8px;
   margin: 9px 0 0;
@@ -1018,7 +1020,7 @@ body:has(.workspace-divider[data-dragging]) {
   .app-frame[data-mode="montage"] .workbench-actions button .ui-icon { display: none; }
   .app-frame[data-mode="montage"] :is(.inspector-tabs, .timeline-header [role="tablist"]) { gap: 0; }
   .app-frame[data-mode="montage"] .inspector-tab { padding-inline: 2px; }
-  .app-frame[data-mode="montage"] .material-list { grid-template-columns: repeat(auto-fill, minmax(min(100%, 64px), 1fr)); }
+  .app-frame[data-mode="montage"] .material-list { --material-default-max-width: 64px; }
 }
 
 @container (max-width: 215px) {
