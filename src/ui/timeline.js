@@ -300,7 +300,7 @@ window.mountEditTimeline = function (host, ctx) {
       const track=el('div','sequence-content');
       if (key) {
         node.dataset.laneKey=key;
-        const toggle=btn(label,()=>{setFold(node,key,!folded.has(key));ctx.scroll();});
+        const toggle=btn(label,()=>{setFold(node,key,!folded.has(key),true);ctx.scroll();});
         toggle.setAttribute('aria-expanded',String(!folded.has(key)));
         head.append(toggle);
         if (folded.has(key)) node.classList.add('sequence-folded');
@@ -314,6 +314,9 @@ window.mountEditTimeline = function (host, ctx) {
           if(event.button!==0 || resizeDrag || scrubPointer!=null) return;
           event.preventDefault();
           resizeDrag={key,node,y:event.clientY,height:node.offsetHeight,id:event.pointerId};
+          if(node.getAnimations().some((animation)=>animation.transitionProperty==='height')) {
+            resizeLane(node,key,resizeDrag.height);
+          }
           handle.setPointerCapture(event.pointerId);
         };
         handle.ondblclick=()=>{heights.delete(key);node.style.removeProperty('--lane-height');setFold(node,key,false);ctx.scroll();};
@@ -588,8 +591,9 @@ window.mountEditTimeline = function (host, ctx) {
     const cursor=host.querySelector('.sequence-cursor');
     if(cursor) cursor.style.left=(96+Math.min(totalTime,playTime)*timeScale)+'px';
   }
-  function setFold(node,key,value) {
+  function setFold(node,key,value,animate=false) {
     if(value) folded.add(key); else folded.delete(key);
+    node.classList.toggle('animate-lane-fold',animate);
     node.classList.toggle('sequence-folded',value);
     node.querySelector('[aria-expanded]').setAttribute('aria-expanded',String(!value));
   }
@@ -802,7 +806,15 @@ window.mountEditTimeline = function (host, ctx) {
     stopDraftPlayback:draftTransport.stop,isDraftPlaying:draftTransport.playing,
     canPlayDraft:()=>draftPlan().length>0,get playheadTime(){return playTime;},
     zoom:()=>{fit=false;refresh();},fit:()=>{fit=true;refresh();},
-    setHeight(value){host.dataset.height=value;heights.clear();for(const node of host.querySelectorAll('[data-lane-key]')) node.style.removeProperty('--lane-height');ctx.scroll();},
+    setHeight(value) {
+      host.dataset.height=value;
+      heights.clear();
+      for(const node of host.querySelectorAll('[data-lane-key]')) {
+        node.classList.remove('animate-lane-fold');
+        node.style.removeProperty('--lane-height');
+      }
+      ctx.scroll();
+    },
     fold(expanded){folded.clear();for(const node of host.querySelectorAll('[data-lane-key]')) setFold(node,node.dataset.laneKey,!expanded);ctx.scroll();},
     reset(){draftTransport.stop();selection.clear();focusShot=focusClip=voiceTarget=activeSeek=undefined;folded.clear();heights.clear();playTime=0;refresh();}};
 };

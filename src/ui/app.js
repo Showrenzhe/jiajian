@@ -139,16 +139,26 @@ function bindTrackDisclosure(toggle, body, owner, part, label, initiallyExpanded
     parts = new Map();
     trackExpansion.set(owner, parts);
   }
-  const setExpanded = (expanded) => {
+  const setExpanded = (expanded, animate = false) => {
     parts.set(part, expanded);
+    if (!expanded && body.contains(document.activeElement)) toggle.focus({ preventScroll: true });
+    body.classList.toggle('animate-track-disclosure', animate);
+    toggle.classList.toggle('animate-track-disclosure', animate);
+    body.inert = !expanded;
     body.hidden = !expanded;
     toggle.setAttribute('aria-expanded', String(expanded));
     toggle.title = `${expanded ? '折叠' : '展开'}${label}`;
     toggle.setAttribute('aria-label', toggle.title);
+    if (animate) {
+      // Disarm entry transitions before an ancestor is reopened or a different tab is shown.
+      Promise.allSettled(body.getAnimations().map(animation => animation.finished)).then(() => {
+        if (!body.getAnimations().length) body.classList.remove('animate-track-disclosure');
+      });
+    }
   };
   setExpanded(parts.get(part) ?? initiallyExpanded);
   trackDisclosures.set(toggle, setExpanded);
-  toggle.addEventListener('click', () => setExpanded(body.hidden));
+  toggle.addEventListener('click', () => setExpanded(body.hidden, true));
 }
 
 function setAllTrackDisclosures(expanded) {
@@ -3219,8 +3229,10 @@ const workspaceNavigation = (() => {
   }
 
   function toggleNavigation() {
-    if (isEditor()) drawerOpen = !drawerOpen;
-    else {
+    if (isEditor()) {
+      frame.classList.add('animate-floating-navigation');
+      drawerOpen = !drawerOpen;
+    } else {
       frame.classList.add('animate-docked-navigation');
       collapsed = !collapsed;
       try { localStorage.setItem('jiajian.sidebar.collapsed', String(collapsed)); } catch {}
@@ -3234,8 +3246,13 @@ const workspaceNavigation = (() => {
 
   function closeDrawer() {
     drawerOpen = false;
-    if (isEditor()) frame.classList.remove('animate-docked-navigation');
     sync();
+  }
+
+  function changeMode() {
+    if (isEditor()) frame.classList.remove('animate-docked-navigation');
+    frame.classList.remove('animate-floating-navigation');
+    closeDrawer();
   }
 
   toggle.addEventListener('click', toggleNavigation);
@@ -3261,7 +3278,7 @@ const workspaceNavigation = (() => {
     }
   }, true);
   sync();
-  return { changeMode: closeDrawer, selectionBounds, moveSelection };
+  return { changeMode, selectionBounds, moveSelection };
 })();
 $('#tab-home').addEventListener('click', showHome);
 $('#tab-drafts').addEventListener('click', () => {

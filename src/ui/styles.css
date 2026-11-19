@@ -29,6 +29,7 @@
   --accent-hover: var(--blue-hover);
   --chrome: var(--glass-surface);
   --sidebar-width: clamp(190px, 16vw, 218px);
+  --sidebar-transition: 260ms cubic-bezier(.42, 0, .28, 1);
   --bar-height: 44px;
   --page-pad: clamp(24px, 3.5vw, 58px);
   font: 14px/1.5 -apple-system, BlinkMacSystemFont, "SF Pro Text", "Segoe UI Variable Text", "Segoe UI", "PingFang SC", "Microsoft YaHei UI", "Microsoft YaHei", "Noto Sans CJK SC", system-ui, sans-serif;
@@ -99,18 +100,22 @@ button:disabled { opacity: .46; cursor: default; }
   padding: 26px 13px 24px; background: rgba(249,250,253,.53);
   backdrop-filter: var(--glass-filter); color: var(--ink);
 }
-@media (prefers-reduced-motion: no-preference) and (forced-colors: none) {
-  .app-frame.animate-docked-navigation {
-    --sidebar-transition: 260ms cubic-bezier(.42, 0, .28, 1);
-    transition: grid-template-columns var(--sidebar-transition);
-  }
-  /* Keep the full-width sidebar painted until its grid track has slid offscreen. */
-  .app-frame.animate-docked-navigation > .tabs { transition: display var(--sidebar-transition) allow-discrete; }
-}
-.app-frame[data-navigation="floating"] > .tabs {
+.app-frame:is([data-mode="montage"], [data-mode="script"]) > .tabs {
   display: block; position: fixed; top: calc(var(--bar-height) + 8px); left: 8px; z-index: 25; width: 220px;
   max-height: calc(100dvh - var(--bar-height) - 16px); border-radius: 18px;
   background: rgba(249,250,253,.8); box-shadow: var(--glass-shadow);
+}
+@media (prefers-reduced-motion: no-preference) and (forced-colors: none) {
+  .app-frame.animate-docked-navigation { transition: grid-template-columns var(--sidebar-transition); }
+  /* Keep the full-width sidebar painted until its grid track has slid offscreen. */
+  .app-frame.animate-docked-navigation > .tabs { transition: display var(--sidebar-transition) allow-discrete; }
+  .app-frame.animate-floating-navigation > .tabs {
+    transition: transform var(--sidebar-transition), display var(--sidebar-transition) allow-discrete;
+  }
+  .app-frame.animate-floating-navigation[data-navigation="closed"] > .tabs { transform: translateX(calc(-100% - 24px)); }
+  @starting-style {
+    .app-frame.animate-floating-navigation[data-navigation="floating"] > .tabs { transform: translateX(calc(-100% - 24px)); }
+  }
 }
 .tabs p { margin: 27px 13px 7px; color: #4c525a; font-size: 12px; font-weight: 600; }
 .tabs > p:first-child { margin-top: 0; }
@@ -128,8 +133,19 @@ button:disabled { opacity: .46; cursor: default; }
 .tabs button[aria-current="page"] .ui-icon { stroke-width: 2; }
 .nav-more { margin: 18px 0 0; padding-top: 13px; border-top: 1px solid var(--hairline); }
 .nav-more summary { cursor: pointer; list-style: none; }
-.nav-more .disclosure { margin-left: auto; width: 12px; height: 12px; color: var(--secondary-ink); transition: transform .18s; }
+.nav-more .disclosure { margin-left: auto; width: 12px; height: 12px; color: var(--secondary-ink); }
 .nav-more[open] .disclosure { transform: rotate(90deg); }
+@media (prefers-reduced-motion: no-preference) and (forced-colors: none) {
+  .nav-more::details-content {
+    interpolate-size: allow-keywords;
+    block-size: 0;
+    overflow: clip;
+    transition: block-size var(--sidebar-transition), content-visibility var(--sidebar-transition) allow-discrete;
+  }
+  .nav-more[open]::details-content { block-size: auto; }
+  .nav-more:not([open])::details-content { interactivity: inert; }
+  .nav-more .disclosure { transition: transform var(--sidebar-transition); }
+}
 
 .home, .app-frame[data-mode="audio"] .work-area { min-height: calc(100dvh - var(--bar-height)); color: var(--ink); background: var(--surface); }
 .home:not(.home-dashboard) { padding: clamp(28px,4vw,60px) var(--page-pad); }
@@ -238,7 +254,8 @@ button:disabled { opacity: .46; cursor: default; }
 #scene-results th, #scene-results td { padding: 8px 7px; border-bottom: 1px solid var(--hairline); text-align: left; }
 #scene-results td { max-width: 300px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .script-brief { margin-bottom: 15px; }
-#script-brief-rows { display: grid; gap: 6px; padding: 0; list-style: none; margin: 0; max-height: 220px; overflow: auto; }
+#script-brief-rows { display: grid; gap: 6px; padding: 0; list-style: none; margin: 0; overflow: auto; }
+:where(#script-brief-rows) { block-size: calc-size(auto, min(size, 220px)); }
 #script-brief-rows li { padding: 8px; background: var(--well); border-radius: 7px; }
 #script-brief-rows p { white-space: pre-wrap; overflow-wrap: anywhere; }
 @media (max-width: 700px) {
@@ -438,7 +455,7 @@ progress { display: block; width: 100%; margin: 6px 0; }
     --glass-shadow: 0 0 0 1px #c1ccda; --control-fill: #fff; --content-fill: var(--surface);
     --hairline: #9baaba; --wallpaper: none; --secondary-ink: #405064;
   }
-  .tabs, .app-frame[data-navigation="floating"] > .tabs, .titlebar, #home-open-project, .narration-review { background: var(--glass-surface); }
+  .tabs, .app-frame:is([data-mode="montage"], [data-mode="script"]) > .tabs, .titlebar, #home-open-project, .narration-review { background: var(--glass-surface); }
   .narration-review::backdrop { backdrop-filter: none; background: #32425580; }
   .tabs button[aria-current="page"], .draft-views button[aria-pressed="true"] { box-shadow: inset 0 0 0 1px currentColor; }
 }

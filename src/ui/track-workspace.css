@@ -815,6 +815,18 @@
 }
 .app-frame[data-mode="montage"] .track-disclosure[aria-expanded="false"] { background: transparent; color: var(--muted); }
 .app-frame[data-mode="montage"] .track-disclosure[aria-expanded="false"]::before { transform: translateX(-1px) rotate(-45deg); }
+@media (prefers-reduced-motion: no-preference) and (forced-colors: none) {
+  .track-disclosure.animate-track-disclosure::before { transition: transform var(--sidebar-transition); }
+  .animate-track-disclosure:not(button) {
+    interpolate-size: allow-keywords;
+    overflow: clip;
+    transition: block-size var(--sidebar-transition), display var(--sidebar-transition) allow-discrete;
+  }
+  .animate-track-disclosure[hidden] { block-size: 0; }
+  @starting-style {
+    .animate-track-disclosure:not(button, [hidden]) { block-size: 0; }
+  }
+}
 .app-frame[data-mode="montage"] .track-disclosure:hover:enabled { border-color: var(--selected-edge); background: var(--selected-surface); color: var(--text); }
 .app-frame[data-mode="montage"] #shots .segment-narration-heading { gap: 5px; }
 .app-frame[data-mode="montage"] #shots .segment-narration-heading strong { flex: 1; min-width: 0; font-size: 12px; }

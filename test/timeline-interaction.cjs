@@ -2,7 +2,7 @@
 
 const assert = require('node:assert/strict');
 
-module.exports = async function checkTimelineInteraction(win, read, waitFor) {
+module.exports = async function checkTimelineInteraction(win, read, waitFor, checkFold) {
   const lane = '#timeline-clock .sequence-video';
   const clip = lane + ' .sequence-block';
   const trackHeight = (selector) => read(`document.querySelector(${JSON.stringify(selector)}).offsetHeight`);
@@ -45,17 +45,22 @@ module.exports = async function checkTimelineInteraction(win, read, waitFor) {
     const gx = grip.left + grip.width / 2, gy = grip.top + grip.height / 2;
     await mouse('mousePressed', gx, gy);
     await mouse('mouseMoved', gx, gy + 24);
-    await mouse('mouseReleased', gx, gy + 24);
     const enlarged = await trackHeight(lane);
-    assert.ok(Math.abs(enlarged - original - 24) < 2, '拖动轨道边界应仅改变本轨高度');
+    assert.ok(Math.abs(enlarged - original - 24) < 2, '拖住边界时轨道高度应即时跟随指针');
+    await mouse('mouseReleased', gx, gy + 24);
     assert.equal(await trackHeight('.sequence-shots'), other);
     const toggle = () => read(`document.querySelector('${lane} [aria-expanded]').click()`);
-    await toggle();
-    await waitFor(`document.querySelector('${lane}').classList.contains('sequence-folded')`, '应折叠轨道');
-    assert.ok(await trackHeight(lane) <= 20);
+    assert.equal(await checkFold(lane + ' [aria-expanded]', lane), 17, '折叠后的轨道应收至色带高度');
+    assert.equal(await read(`document.querySelector('${lane} [aria-expanded]').getAttribute('aria-expanded')`), 'false');
     assert.ok(await read(`(() => {const block=document.querySelector('${clip}');return block.offsetHeight>0 && getComputedStyle(block).visibility==='visible' && getComputedStyle(block).display!=='none';})()`), '折叠后素材仍应显示为色带');
     await toggle();
     await waitFor(`document.querySelector('${lane}').offsetHeight===${enlarged}`, '重新展开应还原自定义轨高');
+    const reopened = await rect(lane + ' .sequence-height-handle');
+    const reopenedY = reopened.top + reopened.height / 2;
+    await mouse('mousePressed', gx, reopenedY);
+    await mouse('mouseMoved', gx, reopenedY - 8);
+    assert.ok(Math.abs(await trackHeight(lane) - enlarged + 8) < 2, '刚展开的轨道也应在拖动中即时调整高度');
+    await mouse('mouseReleased', gx, reopenedY - 8);
     await read(`document.querySelector('${lane} .sequence-height-handle').dispatchEvent(new MouseEvent('dblclick',{bubbles:true}))`);
     await waitFor(`document.querySelector('${lane}').offsetHeight===${original}`, '双击边界应恢复默认轨高');
     const changeSpeed = (speed) => read(`(() => {

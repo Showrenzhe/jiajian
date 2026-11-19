@@ -41,10 +41,10 @@ async function traceDockedNavigation() {
     }
     return widths;
   }
-  const home = navigation.querySelector('#tab-home');
-  home.focus();
-  home.dispatchEvent(new KeyboardEvent('keydown', { bubbles: true, ctrlKey: true, code: 'Backslash' }));
-  home.focus();
+  const current = navigation.querySelector('[aria-current="page"]');
+  current.focus();
+  current.dispatchEvent(new KeyboardEvent('keydown', { bubbles: true, ctrlKey: true, code: 'Backslash' }));
+  current.focus();
   const focusReturned = document.activeElement === toggle && navigation.inert;
   const closing = await until(w => Math.abs(w - full) < 0.02);
   toggle.click();
@@ -57,17 +57,104 @@ async function traceDockedNavigation() {
   return { docked, full, closing, opening, before, reversed, focusReturned, usable: !navigation.inert };
 }
 
-async function checkDockedNavigation(contents) {
+async function traceFloatingNavigation(mode) {
+  const toggle = document.querySelector('#nav-toggle');
+  const navigation = document.querySelector('#workspace-navigation');
+  const area = document.querySelector('.work-area');
+  const canvas = document.querySelector(mode === 'script' ? '#script-workspace' : '#editor-workspace');
+  const nodes = [area, canvas];
+  const initial = nodes.map(node => node.getBoundingClientRect());
+  function position() {
+    nodes.forEach((node, index) => {
+      const rect = node.getBoundingClientRect();
+      if (Math.abs(rect.width - initial[index].width) > 0.1 || Math.abs(rect.left - initial[index].left) > 0.1) {
+        throw new Error(mode + ' 浮层开合过程中改变了工作区或画布的宽度或横向位置');
+      }
+    });
+    return navigation.checkVisibility({ opacityProperty: true, visibilityProperty: true })
+      ? navigation.getBoundingClientRect().right : null;
+  }
+  async function until(reached) {
+    const deadline = performance.now() + 5000;
+    const positions = [position()];
+    while (!reached(positions.at(-1))) {
+      if (performance.now() > deadline) throw new Error(mode + ' 浮层未到达目标位置，最后右缘 ' + positions.at(-1));
+      await new Promise(requestAnimationFrame);
+      positions.push(position());
+    }
+    return positions;
+  }
+  toggle.click();
+  const openRight = parseFloat(getComputedStyle(navigation).left) + navigation.getBoundingClientRect().width;
+  const fullyOpen = x => x !== null && Math.abs(x - openRight) < 0.02;
+  const opening = await until(fullyOpen);
+  const current = navigation.querySelector('[aria-current="page"]');
+  const focused = document.activeElement === current && !navigation.inert;
+  const escape = () => document.activeElement.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }));
+  escape();
+  current.focus();
+  const focusReturned = navigation.inert && document.activeElement === toggle && toggle.getAttribute('aria-expanded') === 'false';
+  const closing = await until(x => x === null);
+  toggle.click();
+  await until(fullyOpen);
+  escape();
+  const halfway = await until(x => x === null || x < openRight / 2);
+  const before = halfway.at(-1);
+  toggle.click();
+  const reversed = await until(fullyOpen);
+  return { openRight, opening, closing, before, reversed, focused, focusReturned };
+}
+
+async function checkNavigation(contents, mode) {
   const debuggerClient = contents.debugger;
   const evaluate = (code) => contents.executeJavaScript(code, true);
-  const emulate = (value) => debuggerClient.sendCommand('Emulation.setEmulatedMedia', {
-    features: [{ name: 'prefers-reduced-motion', value }, { name: 'forced-colors', value: 'none' }],
+  const emulate = (motion, colors) => debuggerClient.sendCommand('Emulation.setEmulatedMedia', {
+    features: [{ name: 'prefers-reduced-motion', value: motion }, { name: 'forced-colors', value: colors }],
   });
   debuggerClient.attach();
   try {
-    await emulate('no-preference');
+    assert.equal(await evaluate("document.querySelector('.app-frame').dataset.mode"), mode);
+    await emulate('no-preference', 'none');
     // Slow the renderer timeline so intermediate frames remain observable on busy machines.
     await debuggerClient.sendCommand('Animation.setPlaybackRate', { playbackRate: 0.5 });
+    if (mode === 'montage' || mode === 'script') {
+      const trace = await evaluate(`(${traceFloatingNavigation})(${JSON.stringify(mode)})`);
+      for (const positions of [trace.opening, trace.closing]) {
+        const middle = positions.filter(x => x !== null && x > 1 && x < trace.openRight - 1);
+        assert.ok(new Set(middle.map(Math.round)).size >= 2, mode + ' 浮层在展开和收起时都应有多个可见的中间位置');
+      }
+      assert.ok(trace.before > 1 && Math.abs(trace.reversed[0] - trace.before) < 1, mode + ' 退出中重开应从原位开始');
+      assert.ok(trace.reversed.every(x => x !== null && x >= trace.before - 1), mode + ' 反向时应保持可见并直接展开');
+      assert.ok(trace.focused && trace.focusReturned, mode + ' 浮层应聚焦当前页，Esc 应立即把焦点和操作权还给开关');
+      const { x, y } = await evaluate(`(() => {
+        const {x, y, width, height} = document.querySelector('#title-tab').getBoundingClientRect();
+        return { x: x + width / 2, y: y + height / 2 };
+      })()`);
+      for (const type of ['mousePressed', 'mouseReleased']) {
+        await debuggerClient.sendCommand('Input.dispatchMouseEvent', { type, x, y, button: 'left', clickCount: 1 });
+      }
+      assert.ok(await evaluate(`document.querySelector('#workspace-navigation').inert
+        && document.querySelector('#nav-toggle').getAttribute('aria-expanded') === 'false'`), mode + ' 外部点击应收起浮层');
+      for (const [motion, colors] of [['reduce', 'none'], ['no-preference', 'active']]) {
+        await emulate(motion, colors);
+        const states = await evaluate(`(() => {
+          const toggle = document.querySelector('#nav-toggle');
+          const nav = document.querySelector('#workspace-navigation');
+          toggle.click();
+          const current = nav.querySelector('[aria-current="page"]');
+          const open = nav.checkVisibility() && !nav.inert && document.activeElement === current
+            && Math.abs(nav.getBoundingClientRect().right - ${trace.openRight}) < 0.02;
+          nav.querySelector('#tab-home').focus();
+          const marked = getComputedStyle(current).outlineStyle !== 'none';
+          const emulated = matchMedia('(prefers-reduced-motion: ${motion}) and (forced-colors: ${colors})').matches;
+          toggle.click();
+          return {emulated, open, marked, closed: !nav.checkVisibility() && nav.inert && document.activeElement === toggle};
+        })()`);
+        assert.ok(states.emulated && states.open && states.closed, mode + ' 使用减少动态效果或高对比时应即时开合并保持焦点可用');
+        if (colors === 'active') assert.ok(states.marked, mode + ' 高对比下应看得见当前页标记');
+      }
+      return;
+    }
     const { docked, full, closing, opening, before, reversed, focusReturned, usable } =
       await evaluate(`(${traceDockedNavigation})()`);
     for (const widths of [closing, opening]) {
@@ -77,7 +164,7 @@ async function checkDockedNavigation(contents) {
     assert.ok(before < full - 1 && Math.abs(before - reversed[0]) < 1, '动画中反向应从当前位置开始');
     assert.ok(reversed.every(w => w <= before + 1) && usable, '反向后应直接回到可操作的展开状态');
     assert.ok(focusReturned, '收起时应立即禁止侧栏获得焦点，并将焦点还给开关');
-    await emulate('reduce');
+    await emulate('reduce', 'none');
     await evaluate('new Promise(resolve => requestAnimationFrame(resolve))');
     assert.equal(await evaluate("matchMedia('(prefers-reduced-motion: reduce)').matches"), true);
     const widths = await evaluate(`(() => {
@@ -90,6 +177,7 @@ async function checkDockedNavigation(contents) {
     })()`);
     assert.deepEqual(widths, [full, docked], '减少动态效果时应在切换当下抵达目标宽度');
   } finally {
+    await debuggerClient.sendCommand('Emulation.setEmulatedMedia', { features: [] });
     await debuggerClient.sendCommand('Animation.setPlaybackRate', { playbackRate: 1 });
     debuggerClient.detach();
   }
@@ -201,6 +289,28 @@ async function run() {
   });
   const runInWindow = (code) => win.webContents.executeJavaScript(code, true);
   const click = (selector) => runInWindow(`document.querySelector(${JSON.stringify(selector)}).click()`);
+  async function checkFold(toggleSelector, bodySelector) {
+    const { heights, animate } = await runInWindow(`(async () => {
+      const toggle = document.querySelector(${JSON.stringify(toggleSelector)});
+      const body = document.querySelector(${JSON.stringify(bodySelector)});
+      const height = () => body.getBoundingClientRect().height;
+      const heights = [height()];
+      toggle.click();
+      const deadline = performance.now() + 5000;
+      do {
+        if (performance.now() > deadline) throw new Error('折叠动效未结束');
+        heights.push(height());
+        await new Promise(requestAnimationFrame);
+      } while (body.getAnimations().some(animation => animation.playState === 'running'));
+      heights.push(height());
+      return { heights, animate: matchMedia('(prefers-reduced-motion: no-preference) and (forced-colors: none)').matches };
+    })()`);
+    const start = heights[0], end = heights.at(-1);
+    assert.ok(start > end + 2, bodySelector + ' 折叠后实际高度应减小');
+    if (animate) assert.ok(heights.some(h => h > end + 1 && h < start - 1), bodySelector + ' 折叠应经过可见的中间高度');
+    else assert.equal(heights[1], end, bodySelector + ' 减动或高对比模式应即时抵达折叠高度');
+    return end;
+  }
   async function screenshot(file, selector = '#export-heading') {
     // Match a visible label against its rendered text color, independent of the current theme.
     const label = await runInWindow(`(async () => {
@@ -283,13 +393,14 @@ async function run() {
   assert.ok(await runInWindow(`!document.querySelector('#home .home-shortcuts') &&
     ['home-import', 'tab-script', 'tab-audio', 'tab-scene-split'].every(id =>
       document.querySelector('#workspace-navigation').contains(document.getElementById(id)))`), '创作工具应集中在侧栏');
-  await checkDockedNavigation(win.webContents);
+  await checkNavigation(win.webContents, 'home');
   const files = await fixtures(root);
   const output = path.join(root, 'output');
   await fs.mkdir(output);
 
   await runInWindow('document.querySelector("#tab-montage").click()');
   await waitFor('!document.querySelector("#project-workspace").hidden && document.querySelector("#project-list-status").textContent.includes("还没有本地项目")', '批量混剪应先进入项目工作区');
+  await checkNavigation(win.webContents, 'project');
   await runInWindow('document.querySelector("#project-new").click()');
   assert.equal(await runInWindow('document.querySelector("#editor-workspace").hidden'), false);
   await waitForInspector('visual');
@@ -304,13 +415,7 @@ async function run() {
   assert.equal(await scheme('#editor-workspace'), await scheme('.titlebar'), '编辑器和全局工具栏应使用同一外观');
   await openInspector('narration');
   await waitFor(`parseFloat(getComputedStyle(document.querySelector('#inspector-tabs'), '::before').left) > ${initialHighlight} + 10`, '属性页的选中底色应随标签移动');
-  const editorWidth = await runInWindow("document.querySelector('.work-area').getBoundingClientRect().width");
-  await click('#nav-toggle');
-  await waitFor("document.querySelector('#workspace-navigation').checkVisibility() && document.querySelector('#nav-toggle').getAttribute('aria-expanded') === 'true'", '编辑时应能打开同一个工作区侧栏');
-  assert.ok(await runInWindow(`document.querySelector('#workspace-navigation').contains(document.activeElement)
-    && document.querySelector('.work-area').getBoundingClientRect().width === ${editorWidth}`), '编辑器浮层应接收焦点并保留原有画布宽度');
-  await runInWindow("document.activeElement.dispatchEvent(new KeyboardEvent('keydown', {key:'Escape', bubbles:true}))");
-  await waitFor("!document.querySelector('#workspace-navigation').checkVisibility() && document.activeElement.id === 'nav-toggle'", 'Esc 应收起浮动侧栏，并将焦点还给原按钮');
+  await checkNavigation(win.webContents, 'montage');
   await waitForInspector('narration');
   await openInspector('visual');
   assert.ok(await runInWindow('!document.querySelector("#timeline-tracks-panel").hidden && document.querySelector("#timeline-batch-tab").disabled'));
@@ -419,6 +524,13 @@ async function run() {
   await runInWindow('document.querySelector("#title-home").click()');
   await runInWindow('document.querySelector("#tab-script").click()');
   await waitFor('document.querySelectorAll("#script-rows .script-row").length === 3', '脚本页应显示三个初始脚本行');
+  await checkNavigation(win.webContents, 'script');
+  await click('#nav-toggle');
+  await click('#tab-drafts');
+  assert.ok(await runInWindow(`document.activeElement.id === 'draft-heading'
+    && document.querySelector('.app-frame').dataset.navigation === 'docked'
+    && !document.querySelector('#workspace-navigation').inert`), '从脚本浮层切到本地草稿应聚焦可见的草稿标题并恢复常驻侧栏');
+  await click('#tab-script');
   await runInWindow('document.querySelector("#script-import-dialogue").click()');
   await runInWindow('document.querySelector("#script-import-input").value = "1、开头台词\\t展示第一镜\\n2、第二条台词"; document.querySelector("#script-import-confirm").click();');
   await waitFor('document.querySelector(".script-dialogue").value === "开头台词" && document.querySelector(".script-note").value === "展示第一镜"', '应能批量粘贴台词和备注');
@@ -448,7 +560,7 @@ async function run() {
   await waitFor(visibleThumbnail, '素材库应解码实际视频缩略图');
   await waitFor('document.querySelectorAll("#timeline-clock .sequence-shots .sequence-block").length===3', '时间线应与三个分镜一一对应');
   assert.equal(await runInWindow('document.querySelector("#timeline-view").value'), 'time');
-  await require('./timeline-interaction.cjs')(win, runInWindow, waitFor);
+  await require('./timeline-interaction.cjs')(win, runInWindow, waitFor, checkFold);
   await runInWindow('document.querySelector("#timeline-layer-add").click()');
   await runInWindow(`(() => {const d=document.querySelector(".sequence-dialog[open]");d.querySelector("textarea").value="产品展示";d.querySelector("form").requestSubmit();})()`);
   await waitFor('document.querySelector("#timeline-clock .kind-text")?.textContent.includes("产品展示")', '全局文字应出现在独立轨道');
@@ -969,7 +1081,7 @@ async function run() {
     return root.querySelector(${JSON.stringify(toggle)}).getAttribute('aria-expanded') === ${JSON.stringify(String(expanded))}
       && root.querySelector(${JSON.stringify(body)}).hidden === ${!expanded};
   })()`;
-  await click(`${firstClip} .clip-toggle`);
+  assert.equal(await checkFold(`${firstClip} .clip-toggle`, `${firstClip} .trim-fields`), 0, '候选素材参数应完全收起');
   await click(`${firstSegment} .segment-track-toggle`);
   await waitFor(`${disclosure(firstClip, '.clip-toggle', '.trim-fields', false)}
     && ${disclosure(`${firstShot} .asset:nth-child(2)`, '.clip-toggle', '.trim-fields', true)}
