@@ -47,5 +47,3 @@
 `npm.cmd test` 检查轨道、媒体输出、工程格式和云端配音接口。`npm.cmd run test:desktop` 以隐藏窗口检查本地混剪。`npm.cmd run test:cloud-desktop` 使用本机临时 HTTP 模拟服务检查云端配音、工程恢复和实际成片。桌面测试的合成样片与结果保存在 `test-data`。
 
 本机的 Electron 启动需要 Windows 应用容器读取其运行时。已给这个项目内的 `node_modules/electron/dist` 增加 Windows 应用容器读取和执行权限。桌面测试以普通桌面会话权限运行，渲染进程沙箱保持启用。
-
-对照原版入口和待实现范围见 [功能对照](功能对照.md)。
