@@ -168,37 +168,73 @@ async function run() {
   }
   const moveGrip = pane => `.panel-layout-box[data-pane="${pane}"] [data-edge="move"]`;
   const targetPane = () => evaluate("document.querySelector('.panel-layout-box[data-drop-target]')?.dataset.pane ?? null");
-  const pickupState = () => evaluate(`(() => {
-    const chip = document.querySelector('.panel-layout-pickup');
-    const source = document.querySelector('.panel-layout-box[data-drag-source]');
-    return {
-      source: source?.dataset.pane ?? null,
-      label: chip.checkVisibility() ? chip.textContent : null,
-      shadow: source && getComputedStyle(source).boxShadow,
-      hitTest: getComputedStyle(chip).pointerEvents,
-      rect: chip.getBoundingClientRect().toJSON(),
-    };
+  const slotSnapshot = () => evaluate(`Object.fromEntries(Object.entries(${JSON.stringify(paneSelectors)}).map(([pane, selector]) =>
+    [selector, document.querySelector('.panel-layout-box[data-pane="' + pane + '"]').getBoundingClientRect().toJSON()]))`);
+  const paneVisual = pane => evaluate(`(() => {
+    const el = document.querySelector(${JSON.stringify(paneSelectors[pane])});
+    const content = [...el.children].find(child => child.checkVisibility() && child.getBoundingClientRect().width > 0);
+    const style = getComputedStyle(el);
+    return { box: el.getBoundingClientRect().toJSON(), content: content.getBoundingClientRect().toJSON(),
+      shadow: style.boxShadow, reduced: matchMedia('(prefers-reduced-motion: reduce)').matches,
+      lifted: el.hasAttribute('data-lifted'), transform: style.transform };
   })()`);
+  async function finishPaneMotion() {
+    await evaluate(`Promise.allSettled([...document.querySelectorAll('.panel-layout-pane')].flatMap(pane => {
+      getComputedStyle(pane).transform;
+      return pane.getAnimations().filter(animation => Number.isFinite(animation.effect.getComputedTiming().endTime))
+        .map(animation => animation.finished);
+    }))`);
+  }
   async function checkReleased() {
-    const state = await pickupState();
-    assert.equal(state.source, null);
-    assert.equal(state.label, null);
-    assert.equal(await targetPane(), null);
+    assert.equal(await evaluate(`document.querySelectorAll('.panel-layout-pane[data-lifted], .panel-layout-box[data-drag-source], .panel-layout-box[data-drop-target]').length`), 0);
+    await finishPaneMotion();
   }
   async function paneCenter(pane) {
-    const rect = (await snapshot())[paneSelectors[pane]];
+    const rect = (await slotSnapshot())[paneSelectors[pane]];
     return { x: rect.left + rect.width / 2, y: rect.top + rect.height / 2 };
   }
+  async function verifyLift(pane, before, slots) {
+    const lifted = await paneVisual(pane);
+    assert.ok(lifted.lifted, 'the original pane receives the lift on pointerdown');
+    assert.notEqual(lifted.shadow, before.shadow, 'the original pane casts its own raised shadow');
+    assert.notEqual(lifted.shadow, 'none');
+    samePanes(await slotSnapshot(), slots);
+    const neighbors = await snapshot();
+    for (const [selector, rect] of Object.entries(neighbors)) {
+      if (selector === paneSelectors[pane]) continue;
+      assert.deepEqual(rect, slots[selector], 'neighboring panes remain aligned with their slots');
+      assert.ok(rect.left >= lifted.box.right || rect.right <= lifted.box.left
+        || rect.top >= lifted.box.bottom || rect.bottom <= lifted.box.top,
+      'the raised pane must stay clear of its neighbors');
+    }
+    if (lifted.reduced) {
+      assert.deepEqual(lifted.box, before.box, 'reduced motion keeps the shadow cue without positional movement');
+      assert.equal(lifted.transform, 'none');
+    } else {
+      const scale = lifted.box.width / before.box.width;
+      assert.ok(scale > 1.001 && lifted.box.height > before.box.height + .5,
+        'the actual pane scales in both dimensions while held');
+      assert.ok((lifted.box.top + lifted.box.bottom) / 2 < (before.box.top + before.box.bottom) / 2 - 1,
+        'the actual pane rises vertically');
+      assert.ok(Math.abs(lifted.content.width - before.content.width * scale) < .12,
+        'actual pane content scales with the surface');
+    }
+  }
   async function beginSwap(pane) {
-    const box = (await snapshot())[paneSelectors[pane]];
+    const before = await paneVisual(pane);
+    const slots = await slotSnapshot();
+    const box = slots[paneSelectors[pane]];
     const start = { x: box.left + box.width / 2, y: box.top + 14 };
     await mouse('mouseMoved', start, {});
     await mouse('mousePressed', start, { button: 'left', buttons: 1, clickCount: 1 });
-    const state = await pickupState();
-    assert.equal(state.source, pane, 'pressing the visible grip immediately picks up its pane');
-    assert.ok(state.label?.startsWith('已抓起'));
-    assert.notEqual(state.shadow, 'none');
-    assert.equal(state.hitTest, 'none');
+    const pressed = await paneVisual(pane);
+    assert.ok(pressed.lifted, 'no pointer movement or delay is needed to lift the panel');
+    if (pressed.reduced) {
+      assert.equal(await evaluate(`document.querySelector(${JSON.stringify(paneSelectors[pane])}).getAnimations().length`), 0,
+        'the reduced-motion shadow appears without a transition');
+    }
+    await finishPaneMotion();
+    await verifyLift(pane, before, slots);
     return start;
   }
   async function hoverAt(point, expected) {
@@ -248,6 +284,8 @@ async function run() {
       await settle();
       if (checkPaint && distance === distances[0]) await checkHandlePaint(selector);
       const boxes = await snapshot();
+      assert.equal(await evaluate("document.querySelectorAll('.panel-layout-pane[data-lifted]').length"), 0,
+        'resizing a shared edge never lifts a panel');
       checkGutters(boxes);
       near(boxes['.editor-player'][horizontal ? 'right' : 'bottom'], preview[horizontal ? 'right' : 'bottom'] + distance);
       near(boxes['.editor-player'].left, preview.left);
@@ -462,47 +500,27 @@ async function run() {
   await motion('no-preference');
   await adjust();
   const stage = await snapshot();
-  const left = stage['#materials-pane'], middle = stage['.editor-player'];
+  const slots = await slotSnapshot();
+  const left = slots['#materials-pane'], middle = slots['.editor-player'];
   const seamPoint = { x: (left.right + middle.left) / 2, y: left.top + left.height / 2 };
   const playerPoint = await paneCenter('player');
   const inspectorPoint = await paneCenter('inspector');
+  const rest = await paneVisual('materials');
   const stationary = await beginSwap('materials');
-  assert.equal((await pickupState()).label, '已抓起素材库');
   assert.equal(await targetPane(), null);
+  assert.ok(!await evaluate(`document.querySelector('.panel-layout-pickup')?.checkVisibility() || document.querySelector('#panel-layout-layer').innerText.includes('已抓起')`),
+    'holding the panel does not show a pickup label');
   if (process.env.JIAJIAN_PICKUP_CAPTURE) {
-    await evaluate("Promise.all(document.querySelector('.panel-layout-pickup').getAnimations().map(a => a.finished))");
-    await settle();
-    assert.equal(await evaluate("document.querySelector('#panel-layout-target').value"), 'materials');
-    const chip = (await pickupState()).rect;
-    const [width, height] = await evaluate('[innerWidth, innerHeight]');
-    const probes = [{ x: chip.left + 5, y: chip.top + chip.height / 2 }, { x: stationary.x - 10, y: stationary.y }];
-    let painted = false;
-    for (let attempt = 0; attempt < 20 && !painted; attempt++) {
-      const picture = await wc.capturePage(undefined, { stayHidden: true });
-      if (!picture.isEmpty()) {
-        const frame = picture.resize({ width, height });
-        const pixels = frame.toBitmap();
-        // Electron's bitmap is BGRA on Windows. Both blue fills must be in this exact frame.
-        painted = probes.every(({ x, y }) => {
-          const offset = 4 * (Math.round(y) * width + Math.round(x));
-          return pixels[offset] - pixels[offset + 2] > 90;
-        });
-        if (painted) writeFileSync(process.env.JIAJIAN_PICKUP_CAPTURE, picture.toPNG());
-      }
-      if (!painted) await settle();
-    }
-    assert.ok(painted, 'the captured frame must show the blue pickup chip and source grip');
+    writeFileSync(process.env.JIAJIAN_PICKUP_CAPTURE, (await wc.capturePage(undefined, { stayHidden: true })).toPNG());
   }
   await dropAt(stationary);
   samePanes(await snapshot(), stage);
+  assert.equal((await paneVisual('materials')).shadow, rest.shadow);
   await beginSwap('materials');
   await hoverAt(playerPoint, 'player');
-  const hovering = await pickupState();
-  assert.equal(hovering.source, 'materials');
-  assert.ok(hovering.rect.left > playerPoint.x && hovering.rect.left < playerPoint.x + 22,
-    'the pickup label stays beside the pointer while the target changes');
+  await verifyLift('materials', rest, slots);
   await hoverAt(inspectorPoint, 'inspector');
-  samePanes(await snapshot(), stage);
+  await verifyLift('materials', rest, slots);
   await hoverAt(seamPoint, null);
   await dropAt(seamPoint);
   samePanes(await snapshot(), stage);
@@ -516,10 +534,20 @@ async function run() {
   await dropAt(seamPoint);
   samePanes(await snapshot(), stage);
 
+  const lostGrip = await beginSwap('materials');
+  await hoverAt(playerPoint, 'player');
+  await evaluate(`document.querySelector(${JSON.stringify(moveGrip('materials'))}).releasePointerCapture(1)`);
+  await mouse('mouseMoved', { ...playerPoint, x: playerPoint.x + 2 }, { buttons: 1 });
+  await checkReleased();
+  await dropAt(lostGrip);
+  samePanes(await snapshot(), stage);
+
   await wc.debugger.sendCommand('Emulation.setTouchEmulationEnabled', { enabled: true });
   try {
     await touch('touchStart', [await center(moveGrip('materials'))]);
-    assert.equal((await pickupState()).label, '已抓起素材库', 'touch pickup needs no movement or long press');
+    assert.ok((await paneVisual('materials')).lifted, 'touch pickup needs no movement or long press');
+    await finishPaneMotion();
+    await verifyLift('materials', rest, slots);
     await touch('touchMove', [playerPoint]);
     await settle();
     assert.equal(await targetPane(), 'player');
@@ -527,6 +555,15 @@ async function run() {
     await settle();
     await checkReleased();
     samePanes(await snapshot(), stage);
+    for (const expected of [exchanged(stage, 'materials', 'player'), stage]) {
+      const start = await paneCenter('materials'), end = await paneCenter('player');
+      await touch('touchStart', [start]);
+      await touch('touchMove', [end]);
+      assert.equal(await targetPane(), 'player');
+      await touch('touchEnd', []);
+      await checkReleased();
+      samePanes(await snapshot(), expected);
+    }
   } finally {
     await wc.debugger.sendCommand('Emulation.setTouchEmulationEnabled', { enabled: false });
   }
@@ -539,15 +576,18 @@ async function run() {
       const style = getComputedStyle(el, pseudo);
       return ![style.outlineStyle, style.borderTopStyle, style.borderRightStyle, style.borderBottomStyle, style.borderLeftStyle].includes('dashed');
     })))`), 'editing and targeting should use a continuous surface without a dashed outline');
-  await dropAt(playerPoint);
-  samePanes(await snapshot(), exchanged(stage, 'materials', 'player'));
+  await mouse('mouseReleased', playerPoint, { button: 'left', clickCount: 1 });
   assert.ok(await evaluate(animatedTransforms) > 0, 'the contents should transition when the two slots exchange');
+  samePanes(await slotSnapshot(), exchanged(stage, 'materials', 'player'));
+  await checkReleased();
+  samePanes(await snapshot(), exchanged(stage, 'materials', 'player'));
   await evaluate(`Promise.allSettled(document.getAnimations().filter(a => a.effect?.target?.closest('.panel-layout-pane') &&
     Number.isFinite(a.effect.getComputedTiming().endTime)).map(a => a.finished))`);
   await beginSwap('inspector');
   await hoverAt(await paneCenter('timeline'), 'timeline');
+  const cancelledTarget = await paneCenter('timeline');
   await press('Escape');
-  await dropAt(await paneCenter('timeline'));
+  await dropAt(cancelledTarget);
   assert.equal(await editing(), false);
   samePanes(await snapshot(), stage);
   await reopen();
@@ -557,7 +597,6 @@ async function run() {
   await adjust();
   const reducedGrip = await beginSwap('player');
   assert.equal(await evaluate('document.documentElement.dataset.theme'), 'light');
-  assert.equal(await evaluate("getComputedStyle(document.querySelector('.panel-layout-pickup')).animationName"), 'none');
   await dropAt(reducedGrip);
   await evaluate(`document.querySelector(${JSON.stringify(moveGrip('materials'))}).focus()`);
   await press('ArrowRight');

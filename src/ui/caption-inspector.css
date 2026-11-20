@@ -145,7 +145,6 @@ input[value="left"] + .caption-align-symbol { --align-edge: left; }
 input[value="right"] + .caption-align-symbol { --align-edge: right; }
 .caption-colors { flex-wrap: wrap; gap: 4px 8px; }
 .caption-colors label { display: flex; align-items: center; gap: 4px; color: var(--secondary-ink); font-size: 11px; }
-.caption-colors input[type="color"] { width: 32px; height: 23px; padding: 1px 2px; cursor: pointer; }
 .caption-size-controls input[type="range"] { flex: 1; accent-color: var(--system-blue); }
 .caption-size-controls input[type="number"] { width: 49px; }
 .caption-section summary { cursor: pointer; }

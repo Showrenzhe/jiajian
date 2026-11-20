@@ -1,3 +1,26 @@
+/* The native swatch paints the actual input value; its transparent padding
+   keeps the whole control clickable, including the space around the strip. */
+input[type="color"] {
+  appearance: none;
+  width: 42px;
+  height: 26px;
+  margin: 0;
+  padding: 0;
+  border: 0;
+  border-radius: 0;
+  background: transparent;
+  cursor: pointer;
+}
+input[type="color"]::-webkit-color-swatch-wrapper { padding: 6px 0; }
+input[type="color"]::-webkit-color-swatch {
+  border: 1px solid --appearance-color(#858a92, #828991);
+  border-radius: 0;
+  forced-color-adjust: none;
+}
+@media (forced-colors: active) {
+  input[type="color"]::-webkit-color-swatch { border-color: ButtonText; }
+}
+
 .color-wheel-panel {
   position: fixed;
   inset: auto;

@@ -911,35 +911,10 @@ body:has(.workspace-divider[data-dragging]) {
   border-radius: var(--workspace-radius);
   pointer-events: none;
 }
-.app-frame[data-mode="montage"] .panel-layout-box[data-drag-source] {
-  background-color: color-mix(in srgb, var(--accent) 8%, transparent);
-  box-shadow: inset 0 0 0 1.5px var(--selected-edge), 0 4px 12px rgb(12 22 38 / 22%);
-}
-.panel-layout-pickup:not([hidden]) {
-  position: fixed;
-  inset: 0 auto auto 0;
-  z-index: 14;
-  /* Stay beside the pointer, including when it reaches a window edge. */
-  translate: clamp(6px, calc(var(--pickup-x) + 14px), calc(100vw - 100% - 6px))
-    clamp(6px, calc(var(--pickup-y) - 100% - 12px), calc(100vh - 100% - 6px));
-  display: inline-flex;
-  align-items: center;
-  gap: 7px;
-  padding: 5px 11px 5px 9px;
-  border-radius: 999px;
-  background: var(--action-fill);
-  color: white;
-  box-shadow: 0 3px 9px rgb(12 22 38 / 24%);
-  font-size: 12px;
-  font-weight: 600;
-  white-space: nowrap;
-  pointer-events: none;
-}
-.panel-layout-pickup::before {
-  content: "";
-  width: 8px;
-  height: 12px;
-  background: radial-gradient(circle, currentColor 1px, transparent 1.3px) center / 4px 4px;
+.app-frame[data-mode="montage"] .panel-layout-pane[data-lifted] {
+  z-index: 3;
+  border-color: var(--selected-edge);
+  box-shadow: 0 8px 17px -5px rgb(12 22 38 / 38%), 0 2px 5px rgb(12 22 38 / 22%);
 }
 .app-frame[data-mode="montage"] .panel-layout-box[data-drop-target] {
   background-color: color-mix(in srgb, var(--accent) 14%, transparent);
@@ -958,11 +933,20 @@ body:has(.workspace-divider[data-dragging]) {
   white-space: nowrap;
 }
 @media (prefers-reduced-motion: no-preference) {
-  .panel-layout-box:not([data-drag-source]) { transition: background-color 110ms ease-out; }
-  .panel-layout-pickup:not([hidden]) { animation: panel-pickup-lift 120ms ease-out; }
-  @keyframes panel-pickup-lift {
-    from { transform: translateY(3px) scale(.96); }
-    to { transform: none; }
+  .panel-layout-box { transition: background-color 110ms ease-out; }
+  [data-layout-editing] .panel-layout-pane {
+    transition: transform 180ms cubic-bezier(.2,.75,.25,1), box-shadow 180ms ease-out, border-color 180ms ease-out;
+  }
+  [data-layout-editing] .panel-layout-pane[data-lifted] {
+    transform: translateY(-3px) scale(var(--panel-lift-scale));
+    transition-duration: 150ms;
+  }
+  .panel-layout-handle[data-edge="move"]::before {
+    transition: transform 180ms cubic-bezier(.2,.75,.25,1);
+  }
+  .panel-layout-box[data-drag-source] [data-edge="move"]::before {
+    transform: translateY(var(--panel-grip-offset));
+    transition-duration: 150ms;
   }
 }
 .app-frame[data-mode="montage"] .panel-layout-handle {
@@ -1050,7 +1034,6 @@ body:has(.workspace-divider[data-dragging]) {
 .app-frame[data-mode="montage"] .inspector-body .settings-grid { display: grid; grid-template-columns: 1fr; gap: 0; }
 .app-frame[data-mode="montage"] .inspector-body .settings-grid select { width: 54%; }
 .app-frame[data-mode="montage"] .inspector-body :is(select, input[type="number"]) { min-height: 27px; padding: 2px 6px; }
-.app-frame[data-mode="montage"] #background-color { height: 24px; padding: 2px 4px; border: 1px solid var(--hairline); background: var(--surface); }
 .app-frame[data-mode="montage"] .inspector-body .check { font-size: 13px; }
 .app-frame[data-mode="montage"] .timeline-lane-label .ui-icon { width: 16px; height: 16px; }
 @media (prefers-contrast: more) {

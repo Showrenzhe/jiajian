@@ -96,9 +96,6 @@
     const layer = create('div', { id: 'panel-layout-layer' });
     layer.hidden = true;
     workspace.append(layer);
-    const pickup = create('span', { className: 'panel-layout-pickup', hidden: true });
-    pickup.setAttribute('aria-hidden', 'true');
-    layer.append(pickup);
     const panes = new Map(definitions.map(([id, selector, label]) => {
       const element = workspace.querySelector(selector);
       const overlay = create('div', { className: 'panel-layout-box' });
@@ -308,21 +305,19 @@
       sync();
     }
 
-    function positionPickup(x, y) {
-      pickup.style.setProperty('--pickup-x', x + 'px');
-      pickup.style.setProperty('--pickup-y', y + 'px');
-    }
-
     function startDrag(pane, edge, handle, event) {
       if (!editing || drag || event.button !== 0) return;
       event.preventDefault();
       active = pane.id;
       drag = { pane, edge, handle, pointerId: event.pointerId, x: event.clientX, y: event.clientY, changed: false };
       if (edge === 'move') {
+        // Cap expansion at three pixels per edge, even for the full-width timeline.
+        const { width, height } = pane.overlay.getBoundingClientRect();
+        const expansion = Math.min(.014, 6 / Math.max(1, width, height));
+        pane.element.style.setProperty('--panel-lift-scale', String(1 + expansion));
+        pane.overlay.style.setProperty('--panel-grip-offset', `${-3 - height * expansion / 2}px`);
+        pane.element.dataset.lifted = '';
         pane.overlay.dataset.dragSource = '';
-        positionPickup(event.clientX, event.clientY);
-        pickup.textContent = '已抓起' + pane.label;
-        pickup.hidden = false;
       } else {
         drag.split = splitView.sizes();
         drag.before = splitView.snapshot();
@@ -337,7 +332,6 @@
     function updateDrag(x, y) {
       const dx = x - drag.x, dy = y - drag.y;
       if (drag.edge === 'move') {
-        positionPickup(x, y);
         if (!drag.changed && Math.hypot(dx, dy) < 4) return;
         const target = targetAt(drag.pane, x, y);
         if (target !== drag.target) {
@@ -362,6 +356,7 @@
 
     function finish(event) {
       if (!drag || drag.pointerId !== event.pointerId) return;
+      if (event.type === 'lostpointercapture' && (drag.handle !== event.currentTarget || drag.handle.hasPointerCapture(event.pointerId))) return;
       if (event.type !== 'pointerup') return releaseDrag();
       updateDrag(event.clientX, event.clientY);
       const { pane, target, edge, changed } = drag;
@@ -382,8 +377,12 @@
         splitView.restore(before);
         sync();
       }
-      delete pane.overlay.dataset.dragSource;
-      pickup.hidden = true;
+      if (pane.element.hasAttribute('data-lifted')) {
+        delete pane.element.dataset.lifted;
+        pane.element.style.removeProperty('--panel-lift-scale');
+        delete pane.overlay.dataset.dragSource;
+        pane.overlay.style.removeProperty('--panel-grip-offset');
+      }
       if (target) delete target.overlay.dataset.dropTarget;
       workspace.classList.remove('panel-layout-dragging');
       if (handle.hasPointerCapture(pointerId)) handle.releasePointerCapture(pointerId);

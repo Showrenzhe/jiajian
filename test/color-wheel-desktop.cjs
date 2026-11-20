@@ -43,6 +43,33 @@ async function run() {
     await key('Enter', 13);
   };
   const box = selector => read(dom(selector) + '.getBoundingClientRect().toJSON()');
+  const inspectSwatch = async selector => {
+    const { width, height } = await box(selector);
+    assert.ok(width >= 36 && height >= 24, selector + ' should retain its click target');
+    const appearance = await read(`(() => {
+      const field = ${dom(selector)}, style = getComputedStyle(field);
+      return [style.backgroundColor, style.borderTopWidth, style.borderRadius, style.boxShadow, field.labels.length > 0];
+    })()`);
+    assert.deepEqual(appearance, ['rgba(0, 0, 0, 0)', '0px', '0px', 'none', true], selector);
+  };
+  const captureRow = async (selector, name) => {
+    const target = process.argv[2];
+    if (!target) return;
+    await read(dom(selector) + ".scrollIntoView({ block: 'center', behavior: 'instant' })");
+    await read('new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve)))');
+    const row = await box(selector);
+    const neighbors = await read(`(() => {
+      const row = ${dom(selector)}, previous = row.previousElementSibling;
+      const above = previous.matches('.settings-grid') ? previous.lastElementChild : previous;
+      return { top: above.getBoundingClientRect().top, bottom: row.nextElementSibling.getBoundingClientRect().bottom };
+    })()`);
+    const viewport = await read('({ width: innerWidth, height: innerHeight })');
+    const x = Math.max(0, Math.floor(row.left - 8)), y = Math.max(0, Math.floor(neighbors.top - 2));
+    const clip = { x, y, width: Math.min(viewport.width, Math.ceil(row.right + 8)) - x,
+      height: Math.min(viewport.height, Math.ceil(neighbors.bottom + 2)) - y };
+    await fs.mkdir(target, { recursive: true });
+    await fs.writeFile(path.join(target, name + '.png'), (await wc.capturePage(clip)).toPNG());
+  };
   const capture = async name => {
     const target = process.argv[2];
     if (!target) return;
@@ -58,6 +85,15 @@ async function run() {
   };
   await click('#home-create');
   await until(() => read(dom(color) + '.checkVisibility()'), 'Missing background color input');
+  const captionRow = '.caption-field:has(.caption-colors)';
+  await click('#inspector-tab-subtitles');
+  for (const selector of ['#caption-color', '#caption-outline']) await inspectSwatch(selector);
+  await captureRow(captionRow, '扁平色片-浅色-字幕');
+  await click('.caption-colors label');
+  assert.equal(await value('[data-hex]'), '#FFFFFF');
+  await key('Escape', 27);
+  await click('#inspector-tab-visual');
+  await inspectSwatch(color);
   await read(`window.colorEvents = [];
     for (const type of ['input', 'change']) ${dom(color)}.addEventListener(type, e => colorEvents.push(e.type));`);
   await read(dom(color) + '.focus()');
@@ -84,6 +120,11 @@ async function run() {
   await exact('ffffff');
   assert.equal(await value(color), '#ffffff');
   assert.equal(await value('[data-channel="0"]'), '255');
+  await key('Escape', 27);
+  await until(() => read('!' + dom(panel)), 'Return to the white background swatch');
+  await read(dom(color) + '.blur()');
+  await captureRow('#background-color-row', '扁平色片-浅色-留边背景');
+  await click(color);
   const redField = dom('[data-channel="0"]');
   await read(redField + ".focus(); " + redField + ".select()");
   await wc.debugger.sendCommand('Input.insertText', { text: '37' });
@@ -104,6 +145,9 @@ async function run() {
   await key('Escape', 27);
   await until(() => read('!' + dom(panel)), 'Escape should remove the picker');
   assert.equal(await read(dom(color) + ' === document.activeElement'), true);
+  assert.ok(await read(dom(color) + ".matches(':focus-visible') && getComputedStyle(document.activeElement).outlineStyle === 'solid'"));
+  await read(dom(color) + '.blur()');
+  await captureRow('#background-color-row', '扁平色片-深色-留边背景');
   const anchor = await box(color);
   for (const type of ['mousePressed', 'mouseReleased']) await mouse(type, anchor.x + anchor.width / 2, anchor.y + anchor.height / 2);
   assert.equal(await value('[data-hex]'), '#5898CF');
@@ -115,10 +159,13 @@ async function run() {
   await until(() => read(`(async () => { const drafts = await workbench.listDrafts();
     if (!drafts.length) return false;
     return (await workbench.openDraft(drafts[0].id)).config.backgroundColor === '#5898cf'; })()`), 'Draft should retain the chosen color');
+  await click('#inspector-tab-subtitles');
+  await captureRow(captionRow, '扁平色片-深色-字幕');
   // Open the real nested bulk editor and its dynamically constructed color control.
   await click('#timeline-text-tools');
   await read("document.querySelector('.sequence-dialog details').open = true");
   const nested = '.sequence-dialog [name=color]';
+  await inspectSwatch(nested);
   await click(nested);
   assert.equal(await read(dom(panel) + ".matches(':modal')"), true);
   await exact('a10c77');
