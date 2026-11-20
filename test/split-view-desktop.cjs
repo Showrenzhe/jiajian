@@ -157,9 +157,20 @@ async function run() {
     await settle();
   }
   const editing = () => evaluate("document.querySelector('#panel-layout-toggle').getAttribute('aria-pressed') === 'true'");
+  function sameBox(actual, expected, label) {
+    for (const prop of ['left', 'top', 'right', 'bottom']) {
+      assert.ok(Math.abs(actual[prop] - expected[prop]) <= 1.5,
+        `${label}.${prop} should be ${expected[prop]}, got ${actual[prop]}`);
+    }
+  }
   function samePanes(boxes, expected) {
-    for (const selector of selectors) {
-      for (const prop of ['left', 'top', 'right', 'bottom']) near(boxes[selector][prop], expected[selector][prop]);
+    for (const selector of selectors) sameBox(boxes[selector], expected[selector], selector);
+  }
+  function betweenBoxes(actual, from, to, label) {
+    for (const prop of ['left', 'top', 'width', 'height']) {
+      if (Math.abs(from[prop] - to[prop]) < 10) continue;
+      assert.ok(actual[prop] > Math.min(from[prop], to[prop]) && actual[prop] < Math.max(from[prop], to[prop]),
+        `${label}.${prop} should be between ${from[prop]} and ${to[prop]}, got ${actual[prop]}`);
     }
   }
   function exchanged(boxes, first, second) {
@@ -185,6 +196,22 @@ async function run() {
         .map(animation => animation.finished);
     }))`);
   }
+  // Use the browser's animation clock to sample real panel positions even on a busy desktop.
+  // The check works with CSS and Web Animations and does not depend on an application animation ID.
+  async function sampleMotion(pane, fraction) {
+    return evaluate(`(() => {
+      const el = document.querySelector(${JSON.stringify(paneSelectors[pane])});
+      const properties = ['transform', 'translate', 'scale', 'width', 'height', 'left', 'top'];
+      const animations = el.getAnimations().filter(a => a.effect.getKeyframes().some(frame =>
+        properties.some(prop => prop in frame)));
+      for (const animation of animations) {
+        animation.pause();
+        animation.currentTime = animation.effect.getComputedTiming().activeDuration * ${fraction};
+      }
+      return animations.length;
+    })()`);
+  }
+  const resumeMotion = () => evaluate(`document.getAnimations().filter(a => a.playState === 'paused').forEach(a => a.play())`);
   async function checkReleased() {
     assert.equal(await evaluate(`document.querySelectorAll('.panel-layout-pane[data-lifted], .panel-layout-box[data-drag-source], .panel-layout-box[data-drop-target]').length`), 0);
     await finishPaneMotion();
@@ -197,10 +224,10 @@ async function run() {
     .map(key => localStorage.getItem(key))`);
   let held;
   async function preparePickup(pane, start) {
-    held = { pane, start, before: await paneVisual(pane), slots: await slotSnapshot(), stored: await storedLayout() };
+    held = { pane, start, before: await paneVisual(pane), slots: await snapshot(), stored: await storedLayout() };
   }
   async function verifyFollow(point) {
-    const { pane, start, before, slots, stored } = held;
+    const { pane, start, before, stored } = held;
     const visual = await paneVisual(pane);
     assert.ok(visual.lifted, 'the original pane is raised');
     assert.notEqual(visual.shadow, before.shadow);
@@ -218,11 +245,6 @@ async function run() {
     near(visual.content.left, visual.box.left + (before.content.left - before.box.left) * scaleX);
     near(visual.content.top, visual.box.top + (before.content.top - before.box.top) * scaleY);
     near(visual.content.width, before.content.width * scaleX);
-    samePanes(await slotSnapshot(), slots);
-    const neighbors = await snapshot();
-    for (const selector of selectors.filter(selector => selector !== paneSelectors[pane])) {
-      assert.deepEqual(neighbors[selector], slots[selector], 'neighboring panels remain in their slots');
-    }
     assert.deepEqual(await storedLayout(), stored, 'hover never writes a layout');
     return visual;
   }
@@ -242,10 +264,21 @@ async function run() {
     await verifyFollow(start);
     return start;
   }
+  async function verifyNeighbors(target) {
+    const boxes = await snapshot();
+    const source = paneSelectors[held.pane];
+    for (const selector of selectors.filter(selector => selector !== source)) {
+      const expected = held.slots[selector === paneSelectors[target] ? source : selector];
+      sameBox(boxes[selector], expected, `while held over ${target}, ${selector}`);
+    }
+  }
   async function hoverAt(point, expected) {
     await mouse('mouseMoved', point, { buttons: 1 });
-    await verifyFollow(point);
+    const visual = await verifyFollow(point);
     assert.equal(await targetPane(), expected, 'only the fixed slot under the pointer offers to swap');
+    if (!visual.reduced) await finishPaneMotion();
+    else if (expected) assert.equal(await sampleMotion(expected, .5), 0, 'reduced motion makes room instantly');
+    await verifyNeighbors(expected);
     return point;
   }
   async function paintedContent(box) {
@@ -560,15 +593,53 @@ async function run() {
   const originalPaint = await paintedContent((await paneVisual('materials')).box);
   const diagonal = { x: Math.round(middle.left + 52), y: Math.round(left.top + 75) };
   await hoverAt({ x: grab.x + 3, y: grab.y }, null);
+  await hoverAt({ x: Math.ceil(middle.left) + 1, y: diagonal.y }, 'player');
   await hoverAt(diagonal, 'player');
   await evaluate("Promise.allSettled(document.querySelector('[data-drop-target]').getAnimations().map(a => a.finished))");
   await settle();
   samePaint(originalPaint, await paintedContent((await paneVisual('materials')).box), middle.left);
+  await hoverAt(inspectorPoint, 'inspector');
+  await hoverAt(playerPoint, 'player');
   await hoverAt({ x: grab.x + 1, y: grab.y + 1 }, null);
   await hoverAt(inspectorPoint, 'inspector');
   await hoverAt(seamPoint, null);
   await dropAt(seamPoint);
   samePanes(await snapshot(), stage);
+  assert.deepEqual(await storedLayout(), held.stored);
+
+  // Reverse before the first displaced panel reaches the source. At each new target,
+  // the returning and incoming panels must continue from their currently visible rectangles.
+  const rapidStart = await beginSwap('materials');
+  await mouse('mouseMoved', playerPoint, { buttons: 1 });
+  assert.ok(await sampleMotion('player', .25), 'crossing into a slot starts the slide before release');
+  const midSlide = (await snapshot())['.editor-player'];
+  betweenBoxes(midSlide, middle, left, 'player entering the source slot');
+  await mouse('mouseMoved', inspectorPoint, { buttons: 1 });
+  assert.ok(await sampleMotion('player', 0));
+  assert.ok(await sampleMotion('inspector', 0));
+  let interrupted = await snapshot();
+  sameBox(interrupted['.editor-player'], midSlide, 'player begins its return');
+  sameBox(interrupted['#montage-inspector'], stage['#montage-inspector'], 'inspector starts from its physical slot');
+  await sampleMotion('player', .25);
+  await sampleMotion('inspector', .25);
+  interrupted = await snapshot();
+  betweenBoxes(interrupted['.editor-player'], midSlide, middle, 'player returning to its slot');
+  betweenBoxes(interrupted['#montage-inspector'], stage['#montage-inspector'], left, 'inspector entering the source slot');
+  await mouse('mouseMoved', playerPoint, { buttons: 1 });
+  assert.ok(await sampleMotion('player', 0));
+  assert.ok(await sampleMotion('inspector', 0));
+  const reversed = await snapshot();
+  sameBox(reversed['.editor-player'], interrupted['.editor-player'], 'player reverses from its visible location');
+  sameBox(reversed['#montage-inspector'], interrupted['#montage-inspector'], 'inspector reverses from its visible location');
+  await resumeMotion();
+  await finishPaneMotion();
+  await verifyFollow(playerPoint);
+  await verifyNeighbors('player');
+  await hoverAt(rapidStart, null);
+  await dropAt(rapidStart);
+  samePanes(await snapshot(), stage);
+  assert.deepEqual(await storedLayout(), held.stored);
+
   await beginSwap('materials');
   await hoverAt(playerPoint, 'player');
   await hoverAt({ x: 2, y: 2 }, null);
@@ -605,24 +676,56 @@ async function run() {
     await settle();
     assert.equal(await targetPane(), 'player');
     await verifyFollow(playerPoint);
+    await finishPaneMotion();
+    await verifyNeighbors('player');
     await touch('touchCancel', []);
     await settle();
     await checkReleased();
     samePanes(await snapshot(), stage);
+    assert.deepEqual(await storedLayout(), held.stored, 'touch cancellation preserves the saved layout');
     for (const expected of [exchanged(stage, 'materials', 'player'), stage]) {
       const start = await paneCenter('materials'), end = await paneCenter('player');
+      await preparePickup('materials', start);
       await touch('touchStart', [start]);
       await touch('touchMove', [end]);
       assert.equal(await targetPane(), 'player');
+      await finishPaneMotion();
+      await verifyFollow(end);
+      await verifyNeighbors('player');
       await touch('touchEnd', []);
       await checkReleased();
       samePanes(await snapshot(), expected);
+      assert.notDeepEqual(await storedLayout(), held.stored, 'touch release commits the preview');
     }
   } finally {
     await wc.debugger.sendCommand('Emulation.setTouchEmulationEnabled', { enabled: false });
   }
 
-  const animatedTransforms = `document.getAnimations().filter(a => a.id === 'panel-slot-arrival').length`;
+  // Drop a different-sized panel while its neighbor is still crossing the workspace.
+  const timelinePoint = await paneCenter('timeline');
+  await beginSwap('inspector');
+  await mouse('mouseMoved', timelinePoint, { buttons: 1 });
+  assert.ok(await sampleMotion('timeline', .25));
+  const crossing = await snapshot();
+  betweenBoxes(crossing['#montage-pane'], stage['#montage-pane'], stage['#montage-inspector'], 'timeline making room');
+  await verifyFollow(timelinePoint);
+  await mouse('mouseReleased', timelinePoint, { button: 'left', clickCount: 1 });
+  assert.ok(await sampleMotion('inspector', 0));
+  // The timeline was paused at a known frame. It must still be there while the released pane starts landing.
+  samePanes(await snapshot(), crossing);
+  await resumeMotion();
+  await checkReleased();
+  samePanes(await snapshot(), exchanged(stage, 'timeline', 'inspector'));
+  assert.notDeepEqual(await storedLayout(), held.stored, 'mouse release commits the preview');
+  await reopen();
+  samePanes(await snapshot(), exchanged(stage, 'timeline', 'inspector'));
+  await adjust();
+  await beginSwap('inspector');
+  await dropAt(await hoverAt(await paneCenter('timeline'), 'timeline'));
+  samePanes(await snapshot(), stage);
+  await adjust();
+  await adjust();
+
   await beginSwap('materials');
   await hoverAt(playerPoint, 'player');
   assert.ok(await evaluate(`[...document.querySelectorAll('.panel-layout-box')].every(box =>
@@ -633,28 +736,15 @@ async function run() {
   const airborne = await snapshot();
   const swapped = exchanged(stage, 'materials', 'player');
   await mouse('mouseReleased', playerPoint, { button: 'left', clickCount: 1 });
-  assert.ok(await evaluate(animatedTransforms) > 0, 'release starts the slot exchange');
-  samePanes(await slotSnapshot(), swapped);
-  // Seek the real animations to inspect their first and intermediate frames without depending on CI frame timing.
-  const seekArrival = fraction => evaluate(`(() => {
-    const arrivals = document.getAnimations().filter(a => a.id === 'panel-slot-arrival');
-    for (const a of arrivals) { a.pause(); a.currentTime = a.effect.getTiming().duration * ${fraction}; }
-    return arrivals.length;
-  })()`);
-  assert.ok(await seekArrival(0) >= 2);
+  assert.ok(await sampleMotion('materials', 0), 'the released panel lands from the pointer');
+  await sampleMotion('player', 0);
   samePanes(await snapshot(), airborne);
-  await seekArrival(.5);
+  await sampleMotion('materials', .50);
+  await sampleMotion('player', .50);
   const landing = await snapshot();
-  for (const selector of ['#materials-pane', '.editor-player']) {
-    for (const prop of ['left', 'top', 'width', 'height']) {
-      const from = airborne[selector][prop], to = swapped[selector][prop], now = landing[selector][prop];
-      if (Math.abs(from - to) > 10) {
-        assert.ok(now > Math.min(from, to) && now < Math.max(from, to),
-          `${selector} ${prop} must move continuously from ${from} to ${to}, got ${now}`);
-      }
-    }
-  }
-  await evaluate("document.getAnimations().filter(a => a.id === 'panel-slot-arrival').forEach(a => a.play())");
+  betweenBoxes(landing['#materials-pane'], airborne['#materials-pane'], swapped['#materials-pane'], 'materials landing');
+  sameBox(landing['.editor-player'], left, 'the displaced player stays put throughout release');
+  await resumeMotion();
   await checkReleased();
   samePanes(await snapshot(), swapped);
 
@@ -663,7 +753,7 @@ async function run() {
   const offset = { x: regrab.x + 34, y: regrab.y + 28 };
   await hoverAt(offset, null);
   await mouse('mouseReleased', offset, { button: 'left', clickCount: 1 });
-  assert.ok(await evaluate(animatedTransforms) > 0);
+  assert.ok(await sampleMotion('materials', .25));
   await mouse('mousePressed', offset, { button: 'left', buttons: 1, clickCount: 1 });
   await finishPaneMotion();
   const caught = await paneVisual('materials');
@@ -696,7 +786,7 @@ async function run() {
   await press('ArrowRight');
   samePanes(await snapshot(), exchanged(stage, 'materials', 'player'));
   assert.equal(await evaluate(`document.activeElement.closest('.panel-layout-box')?.dataset.pane`), 'materials');
-  assert.equal(await evaluate(animatedTransforms), 0, 'reduced motion should perform the same exchange immediately');
+  assert.equal(await sampleMotion('materials', 0), 0, 'reduced motion exchanges immediately');
   await press('ArrowLeft');
   samePanes(await snapshot(), stage);
   await press('ArrowDown');
@@ -742,7 +832,7 @@ async function run() {
   await dropAt(timelineGrip);
   assert.equal(await visible(), 0);
   wc.debugger.detach();
-  console.log('Passed pointer-anchored panel movement, painted content, animated slot exchange, cancellation and re-grab, touch, reduced motion, keyboard, migration, clipping, resizing, and persistence.');
+  console.log('Passed live panel swaps while held, rapid reversals, continuous release, cancellation, re-grab, touch, reduced motion, keyboard, migration, clipping, resizing, and persistence.');
   win.close();
 }
 

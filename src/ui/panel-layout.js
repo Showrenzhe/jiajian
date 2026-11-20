@@ -172,16 +172,17 @@
       }
     }
 
-    function swapPanes(sourceId, targetId) {
-      if (sourceId === targetId || !panes.has(sourceId) || !panes.has(targetId)) return;
-      [slots[sourceId], slots[targetId]] = [slots[targetId], slots[sourceId]];
+    function commitExchange(source, target) {
+      [slots[source.id], slots[target.id]] = [slots[target.id], slots[source.id]];
       applySlots();
+      live.textContent = `${source.label}与${target.label}已交换位置。`;
+      save();
     }
 
     function refreshControls() {
       toggle.setAttribute('aria-pressed', String(editing));
       toggle.textContent = editing ? '完成布局' : '调整布局';
-      toggle.title = editing ? '保留本次调整并退出。按 Esc 可取消本次调整。' : '拖动面板到另一块面板上松开即可交换，拖动边缘调整大小。';
+      toggle.title = editing ? '保留本次调整并退出。按 Esc 可取消本次调整。' : '拖到另一块面板上预览交换，松开落位。拖动边缘调整大小。';
       choose.hidden = !editing;
       choose.value = active;
       const modified = swapped() || splitView.modified;
@@ -270,18 +271,20 @@
       for (const key of ['left', 'top', 'width', 'height']) pane.element.style.removeProperty('--panel-float-' + key);
     }
 
-    function stopArrivals() {
-      for (const pane of panes.values()) {
-        if (!pane.arrival) continue;
-        pane.arrival.cancel();
-        pane.arrival = undefined;
-        dock(pane);
-      }
+    function stopArrival(pane) {
+      if (!pane.arrival) return;
+      pane.arrival.cancel();
+      pane.arrival = undefined;
+      dock(pane);
     }
 
-    function animateArrival(pane, from, foreground = false) {
+    function stopArrivals() {
+      for (const pane of panes.values()) stopArrival(pane);
+    }
+
+    function animateArrival(pane, from, { destination = pane.overlay, foreground = false } = {}) {
       if (reducedMotion.matches) return;
-      const to = pane.overlay.getBoundingClientRect();
+      const to = destination.getBoundingClientRect();
       if (!to.width || !to.height) return;
       floatAt(pane, to);
       if (foreground) pane.element.dataset.floating = 'front';
@@ -298,14 +301,29 @@
       }, () => { /* A new gesture can interrupt the landing. */ });
     }
 
-    function exchange(source, target, from = source.element.getBoundingClientRect()) {
-      const displaced = target.element.getBoundingClientRect();
-      stopArrivals();
-      swapPanes(source.id, target.id);
-      animateArrival(target, displaced);
-      animateArrival(source, from, true);
-      live.textContent = `${source.label}与${target.label}已交换位置。`;
-      save();
+    // Overlays remain in their committed slots until release, so sliding panes
+    // cannot change which physical slot is under a stationary pointer.
+    function previewPaneAt(pane, destination) {
+      const from = pane.element.getBoundingClientRect();
+      stopArrival(pane);
+      pane.element.style.setProperty('--panel-grid-area', destination.style.getPropertyValue('--panel-grid-area'));
+      animateArrival(pane, from, { destination });
+    }
+
+    function previewTarget(target) {
+      if (target === drag.target) return;
+      const previous = drag.target;
+      if (previous) {
+        delete previous.overlay.dataset.dropTarget;
+        previewPaneAt(previous, previous.overlay);
+      }
+      if (target) {
+        target.overlay.dataset.dropTarget = '';
+        previewPaneAt(target, drag.pane.overlay);
+      }
+      drag.target = target;
+      const emptySlot = (target ?? drag.pane).overlay;
+      vacancy.style.setProperty('--panel-grid-area', emptySlot.style.getPropertyValue('--panel-grid-area'));
     }
 
     function nudge(pane, edge, event) {
@@ -319,7 +337,14 @@
       active = pane.id;
       if (edge === 'move') {
         const target = neighbor(pane, dx, dy);
-        if (target) exchange(pane, target);
+        if (target) {
+          const from = pane.element.getBoundingClientRect();
+          const displaced = target.element.getBoundingClientRect();
+          stopArrivals();
+          commitExchange(pane, target);
+          animateArrival(target, displaced);
+          animateArrival(pane, from, { foreground: true });
+        }
       } else {
         const step = event.shiftKey ? 24 : 8;
         resizeDocked(pane.id, edge, splitView.sizes(), dx * step, dy * step);
@@ -355,6 +380,7 @@
         const scaleX = visual.width / box.width, scaleY = visual.height / box.height;
         const grabX = (event.clientX - visual.left) / scaleX, grabY = (event.clientY - visual.top) / scaleY;
         floatAt(pane, { width: box.width, height: box.height, left: event.clientX - grabX, top: event.clientY - grabY });
+        pane.element.dataset.floating = 'front';
         if (visibleBox) pane.element.style.scale = `${scaleX} ${scaleY}`;
         const expansion = Math.min(.014, 3 / Math.max(1, box.width, box.height));
         pane.element.style.setProperty('--panel-lift-scale', String(1 + expansion));
@@ -384,11 +410,7 @@
         drag.lastY = y;
         if (!drag.changed && Math.hypot(dx, dy) < 4) return;
         const target = drag.targets.find(({ rect }) => containsPoint(rect, x, y))?.pane;
-        if (target !== drag.target) {
-          if (drag.target) delete drag.target.overlay.dataset.dropTarget;
-          if (target) target.overlay.dataset.dropTarget = '';
-          drag.target = target;
-        }
+        previewTarget(target);
       } else {
         if (!drag.changed && !dx && !dy) return;
         resizeDocked(drag.pane.id, drag.edge, drag.split, dx, dy);
@@ -409,11 +431,8 @@
       if (event.type === 'lostpointercapture' && (drag.handle !== event.currentTarget || drag.handle.hasPointerCapture(event.pointerId))) return;
       if (event.type !== 'pointerup') return releaseDrag();
       updateDrag(event.clientX, event.clientY);
-      const { pane, target, edge, changed } = drag;
-      const from = edge === 'move' ? pane.element.getBoundingClientRect() : null;
+      const { pane, edge, changed } = drag;
       releaseDrag(true);
-      if (target) exchange(pane, target, from);
-      else if (from) animateArrival(pane, from, true);
       if (changed && edge !== 'move') {
         live.textContent = `已调整${pane.label}的大小。`;
         save();
@@ -424,12 +443,14 @@
     function releaseDrag(commit = false) {
       if (!drag) return;
       const { pane, target, handle, pointerId, before, changed } = drag;
+      if (target && !commit) previewTarget(undefined);
       drag = undefined;
       if (before && changed && !commit) {
         splitView.restore(before);
         sync();
       }
       if (pane.element.hasAttribute('data-lifted')) {
+        const from = pane.element.getBoundingClientRect();
         delete pane.element.dataset.lifted;
         pane.element.style.removeProperty('--panel-lift-scale');
         pane.element.style.removeProperty('transform-origin');
@@ -438,6 +459,8 @@
         dock(pane);
         delete pane.overlay.dataset.dragSource;
         vacancy.hidden = true;
+        if (target && commit) commitExchange(pane, target);
+        animateArrival(pane, from, { foreground: true });
       }
       if (target) delete target.overlay.dataset.dropTarget;
       workspace.classList.remove('panel-layout-dragging');
@@ -447,7 +470,7 @@
     for (const pane of panes.values()) {
       for (const [edge, direction] of Object.entries({ move: '', ...edges })) {
         const label = edge === 'move' ? `交换${pane.label}的位置` : `调整${pane.label}${direction}`;
-        const title = edge === 'move' ? '拖到另一块面板上松开，或按方向键直接交换' : `${label}（可用方向键）`;
+        const title = edge === 'move' ? '拖到另一块面板上预览交换，松开落位，或按方向键直接交换' : `${label}（可用方向键）`;
         const handle = create('button', { type: 'button', className: 'panel-layout-handle', title });
         handle.dataset.edge = edge;
         handle.setAttribute('aria-label', label);
@@ -497,7 +520,7 @@
       if (editing) return endEditing(false);
       beforeEdit = { slots: { ...slots }, active, split: splitView.snapshot() };
       editing = true;
-      live.textContent = '拖动面板到另一块面板上松开即可交换，方向键也可交换。拖动边缘调整大小，按 Esc 取消本次调整。';
+      live.textContent = '拖到另一块面板上预览交换，松开落位，方向键也可交换。拖动边缘调整大小，按 Esc 取消本次调整。';
       sync();
     });
     document.addEventListener('keydown', (event) => {
