@@ -1,5 +1,8 @@
 'use strict';
 
+const { existsSync } = require('node:fs');
+const path = require('node:path');
+
 // GitHub's Atom fallback supplies HTML. The release pipeline also embeds the
 // original release notes as text in latest.yml. Send plain text to the window.
 function releaseNotes(value) {
@@ -27,6 +30,7 @@ function createAppUpdates({ app, onState = () => {}, updater }) {
   const supported = app.isPackaged && process.platform === 'win32' && process.arch === 'x64';
   let state = {
     status: supported ? 'idle' : 'unsupported', currentVersion: app.getVersion(),
+    canManageInstallation: supported && existsSync(path.join(path.dirname(process.execPath), 'Uninstall ' + path.basename(process.execPath))),
     version: '', notes: '', percent: 0, retry: null,
     message: supported ? '' : '自动更新适用于 Windows x64 安装版。请到 GitHub 正式版下载页获取安装程序。',
   };

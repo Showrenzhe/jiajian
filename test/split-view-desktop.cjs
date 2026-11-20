@@ -55,17 +55,17 @@ async function run() {
         thickness: parseFloat(horizontal ? line.height : line.width),
         grip: getComputedStyle(handle, '::after').content,
         neutral: Math.max(r, g, b) - Math.min(r, g, b) < 48,
-        visible: alpha > 0,
+        visible: alpha > 0, hovered: handle.matches(':hover'),
         focused: document.activeElement === handle,
         outlined: getComputedStyle(handle).outlineStyle !== 'none',
         forcedColors: matchMedia('(forced-colors: active)').matches,
       };
     })()`);
     assert.ok(['none', 'normal'].includes(style.grip), id + ' has no central grip');
-    assert.ok(style.visible, id + ' divider remains visible');
     if (keyboard) {
-      assert.ok(style.focused && (style.outlined || style.thickness > 1), id + ' keyboard focus: ' + JSON.stringify(style));
+      assert.ok(style.focused && style.visible && (style.outlined || style.thickness > 1), id + ' keyboard focus: ' + JSON.stringify(style));
     } else {
+      if (style.hovered || style.forcedColors) assert.ok(style.visible, id + ' should highlight its gutter');
       assert.equal(style.thickness, 1, id + ' uses a one-pixel pointer divider');
       assert.ok(style.forcedColors || style.neutral, id + ' pointer feedback uses a neutral line');
     }
@@ -86,7 +86,7 @@ async function run() {
     await mouse('mouseMoved', end, { buttons: 1 });
     await settle();
     await checkDivider(id);
-    joined(await snapshot());
+    checkGutters(await snapshot());
     if (cancel) {
       near(size(await snapshot(), id), size(before, id) + distance * (id === 'materials' ? 1 : -1));
       await press('Escape');
@@ -127,15 +127,18 @@ async function run() {
     await click('#home-create');
     await settle();
   }
-  function joined(boxes) {
+  function checkGutters(boxes) {
     const preview = boxes['.editor-player'];
     const inspector = boxes['#montage-inspector'];
     const materials = boxes['#materials-pane'];
     const timeline = boxes['#montage-pane'];
-    for (const [a, b] of [[materials.right, preview.left], [preview.right, inspector.left],
+    const gutter = preview.left - materials.right;
+    assert.ok(gutter >= 6 && gutter <= 8, 'The panels should have a compact visible gutter, got ' + gutter);
+    for (const [a, b] of [[preview.right, inspector.left],
       [materials.bottom, timeline.top], [preview.bottom, timeline.top], [inspector.bottom, timeline.top]]) {
-      assert.ok(Math.abs(a - b) < 1, `Detached pane edges at ${a} and ${b}`);
+      near(b - a, gutter);
     }
+    return gutter;
   }
   async function contained() {
     const boxes = await snapshot();
@@ -143,7 +146,7 @@ async function run() {
     const preview = boxes['.editor-player'];
     for (const rect of Object.values(boxes)) assert.ok(rect.x >= 0 && rect.y >= 0 && rect.right <= width + 1 && rect.bottom <= height + 1);
     assert.ok(preview.width >= 201 && preview.height >= 164);
-    joined(boxes);
+    checkGutters(boxes);
   }
   async function adjust() {
     await click('#panel-layout-toggle');
@@ -168,7 +171,7 @@ async function run() {
       await mouse('mouseMoved', point, { buttons: 1 });
       await settle();
       const boxes = await snapshot();
-      joined(boxes);
+      checkGutters(boxes);
       near(boxes['.editor-player'][horizontal ? 'right' : 'bottom'], preview[horizontal ? 'right' : 'bottom'] + distance);
       near(boxes['.editor-player'].left, preview.left);
       near(boxes['#montage-inspector'].right, before['#montage-inspector'].right);
@@ -187,6 +190,12 @@ async function run() {
   await settle();
   assert.equal(await visible(), 3, await evaluate(`[document.querySelector('.app-frame').dataset.mode, document.querySelector('#editor-workspace').outerHTML.slice(0, 150), document.querySelector('#notice').textContent].join(' ')`));
   const original = await snapshot();
+  checkGutters(original);
+  assert.ok(await evaluate(`Object.values(document.querySelectorAll('.panel-layout-pane')).every(el => {
+    const style = getComputedStyle(el);
+    return ['borderTopLeftRadius','borderTopRightRadius','borderBottomLeftRadius','borderBottomRightRadius']
+      .every(prop => parseFloat(style[prop]) >= 8);
+  })`), 'All four corners should separate each panel from the desktop');
   assert.deepEqual(await evaluate(`[...document.querySelectorAll('.workspace-divider')].map(el => {
     const controlled = document.getElementById(el.getAttribute('aria-controls'));
     return [el.getAttribute('role'), el.getAttribute('aria-orientation'), controlled?.checkVisibility(), el.tabIndex];
@@ -258,6 +267,15 @@ async function run() {
     }
     await doubleClick(id);
   }
+  // Both side panels at their limits must still leave the two gutters and a usable player.
+  await key('materials', 'End');
+  await key('inspector', 'End');
+  await key('timeline', 'End');
+  const compact = await snapshot();
+  near(compact['.editor-player'].width, 202);
+  near(compact['.editor-player'].height, 165);
+  near(checkGutters(compact), 6);
+  for (const id of ids) await doubleClick(id);
   win.setSize(...originalWindow);
   await settle();
   await move('materials', 20);
@@ -317,8 +335,8 @@ async function run() {
   await evaluate(`localStorage.setItem('sd-workbench-panel-layout-v1', ${JSON.stringify(JSON.stringify(gapped))})`);
   await reopen();
   const repaired = await snapshot();
-  joined(repaired);
-  near(repaired['.editor-player'].right, repaired['#montage-pane'].left + .71 * repaired['#montage-pane'].width);
+  const gutter = checkGutters(repaired);
+  near(repaired['.editor-player'].right + gutter, repaired['#montage-pane'].left + .71 * repaired['#montage-pane'].width);
   await adjust();
   await dragSeam('player', 'e', [-32]);
   await press('Escape');

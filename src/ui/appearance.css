@@ -1,6 +1,4 @@
-/* One progress value on the root softens the arriving surfaces. Text and its
-   surface always use the same palette, including inside native top-layer UI. */
-@property --appearance-tint { syntax: "<percentage>"; inherits: false; initial-value: 0%; }
+@property --appearance-mix { syntax: "<percentage>"; inherits: true; initial-value: 0%; }
 
 /* Ordinary hover transitions must not interpolate ink or fills across palettes. */
 html[data-theme-changing] button { transition-property: scale !important; }

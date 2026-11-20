@@ -11,6 +11,7 @@ const updateInfo = { version: '0.7.0', tag: 'v0.7.0', releaseNotes: '## 更新�
 
 test('source mode never contacts GitHub or installs an update', async () => {
   const service = createAppUpdates({ app: { ...app, isPackaged: false } });
+  assert.equal(service.getState().canManageInstallation, false);
   assert.equal((await service.check()).status, 'unsupported');
   assert.equal((await service.download()).status, 'unsupported');
   assert.equal(service.install().status, 'unsupported');

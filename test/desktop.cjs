@@ -318,7 +318,10 @@ async function run() {
       const element = document.querySelector(${JSON.stringify(selector)});
       if (!element?.checkVisibility()) return null;
       const { left, right, top, bottom } = element.getBoundingClientRect();
-      const rgb = getComputedStyle(element).color.match(/[0-9.]+/g).slice(0, 3).map(Number);
+      const paint = document.createElement('canvas').getContext('2d', { willReadFrequently: true });
+      paint.fillStyle = getComputedStyle(element).color;
+      paint.fillRect(0, 0, 1, 1);
+      const rgb = Array.from(paint.getImageData(0, 0, 1, 1).data);
       return { left: left / innerWidth, right: right / innerWidth, top: top / innerHeight, bottom: bottom / innerHeight, rgb };
     })()`);
     assert.ok(label, `${file} 应显示 ${selector}`);
@@ -447,6 +450,8 @@ async function run() {
     const { x, y, width, height } = document.querySelector('.editor-materials').getBoundingClientRect();
     return { x, y, width, height };
   })()`;
+  // The viewport can report its restored size a frame before the pane ResizeObserver lays out the grid.
+  await runInWindow('new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve)))');
   const defaultMaterial = await runInWindow(materialBox);
   await runInWindow('document.querySelector("#panel-layout-toggle").click()');
   await waitFor('!document.querySelector("#panel-layout-layer").hidden && document.querySelectorAll(".panel-layout-box .panel-layout-handle").length === 36', '布局编辑应提供四个移动手柄和各面板的八个缩放边');

@@ -5,10 +5,10 @@
   const root = document.documentElement;
   const system = matchMedia('(prefers-color-scheme: dark)');
   const motion = matchMedia('(prefers-reduced-motion: no-preference) and (forced-colors: none)');
-  const midpointTint = 98;
   let preference = 'system';
   let picker;
-  let surfaceAnimation;
+  let transition;
+  let chromeFrame;
   let requestedTheme;
 
   function supported(value) {
@@ -16,45 +16,48 @@
   }
 
   function paint(theme) {
+    if (root.dataset.theme === theme) return;
     root.dataset.theme = theme;
     window.workbench?.setWindowAppearance?.(theme).catch(() => {});
   }
 
-  async function easeTint(from, to) {
-    surfaceAnimation?.cancel();
-    const animation = root.animate([
-      { '--appearance-tint': from + '%' }, { '--appearance-tint': to + '%' },
-    ], {
-      duration: 125 * Math.abs(to - from) / midpointTint,
-      easing: 'ease-in-out',
-      fill: 'both',
-    });
-    surfaceAnimation = animation;
-    try {
-      await animation.finished;
-      return surfaceAnimation === animation;
-    } catch { return false; } // A newer preference interrupted this leg.
+  function finish() {
+    cancelAnimationFrame(chromeFrame);
+    paint(requestedTheme);
+    transition?.cancel();
+    transition = undefined;
+    // Resolve the resting palette before ordinary button hover transitions resume.
+    void root.offsetWidth;
+    root.removeAttribute('data-theme-changing');
   }
 
-  async function changeTheme(theme) {
-    root.setAttribute('data-theme-changing', '');
-    if (motion.matches) {
-      let tint = parseFloat(getComputedStyle(root).getPropertyValue('--appearance-tint')) || 0;
-      if (theme !== root.dataset.theme) {
-        if (!await easeTint(tint, midpointTint)) return;
-        paint(theme);
-        tint = midpointTint;
-      }
-      if (!await easeTint(tint, 0)) return;
-    } else {
-      surfaceAnimation?.cancel();
-      paint(theme);
-      // Resolve pending hover styles with their transitions suppressed.
-      void root.offsetWidth;
+  function changeTheme() {
+    if (!root.hasAttribute('data-theme') || !motion.matches) {
+      finish();
+      return;
     }
-    surfaceAnimation?.cancel();
-    surfaceAnimation = undefined;
-    root.removeAttribute('data-theme-changing');
+    if (transition) {
+      transition.reverse();
+      return;
+    }
+    const fromDark = root.dataset.theme === 'dark';
+    root.setAttribute('data-theme-changing', '');
+    transition = root.animate([
+      { '--appearance-mix': fromDark ? '100%' : '0%' },
+      { '--appearance-mix': fromDark ? '0%' : '100%' },
+    ], { duration: 300, easing: 'cubic-bezier(.42, 0, .3, 1)', fill: 'both' });
+    // Only the OS caption buttons and the browser's built-in controls have a
+    // discrete appearance. Switch them as their chrome crosses middle gray.
+    function syncChrome() {
+      const progress = transition.effect.getComputedTiming().progress ?? 0;
+      paint((fromDark ? 1 - progress : progress) >= .6 ? 'dark' : 'light');
+      chromeFrame = requestAnimationFrame(syncChrome);
+    }
+    syncChrome();
+    const active = transition;
+    active.onfinish = () => {
+      if (transition === active && active.playState === 'finished') finish();
+    };
   }
 
   function apply() {
@@ -63,8 +66,7 @@
     if (picker) picker.querySelector(`input[value="${preference}"]`).checked = true;
     if (requestedTheme === theme) return;
     requestedTheme = theme;
-    if (root.hasAttribute('data-theme')) changeTheme(theme);
-    else paint(theme); // Cold start sets the palette before CSS loads.
+    changeTheme();
   }
 
   try {
@@ -73,7 +75,7 @@
   } catch { /* A session can still change appearance when storage is unavailable. */ }
   apply();
   motion.addEventListener('change', () => {
-    if (!motion.matches && surfaceAnimation) changeTheme(requestedTheme);
+    if (!motion.matches && transition) finish();
   });
   system.addEventListener('change', () => { if (preference === 'system') apply(); });
   window.addEventListener('storage', (event) => {

@@ -41,6 +41,7 @@ window.bindSoftwareUpdates = (api) => {
     if (status === 'downloading' && knownPercent) $('update-status').textContent += ' · ' + Math.round(progress.value) + '%';
     $('update-details').hidden = !notes;
     $('update-notes').textContent = notes || '';
+    $('update-manage-installation').hidden = !state?.canManageInstallation;
 
     const commands = {
       idle: ['检查更新', 'checkUpdate'], current: ['再次检查', 'checkUpdate'],
@@ -82,6 +83,11 @@ window.bindSoftwareUpdates = (api) => {
     entry.focus();
   });
   $('update-close').addEventListener('click', () => dialog.close());
+  $('update-manage-installation').addEventListener('click', async () => {
+    showError();
+    try { await api.openInstalledApps(); }
+    catch { showError('请打开 Windows 设置，在「应用」中找到佳剪并选择卸载。'); }
+  });
   action.addEventListener('click', async () => {
     if (action.disabled) return;
     const method = action.dataset.method;

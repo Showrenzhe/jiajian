@@ -26,11 +26,13 @@
       } catch { /* Resizing remains available without persistent storage. */ }
     }
 
-    function measure({ width, height } = bounds()) {
+    function measure({ width, height, gutter } = bounds()) {
       // At small window sizes reserve usable space for each pane first.
-      const scale = Math.min(1, width / (158 + 210 + 202));
-      const min = { materials: 158 * scale, inspector: 210 * scale, timeline: Math.min(160, height * .46) };
-      const sideBudget = width - 202 * scale;
+      const panelWidth = width - 2 * gutter;
+      const panelHeight = height - gutter;
+      const scale = Math.min(1, panelWidth / (158 + 210 + 202));
+      const min = { materials: 158 * scale, inspector: 210 * scale, timeline: Math.min(160, panelHeight * .46) };
+      const sideBudget = panelWidth - 202 * scale;
       const materials = preferred.materials ? width * preferred.materials : clamp(width * .19, 176, 295);
       const inspector = preferred.inspector ? width * preferred.inspector : clamp(width * .215, 216, 336);
       const extraLeft = Math.max(0, materials - min.materials);
@@ -38,10 +40,10 @@
       const extraScale = Math.min(1, Math.max(0, sideBudget - min.materials - min.inspector) / (extraLeft + extraRight || 1));
       const left = min.materials + extraLeft * extraScale;
       const right = min.inspector + extraRight * extraScale;
-      const max = { materials: sideBudget - right, inspector: sideBudget - left, timeline: height - Math.min(165, height * .5) };
+      const max = { materials: sideBudget - right, inspector: sideBudget - left, timeline: panelHeight - Math.min(165, panelHeight * .5) };
       const defaultTimeline = Math.max(205, height * (matchMedia('(max-width: 940px)').matches ? .47 : .405));
       const timeline = clamp(preferred.timeline ? height * preferred.timeline : defaultTimeline, min.timeline, max.timeline);
-      return { width, height, min, max, wanted: { materials, inspector }, size: { materials: left, inspector: right, timeline } };
+      return { width, height, gutter, min, max, wanted: { materials, inspector }, size: { materials: left, inspector: right, timeline } };
     }
 
     function render(layout = measure()) {

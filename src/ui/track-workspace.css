@@ -1,5 +1,8 @@
-/* Keep the editing panes on one continuous surface. */
+/* The editing panels share a desktop. The gutters also act as resize targets. */
 .app-frame[data-mode="montage"] {
+  --workspace-gutter: 8px;
+  --workspace-radius: 10px;
+  --workspace-panel: color-mix(in srgb, var(--surface) 96%, #c2c8d1);
   --bg: var(--canvas);
   --panel: var(--surface);
   --well: color-mix(in srgb, var(--surface) 62%, var(--canvas));
@@ -28,22 +31,24 @@
     "toolbar toolbar toolbar"
     "notice notice notice"
     "materials player properties"
+    ". . ."
     "timeline timeline timeline";
   grid-template-columns: var(--split-materials, clamp(176px, 19%, 295px)) minmax(0, 1fr) var(--split-inspector, clamp(216px, 21.5%, 336px));
-  grid-template-rows: auto auto minmax(0, 1fr) var(--split-timeline, minmax(205px, 38%));
+  grid-template-rows: auto auto minmax(0, 1fr) var(--workspace-gutter) var(--split-timeline, minmax(205px, 38%));
   align-items: stretch;
   reading-flow: grid-rows;
-  gap: 0;
+  gap: 0 var(--workspace-gutter);
   width: 100%;
   max-width: none;
   height: calc(100dvh - var(--bar-height));
   padding: 0 clamp(8px, 1.1vw, 18px) 10px;
+  background: var(--canvas);
   overflow: auto;
 }
 
 .workspace-divider {
   display: none;
-  --divider-color: var(--hairline);
+  --divider-color: transparent;
   --divider-thickness: 1px;
 }
 .app-frame[data-mode="montage"] #editor-workspace:not([data-panel-layout="custom"]):not([data-layout-editing]) > .workspace-divider {
@@ -58,13 +63,13 @@
   width: 12px;
   cursor: col-resize;
 }
-.workspace-divider[data-split="materials"] { justify-self: start; transform: translateX(-50%); }
-.workspace-divider[data-split="inspector"] { justify-self: end; transform: translateX(50%); }
+.workspace-divider[data-split="materials"] { justify-self: start; transform: translateX(calc(-50% - var(--workspace-gutter) / 2)); }
+.workspace-divider[data-split="inspector"] { justify-self: end; transform: translateX(calc(50% + var(--workspace-gutter) / 2)); }
 .workspace-divider[data-split="timeline"] {
   grid-area: timeline;
   align-self: start;
   height: 12px;
-  transform: translateY(-50%);
+  transform: translateY(calc(-50% - var(--workspace-gutter) / 2));
   cursor: row-resize;
 }
 .workspace-divider::before {
@@ -75,8 +80,8 @@
   background: var(--divider-color);
   pointer-events: none;
 }
-.workspace-divider[aria-orientation="vertical"]::before { width: var(--divider-thickness); }
-.workspace-divider[aria-orientation="horizontal"]::before { height: var(--divider-thickness); }
+.workspace-divider[aria-orientation="vertical"]::before { inset-block: var(--workspace-radius); width: var(--divider-thickness); }
+.workspace-divider[aria-orientation="horizontal"]::before { inset-inline: var(--workspace-radius); height: var(--divider-thickness); }
 .workspace-divider:hover { --divider-color: color-mix(in srgb, var(--ink) 32%, transparent); }
 .workspace-divider[data-dragging] { --divider-color: color-mix(in srgb, var(--ink) 52%, transparent); }
 .app-frame[data-mode="montage"] .workspace-divider:focus-visible { outline: none; }
@@ -181,19 +186,21 @@ body:has(.workspace-divider[data-dragging]) {
 .app-frame[data-mode="montage"] #start-export { flex: 0 0 auto; }
 .app-frame[data-mode="montage"] #notice {
   grid-area: notice;
-  margin: 0;
+  margin: 0 0 var(--workspace-gutter);
   padding: 6px 10px;
   border-color: var(--selected-edge);
   background: var(--selected-surface);
   color: var(--ink);
 }
 
-.app-frame[data-mode="montage"] :is(.editor-materials, .editor-player, .montage-inspector, #montage-pane) {
+.app-frame[data-mode="montage"] :where(.editor-materials, .editor-player, .montage-inspector, #montage-pane) {
+  --ink-surface: var(--workspace-panel);
   min-width: 0;
   min-height: 0;
-  border: 0;
-  border-radius: 0;
-  background: color-mix(in srgb, var(--surface) 78%, transparent);
+  border: 1px solid var(--hairline);
+  border-radius: var(--workspace-radius);
+  background: var(--workspace-panel);
+  box-shadow: 0 1px 3px rgb(15 18 23 / 12%);
 }
 
 .app-frame[data-mode="montage"] .editor-player {
@@ -225,7 +232,6 @@ body:has(.workspace-divider[data-dragging]) {
   position: relative;
   background: linear-gradient(148deg, var(--wallpaper-start), var(--wallpaper-end) 62%, var(--wallpaper-start));
 }
-.app-frame[data-mode="montage"] .editor-player:has(#preview-hint:not([hidden])) { background: var(--empty-player-surface, color-mix(in srgb, var(--surface) 52%, transparent)); }
 .app-frame[data-mode="montage"] .preview-placeholder-icon { display: none; }
 .app-frame[data-mode="montage"] .preview-stage:has(#preview-hint:not([hidden])) .preview-placeholder-icon {
   display: block;
@@ -285,7 +291,7 @@ body:has(.workspace-divider[data-dragging]) {
 .player-control-row select option { background: var(--panel); }
 .player-control-row button:hover:enabled, .player-control-row button[aria-pressed="true"] { color: var(--accent); background: #303638; }
 #player-time { color: #a6d7d9; font-size: 11px; font-variant-numeric: tabular-nums; }
-.app-frame[data-mode="montage"] .editor-player:fullscreen { width: 100%; height: 100%; border: 0; }
+.app-frame[data-mode="montage"] .editor-player:fullscreen { width: 100%; height: 100%; border: 0; border-radius: 0; }
 .app-frame[data-mode="montage"] .editor-player:popover-open {
   position: fixed;
   inset: auto 16px 16px auto;
@@ -301,7 +307,7 @@ body:has(.workspace-divider[data-dragging]) {
 #clip-inspector-name { display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 13px; }
 #clip-inspector-meta { margin: 3px 0 6px; }
 
-.app-frame[data-mode="montage"] .editor-materials { grid-area: materials; position: relative; container-type: inline-size; padding: 12px 13px; border-radius: 14px 0 0 0; overflow: auto; }
+.app-frame[data-mode="montage"] .editor-materials { grid-area: materials; position: relative; container-type: inline-size; padding: 12px 13px; overflow: auto; }
 .material-marquee {
   position: absolute;
   z-index: 2;
@@ -498,7 +504,6 @@ body:has(.workspace-divider[data-dragging]) {
 
 .app-frame[data-mode="montage"] .montage-inspector {
   grid-area: properties;
-  border-radius: 0 14px 0 0;
   display: flex;
   flex-direction: column;
   overflow: hidden;
@@ -570,7 +575,6 @@ body:has(.workspace-divider[data-dragging]) {
 
 .app-frame[data-mode="montage"] #montage-pane {
   grid-area: timeline;
-  border-radius: 0 0 14px 14px;
   display: flex;
   flex-direction: column;
   overflow: hidden;
@@ -901,7 +905,7 @@ body:has(.workspace-divider[data-dragging]) {
 .app-frame[data-mode="montage"] #script-brief .list-heading:has(.script-brief-toggle[aria-expanded="false"]) { margin-bottom: 0; }
 
 .app-frame[data-mode="montage"] #editor-workspace[data-panel-layout="custom"] {
-  grid-template-rows: auto auto minmax(0, 1fr) 0;
+  grid-template-rows: auto auto minmax(0, 1fr) 0 0;
   overflow: hidden;
 }
 .app-frame[data-mode="montage"] #editor-workspace[data-panel-layout="custom"] .panel-layout-pane,
@@ -921,7 +925,7 @@ body:has(.workspace-divider[data-dragging]) {
 .app-frame:not([data-mode="montage"]) #panel-layout-layer { display: none; }
 .app-frame[data-mode="montage"] .panel-layout-box {
   border: 1px dashed var(--selected-edge);
-  border-radius: 6px;
+  border-radius: var(--workspace-radius);
   pointer-events: none;
 }
 .app-frame[data-mode="montage"] .panel-layout-box.panel-layout-active { border-color: var(--accent); }
@@ -1029,7 +1033,7 @@ body:has(.workspace-divider[data-dragging]) {
   color: var(--selected-ink);
 }
 
-/* Material browser, picture monitor and inspector share one editing surface. */
+/* Material browser, picture monitor and inspector controls. */
 .app-frame[data-mode="montage"] {
   --pane-divider: color-mix(in srgb, var(--ink) 11%, transparent);
 
@@ -1105,7 +1109,6 @@ body:has(.workspace-divider[data-dragging]) {
   #shots .shot-size { font-size: 10px; }
   #shots .shot:has(.track-selected) .shot-poster { box-shadow: inset 0 0 0 2px var(--system-blue); }
   #shots .shot:has(.track-selected) .shot-poster::after { content: ''; position: absolute; inset: 0; border-bottom: 2px solid var(--system-blue); }
-  .editor-materials, .montage-inspector, #montage-pane { backdrop-filter: var(--pane-filter, blur(10px)); }
   #notice { padding: 3px 10px; border: 0; border-radius: 6px; background: color-mix(in srgb,var(--surface) 69%,transparent); color: var(--secondary-ink); font-size: 12px; }
   #shots .shot-poster {
     position: relative;
@@ -1149,6 +1152,8 @@ body:has(.workspace-divider[data-dragging]) {
 }
 @media (max-width: 940px) {
   .app-frame[data-mode="montage"] {
+    --workspace-gutter: 6px;
+    --workspace-radius: 8px;
     #editor-workspace { padding: 0 6px 6px; }
     .editor-heading { min-height: 43px; }
     .editor-materials { padding-inline: 9px; }
@@ -1162,7 +1167,7 @@ body:has(.workspace-divider[data-dragging]) {
 @media (prefers-reduced-transparency: reduce), (prefers-contrast: more), (forced-colors: active) {
   .app-frame[data-mode="montage"] :is(.editor-materials, .editor-player, .montage-inspector, #montage-pane, #notice) { background: var(--surface); }
   .app-frame[data-mode="montage"] .preview-stage:has(#preview-hint:not([hidden])) { background: var(--well); }
-  .app-frame[data-mode="montage"] { --readout-fill: #27303a; --empty-player-surface: var(--surface); --pane-filter: none; --pane-divider: var(--hairline); }
+  .app-frame[data-mode="montage"] { --readout-fill: #27303a; --pane-divider: var(--hairline); }
 }
 
 #audio-tools-dialog {width:min(600px,90vw);max-height:90vh;overflow:auto}

@@ -133,12 +133,11 @@
       const style = getComputedStyle(workspace);
       const horizontal = Number.parseFloat(style.paddingLeft) || 0;
       const vertical = Number.parseFloat(style.paddingBottom) || 0;
-      const gap = Number.parseFloat(style.rowGap) || 0;
       const last = notice.hidden ? toolbar : notice;
-      const bottom = last.getBoundingClientRect().bottom - outer.top + workspace.scrollTop;
-      const y = bottom + (notice.hidden ? 2 * gap : gap);
+      const y = last.getBoundingClientRect().bottom - outer.top + workspace.scrollTop + parseFloat(getComputedStyle(last).marginBottom);
       return { outer, x: horizontal, y, width: Math.max(1, workspace.clientWidth - horizontal * 2),
-        height: Math.max(1, workspace.clientHeight - y - vertical) };
+        height: Math.max(1, workspace.clientHeight - y - vertical),
+        gutter: Number.parseFloat(style.columnGap) || 0 };
     }
 
     function currentBox(pane, canvas) {

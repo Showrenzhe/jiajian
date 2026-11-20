@@ -24,6 +24,8 @@ module.exports = {
     oneClick: true,
     perMachine: false,
     deleteAppDataOnUninstall: false,
+    include: 'scripts/windows-installer.nsh',
+    uninstallDisplayName: '${productName}',
     artifactName: 'Jiajian-Setup-${version}-${arch}.${ext}',
   },
   publish: { provider: 'github', owner: 'Showrenzhe', repo: 'jiajian', releaseType: 'release' },

@@ -18,5 +18,6 @@
 #update-dialog .cloud-settings-body { gap: 12px; }
 #update-dialog h3, #update-dialog p { margin: 0; }
 #update-dialog progress { width: 100%; }
+#update-manage-installation { margin-inline-end: auto; }
 #update-notes { padding-top: 6px; white-space: pre-wrap; overflow-wrap: anywhere; }
 #update-error { color: var(--dialog-alert); }

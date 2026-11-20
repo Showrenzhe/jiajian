@@ -1,42 +1,50 @@
+/* All adaptive surfaces draw from the same clock. Keep their own endpoints,
+   including the alpha of glass, so layers keep their depth through the fade. */
+@function --appearance-color(--light <color>, --dark <color>) returns <color> {
+  result: color-mix(in srgb, var(--light), var(--dark) var(--appearance-mix));
+}
+/* Flatten a translucent material over its base for foreground contrast only. */
+@function --over(--paint <color>, --base <color>, --opacity <percentage>) returns <color> {
+  result: color-mix(in srgb, var(--base), rgb(from var(--paint) r g b / 1) var(--opacity));
+}
+@function --appearance-ink(--light <color>, --dark <color>) returns <color> {
+  result: color-mix(in srgb, --appearance-color(var(--light), var(--dark)), contrast-color(var(--ink-surface)) var(--ink-clarity));
+}
+
 :root {
   color-scheme: light;
-  --appearance-gray: light-dark(#888d96, #626772) var(--appearance-tint);
-  --canvas: color-mix(in srgb, light-dark(#e6e9ed, #191b1e), var(--appearance-gray));
-  --surface: color-mix(in srgb, light-dark(#fbfbfc, #222428), var(--appearance-gray));
-  --ink: light-dark(#202329, #f2f3f5);
-  --secondary-ink: color-mix(in srgb, light-dark(#555b65, #bac1ca), light-dark(#171c24, #fbfcff) var(--appearance-tint));
-  --hairline: light-dark(rgb(44 47 58 / 13%), rgb(225 231 241 / 16%));
-  --system-blue: color-mix(in srgb, light-dark(#0066cc, #87baff), light-dark(#001f45, #edf5ff) var(--appearance-tint));
-  --action-fill: light-dark(#0066cc, #1468c0);
-  --blue-hover: light-dark(#0059b7, #1872cb);
-  --focus-ring: light-dark(#0673dc, #92c6ff);
-  --glass-surface: light-dark(rgb(251 252 254 / 61%), rgb(52 55 61 / 79%));
-  --glass-edge: light-dark(rgb(255 255 255 / 54%), rgb(255 255 255 / 15%));
-  --glass-shadow: 0 4px 18px light-dark(rgb(23 29 42 / 10%), rgb(0 0 0 / 30%));
+  --appearance-mix: 0%;
+  --canvas: --appearance-color(#e6e9ed, #191b1e);
+  --surface: --appearance-color(#fbfbfc, #222428);
+  --well: --appearance-color(#f1f2f4, #2c2f34);
+  --hairline: --appearance-color(rgb(44 47 58 / 13%), rgb(225 231 241 / 16%));
+  --action-fill: --appearance-color(#0066cc, #1468c0);
+  --blue-hover: --appearance-color(#0059b7, #1872cb);
+  --focus-ring: --appearance-color(#0673dc, #92c6ff);
+  --glass-surface: --appearance-color(rgb(251 252 254 / 61%), rgb(52 55 61 / 79%));
+  --glass-edge: --appearance-color(rgb(255 255 255 / 54%), rgb(255 255 255 / 15%));
+  --glass-shadow: 0 4px 18px --appearance-color(rgb(23 29 42 / 10%), rgb(0 0 0 / 30%));
   --glass-filter: blur(20px) saturate(125%);
-  --sheet-surface: color-mix(in srgb, light-dark(rgb(250 251 253 / 87%), rgb(45 47 52 / 94%)), var(--appearance-gray));
-  --sheet-shadow: 0 18px 62px light-dark(#18213134, #0008);
-  --sheet-scrim: light-dark(#19212e29, #07090c62);
-  --field-fill: color-mix(in srgb, light-dark(rgb(255 255 255 / 72%), rgb(255 255 255 / 8%)), transparent var(--appearance-tint));
-  --control-fill: color-mix(in srgb, light-dark(#f0f1f4, #34373d), var(--appearance-gray));
-  --control-hover: light-dark(#e5e7eb, #41454c);
-  --hover-tint: color-mix(in srgb, light-dark(rgb(43 48 61 / 6.5%), rgb(255 255 255 / 8%)), transparent var(--appearance-tint));
-  --selected-fill: color-mix(in srgb, light-dark(rgb(40 50 66 / 10%), rgb(220 231 250 / 15%)), transparent var(--appearance-tint));
-  --selected-ink: var(--ink);
-  --destructive-ink: color-mix(in srgb, light-dark(#a13239, #ff9a9b), light-dark(#411019, #ffebec) var(--appearance-tint));
-  --warning-ink: color-mix(in srgb, light-dark(#71490e, #f5c682), light-dark(#322006, #fff2d9) var(--appearance-tint));
+  --sheet-surface: --appearance-color(rgb(250 251 253 / 87%), rgb(45 47 52 / 94%));
+  --sheet-ink-surface: --over(var(--sheet-surface), var(--canvas), calc(87% + .07 * var(--appearance-mix)));
+  --titlebar-fill: --appearance-color(rgb(249 250 253 / 67%), rgb(34 36 41 / 82%));
+  --sheet-shadow: 0 18px 62px --appearance-color(#18213134, #0008);
+  --sheet-scrim: --appearance-color(#19212e29, #07090c62);
+  --field-fill: --appearance-color(rgb(255 255 255 / 72%), rgb(255 255 255 / 8%));
+  --control-fill: --appearance-color(#f0f1f4, #34373d);
+  --control-hover: --appearance-color(#e5e7eb, #41454c);
+  --hover-tint: --appearance-color(rgb(43 48 61 / 6.5%), rgb(255 255 255 / 8%));
+  --selected-fill: --appearance-color(rgb(40 50 66 / 10%), rgb(220 231 250 / 15%));
   --content-fill: var(--surface);
   --content-shadow: none;
-  --wallpaper-start: color-mix(in srgb, light-dark(#d9e3eb, #303640), var(--appearance-gray));
-  --wallpaper-end: color-mix(in srgb, light-dark(#f6f7f8, #1c1e22), var(--appearance-gray));
+  --wallpaper-start: --appearance-color(#d9e3eb, #303640);
+  --wallpaper-end: --appearance-color(#f6f7f8, #1c1e22);
   --wallpaper: linear-gradient(112deg, var(--wallpaper-start), var(--wallpaper-end));
+  --ink-surface: var(--canvas);
+  --ink-clarity: min(100%, calc(var(--appearance-mix) * 3), calc((100% - var(--appearance-mix)) * 8));
   --bg: var(--canvas);
   --panel: var(--surface);
-  --well: color-mix(in srgb, light-dark(#f1f2f4, #2c2f34), var(--appearance-gray));
   --edge: var(--hairline);
-  --text: var(--ink);
-  --muted: var(--secondary-ink);
-  --accent: var(--system-blue);
   --accent-hover: var(--blue-hover);
   --chrome: var(--glass-surface);
   --sidebar-width: clamp(190px, 16vw, 218px);
@@ -48,9 +56,34 @@
   color: var(--ink);
   background: var(--canvas);
   scrollbar-width: thin;
-  scrollbar-color: light-dark(#838a936b, #a0a8b573) transparent;
+  scrollbar-color: --appearance-color(#838a936b, #a0a8b573) transparent;
 }
-:root:where([data-theme="dark"]) { color-scheme: dark; }
+:root:where([data-theme="dark"]) { color-scheme: dark; --appearance-mix: 100%; }
+
+/* Use the paint behind the label to choose its polarity as brightness crosses
+   the reading threshold. Secondary and accent colors return at both ends. */
+:where(:root, .titlebar, .home-content, .draft-status, dialog, .panel-layout-pane) {
+  --ink: --appearance-ink(#202329, #f2f3f5);
+  --secondary-ink: --appearance-ink(#555b65, #bac1ca);
+  --system-blue: --appearance-ink(#0066cc, #87baff);
+  --destructive-ink: --appearance-ink(#a13239, #ff9a9b);
+  --warning-ink: --appearance-ink(#71490e, #f5c682);
+  --selected-ink: var(--ink);
+  --text: var(--ink);
+  --muted: var(--secondary-ink);
+  --accent: var(--system-blue);
+}
+.home-content, .panel-layout-pane { --ink-surface: var(--surface); color: var(--ink); }
+.draft-status { --ink-surface: var(--well); }
+.titlebar { --ink-surface: --over(var(--titlebar-fill), var(--canvas), calc(67% + .15 * var(--appearance-mix))); }
+dialog { --ink-surface: var(--sheet-ink-surface); }
+dialog :is(input, textarea, select) {
+  --ink-surface: --over(var(--field-fill), var(--sheet-ink-surface), calc(72% - .64 * var(--appearance-mix)));
+  --ink: --appearance-ink(#202329, #f2f3f5);
+}
+dialog :is(input, select):is(:disabled, [readonly]) {
+  --ink-surface: --over(var(--hover-tint), var(--sheet-ink-surface), calc(6.5% + .015 * var(--appearance-mix)));
+}
 *, *::before, *::after { box-sizing: border-box; }
 [hidden] { display: none !important; }
 body { margin: 0; min-height: 100dvh; background: var(--canvas) var(--wallpaper) fixed; }
@@ -90,11 +123,10 @@ button:disabled { opacity: .46; cursor: default; }
   -webkit-app-region: drag; position: sticky; top: 0; z-index: 30; display: flex;
   align-items: center; gap: 3px; height: var(--bar-height);
   padding-inline: 21px max(149px, calc(100vw - env(titlebar-area-width, 100vw) + 8px));
-  color: var(--ink); background: color-mix(in srgb, light-dark(rgb(249 250 253 / 67%), rgb(34 36 41 / 82%)), var(--appearance-gray)); backdrop-filter: var(--glass-filter); user-select: none;
+  color: var(--ink); background: var(--titlebar-fill); backdrop-filter: var(--glass-filter); user-select: none;
 }
 .brand { display: inline-flex; align-items: center; gap: 8px; margin-right: 13px; font-size: 15px; font-weight: 550; letter-spacing: .025em; }
-.brand-logo { width: 26px; height: 26px; flex: none; object-fit: cover; }
-:root[data-theme="dark"] .brand-logo { filter: invert(1); }
+.brand-logo { width: 26px; height: 26px; flex: none; object-fit: cover; filter: invert(var(--appearance-mix)); }
 .titlebar button { -webkit-app-region: no-drag; display: inline-flex; align-items: center; justify-content: center; gap: 6px; min-height: 30px; padding: 4px 7px; color: var(--secondary-ink); background: transparent; font-size: 13px; }
 .titlebar button:hover:enabled { background: var(--selected-fill); color: var(--ink); }
 #titlebar-update { display: inline-flex; align-items: center; margin-inline-start: auto; }
@@ -111,7 +143,7 @@ button:disabled { opacity: .46; cursor: default; }
   isolation: isolate; position: sticky; top: var(--bar-height); align-self: start;
   width: var(--sidebar-width); justify-self: end;
   height: calc(100dvh - var(--bar-height)); overflow: auto;
-  padding: 26px 13px 24px; background: color-mix(in srgb, light-dark(rgb(249 250 253 / 53%), rgb(36 38 43 / 63%)), var(--appearance-gray));
+  padding: 26px 13px 24px; background: --appearance-color(rgb(249 250 253 / 53%), rgb(36 38 43 / 63%));
   backdrop-filter: var(--glass-filter); color: var(--ink);
 }
 .app-frame:is([data-mode="montage"], [data-mode="script"]) > .tabs {
@@ -178,10 +210,10 @@ button:disabled { opacity: .46; cursor: default; }
 .home-hero-actions > button, .blue-button { display: inline-flex; align-items: center; justify-content: center; gap: 7px; }
 .home-hero-actions .ui-icon, .blue-button .ui-icon { width: 16px; height: 16px; }
 #home-create, #home-open-project { min-height: 37px; padding: 7px 16px; border: 0; border-radius: 99px; font-size: 14px; font-weight: 550; }
-#home-create { color: light-dark(white, #202329); background: light-dark(#24262c, #eef0f3); }
-#home-create:hover:enabled { background: light-dark(#0f1116, white); }
-#home-open-project { color: var(--ink); background: light-dark(rgb(255 255 255 / 43%), rgb(255 255 255 / 12%)); backdrop-filter: var(--clear-optics, var(--glass-filter)); }
-#home-open-project:hover:enabled { background: light-dark(rgb(255 255 255 / 87%), rgb(255 255 255 / 19%)); }
+#home-create { color: --appearance-ink(white, #202329); --ink-surface: --appearance-color(#24262c, #eef0f3); background: var(--ink-surface); }
+#home-create:hover:enabled { background: --appearance-color(#0f1116, white); }
+#home-open-project { color: var(--ink); background: --appearance-color(rgb(255 255 255 / 43%), rgb(255 255 255 / 12%)); backdrop-filter: var(--clear-optics, var(--glass-filter)); }
+#home-open-project:hover:enabled { background: --appearance-color(rgb(255 255 255 / 87%), rgb(255 255 255 / 19%)); }
 .blue-button, .primary { color: white; background: var(--action-fill); border: 0; border-radius: 9px; font-weight: 600; }
 .blue-button:hover:enabled, .primary:hover:enabled { background-color: var(--blue-hover); }
 .blue-button, .home-outline { padding: 8px 15px; }
@@ -299,7 +331,7 @@ h3 { font-size: 14px; }
 .toolbar, .shot-actions, .export-actions, .music-row, .narration-row, .subtitle-row, .project-actions { display: flex; align-items: center; gap: 7px; }
 .project-bar { display: flex; align-items: center; justify-content: space-between; gap: 10px; margin-bottom: 15px; }
 #project-status { min-width: 0; overflow-wrap: anywhere; }
-#notice { margin: 0 0 12px; padding: 10px 12px; border: 1px solid light-dark(#caad78, #806746); border-radius: 10px; background: light-dark(#fff5dc, #393025); color: var(--warning-ink); overflow-wrap: anywhere; }
+#notice { margin: 0 0 12px; padding: 10px 12px; border: 1px solid --appearance-color(#caad78, #806746); border-radius: 10px; background: --appearance-color(#fff5dc, #393025); color: var(--warning-ink); overflow-wrap: anywhere; }
 .list-heading, .panel-heading, .shot-heading { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
 .list-heading { margin-bottom: 10px; }
 .list-heading span, .asset-meta, .compact, #preview-meta { font-size: 12px; }
@@ -367,7 +399,7 @@ input[type="number"], select {
   gap: 7px;
   padding: 20px;
   text-align: center;
-  border: 1px dashed light-dark(#94a4b8, #707986);
+  border: 1px dashed --appearance-color(#94a4b8, #707986);
   border-radius: 9px;
   color: var(--muted);
 }
@@ -465,11 +497,14 @@ progress { display: block; width: 100%; margin: 6px 0; }
 }
 @media (prefers-reduced-transparency: reduce), (prefers-contrast: more), (forced-colors: active) {
   :root {
-    --glass-filter: none; --glass-surface: light-dark(#eff3f8, #282b30); --glass-edge: light-dark(#aab5c3, #7e8794);
-    --glass-shadow: 0 0 0 1px var(--glass-edge); --control-fill: light-dark(#fff, #373b42); --content-fill: var(--surface);
-    --hairline: light-dark(#8593a4, #7f8998); --wallpaper: none; --secondary-ink: light-dark(#405064, #d8e1ed);
-    --sheet-surface: var(--surface); --field-fill: var(--control-fill);
+    --glass-filter: none; --glass-surface: --appearance-color(#eff3f8, #282b30); --glass-edge: --appearance-color(#aab5c3, #7e8794);
+    --glass-shadow: 0 0 0 1px var(--glass-edge); --control-fill: --appearance-color(#fff, #373b42); --content-fill: var(--surface);
+    --hairline: --appearance-color(#8593a4, #7f8998); --wallpaper: none;
+    --sheet-surface: var(--surface); --sheet-ink-surface: var(--surface); --field-fill: var(--control-fill);
   }
+  :where(:root, .titlebar, .home-content, .draft-status, dialog, .panel-layout-pane) { --secondary-ink: --appearance-ink(#405064, #d8e1ed); }
+  .titlebar { --ink-surface: var(--glass-surface); }
+  dialog :is(input, textarea, select) { --ink-surface: var(--control-fill); }
   .tabs, .app-frame:is([data-mode="montage"], [data-mode="script"]) > .tabs, .titlebar, #home-open-project, .narration-review { background: var(--glass-surface); }
   .narration-review::backdrop { backdrop-filter: none; }
   .tabs button[aria-current="page"], .draft-views button[aria-pressed="true"] { box-shadow: inset 0 0 0 1px currentColor; }

@@ -32,6 +32,7 @@ contextBridge.exposeInMainWorld('workbench', {
   downloadUpdate: () => invoke('workbench:download-update'),
   installUpdate: () => invoke('workbench:install-update'),
   openUpdatePage: () => invoke('workbench:open-update-page'),
+  openInstalledApps: () => invoke('workbench:open-installed-apps'),
   onUpdate: (callback) => {
     ipcRenderer.on('workbench:update-state', (_event, state) => callback(state));
   },

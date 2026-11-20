@@ -28,7 +28,7 @@ async function run() {
       sample() { taskStarted.resolve(); return task.promise; },
     },
     updateFactory({ onState }) {
-      let state = { currentVersion: '0.6.3', status: 'idle' };
+      let state = { currentVersion: '0.6.3', status: 'idle', canManageInstallation: true };
       send = (status, details) => {
         state = { ...state, status, retry: null, message: '', ...details };
         onState(state);
@@ -97,6 +97,16 @@ async function run() {
   await until('document.getElementById("update-dialog").open');
   assert.equal(await read('document.querySelectorAll("dialog[open]").length'), 1);
   assert.equal(downloads, 0, 'Opening update details should not start a download');
+  assert.ok(await read('document.getElementById("update-manage-installation").checkVisibility()'));
+  const settingsOpened = Promise.withResolvers();
+  const originalOpen = shell.openExternal;
+  try {
+    shell.openExternal = async (url) => { settingsOpened.resolve(url); };
+    await click('update-manage-installation');
+    assert.equal(await settingsOpened.promise, 'ms-settings:appsfeatures');
+    assert.equal(installs, 0);
+    assert.ok(await read('document.getElementById("update-dialog").open'));
+  } finally { shell.openExternal = originalOpen; }
   await press('Escape', 27);
   await until('!document.getElementById("update-dialog").open && document.activeElement.id === "software-update-entry"');
   await press('Tab', 9);
@@ -199,9 +209,11 @@ async function run() {
   clock += fourHours;
   win.emit('focus');
   assert.equal(checks, 4, 'A window kept open should check again when it regains focus');
-  send('unsupported');
+  send('unsupported', { canManageInstallation: false });
   await until('document.getElementById("update-action").textContent === "打开官方发布页"');
   assert.match(await textOf('update-status'), /Windows 安装版/);
+  assert.equal(await read('document.getElementById("update-manage-installation").checkVisibility()'), false);
+  assert.match(await read('workbench.openInstalledApps().then(() => "", e => e.message)'), /Windows 安装版/);
   const opened = Promise.withResolvers();
   const openExternal = shell.openExternal;
   try {

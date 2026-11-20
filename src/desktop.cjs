@@ -720,6 +720,10 @@ async function launchDesktop({
   handle('workbench:check-update', checkUpdates);
   handle('workbench:download-update', () => updates.download());
   handle('workbench:open-update-page', () => shell.openExternal('https://github.com/Showrenzhe/jiajian/releases/latest'));
+  handle('workbench:open-installed-apps', () => {
+    if (!updates.getState().canManageInstallation) throw new Error('此功能仅适用于 Windows 安装版。');
+    return shell.openExternal('ms-settings:appsfeatures');
+  });
   handle('workbench:install-update', async () => {
     const { status, retry } = updates.getState();
     if (status !== 'downloaded' && !(status === 'error' && retry === 'install')) throw new Error('请先下载更新。');

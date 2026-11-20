@@ -44,20 +44,19 @@ function luminance(channels) {
   return .2126 * r + .7152 * g + .0722 * b;
 }
 
-function assertTextFrames(frames, selectors, expectedInk) {
+function assertTextFrames(frames, selectors, checkSingleHandoff = false) {
   let minimum = Infinity;
-  for (const { theme, samples } of frames) {
-    for (const [i, { ink, foreground, background }] of samples.entries()) {
-      const label = selectors[i] + ' in ' + theme;
+  for (const [i, label] of selectors.entries()) {
+    const polarities = [];
+    for (const { samples } of frames) {
+      const { foreground, background } = samples[i];
       const fg = luminance(foreground), bg = luminance(background);
-      if (['#cloud-settings-title', '#home-heading', '#draft-heading-label'].includes(selectors[i])) {
-        assert.equal(ink, expectedInk[theme][i], label + ' should retain the active title color');
-      }
-      assert.ok(theme === 'dark' ? fg > bg : fg < bg, label + ' should retain the active palette polarity');
       const ratio = (Math.max(bg, fg) + .05) / (Math.min(bg, fg) + .05);
+      assert.ok(background[3] === 255 && ratio >= 4.5, label + ' contrast = ' + ratio.toFixed(2));
       minimum = Math.min(minimum, ratio);
-      assert.ok(background[3] === 255 && ratio >= 4.5, label + ' frame contrast = ' + ratio.toFixed(2));
+      if (polarities.at(-1) !== (fg > bg)) polarities.push(fg > bg);
     }
+    if (checkSingleHandoff) assert.deepEqual(polarities, [false, true], label + ' text should change polarity once');
   }
   return minimum;
 }
@@ -183,7 +182,7 @@ async function worker(phase, root) {
   await settings();
   const labels = [
     '#cloud-settings-title', '#cloud-settings-key-label', '.appearance-options input[value=system] ~ span:last-child',
-    '#app-settings', '#home-heading', '#draft-heading-label', '#draft-status-title',
+    '#app-settings', '#home-heading', '#draft-heading-label', '#draft-status-title', '#cloud-settings-base-url', '#cloud-settings-api-key',
   ];
   const surfaceIndex = labels.indexOf('#draft-heading-label');
   const expectedInk = {};
@@ -195,6 +194,34 @@ async function worker(phase, root) {
   for (const [i, selector] of labels.entries()) {
     assert.notEqual(expectedInk.light[i], expectedInk.dark[i], selector + ' should have distinct endpoint colors');
   }
+  await media('light');
+  // Step the actual root animation at equal time intervals. This distinguishes a
+  // single ease from two fades that decelerate and pause around middle gray.
+  const curve = await read(`(async () => {
+    document.querySelector('input[name=appearance][value=dark]').click();
+    const animation = document.documentElement.getAnimations().find(a => a.effect.getKeyframes().some(k => '--appearance-mix' in k));
+    animation.pause();
+    await animation.ready;
+    const paint = document.createElement('canvas').getContext('2d', { willReadFrequently: true });
+    const sample = ${sampleSurface};
+    const result = [];
+    for (let i = 0; i <= 120; i++) {
+      animation.currentTime = animation.effect.getTiming().duration * i / 120;
+      result.push({ samples: ${JSON.stringify(labels)}.map(s => sample(s, paint)) });
+    }
+    animation.play();
+    return result;
+  })()`);
+  const curveContrast = assertTextFrames(curve, labels, true);
+  const levels = curve.filter((_, i) => i % 10 === 0).map(frame => frame.samples[surfaceIndex].background[1]);
+  const deltas = levels.slice(1).map((n, i) => levels[i] - n);
+  console.log('25 ms surface samples:', levels.join(', '));
+  assert.ok(deltas.every(d => d >= 0) && Math.min(...deltas.slice(3, 8)) > 8,
+    'The surface must keep moving through the middle of the fade: ' + levels.join(', '));
+  await until(() => read('!document.documentElement.hasAttribute("data-theme-changing")'), 'Completing sampled transition');
+  await media('light', 'reduce');
+  await click(radio('light'));
+  await expectMode('light', 'light');
   await media('light');
   await wc.debugger.sendCommand('Animation.enable');
   await wc.debugger.sendCommand('Animation.setPlaybackRate', { playbackRate: .5 });
@@ -258,7 +285,7 @@ async function worker(phase, root) {
     'Reversing before the palette handoff should not flash the abandoned theme');
   assert.notDeepEqual(frames[reversedAt - 1].samples[surfaceIndex].background, frames[reversalStart - 1].samples[surfaceIndex].background,
     'The interrupted transition should already have begun changing the surface');
-  const minimumContrast = assertTextFrames(frames, labels, expectedInk);
+  const minimumContrast = Math.min(curveContrast, assertTextFrames(frames, labels));
   console.log(`文字最低对比度 ${minimumContrast.toFixed(2)}:1，浅→深 / 深→浅最大单帧亮度跨度 ${peakSteps.join('% / ')}%。`);
   await click(radio('system'));
   await expectMode('system', 'light');
