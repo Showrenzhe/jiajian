@@ -288,7 +288,6 @@ body:has(.workspace-divider[data-dragging]) {
 .player-control-row, .player-buttons, .player-display { display: flex; align-items: center; gap: 2px; }
 .player-control-row { flex-wrap: wrap; justify-content: space-between; gap: 3px 6px; }
 .player-control-row :is(button, select) { padding: 3px 5px; border: 0; background: transparent; color: var(--text); font-size: 12px; }
-.player-control-row select option { background: var(--panel); }
 .player-control-row button:hover:enabled, .player-control-row button[aria-pressed="true"] { color: var(--accent); background: #303638; }
 #player-time { color: #a6d7d9; font-size: 11px; font-variant-numeric: tabular-nums; }
 .app-frame[data-mode="montage"] .editor-player:fullscreen { width: 100%; height: 100%; border: 0; border-radius: 0; }

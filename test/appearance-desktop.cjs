@@ -12,6 +12,7 @@ const { app, nativeImage, nativeTheme } = require('electron');
 const { launchDesktop } = require('../src/desktop.cjs');
 
 app.disableHardwareAcceleration();
+app.commandLine.appendSwitch('force-device-scale-factor', '1');
 
 async function until(check, message) {
   const timeout = Date.now() + 8000;
@@ -42,6 +43,55 @@ function sampleSurface(selector, paint = document.createElement('canvas').getCon
 function luminance(channels) {
   const [r, g, b] = channels.map(v => v / 255).map(v => v <= .04045 ? v / 12.92 : ((v + .055) / 1.055) ** 2.4);
   return .2126 * r + .7152 * g + .0722 * b;
+}
+
+// On Windows the open select is a separate Chromium surface. capturePage() only
+// includes the underlying inspector; the offscreen paint event includes both.
+async function checkDarkRatioMenu(wc, read, key) {
+  const box = await read("document.querySelector('#ratio').getBoundingClientRect().toJSON()");
+  const clip = { x: Math.ceil(box.left), y: Math.round(box.bottom) + 2, width: Math.floor(box.width) - 2, height: 66 };
+  const sample = (bitmap, x, y) => {
+    const offset = 4 * (y * clip.width + x);
+    return [bitmap[offset + 2], bitmap[offset + 1], bitmap[offset]];
+  };
+  const markerX = clip.width - 8;
+  const before = sample((await wc.capturePage(clip)).toBitmap(), markerX, 2);
+  let menu;
+  const onPaint = (_event, _dirty, frame) => {
+    if (frame.isEmpty()) return;
+    const pixels = frame.crop(clip).toBitmap();
+    const highlight = sample(pixels, markerX, 2);
+    const normal = sample(pixels, markerX, 32);
+    if (highlight.some((v, i) => v !== before[i]) && highlight.some((v, i) => v !== normal[i])) menu = pixels;
+  };
+  wc.on('paint', onPaint);
+  try {
+    for (const type of ['mousePressed', 'mouseReleased']) {
+      await wc.debugger.sendCommand('Input.dispatchMouseEvent', {
+        type, x: box.x + box.width / 2, y: box.y + box.height / 2, button: 'left', clickCount: 1,
+      });
+    }
+    await until(async () => menu && await read("document.querySelector('#ratio').matches(':open')"), 'Missing open ratio menu paint');
+    // The first row is selected. Its trailing highlight ends where the 9:16 row begins.
+    const selected = sample(menu, markerX, 2);
+    let rowStart = 3;
+    while (rowStart < clip.height && sample(menu, markerX, rowStart).every((v, i) => v === selected[i])) rowStart++;
+    assert.ok(rowStart > 10 && rowStart * 2 <= clip.height, 'Expected a complete unselected row');
+    const background = luminance(sample(menu, markerX, rowStart + 3));
+    assert.ok(background < .25, 'Dark ratio menu painted a light background');
+    let legiblePixels = 0;
+    for (let y = rowStart + 2; y < rowStart * 2 - 2; y++) {
+      for (let x = 5; x < clip.width / 2; x++) {
+        if ((luminance(sample(menu, x, y)) + .05) / (background + .05) >= 4.5) legiblePixels++;
+      }
+    }
+    assert.ok(legiblePixels >= 8, 'Expected legible 9:16 text on the open menu');
+    await key('Escape', 27);
+    await until(() => read("!document.querySelector('#ratio').matches(':open')"), 'Escape should dismiss the ratio menu');
+    assert.equal(await read("document.querySelector('#ratio').value"), '16:9');
+  } finally {
+    wc.removeListener('paint', onPaint);
+  }
 }
 
 function assertTextFrames(frames, selectors, checkSingleHandoff = false) {
@@ -299,6 +349,12 @@ async function worker(phase, root) {
   await until(() => read('document.querySelector("#script-title")?.checkVisibility()'), 'Script editor should open');
   await contrast('#script-title', 'dark');
   await click('#tab-home');
+  if (process.platform === 'win32') {
+    await click('#home-create');
+    await until(() => read("document.querySelector('#ratio').checkVisibility()"), 'Expected the ratio selector');
+    await checkDarkRatioMenu(wc, read, key);
+    await click('#title-home');
+  }
   // A real opaque PNG should keep its pixel values in the editor throughout a theme change.
   const bitmap = Buffer.alloc(160 * 90 * 4);
   for (let i = 0; i < bitmap.length; i += 4) bitmap.set([180, 48, 180, 255], i);
