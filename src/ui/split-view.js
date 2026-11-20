@@ -6,18 +6,26 @@
   const ids = ['materials', 'inspector', 'timeline'];
   const sides = ['materials', 'inspector'];
   const dockKey = side => 'dock-' + side;
+  const belowKey = side => 'below-' + side;
+  const returnKey = side => 'return-' + side;
+  const spanPosition = { player: 'below', timeline: 'above', dock: 'full' };
+  const collapsedPosition = { player: 'above', timeline: 'full', dock: 'above' };
 
   function read() {
     try {
       const saved = JSON.parse(localStorage.getItem(key));
       const preferred = Object.fromEntries(ids.filter((id) => Number.isFinite(saved?.[id]) && saved[id] > 0 && saved[id] <= 1)
         .map((id) => [id, saved[id]]));
-      for (const side of sides) if (saved?.[dockKey(side)] === true) preferred[dockKey(side)] = true;
+      for (const side of sides) {
+        if (saved?.[dockKey(side)] === true) preferred[dockKey(side)] = true;
+        else if (saved?.[belowKey(side)] === true) preferred[belowKey(side)] = true;
+        if (['above', 'below', 'full'].includes(saved?.[returnKey(side)])) preferred[returnKey(side)] = saved[returnKey(side)];
+      }
       return preferred;
     } catch { return {}; }
   }
 
-  window.mountSplitView = (workspace, bounds) => {
+  window.mountSplitView = (workspace, bounds, topologyChanged) => {
     const dividers = [...workspace.querySelectorAll('.workspace-divider')];
     const handles = [...dividers];
     const guides = new Map();
@@ -28,12 +36,13 @@
       guide.setAttribute('aria-hidden', 'true');
       workspace.append(guide);
       guides.set(side, guide);
-      for (const kind of ['dock', 'junction']) {
+      for (const kind of ['dock', 'junction', 'player', 'timeline']) {
         const handle = document.createElement('button');
         handle.type = 'button';
         handle.className = 'workspace-area-handle';
         handle.dataset.areaHandle = kind;
         handle.dataset.side = side;
+        if (kind === 'player' || kind === 'timeline') handle.classList.add('workspace-span-handle');
         workspace.append(handle);
         handles.push(handle);
       }
@@ -71,10 +80,34 @@
       return { width, height, gutter, min, max, wanted: { materials, inspector }, size: { materials: left, inspector: right, timeline } };
     }
 
+    function position(side) {
+      return preferred[dockKey(side)] ? 'full' : preferred[belowKey(side)] ? 'below' : 'above';
+    }
+
+    function lowerSide(side) {
+      return position(side) === 'below' || (position(side) === 'full' && preferred[returnKey(side)] === 'below');
+    }
+
+    let lastTopology;
     function render(layout = measure()) {
-      for (const side of sides) workspace.toggleAttribute('data-' + dockKey(side), Boolean(preferred[dockKey(side)]));
-      for (const handle of handles.filter(el => el.dataset.areaHandle === 'dock')) {
-        handle.setAttribute('aria-pressed', String(Boolean(preferred[dockKey(handle.dataset.side)])));
+      const topology = sides.map(side => position(side) + (lowerSide(side) ? '-lower' : '')).join('/');
+      if (topology !== lastTopology) {
+        lastTopology = topology;
+        const rows = [['materials', 'player', 'properties'], ['.', '.', '.'], ['timeline', 'timeline', 'timeline']];
+        for (const [index, side] of sides.entries()) {
+          const column = index * 2, name = rows[0][column], state = position(side);
+          if (state === 'full') rows[1][column] = rows[2][column] = name;
+          if (state === 'below') { rows[0][column] = 'player'; rows[2][column] = name; }
+          workspace.toggleAttribute('data-' + dockKey(side), state === 'full');
+          workspace.toggleAttribute('data-' + belowKey(side), state === 'below');
+          workspace.toggleAttribute('data-lower-' + side, lowerSide(side));
+        }
+        workspace.style.setProperty('--split-areas', rows.map(row => '"' + row.join(' ') + '"').join(' '));
+        for (const handle of handles) {
+          const { areaHandle: kind, side } = handle.dataset;
+          if (spanPosition[kind]) handle.setAttribute('aria-pressed', String(position(side) === spanPosition[kind]));
+        }
+        topologyChanged();
       }
       for (const handle of dividers) {
         const id = handle.dataset.split;
@@ -100,10 +133,16 @@
       render(measure(layout));
     }
 
-    function dock(side, fullHeight) {
-      if (Boolean(preferred[dockKey(side)]) === fullHeight) return;
-      if (fullHeight) preferred[dockKey(side)] = true;
-      else delete preferred[dockKey(side)];
+    function setSpan(kind, side, expand) {
+      const previous = position(side), target = spanPosition[kind], fallback = collapsedPosition[kind];
+      if ((previous === target) === expand) return;
+      const next = expand ? target : preferred[returnKey(side)] || fallback;
+      delete preferred[returnKey(side)];
+      if (expand && previous !== fallback) preferred[returnKey(side)] = previous;
+      delete preferred[dockKey(side)];
+      delete preferred[belowKey(side)];
+      if (next === 'full') preferred[dockKey(side)] = true;
+      if (next === 'below') preferred[belowKey(side)] = true;
       render();
       const guide = guides.get(side);
       delete guide.dataset.preview;
@@ -113,31 +152,37 @@
         // already belong to the new rectangles, even on a rapid reversal.
         guide.animate([
           { opacity: .85, clipPath: 'inset(0 0 0 0)' },
-          { opacity: 0, clipPath: fullHeight ? 'inset(95% 0 0 0)' : 'inset(0 0 95% 0)' },
+          { opacity: 0 },
         ], { duration: 145, easing: 'ease-out' });
       }
     }
 
-    // A continuous border moves pixel for pixel. A side crossing the lower
-    // area changes the T junction between two complete rectangular tilings.
-    // Track the furthest point so a deliberate reversal also works mid-drag.
+    // Use the furthest point as the anchor so reversing the same gesture
+    // restores the previous tiling without crossing a relocated handle.
+    function spanGesture(kind, side, event) {
+      const isVertical = kind === 'dock';
+      const sign = isVertical ? (lowerSide(side) ? -1 : 1) : (side === 'materials' ? -1 : 1);
+      let anchor = sign * (isVertical ? event.clientY : event.clientX);
+      return (x, y) => {
+        const coord = sign * (isVertical ? y : x), expanded = position(side) === spanPosition[kind];
+        anchor = expanded ? Math.max(anchor, coord) : Math.min(anchor, coord);
+        const distance = (coord - anchor) * (expanded ? -1 : 1);
+        guides.get(side).toggleAttribute('data-preview', distance > 3 && distance < 18);
+        if (distance >= 18) {
+          setSpan(kind, side, !expanded);
+          anchor = coord;
+        }
+      };
+    }
+
     function gesture(horizontal, vertical, event) {
       const { size } = measure();
       const startX = event.clientX, startY = event.clientY;
-      let anchorY = startY;
+      const moveDock = sides.includes(vertical) ? spanGesture('dock', vertical, event) : undefined;
       return (x, y) => {
         if (horizontal) update(horizontal, size[horizontal] + (x - startX) * (horizontal === 'materials' ? 1 : -1));
         if (vertical === 'timeline') update('timeline', size.timeline - (y - startY));
-        else if (vertical) {
-          const extended = Boolean(preferred[dockKey(vertical)]);
-          anchorY = extended ? Math.max(anchorY, y) : Math.min(anchorY, y);
-          const distance = (y - anchorY) * (extended ? -1 : 1);
-          guides.get(vertical).toggleAttribute('data-preview', distance > 3 && distance < 18);
-          if (distance >= 18) {
-            dock(vertical, !extended);
-            anchorY = y;
-          }
-        }
+        else moveDock?.(x, y);
       };
     }
 
@@ -148,7 +193,13 @@
     function finish(event) {
       if (!drag || (event?.pointerId != null && event.pointerId !== drag.pointerId)) return;
       const { handle, pointerId, before } = drag;
-      if (event?.type === 'pointerup') drag.move(event.clientX, event.clientY);
+      if (event?.type === 'pointerup') {
+        drag.move(event.clientX, event.clientY);
+        if (drag.tapped) {
+          const { areaHandle: kind, side } = handle.dataset;
+          setSpan(kind, side, position(side) !== spanPosition[kind]);
+        }
+      }
       clearGuides();
       drag = null;
       handle.removeAttribute('data-dragging');
@@ -168,7 +219,13 @@
         if (focused?.matches('input, select, textarea') || focused?.isContentEditable) event.preventDefault();
         try { handle.setPointerCapture(event.pointerId); } catch { return; }
         handle.dataset.pointerFocus = '';
-        drag = { handle, pointerId: event.pointerId, move: gesture(horizontal, vertical, event), before: { ...preferred } };
+        const move = spanPosition[areaHandle] ? spanGesture(areaHandle, side, event) : gesture(horizontal, vertical, event);
+        drag = { handle, pointerId: event.pointerId, before: { ...preferred },
+          tapped: handle.classList.contains('workspace-span-handle'),
+          move(x, y) {
+            if (Math.hypot(x - event.clientX, y - event.clientY) > 3) this.tapped = false;
+            move(x, y);
+          } };
         handle.dataset.dragging = '';
       });
       handle.addEventListener('focus', () => {
@@ -179,13 +236,17 @@
         if (drag?.handle === handle) finish();
       });
       handle.addEventListener('lostpointercapture', (event) => { if (drag?.handle === handle) finish(event); });
-      if (areaHandle === 'dock') handle.addEventListener('click', event => {
+      if (spanPosition[areaHandle]) handle.addEventListener('click', event => {
         if (event.detail) return;
-        dock(side, !preferred[dockKey(side)]);
+        setSpan(areaHandle, side, position(side) !== spanPosition[areaHandle]);
         save();
       });
       handle.addEventListener('dblclick', () => {
-        if (areaHandle === 'dock') delete preferred[dockKey(side)];
+        if (spanPosition[areaHandle]) {
+          delete preferred[dockKey(side)];
+          delete preferred[belowKey(side)];
+          delete preferred[returnKey(side)];
+        }
         else {
           if (horizontal) delete preferred[horizontal];
           if (vertical) delete preferred[vertical];
@@ -196,10 +257,12 @@
       handle.addEventListener('keydown', (event) => {
         if (drag || event.altKey || event.ctrlKey || event.metaKey) return;
         const layout = measure();
-        if (areaHandle === 'dock') {
-          if (!['ArrowUp', 'ArrowDown', 'Home', 'End', 'Enter', ' '].includes(event.key)) return;
-          const extended = Boolean(preferred[dockKey(side)]);
-          dock(side, ['Enter', ' '].includes(event.key) ? !extended : ['ArrowDown', 'End'].includes(event.key));
+        if (spanPosition[areaHandle]) {
+          const arrows = areaHandle === 'dock' ? ['ArrowUp', 'ArrowDown'] : ['ArrowLeft', 'ArrowRight'];
+          if (![...arrows, 'Home', 'End', 'Enter', ' '].includes(event.key)) return;
+          const expanded = position(side) === spanPosition[areaHandle];
+          const outward = areaHandle === 'dock' ? (lowerSide(side) ? 'ArrowUp' : 'ArrowDown') : (side === 'materials' ? 'ArrowLeft' : 'ArrowRight');
+          setSpan(areaHandle, side, ['Enter', ' '].includes(event.key) ? !expanded : [outward, 'End'].includes(event.key));
         } else {
           const split = ['ArrowLeft', 'ArrowRight'].includes(event.key) ? horizontal
             : ['ArrowUp', 'ArrowDown'].includes(event.key) ? vertical : id;
@@ -238,8 +301,7 @@
       },
       sizes() { return measure().size; },
       resize: update,
-      gesture, dock, clearGuides,
-      docked(side) { return Boolean(preferred[dockKey(side)]); },
+      gesture, spanGesture, setSpan, lowerSide, position, clearGuides,
       get dragging() { return Boolean(drag); },
       save,
       snapshot() { return { ...(drag?.before ?? preferred) }; },

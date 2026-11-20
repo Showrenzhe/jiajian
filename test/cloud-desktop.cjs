@@ -402,6 +402,7 @@ async function run() {
     await click('#import-materials');
     await waitFor('document.querySelectorAll("#shots .asset").length === 2', '应为分段批次准备两个分镜');
     await clickVisible(win.webContents, '#title-home');
+    await waitFor('document.querySelector(".app-frame").dataset.mode === "home"', '返回首页后应显示本地创作入口');
     await clickVisible(win.webContents, '#tab-script');
     await waitFor('document.querySelectorAll(".script-dialogue").length > 0', '应打开脚本创作工作区');
     await click('#script-mode-segmented');

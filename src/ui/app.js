@@ -594,7 +594,7 @@ async function cutoutAsset(asset) {
     if (!cancelling) say(error.message);
     return null;
   } finally {
-    foregroundProgress = null; modal.close(); modal.remove(); operation = ''; updateControls();
+    foregroundProgress = null; modal.close(); window.afterDialogExit(modal); operation = ''; updateControls();
   }
 }
 $('#clip-foreground').addEventListener('click', async () => {
@@ -686,9 +686,24 @@ function assetRow(clip, list, trim) {
   return row;
 }
 
-function swapShot(index, destination) {
-  [shots[index], shots[destination]] = [shots[destination], shots[index]];
+function moveShot(shot, destination) {
+  const from = shots.indexOf(shot);
+  if (operation || from < 0 || destination === from || !Number.isInteger(destination) || !shots[destination]) return false;
+  const before = [...shots];
+  shots.splice(from, 1);
+  shots.splice(destination, 0, shot);
+  subprojects.reorderVoiceFollows(before);
+  const rows = attachedScript?.segmented;
+  if (rows && Math.min(from, destination) < rows.length) {
+    while (rows.length <= Math.max(from, destination)) rows.push({dialogue: '', note: ''});
+    const [line] = rows.splice(from, 1);
+    rows.splice(destination, 0, line);
+    renderScriptBrief();
+  }
   renderLists();
+  // Identical empty shots can swap without changing the serialized project key.
+  timeline?.refresh();
+  return true;
 }
 
 function captionText(caption) {
@@ -774,10 +789,10 @@ function shotRow(shot, index) {
   row.querySelector('.no-candidates').hidden = shot.length > 0;
   const up = row.querySelector('.move-up');
   up.disabled = index === 0;
-  up.addEventListener('click', () => swapShot(index, index - 1));
+  up.addEventListener('click', () => moveShot(shot, index - 1));
   const down = row.querySelector('.move-down');
   down.disabled = index === shots.length - 1;
-  down.addEventListener('click', () => swapShot(index, index + 1));
+  down.addEventListener('click', () => moveShot(shot, index + 1));
   row.querySelector('.remove-shot').addEventListener('click', () => {
     if (shot.includes(selected)) clearPreview();
     shots.splice(index, 1);
@@ -3698,7 +3713,7 @@ $('#material-clear-selection').addEventListener('click', () => {
   updateMaterialBatchControls();
 });
 $('#material-add-cancel').addEventListener('click', () => $('#material-add-dialog').close());
-$('#material-add-dialog').addEventListener('close', () => { materialToAdd = undefined; });
+$('#material-add-dialog').addEventListener('close', (event) => { if (!event.target.open) materialToAdd = undefined; });
 $('#material-add-form').addEventListener('submit', (event) => {
   event.preventDefault();
   const items = materialToAdd;
@@ -3746,7 +3761,8 @@ $('#subs2srs-split').addEventListener('click', splitNarrationWithSubs2srs);
 $('#review-narration').addEventListener('click', () => openNarrationReview(narration, attachedScript?.whole[0]?.dialogue, Boolean(subtitles)));
 $('#narration-review-close').addEventListener('click', () => $('#narration-review').close());
 $('#narration-review-save').addEventListener('click', applyNarrationCaption);
-$('#narration-review').addEventListener('close', () => {
+$('#narration-review').addEventListener('close', (event) => {
+  if (event.target.open) return;
   const audio = $('#narration-review-audio');
   reviewWaveform();
   audio.pause();
@@ -4055,7 +4071,7 @@ timeline = window.mountEditTimeline($('#timeline-clock'), {
   showAxis:()=>$('#track-preview-axis').checked,
   shotSettings:(shot,value)=>shotProperties.set(shot,value), newShot:()=>$('#add-shot').click(),
   createAt:(i)=>{if(!operation && i>=0 && i<maxShots){while(shots.length<=i) shots.push([]);renderLists();}},
-  move:(shot,to)=>{const from=shots.indexOf(shot);if(operation || from<0 || to===from || !shots[to]) return; shots.splice(from,1);shots.splice(to,0,shot);renderLists();},
+  move:moveShot,
   importShot:(shot,i)=>shot ? importCandidates(shot) : pick('visual',maxCandidates,(assets)=>{
     if(!assets.length) return;
     while(shots.length<=i) shots.push([]);

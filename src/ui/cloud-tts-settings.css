@@ -14,7 +14,8 @@
 .cloud-settings-error, #cloud-settings-status.cloud-settings-error { color: var(--dialog-alert); }
 .cloud-settings-actions { display: flex; justify-content: flex-end; gap: 7px; padding: 12px 26px 15px; border-top: 1px solid var(--hairline); }
 .cloud-settings-breeze-tools { display: flex; gap: 8px; flex-wrap: wrap; }
-#update-dialog[open] { display: grid; grid-template-rows: auto minmax(0, 1fr) auto; }
+#update-dialog[open] { display: grid; }
+#update-dialog { grid-template-rows: auto minmax(0, 1fr) auto; }
 #update-dialog .cloud-settings-body { gap: 12px; }
 #update-dialog h3, #update-dialog p { margin: 0; }
 #update-dialog progress { width: 100%; }

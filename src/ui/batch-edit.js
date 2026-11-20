@@ -7,7 +7,7 @@ window.mountBatchEdit = function(ctx) {
     const d=el('dialog');d.className='jj-batch-editor';
     const heading=el('header');heading.append(el('h3',title),button('关闭',()=>d.close()));
     const body=el('section'),foot=el('footer'),status=el('output');
-    d.append(heading,body,foot);foot.append(status);document.body.append(d);d.showModal();d.onclose=()=>d.remove();
+    d.append(heading,body,foot);foot.append(status);document.body.append(d);d.showModal();d.onclose=()=>window.afterDialogExit(d);
     return {d,body,foot,status};
   }
   function rename(items,isOutput,apply){

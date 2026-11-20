@@ -94,7 +94,7 @@ window.mountTimelineSelection = function (host, {busy, changed, removed}) {
       || !target.closest('.sequence-canvas')) return;
     const node=target.closest('.sequence-block');
     const additive=event.ctrlKey || event.metaKey || event.shiftKey;
-    if (node && (node.draggable || node.closest('.sequence-layer')) && !additive) return;
+    if (node && (node.draggable || node.hasAttribute('data-reorder-shot') || node.closest('.sequence-layer')) && !additive) return;
     gesture={id:event.pointerId,start:point(event.clientX,event.clientY),initialX:event.clientX,initialY:event.clientY,
       x:event.clientX,y:event.clientY,before:new Set(selected),base:additive?new Set(selected):new Set(),active:false};
     if (node && additive) {event.stopPropagation();event.preventDefault();}
@@ -133,5 +133,6 @@ window.mountTimelineSelection = function (host, {busy, changed, removed}) {
     if (event.key==='Escape' && selected.size) {selected.clear();paint();event.preventDefault();}
   });
   return {bind,attach,removeSelection,get size(){return selected.size;},
+    selectOnly(key){selected=new Set([key]);paint();},
     clear(){finish(true);selected.clear();paint();}};
 };

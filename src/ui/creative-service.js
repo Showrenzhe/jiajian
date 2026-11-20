@@ -8,7 +8,7 @@
     const heading = node('h2', title), fields = node('div'), message = node('p'), footer = node('footer');
     message.setAttribute('role', 'status');
     box.append(heading, fields, message, footer);
-    box.addEventListener('close', () => box.remove(), { once: true });
+    box.addEventListener('close', () => window.afterDialogExit(box), { once: true });
     document.body.append(box);
     const field = (caption, el) => { const label = node('label'); label.append(node('span', caption), el); fields.append(label); return el; };
     return { box, message, footer, fields, field };

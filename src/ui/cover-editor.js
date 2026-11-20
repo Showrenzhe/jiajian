@@ -83,7 +83,7 @@ window.createCoverEditor = function ({get, set, assetFor, selection, pickImage, 
     });
     foot.append(report,save);dialog.replaceChildren(header,mode,actions,grid,panel,foot);
   }
-  dialog.addEventListener('close',()=>{job++;dialog.replaceChildren();});
+  dialog.addEventListener('close',()=>{if(dialog.open)return;job++;window.afterDialogExit(dialog,()=>dialog.replaceChildren());});
   function open(){draft=structuredClone(get()??{mode:'none',items:[],active:0});index=Math.max(0,draft.active);paint();if(!dialog.open)dialog.showModal();}
   return {open,capture(asset,time){open();add(asset,time);},firstShot(){open();draft.mode='first-shot';paint();}};
 };

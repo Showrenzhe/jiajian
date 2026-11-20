@@ -181,6 +181,38 @@ async function run() {
     near(inspector.left - player.right, gap);
     near(timeline.bottom, base['#montage-pane'].bottom);
   }
+  function checkRows(boxes, base, left, right) {
+    const player = base['.editor-player'], timeline = base['#montage-pane'];
+    const columns = [base['#materials-pane'], player, base['#montage-inspector']];
+    for (const [selector, col, state] of [['#materials-pane', columns[0], left], ['#montage-inspector', columns[2], right]]) {
+      sameBox(boxes[selector], { left: col.left, right: col.right, top: state === 'below' ? timeline.top : player.top,
+        bottom: state === 'above' ? player.bottom : timeline.bottom }, selector);
+    }
+    for (const [selector, row, extended] of [['.editor-player', player, 'below'], ['#montage-pane', timeline, 'above']]) {
+      sameBox(boxes[selector], { top: row.top, bottom: row.bottom,
+        left: left === extended ? columns[0].left : player.left,
+        right: right === extended ? columns[2].right : player.right }, selector);
+    }
+  }
+  async function checkSpanTargets() {
+    const issues = await evaluate(`(() => {
+      const errors = [];
+      const panes = [...document.querySelectorAll('.panel-layout-pane')].map(el => el.getBoundingClientRect());
+      for (const handle of document.querySelectorAll('.workspace-span-handle')) {
+        const r = handle.getBoundingClientRect();
+        const id = handle.dataset.areaHandle + '/' + handle.dataset.side;
+        if (!r.width || r.height < 12 || r.left < 0 || r.right > innerWidth) errors.push(id + ' outside window');
+        for (const pane of panes) {
+          const overlapX = Math.min(r.right, pane.right) - Math.max(r.left, pane.left);
+          const overlapY = Math.min(r.bottom, pane.bottom) - Math.max(r.top, pane.top);
+          if (overlapX > .5 && overlapY > .5) errors.push(id + ' covers editor content');
+        }
+        if (document.elementFromPoint(r.left + r.width / 2, r.top + r.height / 2) !== handle) errors.push(id + ' misses input');
+      }
+      return errors;
+    })()`);
+    assert.deepEqual(issues, [], 'span handles occupy only gutters or desktop margins');
+  }
   async function pull(point, dx, dy, release = true) {
     await mouse('mouseMoved', point, {});
     await mouse('mousePressed', point, { button: 'left', buttons: 1, clickCount: 1 });
@@ -406,6 +438,83 @@ async function run() {
   const leftDock = areaHandle('materials', 'dock');
   const rightDock = areaHandle('inspector', 'dock');
   const leftCorner = areaHandle('materials', 'junction');
+  const playerLeft = areaHandle('materials', 'player'), playerRight = areaHandle('inspector', 'player');
+  const timelineLeft = areaHandle('materials', 'timeline'), timelineRight = areaHandle('inspector', 'timeline');
+  await checkSpanTargets();
+  // Visit every two-row tiling from the real default panes. Check every
+  // rectangle against the original tracks, including the displaced editors.
+  await pull(await center(playerLeft), -30, 0);
+  checkRows(await snapshot(), original, 'below', 'above');
+  await pull(await center(timelineRight), -27, 0);
+  checkRows(await snapshot(), original, 'below', 'full');
+  await pull(await center(playerRight), 29, 0);
+  checkRows(await snapshot(), original, 'below', 'below');
+  await checkSpanTargets();
+  await reopen();
+  checkRows(await snapshot(), original, 'below', 'below');
+  await pull(await center(playerRight), -24, 0);
+  checkRows(await snapshot(), original, 'below', 'full');
+  await pull(await center(timelineRight), 28, 0);
+  checkRows(await snapshot(), original, 'below', 'above');
+  // A sidebar displaced to the lower row can expand upwards and return there.
+  await pull(await center(leftDock), 0, -25);
+  checkRows(await snapshot(), original, 'full', 'above');
+  await pull(await center(leftDock), 0, 26);
+  checkRows(await snapshot(), original, 'below', 'above');
+  const enlarged = await snapshot();
+  await adjust();
+  await pull(await center('.panel-layout-box[data-pane="player"] [data-edge="w"]'), 26, 0);
+  samePanes(await snapshot(), original);
+  await press('Escape');
+  samePanes(await snapshot(), enlarged);
+  await adjust();
+  // The visible handle works above the editing overlay, including a simple click.
+  await pull(await center(playerLeft), 0, 0);
+  samePanes(await snapshot(), original);
+  await pull(await center('.panel-layout-box[data-pane="timeline"] [data-edge="w"]'), 26, 0);
+  checkRows(await snapshot(), original, 'full', 'above');
+  await pull(await center(playerRight), 26, 0);
+  checkRows(await snapshot(), original, 'full', 'below');
+  await adjust();
+  await pull(await center(timelineLeft), -27, 0);
+  checkRows(await snapshot(), original, 'above', 'below');
+  const compactBaseSize = win.getSize();
+  win.setSize(850, 600);
+  await settle();
+  const compactRows = await snapshot();
+  near(compactRows['.editor-player'].right, compactRows['#montage-inspector'].right);
+  near(compactRows['#montage-inspector'].top, compactRows['#montage-pane'].top);
+  await checkSpanTargets();
+  await verifyClipping();
+  await reopen();
+  samePanes(await snapshot(), compactRows);
+  await adjust();
+  await beginSwap('inspector');
+  await dropAt(await hoverAt(await paneCenter('player'), 'player'));
+  const exchangedRows = exchanged(compactRows, 'inspector', 'player');
+  samePanes(await snapshot(), exchangedRows);
+  await adjust();
+  await reopen();
+  samePanes(await snapshot(), exchangedRows);
+  assert.equal(await evaluate(`document.querySelector('${playerRight}').getAttribute('aria-controls')`), 'player-pane montage-inspector');
+  await adjust();
+  await beginSwap('player');
+  await dropAt(await hoverAt(await paneCenter('inspector'), 'inspector'));
+  await adjust();
+  samePanes(await snapshot(), compactRows);
+  await evaluate(`document.querySelector('${playerRight}').focus()`);
+  await press('ArrowLeft');
+  win.setSize(...compactBaseSize);
+  await settle();
+  samePanes(await snapshot(), original);
+  await pull(await center(timelineRight), -24, 0);
+  checkRows(await snapshot(), original, 'above', 'full');
+  await pull(await center(timelineLeft), 25, 0);
+  checkRows(await snapshot(), original, 'full', 'full');
+  await checkSpanTargets();
+  await click('#panel-layout-reset');
+  await settle();
+  samePanes(await snapshot(), original);
   // Test the visible gutter itself, including an early reversal and an
   // immediate release. Only the side and the lower editor change shape.
   const startDock = await center(leftDock);
@@ -545,6 +654,7 @@ async function run() {
   const compact = await snapshot();
   near(compact['.editor-player'].width, 76);
   near(compact['.editor-player'].height, 52);
+  await checkSpanTargets();
   near(checkGutters(compact), 6);
   const compactScroll = await evaluate(`(() => {
     const player = document.querySelector('.editor-player');
@@ -942,7 +1052,7 @@ async function run() {
   await dropAt(timelineGrip);
   assert.equal(await visible(), 0);
   wc.debugger.detach();
-  console.log('Passed shared borders, two-axis junctions, reversible T docking, compact scrolling, live panel swaps, cancellation, touch, reduced motion, keyboard, migration, clipping, and persistence.');
+  console.log('Passed all nine pane tilings, gutter-only span handles, shared borders, two-axis junctions, compact scrolling, live panel swaps, cancellation, touch, reduced motion, keyboard, migration, clipping, and persistence.');
   win.close();
 }
 

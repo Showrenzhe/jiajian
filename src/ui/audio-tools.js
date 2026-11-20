@@ -84,7 +84,7 @@ window.mountAudioTools = function({ api, onBusy, onGenerated }) {
   });
   close.onclick=()=>{if(working){cancelled=true;api.cancel().catch((error)=>{status.textContent=error.message;});}else dialog.close();};
   dialog.addEventListener('cancel',(event)=>{if(working){event.preventDefault();close.click();}});
-  dialog.addEventListener('close',()=>{player.pause();player.removeAttribute('src');player.load();showWaveform();assets=[];proposals.clear();});
+  dialog.addEventListener('close',()=>{if(dialog.open)return;player.pause();player.removeAttribute('src');player.load();showWaveform();assets=[];proposals.clear();});
   picker.onchange=setSource; modes.onchange=display;
   for (const id of ['audio-threshold','audio-minimum','audio-padding','audio-fillers']) get(id).oninput=()=>{proposals.clear();showRows();status.textContent='参数已更改，请重新检测。';};
   list.oninput=()=>{proposals.set(current().id,rows());display();};

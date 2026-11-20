@@ -20,6 +20,7 @@ $env:SUPERDIR_REPLICA_FFMPEG = Join-Path $bin 'ffmpeg.exe'
 $env:SUPERDIR_REPLICA_FFPROBE = Join-Path $bin 'ffprobe.exe'
 $env:PATH = "$bin;$env:PATH"
 npm test
+npm run test:desktop
 npm run test:updates
 node --test test/release-workflow.test.cjs
 ./test/release-publish.test.ps1

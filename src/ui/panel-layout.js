@@ -5,18 +5,13 @@
   const definitions = [
     ['materials', '.editor-materials', '素材库'],
     ['player', '.editor-player', '播放器'],
-    ['inspector', '.montage-inspector', '属性面板'],
+    ['inspector', '.montage-inspector', '混剪设置'],
     ['timeline', '#montage-pane', '分镜轨道'],
   ];
   const slotIds = definitions.map(([id]) => id);
   const defaultSlots = Object.fromEntries(slotIds.map(id => [id, id]));
   const edges = { n: '上边', ne: '右上角', e: '右边', se: '右下角', s: '下边', sw: '左下角', w: '左边', nw: '左上角' };
-  const sharedEdges = {
-    materials: { e: 'materials', s: 'dock-materials' },
-    player: { w: 'materials', e: 'inspector', s: 'timeline' },
-    inspector: { w: 'inspector', s: 'dock-inspector' },
-    timeline: { n: 'timeline' },
-  };
+  const sides = ['materials', 'inspector'];
 
   function isPermutation(values) {
     return values.length === slotIds.length && slotIds.every(id => values.includes(id));
@@ -113,7 +108,11 @@
       element.classList.add('panel-layout-pane');
       return [id, { id, label, element, overlay }];
     }));
-    const splitView = window.mountSplitView(workspace, bounds);
+    const splitView = window.mountSplitView(workspace, bounds, () => {
+      stopArrivals();
+      applySlots();
+      refreshControls();
+    });
     const dividers = [...workspace.querySelectorAll('.workspace-divider')];
     const saved = readLayout();
     let slots = saved.slots ?? { ...defaultSlots };
@@ -153,6 +152,19 @@
         gutter: Number.parseFloat(style.columnGap) || 0 };
     }
 
+    function sharedEdges(slot) {
+      if (sides.includes(slot)) {
+        return { [slot === 'materials' ? 'e' : 'w']: slot,
+          [splitView.lowerSide(slot) ? 'n' : 's']: 'dock-' + slot };
+      }
+      const shared = slot === 'player' ? { s: 'timeline' } : { n: 'timeline' };
+      const wide = slot === 'player' ? 'below' : 'above';
+      for (const side of sides) {
+        shared[side === 'materials' ? 'w' : 'e'] = splitView.position(side) === wide ? 'span-' + side : side;
+      }
+      return shared;
+    }
+
     function applySlots() {
       if (swapped()) workspace.dataset.panelLayout = 'swapped';
       else delete workspace.dataset.panelLayout;
@@ -161,8 +173,10 @@
         const area = slot === 'inspector' ? 'properties' : slot;
         pane.element.style.setProperty('--panel-grid-area', area);
         pane.overlay.style.setProperty('--panel-grid-area', area);
+        const shared = sharedEdges(slot);
         for (const handle of pane.overlay.querySelectorAll('button:not([data-edge="move"])')) {
-          const axes = [...handle.dataset.edge].filter(direction => sharedEdges[slot][direction])
+          const edge = handle.dataset.edge;
+          const axes = [...edge].filter(direction => shared[direction] && (edge.length === 1 || !shared[direction].startsWith('span-')))
             .map(direction => 'ns'.includes(direction) ? 'y' : 'x');
           handle.dataset.splitAxes = axes.join('') || 'none';
         }
@@ -179,11 +193,18 @@
       for (const handle of workspace.querySelectorAll('.workspace-area-handle')) {
         const side = handle.dataset.side;
         const pane = panes.get(slotIds.find(id => slots[id] === side));
-        const bottom = panes.get(slotIds.find(id => slots[id] === 'timeline'));
-        handle.setAttribute('aria-controls', pane.element.id + ' ' + bottom.element.id);
-        const label = handle.dataset.areaHandle === 'dock'
-          ? `${pane.label}底边：下拖占满这一列，上拖还原，也可按上下方向键`
-          : `${pane.label}与${bottom.label}的交点：拖动或按方向键调整宽度和高度`;
+        const kind = handle.dataset.areaHandle;
+        const rowSlot = kind === 'player' || (kind === 'dock' && splitView.lowerSide(side)) ? 'player' : 'timeline';
+        const rowPane = panes.get(slotIds.find(id => slots[id] === rowSlot));
+        const lower = splitView.lowerSide(side);
+        const horizontalSide = side === 'materials' ? '左' : '右';
+        const label = {
+          dock: `${pane.label}${lower ? '上' : '下'}边，向${lower ? '上' : '下'}拖动占整列，反向拖动还原`,
+          junction: `拖动${pane.label}旁的交点，或按方向键调整宽度和高度`,
+          player: `${rowPane.label}${horizontalSide}边，向外拖动让${pane.label}移到下方，向内拖动还原，也可点击切换`,
+          timeline: `${rowPane.label}${horizontalSide}边，向内拖动给${pane.label}留出一列，向外拖动铺回，也可点击切换`,
+        }[kind];
+        handle.setAttribute('aria-controls', pane.element.id + ' ' + rowPane.element.id);
         handle.title = label;
         handle.setAttribute('aria-label', label);
       }
@@ -199,11 +220,11 @@
     function refreshControls() {
       toggle.setAttribute('aria-pressed', String(editing));
       toggle.textContent = editing ? '完成布局' : '调整布局';
-      toggle.title = editing ? '保留本次调整并退出。按 Esc 可取消本次调整。' : '拖动面板可交换位置。拖动共享边可调整大小，下拉侧栏底边可让它占满整列。';
+      toggle.title = editing ? '保留本次调整并退出。按 Esc 可取消本次调整。' : '拖动面板交换位置，拖动分隔线调大小。拖动上下两行两侧的箭头可跨列展开或收回。';
       choose.hidden = !editing;
       choose.value = active;
       const modified = swapped() || splitView.modified;
-      resetButton.hidden = !editing && !swapped();
+      resetButton.hidden = !editing && !modified;
       resetButton.disabled = !modified;
       layer.hidden = !editing;
     }
@@ -232,17 +253,19 @@
     }
 
     function resizeAxes(pane, edge, event) {
-      const shared = sharedEdges[slots[pane.id]];
+      const slot = slots[pane.id], shared = sharedEdges(slot);
       const horizontal = shared[[...edge].find(direction => 'ew'.includes(direction))];
+      if (edge.length === 1 && horizontal?.startsWith('span-')) return { span: slot, side: horizontal.slice(5) };
       let vertical = shared[[...edge].find(direction => 'ns'.includes(direction))];
-      if (slots[pane.id] === 'timeline' && vertical && event.type === 'pointerdown') {
-        for (const side of ['materials', 'inspector']) {
+      if (slot === 'timeline' && vertical && event.type === 'pointerdown') {
+        for (const side of sides) {
+          if (splitView.position(side) !== 'above') continue;
           const rect = [...panes.values()].find(other => slots[other.id] === side).overlay.getBoundingClientRect();
           if (event.clientX >= rect.left && event.clientX < rect.right) vertical = 'dock-' + side;
         }
       }
-      if (horizontal && vertical?.startsWith('dock-') && !splitView.docked(slots[pane.id])) vertical = 'timeline';
-      return { horizontal, vertical: vertical?.replace('dock-', '') };
+      if (horizontal && vertical?.startsWith('dock-') && splitView.position(slot) !== 'full') vertical = 'timeline';
+      return { horizontal: sides.includes(horizontal) ? horizontal : undefined, vertical: vertical?.replace('dock-', '') };
     }
 
     function containsPoint(rect, x, y) {
@@ -369,12 +392,13 @@
           animateArrival(pane, from, { foreground: true });
         }
       } else {
-        const { horizontal, vertical } = resizeAxes(pane, edge, event);
+        const { horizontal, vertical, span, side } = resizeAxes(pane, edge, event);
         const step = event.shiftKey ? 32 : 8;
         const size = splitView.sizes();
+        if (dx && span) splitView.setSpan(span, side, side === 'materials' ? dx < 0 : dx > 0);
         if (dx && horizontal) splitView.resize(horizontal, size[horizontal] + dx * step * (horizontal === 'materials' ? 1 : -1));
         if (dy && vertical === 'timeline') splitView.resize('timeline', size.timeline - dy * step);
-        else if (dy && vertical) splitView.dock(vertical, dy > 0);
+        else if (dy && vertical) splitView.setSpan('dock', vertical, splitView.lowerSide(vertical) ? dy < 0 : dy > 0);
         save();
       }
       sync();
@@ -418,8 +442,8 @@
         pane.element.dataset.lifted = '';
         pane.overlay.dataset.dragSource = '';
       } else {
-        const { horizontal, vertical } = resizeAxes(pane, edge, event);
-        drag.resize = splitView.gesture(horizontal, vertical, event);
+        const { horizontal, vertical, span, side } = resizeAxes(pane, edge, event);
+        drag.resize = span ? splitView.spanGesture(span, side, event) : splitView.gesture(horizontal, vertical, event);
         drag.before = splitView.snapshot();
       }
       handle.dataset.pointerFocus = '';

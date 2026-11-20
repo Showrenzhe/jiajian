@@ -30,9 +30,7 @@
   grid-template-areas:
     "toolbar toolbar toolbar"
     "notice notice notice"
-    "materials player properties"
-    ". . ."
-    "timeline timeline timeline";
+    var(--split-areas, "materials player properties" ". . ." "timeline timeline timeline");
   grid-template-columns: var(--split-materials, clamp(176px, 19%, 295px)) minmax(0, 1fr) var(--split-inspector, clamp(216px, 21.5%, 336px));
   grid-template-rows: auto auto minmax(0, 1fr) var(--workspace-gutter) var(--split-timeline, minmax(205px, 38%));
   align-items: stretch;
@@ -46,20 +44,6 @@
   overflow: auto;
 }
 
-/* Each saved state tiles the same four panes using real grid tracks, so
-   a docked column changes the lower editor's viewport and scroll range. */
-.app-frame[data-mode="montage"] #editor-workspace[data-dock-materials] {
-  grid-template-areas: "toolbar toolbar toolbar" "notice notice notice"
-    "materials player properties" "materials . ." "materials timeline timeline";
-}
-.app-frame[data-mode="montage"] #editor-workspace[data-dock-inspector] {
-  grid-template-areas: "toolbar toolbar toolbar" "notice notice notice"
-    "materials player properties" ". . properties" "timeline timeline properties";
-}
-.app-frame[data-mode="montage"] #editor-workspace[data-dock-materials][data-dock-inspector] {
-  grid-template-areas: "toolbar toolbar toolbar" "notice notice notice"
-    "materials player properties" "materials . properties" "materials timeline properties";
-}
 .workspace-divider, .workspace-area-handle { display: none; }
 .app-frame[data-mode="montage"] #editor-workspace > :is(.workspace-divider, .workspace-area-handle) {
   display: block;
@@ -69,12 +53,12 @@
   user-select: none;
 }
 .workspace-divider[aria-orientation="vertical"] {
-  grid-area: player;
+  grid-row: 3;
   width: 12px;
   cursor: col-resize;
 }
-.workspace-divider[data-split="materials"] { justify-self: start; transform: translateX(calc(-50% - var(--workspace-gutter) / 2)); }
-.workspace-divider[data-split="inspector"] { justify-self: end; transform: translateX(calc(50% + var(--workspace-gutter) / 2)); }
+.workspace-divider[data-split="materials"] { grid-column: 1; justify-self: end; transform: translateX(calc(50% + var(--workspace-gutter) / 2)); }
+.workspace-divider[data-split="inspector"] { grid-column: 3; justify-self: start; transform: translateX(calc(-50% - var(--workspace-gutter) / 2)); }
 .workspace-divider[data-split="timeline"] {
   grid-column: 2;
   grid-row: 5;
@@ -95,6 +79,37 @@
 }
 .workspace-area-handle[data-side="materials"] { grid-area: materials; }
 .workspace-area-handle[data-side="inspector"] { grid-area: properties; }
+.workspace-span-handle[data-area-handle="player"] { grid-area: player; }
+.workspace-span-handle[data-area-handle="timeline"] { grid-area: timeline; }
+.app-frame[data-mode="montage"] #editor-workspace > .workspace-span-handle {
+  z-index: 13;
+  align-self: center;
+  top: -25%;
+  width: var(--workspace-gutter);
+  height: min(28px, 30%);
+  margin-inline: calc(0px - var(--workspace-gutter));
+  border-radius: 8px;
+  background: var(--glass-surface);
+  color: var(--secondary-ink);
+  box-shadow: inset 0 0 0 1px var(--hairline);
+  cursor: ew-resize;
+}
+.workspace-span-handle[data-side="materials"] { justify-self: start; }
+.workspace-span-handle[data-side="inspector"] { justify-self: end; }
+.workspace-span-handle::after {
+  content: "";
+  position: absolute;
+  inset: 50% auto auto 50%;
+  width: 3px;
+  height: 3px;
+  translate: -50% -50%;
+  rotate: 45deg;
+  border: solid currentColor;
+  border-width: 0 0 1.5px 1.5px;
+}
+.workspace-span-handle[data-side="inspector"][aria-pressed="false"]::after,
+.workspace-span-handle[data-side="materials"][aria-pressed="true"]::after { rotate: 225deg; }
+#editor-workspace:has([data-drag-source]) .workspace-span-handle { visibility: hidden; }
 .workspace-dock-guide {
   display: none;
   grid-row: 5;
@@ -109,6 +124,8 @@
 .workspace-dock-guide[data-side="materials"] { grid-column: 1; }
 .workspace-dock-guide[data-side="inspector"] { grid-column: 3; }
 .workspace-dock-guide[data-preview] { opacity: .85; }
+#editor-workspace[data-below-materials] .workspace-dock-guide[data-side="materials"],
+#editor-workspace[data-below-inspector] .workspace-dock-guide[data-side="inspector"] { grid-row: 3; }
 .workspace-area-handle[data-area-handle="dock"] {
   align-self: end;
   height: 12px;
@@ -119,6 +136,15 @@
 #editor-workspace[data-dock-inspector] [data-side="inspector"][data-area-handle="dock"] {
   translate: 0 3px;
 }
+#editor-workspace[data-lower-materials] [data-side="materials"][data-area-handle="dock"],
+#editor-workspace[data-lower-inspector] [data-side="inspector"][data-area-handle="dock"] {
+  align-self: start;
+  translate: 0 calc(-50% - var(--workspace-gutter) / 2);
+}
+#editor-workspace[data-lower-materials][data-dock-materials] [data-side="materials"][data-area-handle="dock"],
+#editor-workspace[data-lower-inspector][data-dock-inspector] [data-side="inspector"][data-area-handle="dock"] { translate: 0 -3px; }
+#editor-workspace[data-below-materials] .workspace-divider[data-split="materials"],
+#editor-workspace[data-below-inspector] .workspace-divider[data-split="inspector"] { grid-row: 5; }
 #editor-workspace[data-dock-materials] .workspace-divider[data-split="materials"],
 #editor-workspace[data-dock-inspector] .workspace-divider[data-split="inspector"] { grid-row: 3 / 6; }
 .workspace-area-handle[data-area-handle="junction"] {
