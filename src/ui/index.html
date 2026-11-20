@@ -100,9 +100,12 @@
     <button type="button" id="nav-toggle" aria-controls="workspace-navigation" aria-expanded="true" aria-label="收起侧栏" title="收起侧栏（Ctrl+\）"><svg class="ui-icon" aria-hidden="true"><use href="#icon-sidebar"></use></svg></button>
     <button type="button" id="title-home" aria-label="返回首页" title="返回首页"><svg class="ui-icon" aria-hidden="true"><use href="#icon-home"></use></svg></button>
     <span id="title-tab">工作台</span>
-    <span id="update-notice" hidden>
-      <button type="button" id="update-notice-open" aria-haspopup="dialog"></button>
-      <button type="button" id="update-notice-dismiss" title="本次稍后提醒" aria-label="收起本次更新提醒">×</button>
+    <span id="titlebar-update">
+      <button type="button" id="software-update-entry" title="打开软件更新" aria-haspopup="dialog" aria-controls="update-dialog">
+        <svg class="ui-icon" aria-hidden="true"><use href="#icon-import"></use></svg>软件更新
+        <span id="update-notice" hidden></span>
+      </button>
+      <button type="button" id="update-notice-dismiss" title="收起本次更新提醒" aria-label="收起本次更新提醒" hidden>×</button>
     </span>
     <button type="button" id="app-settings" title="打开设置" aria-haspopup="dialog"><svg class="ui-icon" aria-hidden="true"><use href="#icon-settings"></use></svg>设置</button>
   </header>

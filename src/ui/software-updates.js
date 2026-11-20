@@ -3,7 +3,9 @@
 window.bindSoftwareUpdates = (api) => {
   const $ = (id) => document.getElementById(id);
   const dialog = $('update-dialog');
+  const entry = $('software-update-entry');
   const notice = $('update-notice');
+  const dismiss = $('update-notice-dismiss');
   const action = $('update-action');
   const error = $('update-error');
   let state;
@@ -52,7 +54,9 @@ window.bindSoftwareUpdates = (api) => {
     action.textContent = command?.[0] || '';
     action.dataset.method = command?.[1] || '';
     notice.hidden = !['available', 'downloaded'].includes(status) || dismissed === version;
-    $('update-notice-open').textContent = status === 'downloaded' ? '更新已就绪' : '发现新版本 ' + (version || '');
+    dismiss.hidden = notice.hidden;
+    const reminder = status === 'downloaded' ? '更新已就绪' : descriptions.available;
+    notice.textContent = notice.hidden ? '' : reminder;
   }
 
   function open() {
@@ -71,12 +75,11 @@ window.bindSoftwareUpdates = (api) => {
     if (!received) { state = snapshot; render(); }
   }).catch((cause) => { render(); showError(cause.message); });
 
-  document.addEventListener('click', (event) => {
-    if (event.target.closest('#software-update-entry, #update-notice-open')) open();
-  });
-  $('update-notice-dismiss').addEventListener('click', () => {
+  entry.addEventListener('click', open);
+  dismiss.addEventListener('click', () => {
     dismissed = state?.version;
     render();
+    entry.focus();
   });
   $('update-close').addEventListener('click', () => dialog.close());
   action.addEventListener('click', async () => {

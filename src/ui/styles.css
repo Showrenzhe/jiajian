@@ -1,11 +1,12 @@
 :root {
   color-scheme: light;
-  --canvas: light-dark(#e6e9ed, #191b1e);
-  --surface: light-dark(#fbfbfc, #222428);
+  --appearance-gray: light-dark(#888d96, #626772) var(--appearance-tint);
+  --canvas: color-mix(in srgb, light-dark(#e6e9ed, #191b1e), var(--appearance-gray));
+  --surface: color-mix(in srgb, light-dark(#fbfbfc, #222428), var(--appearance-gray));
   --ink: light-dark(#202329, #f2f3f5);
-  --secondary-ink: light-dark(#555b65, #bac1ca);
+  --secondary-ink: color-mix(in srgb, light-dark(#555b65, #bac1ca), light-dark(#171c24, #fbfcff) var(--appearance-tint));
   --hairline: light-dark(rgb(44 47 58 / 13%), rgb(225 231 241 / 16%));
-  --system-blue: light-dark(#0066cc, #87baff);
+  --system-blue: color-mix(in srgb, light-dark(#0066cc, #87baff), light-dark(#001f45, #edf5ff) var(--appearance-tint));
   --action-fill: light-dark(#0066cc, #1468c0);
   --blue-hover: light-dark(#0059b7, #1872cb);
   --focus-ring: light-dark(#0673dc, #92c6ff);
@@ -13,25 +14,25 @@
   --glass-edge: light-dark(rgb(255 255 255 / 54%), rgb(255 255 255 / 15%));
   --glass-shadow: 0 4px 18px light-dark(rgb(23 29 42 / 10%), rgb(0 0 0 / 30%));
   --glass-filter: blur(20px) saturate(125%);
-  --sheet-surface: light-dark(rgb(250 251 253 / 87%), rgb(45 47 52 / 94%));
+  --sheet-surface: color-mix(in srgb, light-dark(rgb(250 251 253 / 87%), rgb(45 47 52 / 94%)), var(--appearance-gray));
   --sheet-shadow: 0 18px 62px light-dark(#18213134, #0008);
   --sheet-scrim: light-dark(#19212e29, #07090c62);
-  --field-fill: light-dark(rgb(255 255 255 / 72%), rgb(255 255 255 / 8%));
-  --control-fill: light-dark(#f0f1f4, #34373d);
+  --field-fill: color-mix(in srgb, light-dark(rgb(255 255 255 / 72%), rgb(255 255 255 / 8%)), transparent var(--appearance-tint));
+  --control-fill: color-mix(in srgb, light-dark(#f0f1f4, #34373d), var(--appearance-gray));
   --control-hover: light-dark(#e5e7eb, #41454c);
-  --hover-tint: light-dark(rgb(43 48 61 / 6.5%), rgb(255 255 255 / 8%));
-  --selected-fill: light-dark(rgb(40 50 66 / 10%), rgb(220 231 250 / 15%));
+  --hover-tint: color-mix(in srgb, light-dark(rgb(43 48 61 / 6.5%), rgb(255 255 255 / 8%)), transparent var(--appearance-tint));
+  --selected-fill: color-mix(in srgb, light-dark(rgb(40 50 66 / 10%), rgb(220 231 250 / 15%)), transparent var(--appearance-tint));
   --selected-ink: var(--ink);
-  --destructive-ink: light-dark(#a13239, #ff9a9b);
-  --warning-ink: light-dark(#71490e, #f5c682);
+  --destructive-ink: color-mix(in srgb, light-dark(#a13239, #ff9a9b), light-dark(#411019, #ffebec) var(--appearance-tint));
+  --warning-ink: color-mix(in srgb, light-dark(#71490e, #f5c682), light-dark(#322006, #fff2d9) var(--appearance-tint));
   --content-fill: var(--surface);
   --content-shadow: none;
-  --wallpaper-start: light-dark(#d9e3eb, #303640);
-  --wallpaper-end: light-dark(#f6f7f8, #1c1e22);
+  --wallpaper-start: color-mix(in srgb, light-dark(#d9e3eb, #303640), var(--appearance-gray));
+  --wallpaper-end: color-mix(in srgb, light-dark(#f6f7f8, #1c1e22), var(--appearance-gray));
   --wallpaper: linear-gradient(112deg, var(--wallpaper-start), var(--wallpaper-end));
   --bg: var(--canvas);
   --panel: var(--surface);
-  --well: light-dark(#f1f2f4, #2c2f34);
+  --well: color-mix(in srgb, light-dark(#f1f2f4, #2c2f34), var(--appearance-gray));
   --edge: var(--hairline);
   --text: var(--ink);
   --muted: var(--secondary-ink);
@@ -89,14 +90,15 @@ button:disabled { opacity: .46; cursor: default; }
   -webkit-app-region: drag; position: sticky; top: 0; z-index: 30; display: flex;
   align-items: center; gap: 3px; height: var(--bar-height);
   padding-inline: 21px max(149px, calc(100vw - env(titlebar-area-width, 100vw) + 8px));
-  color: var(--ink); background: light-dark(rgb(249 250 253 / 67%), rgb(34 36 41 / 82%)); backdrop-filter: var(--glass-filter); user-select: none;
+  color: var(--ink); background: color-mix(in srgb, light-dark(rgb(249 250 253 / 67%), rgb(34 36 41 / 82%)), var(--appearance-gray)); backdrop-filter: var(--glass-filter); user-select: none;
 }
 .brand { display: inline-flex; align-items: center; gap: 8px; margin-right: 13px; font-size: 15px; font-weight: 550; letter-spacing: .025em; }
 .brand-logo { width: 26px; height: 26px; flex: none; object-fit: cover; }
 :root[data-theme="dark"] .brand-logo { filter: invert(1); }
 .titlebar button { -webkit-app-region: no-drag; display: inline-flex; align-items: center; justify-content: center; gap: 6px; min-height: 30px; padding: 4px 7px; color: var(--secondary-ink); background: transparent; font-size: 13px; }
 .titlebar button:hover:enabled { background: var(--selected-fill); color: var(--ink); }
-.titlebar #app-settings { margin-inline-start: auto; }
+#titlebar-update { display: inline-flex; align-items: center; margin-inline-start: auto; }
+#update-notice { padding: 1px 6px; border-radius: 5px; color: var(--system-blue); background: var(--hover-tint); font-size: 12px; }
 #title-tab { margin-left: 6px; padding-left: 10px; border-left: 1px solid var(--hairline); color: var(--secondary-ink); overflow: hidden; font-size: 12px; text-overflow: ellipsis; white-space: nowrap; }
 .tag { padding: 2px 8px; border-radius: 6px; background: var(--well); color: var(--secondary-ink); font-size: 11px; white-space: nowrap; }
 
@@ -109,7 +111,7 @@ button:disabled { opacity: .46; cursor: default; }
   isolation: isolate; position: sticky; top: var(--bar-height); align-self: start;
   width: var(--sidebar-width); justify-self: end;
   height: calc(100dvh - var(--bar-height)); overflow: auto;
-  padding: 26px 13px 24px; background: light-dark(rgb(249 250 253 / 53%), rgb(36 38 43 / 63%));
+  padding: 26px 13px 24px; background: color-mix(in srgb, light-dark(rgb(249 250 253 / 53%), rgb(36 38 43 / 63%)), var(--appearance-gray));
   backdrop-filter: var(--glass-filter); color: var(--ink);
 }
 .app-frame:is([data-mode="montage"], [data-mode="script"]) > .tabs {
@@ -459,7 +461,7 @@ progress { display: block; width: 100%; margin: 6px 0; }
   .app-frame[data-mode="audio"] .editor-player { grid-row: span 2; }
 }
 @media (prefers-reduced-motion: reduce) {
-  *, *::before, *::after { animation-duration: .01ms !important; transition-duration: .01ms !important; scroll-behavior: auto !important; }
+  *, *::before, *::after { animation-duration: .01ms !important; transition-duration: 0s !important; scroll-behavior: auto !important; }
 }
 @media (prefers-reduced-transparency: reduce), (prefers-contrast: more), (forced-colors: active) {
   :root {

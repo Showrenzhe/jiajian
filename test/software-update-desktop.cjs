@@ -63,28 +63,60 @@ async function run() {
     }
   }
   const waitError = () => until('!document.getElementById("update-error").hidden && !document.getElementById("update-action").disabled');
-  const openSettingsUpdate = async () => {
-    await click('app-settings');
-    await until('document.getElementById("software-update-entry")?.checkVisibility()');
+  const openToolbarUpdate = async () => {
     await click('software-update-entry');
+    await until('document.getElementById("update-dialog").open');
   };
+  const debuggerApi = win.webContents.debugger;
+  debuggerApi.attach();
+  await debuggerApi.sendCommand('Emulation.setFocusEmulationEnabled', { enabled: true });
+  async function press(key, windowsVirtualKeyCode) {
+    for (const type of ['keyDown', 'keyUp']) {
+      await debuggerApi.sendCommand('Input.dispatchKeyEvent', {
+        type, key, code: key, windowsVirtualKeyCode, text: type === 'keyDown' && key === 'Enter' ? '\r' : '',
+      });
+    }
+  }
 
   await until('!document.getElementById("update-notice").hidden');
   assert.equal(checks, 1);
   assert.equal(await read('!!document.querySelector("dialog[open]")'), false);
   assert.equal(downloads, 0);
+  assert.ok(await read(`(() => {
+    const entry = document.querySelector('.titlebar #software-update-entry');
+    const group = entry?.closest('#titlebar-update');
+    const settings = document.querySelector('#app-settings');
+    return entry?.checkVisibility() && entry.textContent.includes('软件更新') &&
+      group?.nextElementSibling === settings && group.getBoundingClientRect().right <= settings.getBoundingClientRect().left;
+  })()`), 'The update button should appear immediately left of Settings');
+  assert.match(await textOf('update-notice'), /发现新版本 0\.6\.4/);
   await click('update-notice-dismiss');
   assert.equal(await read('document.getElementById("update-notice").hidden'), true);
+  assert.equal(await read('document.activeElement.id'), 'software-update-entry');
+  await press('Enter', 13);
+  await until('document.getElementById("update-dialog").open');
+  assert.equal(await read('document.querySelectorAll("dialog[open]").length'), 1);
+  assert.equal(downloads, 0, 'Opening update details should not start a download');
+  await press('Escape', 27);
+  await until('!document.getElementById("update-dialog").open && document.activeElement.id === "software-update-entry"');
+  await press('Tab', 9);
+  assert.equal(await read('document.activeElement.id'), 'app-settings');
+  await press('Enter', 13);
+  await until('document.getElementById("cloud-settings-dialog")?.open');
+  assert.ok(await read('document.getElementById("appearance-settings").checkVisibility()'));
+  assert.equal(await read('document.querySelector("#cloud-settings-dialog #software-update-entry")'), null);
+  await press('Escape', 27);
+  await until('!document.getElementById("cloud-settings-dialog").open');
   clock += fourHours - 1;
   win.emit('focus');
   assert.equal(checks, 1);
   clock++;
   version = '0.6.5';
   powerMonitor.emit('resume');
-  await until('!document.getElementById("update-notice").hidden && document.getElementById("update-notice-open").textContent.includes("0.6.5")');
+  await until('!document.getElementById("update-notice").hidden && document.getElementById("update-notice").textContent.includes("0.6.5")');
   win.emit('focus');
   assert.equal(checks, 2, 'Resume and focus must share one check interval');
-  await openSettingsUpdate();
+  await openToolbarUpdate();
   assert.equal(await textOf('update-notes'), notes);
   assert.equal(await read('document.querySelector("#update-notes img") || window.releaseHtmlExecuted || null'), null);
   await click('update-action');
@@ -97,7 +129,8 @@ async function run() {
   assert.equal(checks, 2, 'An active download must keep its state');
   await click('update-close');
   download.resolve();
-  await click('software-update-entry');
+  await until('document.getElementById("update-notice").checkVisibility() && document.getElementById("update-notice").textContent.includes("更新已就绪")');
+  await openToolbarUpdate();
   await until('document.getElementById("update-action").textContent === "保存并重启更新" && !document.getElementById("update-action").disabled');
 
   await read('window.heldSample = workbench.cloudTtsSample("sample").catch(() => {}); void 0');
@@ -110,14 +143,15 @@ async function run() {
   await read('window.heldSample');
 
   await click('update-close');
+  await click('app-settings');
+  await until('document.getElementById("cloud-settings-dialog").open && !document.getElementById("cloud-settings-api-key").disabled');
   await read('document.getElementById("cloud-settings-api-key").value="未保存的设置"');
-  await click('software-update-entry');
-  await click('update-action');
-  await waitError();
-  assert.match(await textOf('update-error'), /配音设置/);
+  // Settings is modal. Exercise the same install IPC as the update button while a settings edit is pending.
+  const installError = await read('workbench.installUpdate().then(() => "", error => error.message)');
+  assert.match(installError, /配音设置/);
+  assert.equal(await read('document.getElementById("cloud-settings-api-key").value'), '未保存的设置');
   assert.equal(installs, 0);
   assert.ok(win.isEnabled());
-  await click('update-close');
   await click('cloud-settings-cancel');
 
   await click('tab-script');
@@ -126,14 +160,13 @@ async function run() {
     Storage.prototype.setItem = () => { throw new Error('模拟存储空间不足'); };
     const scriptTitle = document.getElementById('script-title');
     scriptTitle.value = '更新前的脚本'; scriptTitle.dispatchEvent(new Event('input', { bubbles: true }));`);
-  await openSettingsUpdate();
+  await openToolbarUpdate();
   await click('update-action');
   await waitError();
   assert.match(await textOf('update-error'), /脚本草稿保存失败/);
   assert.equal(installs, 0);
   await read('Storage.prototype.setItem = window.originalSetItem; void 0');
   await click('update-close');
-  await click('cloud-settings-cancel');
   await click('tab-home');
 
   // A regular file at the directory path makes the real autosave fail deterministically.
@@ -141,7 +174,7 @@ async function run() {
   await click('home-create');
   await until('!document.getElementById("editor-workspace").hidden && !document.getElementById("add-shot").disabled');
   await click('add-shot');
-  await openSettingsUpdate();
+  await openToolbarUpdate();
   await click('update-action');
   await waitError();
   assert.match(await textOf('update-error'), /草稿/);
@@ -184,7 +217,7 @@ async function run() {
   clock += fourHours;
   powerMonitor.emit('resume');
   assert.equal(checks, 4, 'Installing must never trigger another automatic check');
-  console.log('软件更新设置、进度、重试、草稿与运行中任务保护通过。');
+  console.log('标题栏软件更新、键盘导航、下载重试、草稿与运行中任务保护通过。');
 }
 
 run().then(() => app.exit(0), (error) => { console.error(error); app.exit(1); });

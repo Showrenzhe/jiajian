@@ -22,10 +22,10 @@ async function until(check, message) {
 }
 
 // Runs in the renderer. Composite translucent surfaces before measuring text contrast.
-function sampleSurface(selector) {
+function sampleSurface(selector, paint = document.createElement('canvas').getContext('2d', { willReadFrequently: true })) {
   const el = document.querySelector(selector);
   if (!el?.checkVisibility()) throw new Error('Expected a visible ' + selector);
-  const paint = document.createElement('canvas').getContext('2d', { willReadFrequently: true });
+  paint.clearRect(0, 0, 1, 1);
   const ancestors = [];
   for (let node = el; node; node = node.parentElement) ancestors.unshift(node);
   for (const node of ancestors) {
@@ -33,14 +33,33 @@ function sampleSurface(selector) {
     paint.fillRect(0, 0, 1, 1);
   }
   const background = Array.from(paint.getImageData(0, 0, 1, 1).data);
-  paint.fillStyle = getComputedStyle(el).color;
+  const ink = getComputedStyle(el).color;
+  paint.fillStyle = ink;
   paint.fillRect(0, 0, 1, 1);
-  return { background, foreground: Array.from(paint.getImageData(0, 0, 1, 1).data) };
+  return { ink, background, foreground: Array.from(paint.getImageData(0, 0, 1, 1).data) };
 }
 
 function luminance(channels) {
   const [r, g, b] = channels.map(v => v / 255).map(v => v <= .04045 ? v / 12.92 : ((v + .055) / 1.055) ** 2.4);
   return .2126 * r + .7152 * g + .0722 * b;
+}
+
+function assertTextFrames(frames, selectors, expectedInk) {
+  let minimum = Infinity;
+  for (const { theme, samples } of frames) {
+    for (const [i, { ink, foreground, background }] of samples.entries()) {
+      const label = selectors[i] + ' in ' + theme;
+      const fg = luminance(foreground), bg = luminance(background);
+      if (['#cloud-settings-title', '#home-heading', '#draft-heading-label'].includes(selectors[i])) {
+        assert.equal(ink, expectedInk[theme][i], label + ' should retain the active title color');
+      }
+      assert.ok(theme === 'dark' ? fg > bg : fg < bg, label + ' should retain the active palette polarity');
+      const ratio = (Math.max(bg, fg) + .05) / (Math.min(bg, fg) + .05);
+      minimum = Math.min(minimum, ratio);
+      assert.ok(background[3] === 255 && ratio >= 4.5, label + ' frame contrast = ' + ratio.toFixed(2));
+    }
+  }
+  return minimum;
 }
 
 async function worker(phase, root) {
@@ -161,32 +180,94 @@ async function worker(phase, root) {
   await close();
   await contrast('#draft-search', 'dark');
 
-  const ink = () => colorAt('#home-heading', 'color');
-  const darkInk = await ink();
-  await media('light', 'reduce');
+  await settings();
+  const labels = [
+    '#cloud-settings-title', '#cloud-settings-key-label', '.appearance-options input[value=system] ~ span:last-child',
+    '#app-settings', '#home-heading', '#draft-heading-label', '#draft-status-title',
+  ];
+  const surfaceIndex = labels.indexOf('#draft-heading-label');
+  const expectedInk = {};
+  for (const theme of ['dark', 'light']) {
+    await click(radio(theme));
+    await expectMode(theme, theme);
+    expectedInk[theme] = await Promise.all(labels.map(selector => colorAt(selector, 'color')));
+  }
+  for (const [i, selector] of labels.entries()) {
+    assert.notEqual(expectedInk.light[i], expectedInk.dark[i], selector + ' should have distinct endpoint colors');
+  }
+  await media('light');
+  await wc.debugger.sendCommand('Animation.enable');
+  await wc.debugger.sendCommand('Animation.setPlaybackRate', { playbackRate: .5 });
+  // Sample inherited Chinese labels, native controls and real surface colors through cleanup and a rapid reversal.
+  const { frames, reversalStart, reversedAt, firstEnd } = await read(`(async () => {
+    const sample = ${sampleSurface};
+    const selectors = ${JSON.stringify(labels)};
+    const paint = document.createElement('canvas').getContext('2d', { willReadFrequently: true });
+    const frames = [];
+    function record() {
+      frames.push({ theme: document.documentElement.dataset.theme, samples: selectors.map(s => sample(s, paint)) });
+    }
+    async function switchTo(theme, waitMs) {
+      document.querySelector('input[name=appearance][value=' + theme + ']').click();
+      record();
+      const start = performance.now();
+      while (performance.now() - start < waitMs) {
+        await new Promise(requestAnimationFrame);
+        record();
+      }
+    }
+    record();
+    await switchTo('dark', 850);
+    const firstEnd = frames.length - 1;
+    await switchTo('light', 850);
+    const reversalStart = frames.length;
+    const panelColor = () => frames.at(-1).samples[${surfaceIndex}].background.join(',');
+    const restingColor = panelColor();
+    await switchTo('dark', 0);
+    const timeout = performance.now() + 850;
+    while (panelColor() === restingColor && performance.now() < timeout) {
+      await new Promise(requestAnimationFrame);
+      record();
+    }
+    const reversedAt = frames.length;
+    await switchTo('light', 850);
+    return { frames, reversalStart, reversedAt, firstEnd };
+  })()`);
+  await wc.debugger.sendCommand('Animation.setPlaybackRate', { playbackRate: 1 });
+  const completeChanges = frames.slice(0, reversalStart);
+  const observed = completeChanges.map(f => f.theme);
+  assert.deepEqual(observed.filter((t, i) => !i || t !== observed[i - 1]), ['light', 'dark', 'light'],
+    'Each change should hand off once without reverting');
+  // The draft heading sits on the opaque content panel. Bound changes to its displayed sRGB
+  // levels so one large jump followed by several almost identical shades cannot pass.
+  const peakSteps = [];
+  for (const section of [completeChanges.slice(0, firstEnd + 1), completeChanges.slice(firstEnd)]) {
+    const levels = section.map(frame => {
+      const [r, g, b] = frame.samples[surfaceIndex].background;
+      return .2126 * r + .7152 * g + .0722 * b;
+    });
+    const span = Math.abs(levels.at(-1) - levels[0]);
+    assert.ok(span > 100, 'The content panel should complete the full theme change');
+    const largestStep = Math.max(...levels.slice(1).map((level, i) => Math.abs(level - levels[i])));
+    peakSteps.push(Math.round(100 * largestStep / span));
+    assert.ok(largestStep / span < .40, 'One frame covered ' + Math.round(100 * largestStep / span) + '% of the surface change');
+    const settled = section.at(-1);
+    assert.deepEqual(settled.samples.map(s => s.ink), expectedInk[settled.theme], 'Settled text should match the saved palette');
+  }
+  assert.ok(frames.slice(reversalStart).every(f => f.theme === 'light'),
+    'Reversing before the palette handoff should not flash the abandoned theme');
+  assert.notDeepEqual(frames[reversedAt - 1].samples[surfaceIndex].background, frames[reversalStart - 1].samples[surfaceIndex].background,
+    'The interrupted transition should already have begun changing the surface');
+  const minimumContrast = assertTextFrames(frames, labels, expectedInk);
+  console.log(`文字最低对比度 ${minimumContrast.toFixed(2)}:1，浅→深 / 深→浅最大单帧亮度跨度 ${peakSteps.join('% / ')}%。`);
+  await click(radio('system'));
   await expectMode('system', 'light');
-  const lightInk = await ink();
-  assert.notEqual(lightInk, darkInk);
-  await media('dark', 'reduce');
-  await expectMode('system', 'dark');
-  assert.equal(await ink(), darkInk, 'Reduced motion should reach the endpoint immediately');
-
-  await media('dark');
-  // Collect every rendered frame across a change, then interrupt a second change mid-flight.
-  await recordFrames('#home-heading', 'color');
-  await media('light');
-  await until(async () => (await ink()) === lightInk, 'Appearance transition did not settle');
-  assertInterpolated(await stopRecording(), darkInk, lightInk, 'Home heading');
-  await recordFrames('#home-heading', 'color');
-  await media('dark');
-  await until(async () => { const color = await ink(); return color !== darkInk && color !== lightInk; }, 'Second transition did not start');
-  await media('light');
-  await until(async () => (await ink()) === lightInk, 'Reversing a transition should settle at the latest preference');
-  const reversed = await stopRecording();
-  assert.ok(!reversed.includes(darkInk), 'Reversal should not flash the discarded endpoint');
+  await close();
 
   await media('dark', 'reduce');
   await expectMode('system', 'dark');
+  assert.equal(await colorAt('#home-heading', 'color'), expectedInk.dark[labels.indexOf('#home-heading')],
+    'System changes with reduced motion should reach the endpoint immediately');
   await click('#tab-script');
   await until(() => read('document.querySelector("#script-title")?.checkVisibility()'), 'Script editor should open');
   await contrast('#script-title', 'dark');
