@@ -40,7 +40,8 @@ const uiFiles = new Set(['/index.html', '/app.js', '/styles.css', '/dialog-focus
   '/timeline.js', '/timeline-selection.js', '/timeline.css', '/cut-track.js', '/cut-track.css', '/layer-motion.js', '/layer-motion.css', '/subprojects.js',
   '/track-workspace.css', '/edit-history.js', '/track-tools.js', '/track-tools.css', '/cloud-tts-dialog.js', '/cloud-tts-dialog.css',
   '/cloud-tts-settings.js', '/cloud-tts-settings.css', '/split-view.js', '/panel-layout.js', '/draft-workspace.js', '/player-tools.js', '/assets/jiajian-logo.png',
-  '/glass-material.css', '/inspector-controls.css', '/editor-surfaces.css', '/appearance.js', '/appearance.css', '/software-updates.js']);
+  '/glass-material.css', '/inspector-controls.css', '/editor-surfaces.css', '/appearance.js', '/appearance.css', '/software-updates.js',
+  '/color-wheel.js', '/color-wheel.css']);
 const maxCatalog = (maxShots + 1) * (maxCandidates + maxWholeTracks);
 const maxSubtitleBatchBytes = 1024 * 1024;
 const maxSpeechJobs = maxShots;
@@ -265,7 +266,7 @@ async function launchDesktop({
         const item = rememberMaterialEntry(record, child, entry.name, kind);
         if (!item) { limited = true; continue; }
         const { id, name } = item;
-        if (kind === 'folder') folders.push({ id, name });
+        if (kind === 'folder') folders.push({ id, name, sourceKey: materialSourceKey(child) });
         else files.push({ id, name, kind, sourceKey: materialSourceKey(child), ...(lookupByPath.has(assetPathKey(kind,child)) && {assetId:lookupByPath.get(assetPathKey(kind,child))}), ...(kind === 'image' && { previewUrl: `${scheme}://asset/folder-image/${id}` }) });
       }
     } catch {
@@ -273,7 +274,7 @@ async function launchDesktop({
     }
     const byName = (a, b) => a.name.localeCompare(b.name, 'zh-CN', { numeric: true });
     return {
-      id: record.id, name: record.name, folders: folders.sort(byName), files: files.sort(byName),
+      id: record.id, name: record.name, sourceKey: materialSourceKey(record.path), folders: folders.sort(byName), files: files.sort(byName),
       ...(limited && { warnings: ['已达到单个文件夹或本次会话的显示上限。'] }),
     };
   }

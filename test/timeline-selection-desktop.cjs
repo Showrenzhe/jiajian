@@ -15,12 +15,17 @@ app.disableHardwareAcceleration();
 async function check() {
   const root = mkdtempSync(path.join(os.tmpdir(), 'jiajian-selection-'));
   const library = path.join(root, '素材目录');
+  const project = path.join(root, '素材移除.sdworkbench');
   const picks = [];
   const win = await launchDesktop({ show: false, dataDirectory: path.join(root, 'profile'), dialogs: {
     async showOpenDialog(_win, options) {
       const next = picks.shift();
       assert.equal(options.title, next?.title);
       return { canceled: false, filePaths: next.files };
+    },
+    async showSaveDialog(_win, options) {
+      assert.equal(options.title, '保存工程');
+      return { canceled: false, filePath: project };
     },
   } });
   await fs.mkdir(library);
@@ -109,7 +114,7 @@ async function check() {
     picks.push({ title:'选择素材文件夹',files:[library] });
     await click('#material-folder-import');
     await wait('!!'+query('#material-folders .material-folder'),'添加素材目录');
-    await click('#material-folders .material-folder');
+    await read(query('#material-folders .material-folder') + '.dispatchEvent(new MouseEvent("dblclick", {bubbles:true}))');
     await wait(query(tile(files.red))+'?.dataset.used==="true" && !!'+query(tile(files.still))+' && !'+query(tile(files.still))+'.dataset.used','文件夹应区分已用与未用素材');
     const duplicateDrop = '(() => {const source='+query(tile(files.red))+',target=document.querySelectorAll("#shots .shot")[1],dt=new DataTransfer();'
       +'for(const [el,type] of [[source,"dragstart"],[target,"dragover"],[target,"drop"],[source,"dragend"]])el.dispatchEvent(new DragEvent(type,{bubbles:true,cancelable:true,dataTransfer:dt}));})()';
@@ -117,10 +122,20 @@ async function check() {
     await wait(count(video)+'===4 && '+query(tile(files.red)+' .material-used')+'.title.includes("1、2")','重复源文件用于两个分镜时应标出两个分镜号');
     await actualClick(tile(files.red));
     await pressDelete();
-    await wait(count(video)+'===2 && !'+query(tile(files.red)), '从文件夹删除应移除两个分镜中的同源候选');
+    await wait(count(video)+'===4 && !'+query(tile(files.red)), '从素材库移除后应保留两个分镜中的同源候选');
     assert.deepEqual(await fs.readFile(files.red), original, '删除库素材后原文件的每个字节都应保留');
     await undo();
-    await wait(count(video)+'===4 && '+query(tile(files.red))+'?.dataset.used==="true"', '撤销应还原文件夹素材和全部同源候选');
+    await wait(count(video)+'===4 && '+query(tile(files.red))+'?.dataset.used==="true"', '撤销应还原文件夹素材及其使用标记');
+    await actualClick(tile(files.red));
+    await pressDelete();
+    await wait('!' + query(tile(files.red)), '再次移除在用素材');
+    await click('#save-project');
+    await wait(query('#notice') + '.textContent.includes("工程已保存")', '保存素材库移除状态');
+    picks.push({title: '打开工程', files: [project]});
+    await click('#open-project');
+    await wait(query('#notice') + '.textContent.includes("已打开工程")', '重新载入磁盘工程');
+    assert.equal(await read(count(video) + '===4 && !' + query(tile(files.red)) + ' && !!' + query(tile(files.green))), true,
+      '重开后素材仍已移除，同源轨道片段均可恢复');
     assert.deepEqual(picks,[]);
     console.log('时间线删除、框选、文件夹同源标记和撤销通过。');
   } finally {

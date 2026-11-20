@@ -277,6 +277,8 @@ const materialPanel = $('.editor-materials');
 const libraryWaves = window.mountWaveforms(materialPanel);
 const reviewWaveform = window.attachPlayerWaveform($('#narration-review-audio'));
 const materialList = $('#material-list');
+const materialMenu = $('#material-context-menu');
+let materialMenuTarget;
 bindWheelZoom(materialPanel, (steps, event) => {
   const style = getComputedStyle(materialList);
   const width = materialList.clientWidth;
@@ -288,12 +290,12 @@ bindWheelZoom(materialPanel, (steps, event) => {
   const next = Math.max(1, Math.min(maxColumns, columns - steps));
   if (next === columns) return;
 
-  const tile = document.elementFromPoint(event.clientX, event.clientY)?.closest('#material-list > li');
+  const tile = document.elementFromPoint(event.clientX, event.clientY)?.closest('#material-list > li, #material-folders > li');
   const before = tile?.getBoundingClientRect();
   const fraction = before ? (event.clientY - before.top) / before.height : 0;
   // Leave room for a scrollbar to appear without immediately dropping another column.
   const targetWidth = Math.max(minimum, (width + gap) / (next + .5) - gap);
-  materialList.style.setProperty('--material-tile-width', `${targetWidth}px`);
+  materialPanel.style.setProperty('--material-tile-width', `${targetWidth}px`);
   if (tile) {
     const after = tile.getBoundingClientRect();
     materialPanel.scrollTop += after.top + fraction * after.height - event.clientY;
@@ -1065,20 +1067,23 @@ $('#subproject-replace').addEventListener('click', () => {
 
 function renderMaterials() {
   cancelMaterialMarquee();
+  if (materialMenu.matches(':popover-open')) materialMenu.hidePopover();
   const query = $('#material-search').value.trim().toLocaleLowerCase();
-  const folder = materialFolderPath.at(-1);
   const catalog = new Map();
   const usage = new Map();
   const bin = currentMaterialBin();
   const excluded = bin.hidden;
+  const hiddenFolder = materialFolderPath.findIndex((entry) => excluded.has(entry.sourceKey));
+  if (hiddenFolder !== -1) materialFolderPath.splice(hiddenFolder);
+  const folder = materialFolderPath.at(-1);
   for (const [index,shot] of shots.entries()) {
     for (const clip of shot) {
       const { id, name, kind, sourceKey } = clip.asset;
       if (!usage.has(sourceKey ?? id)) usage.set(sourceKey ?? id,new Set());
       usage.get(sourceKey ?? id).add(index + 1);
+      if (excluded.has(sourceKey)) continue;
       if (!catalog.has(id)) catalog.set(id, { id, name, kind, sourceKey, clip });
       bin.ids.add(id);
-      excluded.delete(sourceKey);
     }
   }
   renderProcessedMaterials(usage);
@@ -1095,7 +1100,7 @@ function renderMaterials() {
   const matches = ({ name }) => name.toLocaleLowerCase().includes(query);
   const availableFiles = files.filter((item)=>!excluded.has(item.sourceKey ?? item.clip?.asset.sourceKey));
   const visibleFiles = availableFiles.filter(matches);
-  const visibleFolders = folders.filter(matches);
+  const visibleFolders = folders.filter((entry) => !excluded.has(entry.sourceKey) && matches(entry));
   const folderCount = visibleFolders.length ? ` · ${visibleFolders.length} 个文件夹` : '';
   $('#material-status').textContent = (query ? `${visibleFiles.length} / ${availableFiles.length} 个素材` : `${availableFiles.length} 个素材`) + folderCount;
   $('#material-empty').hidden = visibleFiles.length > 0 || visibleFolders.length > 0;
@@ -1122,7 +1127,8 @@ function renderMaterials() {
     button.title = fileName;
     const browsingHint = kind === 'video' ? '方向键浏览素材，选中后按空格播放或暂停' : '方向键浏览素材';
     button.setAttribute('aria-description', browsingHint);
-    button.setAttribute('aria-keyshortcuts', 'ArrowLeft ArrowRight ArrowUp ArrowDown Home End' + (kind === 'video' ? ' Space' : ''));
+    button.setAttribute('aria-keyshortcuts', 'Delete Shift+F10 ArrowLeft ArrowRight ArrowUp ArrowDown Home End' + (kind === 'video' ? ' Space' : ''));
+    button.setAttribute('aria-haspopup', 'menu');
     button.draggable = true;
     thumbnail.className = 'material-thumbnail';
     thumbnail.title = `${fileName} · ${browsingHint}`;
@@ -1168,9 +1174,6 @@ function renderMaterials() {
       activateTimelineTab($('#timeline-tracks-tab'));
     });
     button.addEventListener('dragend', clearMaterialDrag);
-    if (kind==='video') button.addEventListener('contextmenu', (event)=>{
-      event.preventDefault(); openMaterialAudio(selectedMaterials.has(id)?[...selectedMaterials.values()]:[item]);
-    });
     check.type = 'checkbox';
     check.className = 'material-select';
     check.title = '多选素材';
@@ -1346,52 +1349,111 @@ function finishMaterialMarquee(event) {
   materialPanel.focus({preventScroll:true});
 }
 
-function deleteLibrarySelection(event) {
-  if (event.key !== 'Delete' || operation || mode !== 'montage' || event.isComposing
-      || event.target.closest('dialog,[contenteditable="true"],textarea,input:not([type=checkbox]),select')) return;
-  const processed = event.target.closest('[data-processed-id]');
-  const row=event.target.closest('#material-list li');
-  const tile=row?.querySelector('.material-tile');
-  const item=tile && materialItems.get(tile);
-  const items=processed ? processedMaterials.filter((asset)=>asset.id===processed.dataset.processedId)
-    : selectedMaterials.size ? [...selectedMaterials.values()] : item ? [item] : [];
-  if (!items.length) return;
-  event.preventDefault();event.stopPropagation();
-  const ids=new Set();
-  const sourceKeys=new Set();
-  for (const item of items) {
-    const asset=item.clip?.asset ?? editAssets.get(item.assetId ?? item.id);
-    if (asset) ids.add(asset.id);
-    const key=item.sourceKey ?? asset?.sourceKey;
-    if (key) sourceKeys.add(key);
+function libraryTarget(element) {
+  const folderButton = element.closest('.material-folder');
+  if (folderButton) {
+    const folders = materialFolderPath.at(-1)?.folders ?? [...materialFolders.values()];
+    const folder = folders.find(({ id }) => id === folderButton.dataset.folderId);
+    if (folder) return { anchor: folderButton, items: [folder], folder: true };
   }
-  for (const asset of editAssets.values()) if (sourceKeys.has(asset.sourceKey)) ids.add(asset.id);
-  for (const id of ids) {
-    currentMaterialBin().ids.delete(id);
-    if (!subprojects.projects.length) materialAliases.delete(id);
+  const processed = element.closest('[data-processed-id]');
+  if (processed) {
+    const asset = processedMaterials.find(({ id }) => id === processed.dataset.processedId);
+    if (asset) return { anchor: processed, items: [{ ...asset, clip: { asset } }] };
   }
-  for (const key of sourceKeys) currentMaterialBin().hidden.add(key);
-  subprojects.removeMaterialReferences(ids);
-  if (items.some((entry)=>entry.kind==='audio')) {
-    for (let i=music.length-1;i>=0;i--) if (ids.has(music[i].id)) music.splice(i,1);
-    if (ids.has(narration?.id)) narration=null;
-    for (const track of extraWholeTracks) if(ids.has(track.narration?.id)) track.narration=null;
-    for (const shot of shots) {
-      const tracks=segmentNarrations.get(shot);
-      tracks?.forEach((asset,i)=>{if(ids.has(asset?.id)) tracks[i]=null;});
-    }
-  }
-  for (let i=processedMaterials.length-1;i>=0;i--) if (ids.has(processedMaterials[i].id)) processedMaterials.splice(i,1);
-  if (selected && (ids.has(selected.asset.id) || sourceKeys.has(selected.asset.sourceKey))) clearPreview();
-  selectedMaterials.clear();
-  renderNarration();renderWholeTracks();renderMusic();
-  renderLists();
-  materialPanel.focus({preventScroll:true});
-  materialMessage(`已从素材库和分镜移除 ${items.length} 项素材，可按 Ctrl+Z 撤销。`);
+  const tile = element.closest('#material-list li')?.querySelector('.material-tile');
+  const item = materialItems.get(tile);
+  if (item) return { anchor: tile, items: selectedMaterials.has(item.id) ? [...selectedMaterials.values()] : [item] };
+  if (element === materialPanel && selectedMaterials.size) return { anchor: materialPanel, items: [...selectedMaterials.values()] };
 }
 
+function removeLibraryItems({ items, folder }) {
+  if (operation || mode !== 'montage') return;
+  const bin = currentMaterialBin();
+  const keys = new Set(items.map((item) => item.sourceKey ?? item.clip?.asset.sourceKey));
+  for (const key of keys) bin.hidden.add(key);
+  for (const id of bin.ids) {
+    if (keys.has(editAssets.get(id)?.sourceKey)) bin.ids.delete(id);
+  }
+  if (!subprojects.projects.length) {
+    for (const id of materialAliases.keys()) {
+      if (keys.has(editAssets.get(id)?.sourceKey) && !shots.some((shot) => shot.some((clip) => clip.asset.id === id))) materialAliases.delete(id);
+    }
+    for (let i = processedMaterials.length - 1; i >= 0; i--) {
+      if (keys.has(processedMaterials[i].sourceKey)) processedMaterials.splice(i, 1);
+    }
+  }
+  if (folder) materialBrowseRequest += 1;
+  if ($('#preview-heading').textContent === '素材预览' && selected && keys.has(selected.asset.sourceKey)) clearPreview();
+  selectedMaterials.clear();
+  renderMaterials();
+  updateControls();
+  materialPanel.focus({ preventScroll: true });
+  const label = items.length === 1 ? `「${items[0].name}」` : `${items.length} 项素材`;
+  materialMessage(`已从素材库移除${label}，可按 Ctrl+Z 撤销。`);
+}
+
+function showMaterialMenu(target, x, y) {
+  materialMenuTarget = target;
+  const remove = $('#material-context-remove');
+  remove.querySelector('span').textContent = target.items.length > 1 ? `从素材库移除 ${target.items.length} 项` : '从素材库移除';
+  const audio = $('#material-context-audio');
+  audio.hidden = !target.items.every((item) => item.kind === 'video' || item.kind === 'audio');
+  const bounds = target.anchor.getBoundingClientRect();
+  target.anchor.focus({ preventScroll: true });
+  materialMenu.showPopover();
+  const { width, height } = materialMenu.getBoundingClientRect();
+  materialMenu.style.left = `${Math.max(0, Math.min(x ?? bounds.left, innerWidth - width))}px`;
+  materialMenu.style.top = `${Math.max(0, Math.min(y ?? bounds.bottom, innerHeight - height))}px`;
+  remove.focus({ preventScroll: true });
+}
+
+materialMenu.addEventListener('click', (event) => {
+  const button = event.target.closest('button');
+  if (!button || !materialMenuTarget) return;
+  const target = materialMenuTarget;
+  materialMenu.hidePopover();
+  if (button.id === 'material-context-remove') removeLibraryItems(target);
+  else if (!operation) openMaterialAudio(target.items);
+});
+materialMenu.addEventListener('keydown', (event) => {
+  if (['ArrowDown','ArrowUp','Home','End'].includes(event.key)) {
+    event.preventDefault();
+    const buttons = [...materialMenu.querySelectorAll('button:not([hidden])')];
+    const next = ['Home','End'].includes(event.key) ? (event.key === 'Home' ? 0 : buttons.length - 1)
+      : (buttons.indexOf(event.target) + (event.key === 'ArrowDown' ? 1 : -1) + buttons.length) % buttons.length;
+    buttons[next].focus();
+  } else if (event.key === 'Escape') {
+    event.preventDefault();
+    materialMenu.hidePopover();
+    materialMenuTarget.anchor.focus({ preventScroll: true });
+  }
+});
 materialPanel.tabIndex = -1;
-materialPanel.addEventListener('keydown',deleteLibrarySelection);
+materialPanel.addEventListener('contextmenu', (event) => {
+  if (operation || mode !== 'montage' || event.target === materialPanel) return;
+  const target = libraryTarget(event.target);
+  if (!target) return;
+  event.preventDefault();
+  showMaterialMenu(target, event.clientX, event.clientY);
+});
+materialPanel.addEventListener('keydown', (event) => {
+  if (operation || mode !== 'montage' || event.defaultPrevented || event.isComposing || event.ctrlKey || event.altKey || event.metaKey
+      || event.target.isContentEditable || event.target.closest('textarea,input:not([type=checkbox]),select,[role="textbox"],dialog')
+      || document.querySelector('dialog[open]')) return;
+  if (event.key === 'Delete' && !event.shiftKey) {
+    const target = materialMenu.matches(':popover-open') ? materialMenuTarget : libraryTarget(event.target);
+    if (!target) return;
+    event.preventDefault();
+    event.stopPropagation();
+    if (!event.repeat) removeLibraryItems(target);
+  } else if ((event.key === 'F10' && event.shiftKey) || event.key === 'ContextMenu') {
+    const target = libraryTarget(event.target);
+    if (!target) return;
+    event.preventDefault();
+    showMaterialMenu(target);
+  }
+});
 
 function materialMessage(message = '') {
   const status = $('#material-message');
@@ -1411,11 +1473,12 @@ function renderMaterialFolders(current, folders) {
     back.textContent = '‹ 上一级';
     back.addEventListener('click', () => {
       materialBrowseRequest += 1;
-      materialFolderPath.pop();
+      const previous = materialFolderPath.pop();
       materialMessage();
       $('#material-search').value = '';
       renderMaterials();
-      ($('#material-breadcrumb .material-back') ?? $('#material-folders .material-folder'))?.focus();
+      ($('#material-folders .material-folder[data-folder-id="' + CSS.escape(previous.id) + '"]')
+        ?? $('#material-breadcrumb .material-back') ?? materialPanel).focus();
     });
     path.textContent = ['素材库', ...materialFolderPath.map(({ name }) => name)].join(' / ');
     path.title = path.textContent;
@@ -1428,8 +1491,30 @@ function renderMaterialFolders(current, folders) {
     button.type = 'button';
     button.className = 'material-folder';
     button.title = folder.name;
-    button.textContent = folder.name;
-    button.addEventListener('click', () => openMaterialFolder(folder.id));
+    button.setAttribute('aria-description', '单击选中，双击或按 Enter 打开');
+    button.setAttribute('aria-keyshortcuts', 'Enter Delete');
+    button.dataset.folderId = folder.id;
+    const icon = document.createElementNS('http://www.w3.org/2000/svg', 'svg');
+    const symbol = document.createElementNS(icon.namespaceURI, 'use');
+    icon.setAttribute('class', 'material-folder-icon');
+    icon.setAttribute('aria-hidden', 'true');
+    symbol.setAttribute('href', '#icon-library-folder');
+    icon.append(symbol);
+    const name = document.createElement('span');
+    name.className = 'material-folder-name';
+    name.textContent = folder.name;
+    button.append(icon, name);
+    button.addEventListener('click', () => {
+      selectedMaterials.clear();
+      updateMaterialBatchControls();
+      button.focus({ preventScroll: true });
+    });
+    button.addEventListener('dblclick', () => openMaterialFolder(folder.id));
+    button.addEventListener('keydown', (event) => {
+      if (event.key !== 'Enter') return;
+      event.preventDefault();
+      if (!event.repeat) openMaterialFolder(folder.id);
+    });
     row.append(button);
     return row;
   }));
@@ -1442,7 +1527,7 @@ async function openMaterialFolder(id) {
   materialMessage('正在读取文件夹…');
   try {
     const listing = await api.browseMaterialFolder(id);
-    if (request !== materialBrowseRequest) return;
+    if (request !== materialBrowseRequest || currentMaterialBin().hidden.has(listing.sourceKey)) return;
     materialFolderPath.push(listing);
     $('#material-search').value = '';
     renderMaterials();
@@ -1462,10 +1547,11 @@ async function addMaterialFolder() {
     if (!folder) return;
     materialBrowseRequest += 1;
     materialFolderPath = [];
-    materialFolders.set(folder.id, { id: folder.id, name: folder.name });
+    materialFolders.set(folder.id, { id: folder.id, name: folder.name, sourceKey: folder.sourceKey });
+    currentMaterialBin().hidden.delete(folder.sourceKey);
     $('#material-search').value = '';
     renderMaterials();
-    materialMessage(`已添加「${folder.name}」，点击文件夹查看素材。`);
+    materialMessage(`已添加「${folder.name}」，双击文件夹或按 Enter 查看素材。`);
   } catch (error) {
     materialMessage(error.message);
   } finally {
@@ -1488,7 +1574,7 @@ async function previewLibraryMaterial(item, focusedTile) {
       if (request !== materialPreviewRequest || document.activeElement !== focusedTile) return;
     }
     const asset = await api.loadMaterialFile(item.id);
-    if (request === materialPreviewRequest && mode === 'montage') {
+    if (request === materialPreviewRequest && mode === 'montage' && !currentMaterialBin().hidden.has(item.sourceKey)) {
       preview(candidate(asset), '素材预览', item.id);
     }
   } catch (error) {
@@ -2277,6 +2363,7 @@ function importMaterials() {
     });
   }
   return pick('visual', Math.min(maxExports, maxShots - shots.length), (assets) => {
+    for (const asset of assets) currentMaterialBin().hidden.delete(asset.sourceKey);
     const imported = assets.map((asset) => [candidate(asset)]);
     shots.push(...imported);
     if (!selected && imported.length) preview(imported[0][0]);
@@ -3492,7 +3579,7 @@ function renderProcessedMaterials(usage) {
   const section=$('#processed-materials');
   libraryWaves.clear();
   const filter=$('#material-search').value.trim().toLocaleLowerCase();
-  const matches=processedMaterials.filter((asset)=>asset.name.toLocaleLowerCase().includes(filter));
+  const matches=processedMaterials.filter((asset)=>!currentMaterialBin().hidden.has(asset.sourceKey) && asset.name.toLocaleLowerCase().includes(filter));
   section.hidden=!matches.length;
   $('#processed-material-list').replaceChildren(...matches.map((asset)=>{
     const li=document.createElement('li'), name=document.createElement('strong');

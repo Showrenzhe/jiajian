@@ -20,6 +20,8 @@
   <link rel="stylesheet" href="./inspector-controls.css">
   <link rel="stylesheet" href="./editor-surfaces.css">
   <link rel="stylesheet" href="./appearance.css">
+  <link rel="stylesheet" href="./color-wheel.css">
+  <script src="./color-wheel.js" defer></script>
   <script src="./dialog-focus.js" defer></script>
   <script src="./script-workspace.js" defer></script>
   <script src="./edit-history.js" defer></script>
@@ -69,6 +71,10 @@
         <symbol id="icon-home" viewBox="0 0 24 24"><path d="m3 10 9-7 9 7v9a2 2 0 0 1-2 2h-4v-7H9v7H5a2 2 0 0 1-2-2z"/></symbol>
         <symbol id="icon-sidebar" viewBox="0 0 24 24"><rect x="3" y="4.5" width="18" height="15" rx="3"/><path d="M9.5 5v14M6 9h.5m-.5 3h.5"/></symbol>
         <symbol id="icon-folder" viewBox="0 0 24 24"><path d="M3 7a2 2 0 0 1 2-2h5l2 2h7a2 2 0 0 1 2 2v9a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"/></symbol>
+        <symbol id="icon-library-folder" viewBox="0 0 48 38">
+          <path fill="currentColor" opacity=".65" d="M2 8a4 4 0 0 1 4-4h11c2 0 3 1 4 2l2 2h19a4 4 0 0 1 4 4v17H2z"/>
+          <rect fill="currentColor" x="2" y="12" width="44" height="23" rx="4"/>
+        </symbol>
         <symbol id="icon-folderOpen" viewBox="0 0 24 24"><path d="M3 16V7a2 2 0 0 1 2-2h5l2 2h7a2 2 0 0 1 2 2M4 19l2-8h16l-2 8z"/></symbol>
         <symbol id="icon-clapper" viewBox="0 0 24 24"><rect x="3" y="7" width="18" height="14" rx="2"/><path d="M3 11h18M5 7l3 4m3-4 3 4m3-4 3 4"/></symbol>
         <symbol id="icon-scene" viewBox="0 0 24 24"><rect x="3" y="4" width="18" height="16" rx="2"/><path d="M8 4v16M3 9h5m-5 6h5m6-11v16m0-11h7m-7 6h7"/></symbol>
@@ -423,6 +429,10 @@
         <p id="material-empty-hint" class="muted compact">添加文件夹后，可以打开并拖入需要的素材。</p>
       </div>
       <ul id="material-list" class="material-list"></ul>
+      <div popover="auto" id="material-context-menu" role="menu" aria-label="素材操作">
+        <button type="button" role="menuitem" id="material-context-remove"><span>从素材库移除</span><kbd>Delete</kbd></button>
+        <button type="button" role="menuitem" id="material-context-audio">音频处理</button>
+      </div>
       <section id="processed-materials" hidden><h3>已处理素材</h3><ul id="processed-material-list"></ul></section>
     </section>
     <aside class="sidebar" aria-label="预览与导出">

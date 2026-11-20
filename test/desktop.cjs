@@ -903,7 +903,7 @@ async function run() {
   await waitFor(`Boolean(${folder(path.basename(library))})`, '选中的目录应出现在素材库根目录');
   assert.equal(await runInWindow('document.querySelectorAll("#shots .shot").length'), 0, '选择素材目录不会生成分镜');
   assert.equal(await runInWindow(`document.querySelectorAll(${JSON.stringify(tiles)}).length`), 0);
-  await runInWindow(`(${folder(path.basename(library))}).click()`);
+  await runInWindow(`(${folder(path.basename(library))}).dispatchEvent(new MouseEvent('dblclick', { bubbles: true }))`);
   await waitFor(`document.querySelectorAll(${JSON.stringify(tiles)}).length === 1 && Boolean(document.querySelector(${JSON.stringify(material(files.green))})) && Boolean(${folder(path.basename(nested))})`, '打开目录后应只显示支持的文件与子目录');
   await waitFor(`document.querySelector(${JSON.stringify(`${material(files.green)} img`)})?.naturalWidth > 0`, '打开视频前应看到已解码的文件夹视频缩略图');
   await click(material(files.green));
@@ -911,7 +911,7 @@ async function run() {
   assert.equal(await runInWindow('document.querySelectorAll("#shots .shot").length'), 0, '浏览和预览素材也不生成分镜');
   await dragMaterial(files.green, '#new-shot-drop');
   await waitFor('document.querySelectorAll("#shots .shot").length === 1 && document.querySelectorAll("#shots .asset").length === 1', '拖到新分镜区应生成一个分镜');
-  await runInWindow(`(${folder(path.basename(nested))}).click()`);
+  await runInWindow(`(${folder(path.basename(nested))}).dispatchEvent(new MouseEvent('dblclick', { bubbles: true }))`);
   await waitFor(`document.querySelectorAll(${JSON.stringify(tiles)}).length === 2 && Boolean(document.querySelector(${JSON.stringify(material(files.blue))})) && Boolean(document.querySelector(${JSON.stringify(material(files.still))}))`, '子目录应列出视频和图片');
   await dragMaterial(files.still, '#shots .shot');
   await waitFor('document.querySelectorAll("#shots .shot").length === 1 && document.querySelectorAll("#shots .asset").length === 2', '拖到现有分镜应加入候选');

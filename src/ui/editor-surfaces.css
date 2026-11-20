@@ -83,6 +83,34 @@
 #timeline-more-menu button { color: var(--ink); background: var(--control-fill); border-color: var(--hairline); }
 #timeline-more-menu button:hover:enabled { background: var(--control-hover); }
 
+#material-context-menu:popover-open {
+  display: grid;
+  position: fixed;
+  inset: auto;
+  margin: 0;
+  min-width: 155px;
+  padding: 4px;
+  border: 1px solid var(--hairline);
+  border-radius: 8px;
+  background: var(--surface);
+  color: var(--ink);
+  box-shadow: var(--glass-shadow);
+}
+#material-context-menu button {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 16px;
+  padding: 6px 9px;
+  border: 0;
+  border-radius: 5px;
+  color: inherit;
+  background: transparent;
+}
+#material-context-menu button[hidden] { display: none; }
+#material-context-menu button:is(:hover, :focus-visible) { background: var(--control-hover); }
+#material-context-menu kbd { font: inherit; color: var(--secondary-ink); }
+
 .sequence-dialog, .layer-motion-dialog, .cut-track-editor, .track-organizer,
 .jj-cover-editor, .jj-visual-editor, .jj-batch-editor, #caption-zoom-dialog {
   color: var(--ink);
