@@ -27,6 +27,8 @@
   }
 
   function open(source) {
+    // A quick reopen can arrive while the previous wheel is fading away.
+    document.querySelector('.color-wheel-panel:not([open])')?.remove();
     const panel = document.createElement('dialog');
     panel.className = 'color-wheel-panel';
     panel.setAttribute('aria-labelledby', 'color-wheel-title');
@@ -215,15 +217,25 @@
       session.abort();
       pickController?.abort();
       commit();
-      panel.remove();
+      if (!panel.isConnected) return;
+      panel.inert = true;
       if (source.isConnected) source.focus({ preventScroll: true });
+      const transitions = panel.getAnimations();
+      if (transitions.length) Promise.allSettled(transitions.map(item => item.finished)).then(() => panel.remove());
+      else panel.remove();
     };
     function position() {
-      const anchor = source.getBoundingClientRect(), { width, height } = panel.getBoundingClientRect();
+      const anchor = source.getBoundingClientRect(), width = panel.offsetWidth, height = panel.offsetHeight;
       const gap = 8;
       const left = anchor.left >= width + 2 * gap ? anchor.left - width - gap : anchor.right + gap;
-      panel.style.left = clamp(left, gap, innerWidth - width - gap) + 'px';
-      panel.style.top = clamp(anchor.top - 12, gap, innerHeight - height - gap) + 'px';
+      const x = clamp(left, gap, innerWidth - width - gap);
+      const y = clamp(anchor.top - 12, gap, innerHeight - height - gap);
+      panel.style.left = x + 'px';
+      panel.style.top = y + 'px';
+      panel.style.transformOrigin = clamp(anchor.left + anchor.width / 2 - x, 0, width) + 'px '
+        + clamp(anchor.top + anchor.height / 2 - y, 0, height) + 'px';
+      panel.style.setProperty('--menu-shift-x', x < anchor.left ? '3px' : '-3px');
+      panel.style.setProperty('--menu-shift-y', '0px');
     }
     document.body.append(panel);
     render(false);

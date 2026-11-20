@@ -1,0 +1,67 @@
+/* Keep native top-layer dismissal and focus handling. Discrete display and
+   overlay transitions keep the surface in place until the last visible frame. */
+:root {
+  --menu-enter: 170ms;
+  --menu-exit: 115ms;
+  --menu-ease: cubic-bezier(.22, .78, .22, 1);
+}
+
+@supports (appearance: base-select) and selector(::picker(select)) {
+  select:not([multiple], [size]:not([size="1"], [size="0"])), select::picker(select) {
+    appearance: base-select;
+  }
+  select::picker(select) {
+    --menu-shift-y: var(--picker-shift, -3px);
+    margin-block: 4px;
+    padding: 4px;
+    max-height: min(50dvh, 320px);
+    border: 1px solid var(--hairline);
+    border-radius: 9px;
+    background: var(--surface);
+    color: var(--ink);
+    box-shadow: var(--glass-shadow);
+    transform-origin: center var(--picker-origin, top);
+  }
+  select:not([multiple], [size]:not([size="1"], [size="0"])) {
+    option {
+      padding: 4px 8px;
+      border-radius: 5px;
+      color: inherit;
+      background: transparent;
+    }
+    option:is(:hover, :focus-visible) { background: var(--control-hover); }
+    option:checked { background: var(--selected-fill); }
+    option:disabled { color: GrayText; }
+  }
+  @media (forced-colors: active) {
+    select::picker(select) { border-color: CanvasText; }
+    select option:is(:hover, :focus-visible) { outline: 1px solid Highlight; }
+  }
+}
+
+@media (prefers-reduced-motion: no-preference) {
+  [popover]:not([popover="manual"]), .color-wheel-panel, select::picker(select) {
+    opacity: 0;
+    scale: .975;
+    translate: var(--menu-shift-x, 0px) var(--menu-shift-y, -3px);
+    pointer-events: none;
+    transition: opacity var(--menu-time) ease-out, scale var(--menu-time) var(--menu-ease),
+      translate var(--menu-time) var(--menu-ease), display var(--menu-time) allow-discrete,
+      overlay var(--menu-time) allow-discrete;
+    --menu-time: var(--menu-exit);
+  }
+  [popover]:not([popover="manual"]):popover-open, .color-wheel-panel[open], select:open::picker(select) {
+    opacity: 1;
+    scale: 1;
+    translate: 0 0;
+    pointer-events: auto;
+    --menu-time: var(--menu-enter);
+  }
+  @starting-style {
+    [popover]:not([popover="manual"]):popover-open, .color-wheel-panel[open], select:open::picker(select) {
+      opacity: 0;
+      scale: .975;
+      translate: var(--menu-shift-x, 0px) var(--menu-shift-y, -3px);
+    }
+  }
+}

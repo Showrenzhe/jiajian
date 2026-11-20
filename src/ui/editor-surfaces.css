@@ -97,7 +97,7 @@
   background: linear-gradient(to right, transparent 4px, var(--system-blue) 4px 5px, transparent 5px);
 }
 #timeline-clock .sequence-cursor::before, #timeline-clock .sequence-hover { background: var(--system-blue); }
-.app-frame[data-mode="montage"] #timeline-more-menu:popover-open {
+.app-frame[data-mode="montage"] #timeline-more-menu {
   position-area: block-end span-inline-start;
   position-try-fallbacks: flip-block, flip-inline, flip-block flip-inline;
   inset: auto;
@@ -115,8 +115,8 @@
 #timeline-more-menu button { color: var(--ink); background: var(--control-fill); border-color: var(--hairline); }
 #timeline-more-menu button:hover:enabled { background: var(--control-hover); }
 
-#material-context-menu:popover-open {
-  display: grid;
+#material-context-menu:popover-open { display: grid; }
+#material-context-menu {
   position: fixed;
   inset: auto;
   margin: 0;

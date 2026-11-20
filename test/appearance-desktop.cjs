@@ -47,53 +47,41 @@ function luminance(channels) {
   return .2126 * r + .7152 * g + .0722 * b;
 }
 
-// On Windows the open select is a separate Chromium surface. capturePage() only
-// includes the underlying inspector; the offscreen paint event includes both.
+// Sample the actual painted rows in the Chromium picker, including its dark
+// background and the unselected label. The popup may flip above the trigger.
 async function checkDarkRatioMenu(wc, read, key) {
-  const box = await read("document.querySelector('#ratio').getBoundingClientRect().toJSON()");
-  const clip = { x: Math.ceil(box.left), y: Math.round(box.bottom) + 2, width: Math.floor(box.width) - 2, height: 66 };
-  const sample = (bitmap, x, y) => {
-    const offset = 4 * (y * clip.width + x);
-    return [bitmap[offset + 2], bitmap[offset + 1], bitmap[offset]];
-  };
-  const markerX = clip.width - 8;
-  const before = sample((await wc.capturePage(clip)).toBitmap(), markerX, 2);
-  let menu;
-  const onPaint = (_event, _dirty, frame) => {
-    if (frame.isEmpty()) return;
-    const pixels = frame.crop(clip).toBitmap();
-    const highlight = sample(pixels, markerX, 2);
-    const normal = sample(pixels, markerX, 32);
-    if (highlight.some((v, i) => v !== before[i]) && highlight.some((v, i) => v !== normal[i])) menu = pixels;
-  };
-  wc.on('paint', onPaint);
-  try {
-    for (const type of ['mousePressed', 'mouseReleased']) {
-      await wc.debugger.sendCommand('Input.dispatchMouseEvent', {
-        type, x: box.x + box.width / 2, y: box.y + box.height / 2, button: 'left', clickCount: 1,
-      });
-    }
-    await until(async () => menu && await read("document.querySelector('#ratio').matches(':open')"), 'Missing open ratio menu paint');
-    // The first row is selected. Its trailing highlight ends where the 9:16 row begins.
-    const selected = sample(menu, markerX, 2);
-    let rowStart = 3;
-    while (rowStart < clip.height && sample(menu, markerX, rowStart).every((v, i) => v === selected[i])) rowStart++;
-    assert.ok(rowStart > 10 && rowStart * 2 <= clip.height, 'Expected a complete unselected row');
-    const background = luminance(sample(menu, markerX, rowStart + 3));
-    assert.ok(background < .25, 'Dark ratio menu painted a light background');
-    let legiblePixels = 0;
-    for (let y = rowStart + 2; y < rowStart * 2 - 2; y++) {
-      for (let x = 5; x < clip.width / 2; x++) {
-        if ((luminance(sample(menu, x, y)) + .05) / (background + .05) >= 4.5) legiblePixels++;
-      }
-    }
-    assert.ok(legiblePixels >= 8, 'Expected legible 9:16 text on the open menu');
-    await key('Escape', 27);
-    await until(() => read("!document.querySelector('#ratio').matches(':open')"), 'Escape should dismiss the ratio menu');
-    assert.equal(await read("document.querySelector('#ratio').value"), '16:9');
-  } finally {
-    wc.removeListener('paint', onPaint);
+  await clickVisible(wc, '#ratio');
+  await until(() => read("document.querySelector('#ratio').matches(':open')"), 'Missing open ratio menu');
+  const rows = await read(`Array.from(document.querySelector('#ratio').options, option => {
+    const rect = option.getBoundingClientRect();
+    return { x: Math.ceil(rect.x), y: Math.ceil(rect.y), width: Math.floor(rect.width) - 1,
+      height: Math.floor(rect.height) - 1, scale: 1 };
+  })`);
+  async function readRow(clip) {
+    assert.ok(clip.width > 16 && clip.height > 10, 'Expected a visible ratio option');
+    const { data } = await wc.debugger.sendCommand('Page.captureScreenshot', { clip });
+    const pixels = nativeImage.createFromBuffer(Buffer.from(data, 'base64')).toBitmap();
+    return (x, y) => {
+      const i = 4 * (y * clip.width + x);
+      return luminance([pixels[i + 2], pixels[i + 1], pixels[i]]);
+    };
   }
+  const selected = await readRow(rows[0]);
+  const normal = await readRow(rows[1]);
+  const trailing = box => [box.width - 6, Math.floor(box.height / 2)];
+  const background = normal(...trailing(rows[1]));
+  assert.ok(background < .25, 'Dark ratio menu painted a light background');
+  assert.notEqual(selected(...trailing(rows[0])), background, 'Selected ratio should have a visible highlight');
+  let legiblePixels = 0;
+  for (let y = 3; y < rows[1].height - 3; y++) {
+    for (let x = 4; x < rows[1].width - 6; x++) {
+      if ((normal(x, y) + .05) / (background + .05) >= 4.5) legiblePixels++;
+    }
+  }
+  assert.ok(legiblePixels >= 8, 'Expected legible 9:16 text on the open menu');
+  await key('Escape', 27);
+  await until(() => read("!document.querySelector('#ratio').matches(':open')"), 'Escape should dismiss the ratio menu');
+  assert.equal(await read("document.querySelector('#ratio').value"), '16:9');
 }
 
 function assertTextFrames(frames, selectors, checkSingleHandoff = false) {

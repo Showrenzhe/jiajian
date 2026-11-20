@@ -76,7 +76,7 @@
     const sort = $('#draft-sort');
     const status = $('#draft-list-status');
     const statusAction = $('#draft-status-action');
-    const reduceMotion = matchMedia('(prefers-reduced-motion: reduce)');
+    const reduceMotion = matchMedia('(prefers-reduced-motion: reduce), (forced-colors: active)');
     let coverTransition;
     let drafts = [];
     let request = 0;

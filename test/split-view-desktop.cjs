@@ -149,7 +149,7 @@ async function run() {
     const [width, height] = await evaluate('[innerWidth,innerHeight]');
     const preview = boxes['.editor-player'];
     for (const rect of Object.values(boxes)) assert.ok(rect.x >= 0 && rect.y >= 0 && rect.right <= width + 1 && rect.bottom <= height + 1);
-    assert.ok(preview.width >= 201 && preview.height >= 164);
+    assert.ok(preview.width >= 75 && preview.height >= 51);
     checkGutters(boxes);
   }
   async function adjust() {
@@ -165,6 +165,30 @@ async function run() {
   }
   function samePanes(boxes, expected) {
     for (const selector of selectors) sameBox(boxes[selector], expected[selector], selector);
+  }
+  const areaHandle = (side, kind) => `[data-side="${side}"][data-area-handle="${kind}"]`;
+  function checkDock(boxes, base, { left = false, right = false } = {}) {
+    const materials = boxes['#materials-pane'], player = boxes['.editor-player'];
+    const inspector = boxes['#montage-inspector'], timeline = boxes['#montage-pane'];
+    const gap = base['.editor-player'].left - base['#materials-pane'].right;
+    sameBox(player, base['.editor-player'], 'central player');
+    near(materials.bottom, left ? timeline.bottom : player.bottom);
+    near(inspector.bottom, right ? timeline.bottom : player.bottom);
+    near(timeline.left, left ? player.left : materials.left);
+    near(timeline.right, right ? player.right : inspector.right);
+    near(timeline.top, player.bottom + gap);
+    near(player.left - materials.right, gap);
+    near(inspector.left - player.right, gap);
+    near(timeline.bottom, base['#montage-pane'].bottom);
+  }
+  async function pull(point, dx, dy, release = true) {
+    await mouse('mouseMoved', point, {});
+    await mouse('mousePressed', point, { button: 'left', buttons: 1, clickCount: 1 });
+    const end = { x: point.x + dx, y: point.y + dy };
+    await mouse('mouseMoved', end, { buttons: 1 });
+    if (release) await mouse('mouseReleased', end, { button: 'left', clickCount: 1 });
+    await settle();
+    return end;
   }
   function betweenBoxes(actual, from, to, label) {
     for (const prop of ['left', 'top', 'width', 'height']) {
@@ -255,7 +279,8 @@ async function run() {
     await mouse('mouseMoved', start, {});
     await mouse('mousePressed', start, { button: 'left', buttons: 1, clickCount: 1 });
     const pressed = await paneVisual(pane);
-    assert.ok(pressed.lifted, 'no pointer movement or delay is needed to lift the panel');
+    assert.ok(pressed.lifted, 'no pointer movement or delay is needed to lift the panel: ' +
+      await evaluate(`document.elementFromPoint(${start.x},${start.y})?.outerHTML.slice(0,280)`));
     if (pressed.reduced) {
       assert.equal(await evaluate(`document.querySelector(${JSON.stringify(paneSelectors[pane])}).getAnimations().length`), 0,
         'the reduced-motion shadow appears without a transition');
@@ -378,6 +403,53 @@ async function run() {
   assert.equal(await visible(), 3, await evaluate(`[document.querySelector('.app-frame').dataset.mode, document.querySelector('#editor-workspace').outerHTML.slice(0, 150), document.querySelector('#notice').textContent].join(' ')`));
   const original = await snapshot();
   checkGutters(original);
+  const leftDock = areaHandle('materials', 'dock');
+  const rightDock = areaHandle('inspector', 'dock');
+  const leftCorner = areaHandle('materials', 'junction');
+  // Test the visible gutter itself, including an early reversal and an
+  // immediate release. Only the side and the lower editor change shape.
+  const startDock = await center(leftDock);
+  await pull(startDock, 0, 8, false);
+  assert.ok(await evaluate("!!document.querySelector('.workspace-dock-guide[data-preview]')"));
+  samePanes(await snapshot(), original);
+  const dockPoint = { x: startDock.x, y: startDock.y + 27 };
+  await mouse('mouseMoved', dockPoint, { buttons: 1 });
+  checkDock(await snapshot(), original, { left: true });
+  await mouse('mouseMoved', { x: dockPoint.x, y: dockPoint.y - 7 }, { buttons: 1 });
+  checkDock(await snapshot(), original, { left: true });
+  await mouse('mouseMoved', startDock, { buttons: 1 });
+  samePanes(await snapshot(), original);
+  await mouse('mouseMoved', dockPoint, { buttons: 1 });
+  await mouse('mouseReleased', dockPoint, { button: 'left', clickCount: 1 });
+  await reopen();
+  checkDock(await snapshot(), original, { left: true });
+  near(await evaluate("document.getElementById('montage-pane').clientWidth"),
+    (await snapshot())['#montage-pane'].width - 2);
+  await verifyClipping();
+  await pull(await center(rightDock), 0, 32);
+  checkDock(await snapshot(), original, { left: true, right: true });
+  await pull(await center(leftDock), 0, -23, false);
+  checkDock(await snapshot(), original, { right: true });
+  await press('Escape');
+  await mouse('mouseReleased', startDock, { button: 'left', clickCount: 1 });
+  checkDock(await snapshot(), original, { left: true, right: true });
+  await pull(await center(leftDock), 0, -23);
+  await pull(await center(rightDock), 0, -23);
+  samePanes(await snapshot(), original);
+  const cornerEnd = await pull(await center(leftCorner), 38, -35, false);
+  const cornerLayout = await snapshot();
+  near(cornerLayout['#materials-pane'].width, original['#materials-pane'].width + 38);
+  near(cornerLayout['#montage-pane'].height, original['#montage-pane'].height + 35);
+  near(cornerLayout['#montage-inspector'].width, original['#montage-inspector'].width);
+  checkGutters(cornerLayout);
+  await press('Escape');
+  await mouse('mouseReleased', cornerEnd, { button: 'left', clickCount: 1 });
+  samePanes(await snapshot(), original);
+  await adjust();
+  await pull(await center('.panel-layout-box[data-pane="materials"] [data-edge="s"]'), 0, 29);
+  checkDock(await snapshot(), original, { left: true });
+  await press('Escape');
+  samePanes(await snapshot(), original);
   assert.ok(await evaluate(`Object.values(document.querySelectorAll('.panel-layout-pane')).every(el => {
     const style = getComputedStyle(el);
     return ['borderTopLeftRadius','borderTopRightRadius','borderBottomLeftRadius','borderBottomRightRadius']
@@ -466,21 +538,27 @@ async function run() {
     }
     await doubleClick(id);
   }
-  // Both side panels at their limits must still leave the two gutters and a usable player.
+  // A user may deliberately park the player as a narrow strip and pull it back later.
   await key('materials', 'End');
   await key('inspector', 'End');
   await key('timeline', 'End');
   const compact = await snapshot();
-  near(compact['.editor-player'].width, 202);
-  near(compact['.editor-player'].height, 165);
+  near(compact['.editor-player'].width, 76);
+  near(compact['.editor-player'].height, 52);
   near(checkGutters(compact), 6);
+  const compactScroll = await evaluate(`(() => {
+    const player = document.querySelector('.editor-player');
+    player.scrollTo(40, 20);
+    return [player.scrollLeft, player.scrollTop];
+  })()`);
+  assert.ok(compactScroll.every(value => value > 0), 'a parked player still scrolls to its clipped controls');
   for (const id of ids) await doubleClick(id);
   win.setSize(...originalWindow);
   await settle();
   await move('materials', 20);
   const beforeEditing = await snapshot();
   await adjust();
-  assert.equal(await visible(), 0);
+  assert.equal(await visible(), 3);
   assert.deepEqual(await evaluate(`(() => {
     const handle = (pane, edge) => document.querySelector('.panel-layout-box[data-pane="' + pane + '"] [data-edge="' + edge + '"]');
     return [handle('inspector', 'e').checkVisibility(), handle('timeline', 's').checkVisibility(),
@@ -524,7 +602,7 @@ async function run() {
     await settle();
     await contained();
     const limit = await snapshot();
-    assert.ok(limit['#montage-inspector'].width >= 209, 'the inspector remains usable at the right limit');
+    assert.ok(limit['#montage-inspector'].width >= 75, 'the inspector remains reachable at the right limit');
     assert.ok(Math.abs(limit['.editor-player'].right - x) > 60, 'a pane at its minimum stops the shared edge');
   }
   await mouse('mouseReleased', { x: 8, y: seam.y }, { button: 'left', clickCount: 1 });
@@ -538,6 +616,16 @@ async function run() {
     materials: { x: 0, y: 0, width: .22, height: .65 }, player: { x: .22, y: 0, width: .49, height: .65 },
     inspector: { x: .78, y: 0, width: .22, height: .65 }, timeline: { x: 0, y: .65, width: 1, height: .35 },
   } };
+  const oldTiling = structuredClone(gapped);
+  oldTiling.boxes.materials.height = 1;
+  Object.assign(oldTiling.boxes.timeline, { x: .22, width: .78 });
+  await evaluate(`localStorage.setItem('sd-workbench-panel-layout-v1', ${JSON.stringify(JSON.stringify(oldTiling))})`);
+  await reopen();
+  const recoveredTiling = await snapshot();
+  near(recoveredTiling['#montage-pane'].left, recoveredTiling['.editor-player'].left);
+  near(recoveredTiling['#materials-pane'].bottom, recoveredTiling['#montage-pane'].bottom);
+  await reopen();
+  samePanes(await snapshot(), recoveredTiling);
   await evaluate(`localStorage.setItem('sd-workbench-panel-layout-v1', ${JSON.stringify(JSON.stringify(gapped))})`);
   await reopen();
   const repaired = await snapshot();
@@ -804,6 +892,28 @@ async function run() {
   await doubleClick('timeline');
   samePanes(await snapshot(), vertical);
 
+  // Dock the *physical* left column after exchanging its editor with the
+  // bottom one. Keyboard, window resize and reload use that same slot.
+  assert.equal(await evaluate(`document.querySelector('${leftDock}').getAttribute('aria-controls')`), 'montage-pane materials-pane');
+  await evaluate(`document.querySelector('${leftDock}').focus()`);
+  await press('ArrowDown');
+  const swappedDock = await snapshot();
+  near(swappedDock['#montage-pane'].bottom, vertical['#materials-pane'].bottom);
+  near(swappedDock['#materials-pane'].left, vertical['.editor-player'].left);
+  sameBox(swappedDock['#montage-inspector'], vertical['#montage-inspector'], 'unaffected inspector');
+  await reopen();
+  samePanes(await snapshot(), swappedDock);
+  win.setSize(850, 600);
+  await settle();
+  const compactDock = await snapshot();
+  near(compactDock['#montage-pane'].bottom, compactDock['#materials-pane'].bottom);
+  near(compactDock['#materials-pane'].left, compactDock['.editor-player'].left);
+  await verifyClipping();
+  await pull(await center(leftDock), 0, -27);
+  win.setSize(...originalWindow);
+  await settle();
+  samePanes(await snapshot(), vertical);
+
   win.setSize(850, 600);
   await settle();
   const narrow = await snapshot();
@@ -832,7 +942,7 @@ async function run() {
   await dropAt(timelineGrip);
   assert.equal(await visible(), 0);
   wc.debugger.detach();
-  console.log('Passed live panel swaps while held, rapid reversals, continuous release, cancellation, re-grab, touch, reduced motion, keyboard, migration, clipping, resizing, and persistence.');
+  console.log('Passed shared borders, two-axis junctions, reversible T docking, compact scrolling, live panel swaps, cancellation, touch, reduced motion, keyboard, migration, clipping, and persistence.');
   win.close();
 }
 

@@ -21,6 +21,8 @@
   <link rel="stylesheet" href="./editor-surfaces.css">
   <link rel="stylesheet" href="./appearance.css">
   <link rel="stylesheet" href="./color-wheel.css">
+  <link rel="stylesheet" href="./menu-motion.css">
+  <script src="./menu-motion.js" defer></script>
   <script src="./color-wheel.js" defer></script>
   <script src="./dialog-focus.js" defer></script>
   <script src="./script-workspace.js" defer></script>
@@ -144,7 +146,7 @@
     <div class="work-area">
       <main id="home" class="home home-dashboard" aria-label="首页工作台">
         <header class="home-hero">
-          <h1 id="home-heading">剪辑工作台</h1>
+          <h1 id="home-heading" tabindex="-1">剪辑工作台</h1>
           <div class="home-hero-actions">
             <button type="button" id="home-create"><svg class="ui-icon" aria-hidden="true"><use href="#icon-plus"></use></svg>新建剪辑</button>
             <button type="button" id="home-open-project" class="glass-clear" title="打开已保存的 .sdworkbench 工程"><svg class="ui-icon" aria-hidden="true"><use href="#icon-folderOpen"></use></svg>打开工程</button>

@@ -12,9 +12,9 @@
   const defaultSlots = Object.fromEntries(slotIds.map(id => [id, id]));
   const edges = { n: '上边', ne: '右上角', e: '右边', se: '右下角', s: '下边', sw: '左下角', w: '左边', nw: '左上角' };
   const sharedEdges = {
-    materials: { e: 'materials', s: 'timeline' },
+    materials: { e: 'materials', s: 'dock-materials' },
     player: { w: 'materials', e: 'inspector', s: 'timeline' },
-    inspector: { w: 'inspector', s: 'timeline' },
+    inspector: { w: 'inspector', s: 'dock-inspector' },
     timeline: { n: 'timeline' },
   };
 
@@ -45,14 +45,20 @@
     const horizontalCenter = id => boxes[id].x + boxes[id].width / 2;
     for (const lower of slotIds) {
       const bottom = boxes[lower];
-      if (!near(bottom.x, 0) || !near(bottom.width, 1) || !near(bottom.y + bottom.height, 1)) continue;
+      if (!near(bottom.y + bottom.height, 1) || !bottom.y) continue;
       const top = slotIds.filter(id => id !== lower).sort((a, b) => horizontalCenter(a) - horizontalCenter(b));
       const [left, middle, right] = top.map(id => boxes[id]);
-      if (!top.every(id => near(boxes[id].y, 0) && near(boxes[id].height, bottom.y))
+      const leftDock = near(left.height, 1), rightDock = near(right.height, 1);
+      if (!top.every(id => near(boxes[id].y, 0)) || !near(middle.height, bottom.y)
+          || !(leftDock || near(left.height, bottom.y)) || !(rightDock || near(right.height, bottom.y))
+          || !near(bottom.x, leftDock ? middle.x : 0) || !near(bottom.x + bottom.width, rightDock ? right.x : 1)
           || !near(left.x, 0) || !near(right.x + right.width, 1)
           || left.x + left.width > middle.x + .0005 || middle.x + middle.width > right.x + .0005) continue;
+      const split = { materials: middle.x, inspector: 1 - middle.x - middle.width, timeline: bottom.height };
+      if (leftDock) split['dock-materials'] = true;
+      if (rightDock) split['dock-inspector'] = true;
       return { slots: Object.fromEntries([...top, lower].map((id, i) => [id, slotIds[i]])),
-        split: { materials: middle.x, inspector: 1 - middle.x - middle.width, timeline: bottom.height } };
+        split };
     }
 
     // Try each pane as the full-width lower track. The other three retain
@@ -170,6 +176,17 @@
         divider.setAttribute('aria-controls', pane.element.id);
         divider.title = `拖动调整${label}，按 Esc 取消拖动，双击恢复默认${measure}`;
       }
+      for (const handle of workspace.querySelectorAll('.workspace-area-handle')) {
+        const side = handle.dataset.side;
+        const pane = panes.get(slotIds.find(id => slots[id] === side));
+        const bottom = panes.get(slotIds.find(id => slots[id] === 'timeline'));
+        handle.setAttribute('aria-controls', pane.element.id + ' ' + bottom.element.id);
+        const label = handle.dataset.areaHandle === 'dock'
+          ? `${pane.label}底边：下拖占满这一列，上拖还原，也可按上下方向键`
+          : `${pane.label}与${bottom.label}的交点：拖动或按方向键调整宽度和高度`;
+        handle.title = label;
+        handle.setAttribute('aria-label', label);
+      }
     }
 
     function commitExchange(source, target) {
@@ -182,7 +199,7 @@
     function refreshControls() {
       toggle.setAttribute('aria-pressed', String(editing));
       toggle.textContent = editing ? '完成布局' : '调整布局';
-      toggle.title = editing ? '保留本次调整并退出。按 Esc 可取消本次调整。' : '拖到另一块面板上预览交换，松开落位。拖动边缘调整大小。';
+      toggle.title = editing ? '保留本次调整并退出。按 Esc 可取消本次调整。' : '拖动面板可交换位置。拖动共享边可调整大小，下拉侧栏底边可让它占满整列。';
       choose.hidden = !editing;
       choose.value = active;
       const modified = swapped() || splitView.modified;
@@ -214,12 +231,18 @@
       if (!scheduled) scheduled = requestAnimationFrame(layout);
     }
 
-    function resizeDocked(id, edge, size, dx, dy) {
-      const displacement = { materials: dx, inspector: -dx, timeline: -dy };
-      for (const direction of edge) {
-        const split = sharedEdges[slots[id]][direction];
-        if (split) splitView.resize(split, size[split] + displacement[split]);
+    function resizeAxes(pane, edge, event) {
+      const shared = sharedEdges[slots[pane.id]];
+      const horizontal = shared[[...edge].find(direction => 'ew'.includes(direction))];
+      let vertical = shared[[...edge].find(direction => 'ns'.includes(direction))];
+      if (slots[pane.id] === 'timeline' && vertical && event.type === 'pointerdown') {
+        for (const side of ['materials', 'inspector']) {
+          const rect = [...panes.values()].find(other => slots[other.id] === side).overlay.getBoundingClientRect();
+          if (event.clientX >= rect.left && event.clientX < rect.right) vertical = 'dock-' + side;
+        }
       }
+      if (horizontal && vertical?.startsWith('dock-') && !splitView.docked(slots[pane.id])) vertical = 'timeline';
+      return { horizontal, vertical: vertical?.replace('dock-', '') };
     }
 
     function containsPoint(rect, x, y) {
@@ -346,15 +369,19 @@
           animateArrival(pane, from, { foreground: true });
         }
       } else {
-        const step = event.shiftKey ? 24 : 8;
-        resizeDocked(pane.id, edge, splitView.sizes(), dx * step, dy * step);
+        const { horizontal, vertical } = resizeAxes(pane, edge, event);
+        const step = event.shiftKey ? 32 : 8;
+        const size = splitView.sizes();
+        if (dx && horizontal) splitView.resize(horizontal, size[horizontal] + dx * step * (horizontal === 'materials' ? 1 : -1));
+        if (dy && vertical === 'timeline') splitView.resize('timeline', size.timeline - dy * step);
+        else if (dy && vertical) splitView.dock(vertical, dy > 0);
         save();
       }
       sync();
     }
 
     function startDrag(pane, edge, handle, event) {
-      if (!editing || drag || event.button !== 0) return;
+      if (!editing || drag || splitView.dragging || !event.isPrimary || event.button !== 0) return;
       event.preventDefault();
       let visibleBox;
       if (edge === 'move') {
@@ -391,7 +418,8 @@
         pane.element.dataset.lifted = '';
         pane.overlay.dataset.dragSource = '';
       } else {
-        drag.split = splitView.sizes();
+        const { horizontal, vertical } = resizeAxes(pane, edge, event);
+        drag.resize = splitView.gesture(horizontal, vertical, event);
         drag.before = splitView.snapshot();
       }
       handle.dataset.pointerFocus = '';
@@ -413,7 +441,7 @@
         previewTarget(target);
       } else {
         if (!drag.changed && !dx && !dy) return;
-        resizeDocked(drag.pane.id, drag.edge, drag.split, dx, dy);
+        drag.resize(x, y);
         sync();
       }
       drag.changed = true;
@@ -443,6 +471,7 @@
     function releaseDrag(commit = false) {
       if (!drag) return;
       const { pane, target, handle, pointerId, before, changed } = drag;
+      splitView.clearGuides();
       if (target && !commit) previewTarget(undefined);
       drag = undefined;
       if (before && changed && !commit) {

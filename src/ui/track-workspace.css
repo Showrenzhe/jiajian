@@ -46,8 +46,22 @@
   overflow: auto;
 }
 
-.workspace-divider { display: none; }
-.app-frame[data-mode="montage"] #editor-workspace:not([data-layout-editing]) > .workspace-divider {
+/* Each saved state tiles the same four panes using real grid tracks, so
+   a docked column changes the lower editor's viewport and scroll range. */
+.app-frame[data-mode="montage"] #editor-workspace[data-dock-materials] {
+  grid-template-areas: "toolbar toolbar toolbar" "notice notice notice"
+    "materials player properties" "materials . ." "materials timeline timeline";
+}
+.app-frame[data-mode="montage"] #editor-workspace[data-dock-inspector] {
+  grid-template-areas: "toolbar toolbar toolbar" "notice notice notice"
+    "materials player properties" ". . properties" "timeline timeline properties";
+}
+.app-frame[data-mode="montage"] #editor-workspace[data-dock-materials][data-dock-inspector] {
+  grid-template-areas: "toolbar toolbar toolbar" "notice notice notice"
+    "materials player properties" "materials . properties" "materials timeline properties";
+}
+.workspace-divider, .workspace-area-handle { display: none; }
+.app-frame[data-mode="montage"] #editor-workspace > :is(.workspace-divider, .workspace-area-handle) {
   display: block;
   position: relative;
   z-index: 2;
@@ -62,11 +76,76 @@
 .workspace-divider[data-split="materials"] { justify-self: start; transform: translateX(calc(-50% - var(--workspace-gutter) / 2)); }
 .workspace-divider[data-split="inspector"] { justify-self: end; transform: translateX(calc(50% + var(--workspace-gutter) / 2)); }
 .workspace-divider[data-split="timeline"] {
-  grid-area: timeline;
+  grid-column: 2;
+  grid-row: 5;
   align-self: start;
   height: 12px;
   transform: translateY(calc(-50% - var(--workspace-gutter) / 2));
   cursor: row-resize;
+}
+.app-frame[data-mode="montage"] .workspace-area-handle {
+  min-width: 0;
+  min-height: 0;
+  padding: 0;
+  border: 0;
+  border-radius: 2px;
+  background: transparent;
+  box-shadow: none;
+  line-height: 1;
+}
+.workspace-area-handle[data-side="materials"] { grid-area: materials; }
+.workspace-area-handle[data-side="inspector"] { grid-area: properties; }
+.workspace-dock-guide {
+  display: none;
+  grid-row: 5;
+  z-index: 2;
+  pointer-events: none;
+  border-radius: var(--workspace-radius);
+  box-shadow: inset 0 0 0 2px var(--selected-edge);
+  background: color-mix(in srgb, var(--accent) 13%, transparent);
+  opacity: 0;
+}
+.app-frame[data-mode="montage"] .workspace-dock-guide { display: block; }
+.workspace-dock-guide[data-side="materials"] { grid-column: 1; }
+.workspace-dock-guide[data-side="inspector"] { grid-column: 3; }
+.workspace-dock-guide[data-preview] { opacity: .85; }
+.workspace-area-handle[data-area-handle="dock"] {
+  align-self: end;
+  height: 12px;
+  translate: 0 calc(50% + var(--workspace-gutter) / 2);
+  cursor: row-resize;
+}
+#editor-workspace[data-dock-materials] [data-side="materials"][data-area-handle="dock"],
+#editor-workspace[data-dock-inspector] [data-side="inspector"][data-area-handle="dock"] {
+  translate: 0 3px;
+}
+#editor-workspace[data-dock-materials] .workspace-divider[data-split="materials"],
+#editor-workspace[data-dock-inspector] .workspace-divider[data-split="inspector"] { grid-row: 3 / 6; }
+.workspace-area-handle[data-area-handle="junction"] {
+  grid-row: 4;
+  align-self: center;
+  width: 16px;
+  height: 16px;
+  cursor: nwse-resize;
+}
+.workspace-area-handle[data-side="materials"][data-area-handle="junction"] {
+  justify-self: end;
+  translate: calc(50% + var(--workspace-gutter) / 2) 0;
+}
+.workspace-area-handle[data-side="inspector"][data-area-handle="junction"] {
+  justify-self: start;
+  translate: calc(-50% - var(--workspace-gutter) / 2) 0;
+  cursor: nesw-resize;
+}
+.workspace-area-handle[data-pointer-focus]:focus-visible { outline: none !important; }
+.workspace-area-handle[data-area-handle="dock"]:focus-visible:not([data-pointer-focus])::after {
+  content: "";
+  position: absolute;
+  inset: calc(50% - 1px) 30%;
+  height: 2px;
+  border-radius: 2px;
+  background: var(--selected-edge);
+  pointer-events: none;
 }
 .app-frame[data-mode="montage"] .workspace-divider:focus-visible { outline: none; }
 .workspace-divider:where(:focus-visible:not([data-pointer-focus], [data-dragging]))::before {
@@ -86,7 +165,13 @@ body:has(.workspace-divider[data-dragging]) {
   &:has(.workspace-divider[aria-orientation="horizontal"][data-dragging]) { cursor: row-resize; }
   * { cursor: inherit !important; }
 }
-#editor-workspace:has(.workspace-divider[data-dragging]) { user-select: none; }
+body:has(.workspace-area-handle[data-dragging]) {
+  cursor: row-resize;
+  &:has([data-area-handle="junction"][data-dragging]) { cursor: nwse-resize; }
+  &:has([data-side="inspector"][data-area-handle="junction"][data-dragging]) { cursor: nesw-resize; }
+  * { cursor: inherit !important; }
+}
+#editor-workspace:has([data-dragging]) { user-select: none; }
 .app-frame[data-mode="montage"] :is(.editor, .sidebar) { display: contents; }
 .app-frame[data-mode="montage"] :focus-visible { outline: 2px solid var(--focus-ring); outline-offset: 2px; }
 
@@ -568,6 +653,22 @@ body:has(.workspace-divider[data-dragging]) {
   display: flex;
   flex-direction: column;
   overflow: hidden;
+}
+.app-frame[data-mode="montage"] :is(.editor-player, .montage-inspector, #montage-pane) {
+  container: editor-area / size;
+  overflow: auto;
+}
+/* A deliberately parked editor can be much smaller than its controls.
+   Keep those controls reachable inside its own viewport at that size. */
+@container editor-area (width < 172px) {
+  .app-frame[data-mode="montage"] :is(.editor-player, .montage-inspector, #montage-pane) > :not([hidden]) {
+    min-inline-size: 170px;
+  }
+}
+@container editor-area (height < 136px) {
+  .app-frame[data-mode="montage"] .editor-player > .viewer { flex: 1 0 82px; }
+  .app-frame[data-mode="montage"] .montage-inspector > .editor-properties { flex: 1 0 150px; }
+  .app-frame[data-mode="montage"] #montage-pane > :is(#timeline-tracks-panel, #preview-batch) { flex: 1 0 100px; }
 }
 .app-frame[data-mode="montage"] .timeline-header {
   display: flex;

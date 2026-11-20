@@ -239,13 +239,12 @@ for (const viewport of [shotViewport, $('#timeline-clock')]) {
 trackScrollbar.addEventListener('scroll', () => onTrackScroll(trackScrollbar, activeTrackViewport()));
 
 const panelLayout = window.mountPanelLayout($('#editor-workspace'), { actions: $('#workbench-actions') });
-function importFromHome() {
-  setMode('montage');
-  return importMaterials();
+async function openEditorForImport() {
+  if (await setMode('montage') && mode === 'montage') return importMaterials();
 }
 
 const draftLibrary = window.mountDraftLibrary($('#draft-library'), {
-  load: api.listDrafts, open: openDraft, importMaterials: importFromHome,
+  load: api.listDrafts, open: openDraft, importMaterials: openEditorForImport,
   showEmptyImport: () => mode === 'drafts',
 });
 const draftAutosave = window.createDraftAutosave({
@@ -1403,9 +1402,13 @@ function showMaterialMenu(target, x, y) {
   const bounds = target.anchor.getBoundingClientRect();
   target.anchor.focus({ preventScroll: true });
   materialMenu.showPopover();
-  const { width, height } = materialMenu.getBoundingClientRect();
-  materialMenu.style.left = `${Math.max(0, Math.min(x ?? bounds.left, innerWidth - width))}px`;
-  materialMenu.style.top = `${Math.max(0, Math.min(y ?? bounds.bottom, innerHeight - height))}px`;
+  const pointX = x ?? bounds.left, pointY = y ?? bounds.bottom;
+  const left = Math.max(0, Math.min(pointX, innerWidth - materialMenu.offsetWidth));
+  const top = Math.max(0, Math.min(pointY, innerHeight - materialMenu.offsetHeight));
+  materialMenu.style.left = left + 'px';
+  materialMenu.style.top = top + 'px';
+  materialMenu.style.transformOrigin = (pointX - left) + 'px ' + (pointY - top) + 'px';
+  materialMenu.style.setProperty('--menu-shift-y', pointY - top > materialMenu.offsetHeight / 2 ? '3px' : '-3px');
   remove.focus({ preventScroll: true });
 }
 
@@ -1958,10 +1961,63 @@ function updateControls(group) {
   updateSceneSplitControls();
 }
 
+const workspaceMotion = matchMedia('(prefers-reduced-motion: no-preference) and (forced-colors: none)');
+let workspaceTransition;
+workspaceMotion.addEventListener('change', () => workspaceTransition?.skipTransition());
+function finishWorkspaceGesture() {
+  if (workspaceTransition && !$('.app-frame').classList.contains('workspace-origin')) workspaceTransition.skipTransition();
+}
+document.addEventListener('pointerdown', finishWorkspaceGesture, true);
+document.addEventListener('keydown', finishWorkspaceGesture, true);
+
+function navigateWorkspace(value, change) {
+  const libraryModes = ['home', 'drafts', 'project'];
+  const enteringEditor = value === 'montage' && libraryModes.includes(mode);
+  const returningToLibrary = mode === 'montage' && libraryModes.includes(value);
+  workspaceTransition?.skipTransition();
+  workspaceTransition = undefined;
+  const frame = $('.app-frame');
+  const root = document.documentElement;
+  root.classList.remove('workspace-transitioning');
+  frame.classList.remove('workspace-origin');
+  if (!(enteringEditor || returningToLibrary) || !workspaceMotion.matches || !document.startViewTransition) {
+    change();
+    return true;
+  }
+  // Capture only the outgoing frame. A document scope preserves viewport coordinates for fixed editor panels.
+  root.classList.add('workspace-transitioning');
+  frame.classList.add('workspace-origin');
+  let committed = false;
+  const transition = document.startViewTransition({
+    types: [enteringEditor ? 'open-editor' : 'return-library'],
+    update() {
+      if (workspaceTransition !== transition) return;
+      frame.classList.remove('workspace-origin');
+      change();
+      committed = true;
+    },
+  });
+  workspaceTransition = transition;
+  transition.ready.catch(() => {}); // A second navigation or a motion preference change can skip the visual phase.
+  const clear = () => {
+    if (workspaceTransition !== transition) return;
+    root.classList.remove('workspace-transitioning');
+    workspaceTransition = undefined;
+  };
+  transition.finished.then(clear, clear);
+  return transition.updateCallbackDone.then(() => committed);
+}
+
 function setMode(value) {
+  return navigateWorkspace(value, () => commitMode(value));
+}
+
+function commitMode(value, { focusDraft = false } = {}) {
   if (value === mode) return;
+  const previousMode = mode;
   const localTools = $('#home-local-tools');
   const leavingLocalTool = localTools.contains(document.activeElement);
+  const focus = document.activeElement;
   draftLibrary.cancelCoverTransition();
   timeline?.stopDraftPlayback();
   if(timelinePlaybackRequest) timelinePlaybackRequest.autoplay=false;
@@ -2002,7 +2058,12 @@ function setMode(value) {
   $('#script-workspace').hidden = !script;
   $('#workflow-workspace').hidden = !service;
   if (editor) $('#workflow-title').textContent = audio ? '音频提取' : '分镜混剪';
-  if (leavingLocalTool) $('.work-area > main:not([hidden]) h1')?.focus({ preventScroll: true });
+  const page = $('.work-area > main:not([hidden])');
+  const heading = page.querySelector('h1');
+  if (leavingLocalTool || (!focusDraft && (mode === 'montage' || (previousMode === 'montage' && (home || project)))
+      && (focus === document.body || focus.closest('main, #title-home, .tabs')))) {
+    heading?.focus({ preventScroll: true });
+  }
   if (window.scrollY) window.scrollTo(0, 0);
   clearPreview();
   say('');
@@ -2128,10 +2189,10 @@ async function newProject() {
   updateControls();
   try {
     if (!await flushCurrentDraft()) return;
-    restoreProject({ name: '', assets: [], config: {
+    await navigateWorkspace('montage', () => restoreProject({ name: '', assets: [], config: {
       shots: [], ratio: '16:9', resolution: 720, fps: 30, fit: 'fit', keepAudio: true, unordered: false,
       useOriginal: true, useMirrors: false, musicIds: [], musicVolume: 35, count: 1,
-    } });
+    } }));
   } finally {
     operation = '';
     updateControls();
@@ -2268,7 +2329,7 @@ async function showWorkflow(id) {
     }
     const localActions = {
       'montage.open': () => setMode('project'),
-      'montage.import': () => { setMode('montage'); importMaterials(); },
+      'montage.import': openEditorForImport,
       'script.edit': () => showScript(),
       'audio.open': () => setMode('audio'),
       'scene-split.open': () => setMode('scene-split'),
@@ -3187,7 +3248,7 @@ function restoreProject({ name, config, assets = [] }, { retainHistory = false, 
     $('#material-search').value = '';
   }
   projectName = name;
-  setMode('montage');
+  commitMode('montage', { focusDraft: Boolean(draft) });
   if (!retainHistory) activateInspectorTab($('#inspector-tab-visual'));
   renderNarration();
   renderSubtitles();
@@ -3207,6 +3268,7 @@ function restoreProject({ name, config, assets = [] }, { retainHistory = false, 
 
 async function openEditorProject(load, { fromDraft = false } = {}) {
   if (operation) return;
+  const opener = document.activeElement;
   operation = 'project';
   sayProject(fromDraft ? '正在打开草稿并检查素材…' : '正在打开工程并检查素材…');
   updateControls();
@@ -3215,17 +3277,22 @@ async function openEditorProject(load, { fromDraft = false } = {}) {
     const result = await load();
     sayProject('');
     if (result) {
-      restoreProject(result, { draft: fromDraft ? result : undefined });
-      const firstShot = shots.findIndex((shot) => shot.length);
-      if (firstShot >= 0) preview(shots[firstShot][0]);
-      sayProject([`已打开${fromDraft ? '草稿' : '工程'}：${result.name}`, result.libraryWarning].filter(Boolean).join(' · '));
-      return result;
+      const opened = await navigateWorkspace('montage', () => {
+        restoreProject(result, { draft: fromDraft ? result : undefined });
+        const firstShot = shots.findIndex((shot) => shot.length);
+        if (firstShot >= 0) preview(shots[firstShot][0]);
+        sayProject([`已打开${fromDraft ? '草稿' : '工程'}：${result.name}`, result.libraryWarning].filter(Boolean).join(' · '));
+      });
+      if (opened && mode === 'montage') return result;
     }
   } catch (error) {
     sayProject(error.message);
   } finally {
     operation = '';
     updateControls();
+    if (document.activeElement === document.body && opener !== document.body && opener.checkVisibility()) {
+      opener.focus({ preventScroll: true });
+    }
   }
 }
 
@@ -3235,7 +3302,7 @@ function openProject(id) {
 
 async function openDraft(id) {
   const result = await openEditorProject(() => api.openDraft(id), { fromDraft: true });
-  if (!result) return;
+  if (!result || mode !== 'montage') return;
   const clip = selected?.asset;
   const cover = result.config.cover;
   const customCover = cover?.mode === 'library' && cover.items?.[cover.active ?? 0];
@@ -3318,7 +3385,7 @@ api.onProgress((data) => {
 
 function showHome() {
   setMode('home');
-  window.scrollTo(0, 0);
+  if (mode === 'home') window.scrollTo(0, 0);
 }
 const workspaceNavigation = (() => {
   const frame = $('.app-frame');
@@ -3433,8 +3500,9 @@ const workspaceNavigation = (() => {
   return { changeMode, selectionBounds, moveSelection };
 })();
 $('#tab-home').addEventListener('click', showHome);
-$('#tab-drafts').addEventListener('click', () => {
-  setMode('drafts');
+$('#tab-drafts').addEventListener('click', async () => {
+  await setMode('drafts');
+  if (mode !== 'drafts') return;
   $('#draft-heading').focus({ preventScroll: true });
   window.scrollTo(0, 0);
 });
@@ -3489,7 +3557,7 @@ $('#tab-montage').addEventListener('click', () => setMode('project'));
 $('#tab-audio').addEventListener('click', () => setMode('audio'));
 $('#tab-script').addEventListener('click', () => showScript());
 $('#edit-attached-script').addEventListener('click', () => showScript(attachedScript));
-$('#home-import').addEventListener('click', importFromHome);
+$('#home-import').addEventListener('click', openEditorForImport);
 $('#home-open-project').addEventListener('click', () => openProject());
 $('#tab-scene-split').addEventListener('click', () => setMode('scene-split'));
 $('#project-new').addEventListener('click', newProject);

@@ -400,6 +400,10 @@ async function run() {
   assert.equal(await runInWindow('typeof window.require'), 'undefined');
   assert.equal(await runInWindow('typeof window.workbench.pick'), 'function');
   const navigate = selector => clickVisible(win.webContents, selector);
+  async function goHome() {
+    await navigate('#title-home');
+    await waitFor('!document.querySelector("#home").hidden', '首页应可见');
+  }
   async function checkButtonIcons(selector) {
     const broken = await runInWindow(`[...document.querySelectorAll(${JSON.stringify(selector)})].filter(button => {
       const icon = button.querySelector('svg use');
@@ -435,7 +439,7 @@ async function run() {
     })()`), width + 'px 首页应在草稿右侧显示五个完整入口');
     await navigate('#tab-audio');
     await waitFor('document.querySelector(".app-frame").dataset.mode === "audio"', '应从右侧工具打开音频提取');
-    await navigate('#title-home');
+    await goHome();
   }
   for (const theme of ['light', 'dark']) {
     nativeTheme.themeSource = theme;
@@ -466,7 +470,7 @@ async function run() {
   } finally {
     client.detach();
   }
-  await navigate('#title-home');
+  await goHome();
   await navigate('#tab-drafts');
   await waitFor(`!document.querySelector('#home-local-tools').checkVisibility() &&
     document.querySelector('#draft-heading-label').textContent === '全部草稿' &&
@@ -475,7 +479,7 @@ async function run() {
   await navigate('#tab-home');
   await navigate('#tab-scene-split');
   await waitFor('document.querySelector("#scene-split-workspace").checkVisibility()', '场景分割入口应可点击');
-  await navigate('#title-home');
+  await goHome();
   for (const id of workflowIds) {
     const selector = '#workspace-navigation [data-workflow="' + id + '"]';
     const label = await runInWindow(`document.querySelector(${JSON.stringify(selector)}).textContent.trim()`);
@@ -483,7 +487,7 @@ async function run() {
     await waitFor(`document.querySelector('#service-title').textContent === ${JSON.stringify(label)} &&
       document.querySelector(${JSON.stringify(selector)}).getAttribute('aria-current') === 'page'`, label + ' 应直接打开并标记选中');
   }
-  await navigate('#title-home');
+  await goHome();
   await checkNavigation(win.webContents, 'home');
   const files = await fixtures(root);
   const output = path.join(root, 'output');
@@ -493,7 +497,7 @@ async function run() {
   await waitFor('!document.querySelector("#project-workspace").hidden && document.querySelector("#project-list-status").textContent.includes("还没有本地项目")', '批量混剪应先进入项目工作区');
   await checkNavigation(win.webContents, 'project');
   await runInWindow('document.querySelector("#project-new").click()');
-  assert.equal(await runInWindow('document.querySelector("#editor-workspace").hidden'), false);
+  await waitFor('!document.querySelector("#editor-workspace").hidden', '新工程应进入剪辑台');
   await checkButtonIcons('#material-import, #material-folder-import, #material-audio-open');
   await waitForInspector('visual');
   const tabHighlight = () => runInWindow("parseFloat(getComputedStyle(document.querySelector('#inspector-tabs'), '::before').left)");
@@ -601,12 +605,12 @@ async function run() {
     await waitForInspector(panel);
     assert.ok(await runInWindow(target), '方向键应切换属性页并移动键盘焦点');
   }
-  await runInWindow('document.querySelector("#title-home").click()');
+  await goHome();
   await navigate('[data-workflow=replicate]');
   await waitFor('document.querySelector("#service-title").textContent === "爆款复刻" && document.querySelector("#service-status").textContent === "待接入 API"', '待接入功能应说明真实状态');
   assert.equal(await runInWindow('document.querySelectorAll("#service-actions button").length'), 0);
   assert.ok(await runInWindow('document.querySelector("#creative-workflow-settings")?.checkVisibility()'), '未配置创作服务时应提供服务设置入口');
-  await runInWindow('document.querySelector("#title-home").click()');
+  await goHome();
   await navigate('#tab-script');
   await waitFor('document.querySelectorAll("#script-rows .script-row").length === 3', '脚本页应显示三个初始脚本行');
   await checkNavigation(win.webContents, 'script');
@@ -634,7 +638,7 @@ async function run() {
   await waitFor('document.querySelector(".script-dialogue")?.value === "开头台词"', '重新加载后应恢复本地脚本草稿');
   await runInWindow('document.querySelector("#script-go-montage").click()');
   await waitFor('!document.querySelector("#script-brief").hidden && document.querySelector("#script-brief-rows").textContent.includes("展示第一镜")', '脚本和备注应进入混剪工程');
-  await runInWindow('document.querySelector("#title-home").click()');
+  await goHome();
 
   selections.push({ title: '选择分镜素材', files: [files.red, files.green, files.still] });
   assert.equal(await runInWindow('document.querySelector("#home").hidden'), false);
@@ -767,7 +771,7 @@ async function run() {
   assert.ok((await fs.stat(project)).isFile());
   await runInWindow('(() => { const start = document.querySelector("#shots .start"); start.value = "0.75"; start.dispatchEvent(new Event("input")); })()');
   assert.equal(await runInWindow('document.querySelector("#shots .start").valueAsNumber'), 0.75);
-  await navigate('#title-home');
+  await goHome();
   await navigate('#tab-montage');
   await waitFor('document.querySelector(".project-reopen")?.textContent.includes("混剪样片")', '保存后应列入本地项目');
   await runInWindow('document.querySelector(".project-reopen").click()');
@@ -949,7 +953,7 @@ async function run() {
   assert.ok(Math.abs(segmentPreviewDuration - 2.4) < 0.05, '有口播的分镜应对齐口播长度，无口播的分镜应保留原长');
   await screenshot('segmented-preview.png');
 
-  await navigate('#title-home');
+  await goHome();
   await waitFor('document.querySelectorAll("#history-list li").length === 3', '首页应列出三条真实成片');
   await navigate('#tab-audio');
   selections.push({ title: '选择视频素材', files: [files.red, files.blue] });
@@ -964,7 +968,7 @@ async function run() {
   assert.equal((await inspectAsset(path.join(output, audios[0]), 'audio')).codec, 'mp3');
   assert.deepEqual(selections, []);
   assert.deepEqual(saves, []);
-  await navigate('#title-home');
+  await goHome();
   await waitFor('document.querySelectorAll("#history-list li").length === 4', '最近作品应包含三条视频和一条音频');
   const history = JSON.parse(await fs.readFile(path.join(root, 'profile', 'work-history.json'), 'utf8'));
   assert.deepEqual(history.map((item) => item.name).sort(), [...videos, ...selectedVideos, ...audios].sort());
@@ -1246,7 +1250,7 @@ async function run() {
   await waitFor(`[innerWidth, innerHeight].join(',') === ${JSON.stringify(originalViewport)}`, '应恢复默认窗口尺寸');
   await runInWindow('for (let count = 8; count > 1; count -= 1) document.querySelector("#shots .shot:last-child .remove-shot").click();');
   await waitFor(`(() => { const value = ${timelineScroll}; return value.hidden && value.range === 0 && value.left === 0 && value.barLeft === 0; })()`, '删到无横向溢出时应隐藏滚动条并清除旧位置');
-  await click('#title-home');
+  await goHome();
   await click('#home-create');
   await waitFor('["#empty-import-visual", "#empty-split-narration"].every((id) => document.querySelector(id)?.checkVisibility() && !document.querySelector(id).disabled)', '新草稿应显示两个可用时间轴入口');
   const splitSrt = path.join(root, '双句口播.srt');
@@ -1272,7 +1276,7 @@ async function run() {
   assert.equal(await runInWindow(`document.querySelectorAll('${visualShot(0)} .asset').length`), 0, '第二句配画面应保留第一句为空');
   const wideVideo = path.join(root, '高清素材.mp4');
   await ffmpeg(['-i', files.red, '-vf', 'scale=960:720', '-c:v', 'libx264', '-threads', '2', '-c:a', 'copy', wideVideo]);
-  await click('#title-home');
+  await goHome();
   await click('#home-create');
   await waitFor("!document.querySelector('#editor-workspace').hidden && !document.querySelector('#material-import').disabled", '新草稿完成初始化后应启用素材导入');
   selections.push({ title: '选择分镜素材', files: [wideVideo] });

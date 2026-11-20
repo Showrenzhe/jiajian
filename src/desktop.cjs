@@ -41,7 +41,7 @@ const uiFiles = new Set(['/index.html', '/app.js', '/styles.css', '/dialog-focus
   '/track-workspace.css', '/edit-history.js', '/track-tools.js', '/track-tools.css', '/cloud-tts-dialog.js', '/cloud-tts-dialog.css',
   '/cloud-tts-settings.js', '/cloud-tts-settings.css', '/split-view.js', '/panel-layout.js', '/draft-workspace.js', '/player-tools.js', '/assets/jiajian-logo.png',
   '/glass-material.css', '/inspector-controls.css', '/editor-surfaces.css', '/appearance.js', '/appearance.css', '/software-updates.js',
-  '/color-wheel.js', '/color-wheel.css']);
+  '/color-wheel.js', '/color-wheel.css', '/menu-motion.js', '/menu-motion.css']);
 const maxCatalog = (maxShots + 1) * (maxCandidates + maxWholeTracks);
 const maxSubtitleBatchBytes = 1024 * 1024;
 const maxSpeechJobs = maxShots;
