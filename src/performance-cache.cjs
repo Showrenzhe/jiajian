@@ -2,7 +2,7 @@
 const fs = require('node:fs/promises');
 const {readFileSync} = require('node:fs');
 const path = require('node:path');
-const os = require('node:os');
+const { readBootIdentity, sameBoot } = require('./boot-identity.cjs');
 const {createHash, randomUUID} = require('node:crypto');
 
 const filename = 'performance.json';
@@ -32,7 +32,7 @@ async function fingerprint(file, variant) {
   return createHash('sha256').update(JSON.stringify([normalized,info.size,info.mtimeMs,info.ctimeMs,variant])).digest('hex');
 }
 
-function createPerformanceCache(directory, {inspect,thumbnail,encode,bootTime=()=>Date.now()-os.uptime()*1000}) {
+function createPerformanceCache(directory, {inspect,thumbnail,encode,bootTime=readBootIdentity}) {
   let state = readPerformance(directory), writes = Promise.resolve();
   const meta = path.join(directory,'material-cache-v1'), pending = new Map();
   let proxyScope = new AbortController(), warmScope = new AbortController(), closing = false;
@@ -166,18 +166,24 @@ function createPerformanceCache(directory, {inspect,thumbnail,encode,bootTime=()
       warmScope.abort();
       await resetProxies();
       for(const file of await proxyEntries(state.location)) await fs.rm(file,{force:true});
-      await atomicWrite(path.join(meta,'last-boot.json'),JSON.stringify(bootTime()));
+      await atomicWrite(path.join(meta,'last-boot.json'),JSON.stringify(await bootTime()));
       return view();
     });
   }
   async function preload(references) {
-    const boot=bootTime(), marker=path.join(meta,'last-boot.json');
+    const boot=await bootTime(), marker=path.join(meta,'last-boot.json');
     const last=await fs.readFile(marker,'utf8').then(JSON.parse).catch(()=>null);
-    if (Number.isFinite(last) && Math.abs(last-boot)<5000) return false;
+    if (sameBoot(last,boot)) {
+      // Upgrade legacy uptime markers. Keep the latest fallback estimate after a clock adjustment.
+      if (boot?.event && (boot.event!==last?.event || Math.abs(boot.time-last.time)>=5000)) {
+        await atomicWrite(marker,JSON.stringify(boot));
+      }
+      return false;
+    }
     const signal=warmScope.signal, seen=new Set();
     for await (const row of references()) {
       signal.throwIfAborted();
-      const useProxy=row.proxyEnabled ?? state.defaultProxy;
+      const useProxy=row.proxyEnabled ?? true;
       const key=JSON.stringify([row.kind,row.path,useProxy]);
       if(seen.has(key)) continue;
       seen.add(key);
