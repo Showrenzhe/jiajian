@@ -21,10 +21,10 @@ window.createTimelinePackaging = function () {
   }
   function choices(shots) {
     forShots(shots);
-    const alternatives = (groups) => Math.max(1, groups.filter(Boolean).length);
+    const alternatives = (groups) => BigInt(Math.max(1, groups.filter(Boolean).length));
     let total = alternatives(data.composites.map((row) => row.length));
     if (data.textMode === 'segmented' && data.textSelection === 'random') {
-      for (let i = 0; i < shots.length; i++) total = Math.min(50, total * alternatives(data.textGroups.map((row) => row[i]?.length)));
+      for (let i = 0; i < shots.length; i++) total *= alternatives(data.textGroups.map((row) => row[i]?.length));
     } else total *= alternatives(data.textGroups.map((row) => data.textMode === 'whole' ? row[0]?.length : row.some((col) => col.length)));
     return total;
   }
@@ -102,6 +102,8 @@ window.mountEditTimeline = function (host, ctx) {
   }
   let playTime = 0, fit = null, refreshFrame, lastState, lastKey;
   let focusShot, focusClip, voiceTarget, shotDrag, refocusShot;
+  let clipboard, pastePosition;
+  const copySources=new WeakMap();
   let timeScale = 60, totalTime = 0, shotTimes = [], widths = [];
   const standardScales = [16, 32, 60, 100, 180];
   let zoomScales = standardScales, manualScale = 60, zoomAnchor;
@@ -116,6 +118,7 @@ window.mountEditTimeline = function (host, ctx) {
     return scales.sort((a,b)=>a-b);
   }
   const draftTransport=window.draftTimeline.transport(document.querySelector('.preview-stage'),{
+    previewSource:ctx.previewSource,
     tick:(time)=>{playTime=time;syncCursor();}, changed:(playing)=>ctx.draftPlaybackChanged?.(playing),
   });
   function draftPlan() {
@@ -127,6 +130,7 @@ window.mountEditTimeline = function (host, ctx) {
   const heights = new Map();
   let scrubPointer, scrubX, scrubFrame, activeSeek;
   let resizeDrag;
+  let locatedMaterial;
   const thumbQueue=[];
   let thumbWorkers=0;
   function loadVisibleFrames() {
@@ -196,6 +200,7 @@ window.mountEditTimeline = function (host, ctx) {
     end.placeholder = '随所属轨道结束';
     const x = input('number',(existing?.x ?? .5)*100,0,100,.1), y = input('number',(existing?.y ?? .5)*100,0,100,.1);
     const scale = input('number',(existing?.scale ?? (type.value === 'text' ? 1 : .35))*100,5,100,.1);
+    const speed = input('number',existing?.speed ?? 1,.5,3,'any');
     const volume = input('number',existing?.volume ?? (type.value === 'pip' ? 0 : 100),0,100,1);
     const font = input('number',existing?.fontSize ?? 48,1,600,1), color = input('color',existing?.color ?? '#ffffff');
     let media = existing?.id ? ctx.asset(existing.id) : null;
@@ -220,6 +225,17 @@ window.mountEditTimeline = function (host, ctx) {
     const textStyles=window.createTextPresets(existing?.textStyle,{fontSize:font,color,x,y,scale,text:content});
     d.body.append(textStyles.element); fontFields.push(textStyles.element);
     const sound=d.field('音量（%）',volume);
+    const speedControl=d.field('播放速度（倍）',speed);
+    let previousSpeed=speed.valueAsNumber;
+    speed.addEventListener('change',()=>{
+      const value=speed.valueAsNumber;
+      if(!speed.checkValidity() || !Number.isFinite(value)) return;
+      if(end.value && end.valueAsNumber>begin.valueAsNumber) {
+        const duration=(end.valueAsNumber-begin.valueAsNumber)*previousSpeed/value;
+        end.value=String(Math.round((begin.valueAsNumber+duration)*1000)/1000);
+      }
+      previousSpeed=value;
+    });
     const motionButton=btn('调整关键帧',async()=>{
       const layer=await window.editLayerMotion({...existing,...motion,kind:type.value,text:content.value,textStyle:textStyles.read(),fontSize:font.valueAsNumber,color:color.value,x:x.valueAsNumber/100,y:y.valueAsNumber/100,scale:scale.valueAsNumber/100,start:begin.valueAsNumber,end:end.value ? end.valueAsNumber : null}, {url:media?.url,kind:media?.kind,duration:media?.duration || groups.find((g)=>g.key===scope.value)?.span || 3});
       if (layer) {
@@ -237,12 +253,13 @@ window.mountEditTimeline = function (host, ctx) {
       type.disabled=!!existing || scope.value.startsWith('text');
       const text=type.value==='text', audio=type.value==='sound';
       words.hidden=!text; content.required=text; file.hidden=text; sound.hidden=!(audio || type.value==='pip');
+      speedControl.hidden=!audio;speed.disabled=!audio;speed.required=audio;
       removeBackdrop.hidden = type.value !== 'pip';
       appearance.hidden=type.value!=='pip';
       for (const f of visuals) f.hidden=audio;
       for (const f of fontFields) f.hidden=!text;
     }
-    type.onchange=()=>{media=null; chooseAsset.textContent='选择文件'; scale.value=type.value==='text' ? 100 : 35; volume.value=type.value==='pip' ? 0 : 100; setKind();};
+    type.onchange=()=>{speed.value='1';previousSpeed=1;media=null; chooseAsset.textContent='选择文件'; scale.value=type.value==='text' ? 100 : 35; volume.value=type.value==='pip' ? 0 : 100; setKind();};
     scope.onchange=setKind; setKind();
     if (existing) {
       d.foot.append(btn('移除片段',()=>{initialTarget.items.splice(initialTarget.items.indexOf(existing),1); d.wrapper.close(); ctx.change();}));
@@ -260,6 +277,7 @@ window.mountEditTimeline = function (host, ctx) {
       if (kind==='text') Object.assign(layer,{text:content.value.trim(),fontSize:font.valueAsNumber,color:color.value,textStyle:textStyles.read()});
       else layer.id=media.id;
       if (kind!=='sound') Object.assign(layer,{x:x.valueAsNumber/100,y:y.valueAsNumber/100,scale:scale.valueAsNumber/100});
+      if (kind==='sound') layer.speed=speed.valueAsNumber;
       if (kind==='sound' || kind==='pip') layer.volume=volume.valueAsNumber;
       const items=target.ensure();
       if (existing && target===initialTarget) items.splice(items.indexOf(existing),1,layer);
@@ -270,6 +288,75 @@ window.mountEditTimeline = function (host, ctx) {
     });
     d.wrapper.showModal();
   }
+  function positionAt(time) {
+    const at=Math.max(0,Math.min(totalTime,time));
+    return {time:at,index:Math.max(0,shotTimes.findLastIndex(start=>start<=at))};
+  }
+  function bindCopy(node,kind,snapshot) {
+    copySources.set(node,{kind,snapshot});
+    node.setAttribute('aria-keyshortcuts','Control+C Control+V');
+  }
+  function copyItem(node) {
+    const entry=copySources.get(node);
+    if (!entry) {ctx.notify('请选择一个视频、口播或字幕片段。');return;}
+    clipboard={kind:entry.kind,data:entry.snapshot()};
+    ctx.notify('已复制'+entry.kind+'。');
+  }
+  function pasteItem(position=pastePosition ?? positionAt(playTime)) {
+    if (!clipboard || ctx.busy()) return;
+    const s=ctx.state(),shot=s.shots[position.index];
+    try {
+      if(clipboard.kind==='视频') {
+        const clip=ctx.pasteClip(clipboard.data);
+        if(shot && !shot.length) {shot.push(clip);ctx.change();}
+        else if(!ctx.insertShot(shot ? position.index+1 : s.shots.length,[clip])) throw Error('已达到分镜上限或此处无法插入。');
+        ctx.preview(clip);
+      } else if(clipboard.kind==='口播') {
+        const row=ctx.pasteVoice(clipboard.data,shot,position.row);
+        ctx.notify('已粘贴至'+(s.segmented ? '分镜 '+(position.index+1)+' · ' : '')+'口播轨 '+(row+1)+'。');
+        return;
+      } else {
+        if(s.timelineCaptions.length>=2000) throw Error('时间轴字幕最多支持 2000 句。');
+        const {duration,...cue}=structuredClone(clipboard.data);
+        const start=Math.round(position.time*1000);
+        if(position.time>=totalTime) throw Error('请将播放头移到时间轴结束前。');
+        s.timelineCaptions.push({...cue,start,end:start+duration});
+        ctx.change();
+      }
+      ctx.notify('已粘贴'+clipboard.kind+'。');
+    } catch(error) {ctx.notify(error.message);}
+  }
+  function clipboardButtons(d,node,position) {
+    if(copySources.has(node)) d.body.append(btn('复制'+copySources.get(node).kind,()=>{copyItem(node);d.wrapper.close();}));
+    const paste=btn(clipboard ? '粘贴'+clipboard.kind : '粘贴',()=>{d.wrapper.close();pasteItem(position);});
+    paste.disabled=!clipboard;
+    d.body.append(paste);
+  }
+  function speedField(d,current,apply) {
+    const field=input('number',current,.5,3,'any');
+    field.required=true;
+    d.field('播放速度（倍）',field);
+    d.save(()=>{const value=field.valueAsNumber;if(!(value>=.5 && value<=3)) throw Error('请输入 0.5 到 3 之间的倍速。');apply(value);});
+  }
+  function insertBeside(index,side) {
+    const shot=ctx.insertShot(index+(side==='right' ? 1 : 0));
+    if(shot) {refocusShot=focusShot=shot;focusClip=voiceTarget=undefined;}
+  }
+  function insertButtons(d,index) {
+    for(const [side,label] of [['left','在左侧插入分镜'],['right','在右侧插入分镜']]) {
+      d.body.append(btn(label,()=>{d.wrapper.close();insertBeside(index,side);}));
+    }
+  }
+  host.addEventListener('keydown',event=>{
+    if(!(event.ctrlKey || event.metaKey) || event.shiftKey || event.altKey || event.isComposing || ctx.busy() ||
+        event.target.closest('input,textarea,select,[contenteditable="true"],dialog')) return;
+    const key=event.key.toLowerCase();
+    if(key!=='c' && key!=='v') return;
+    if(key==='v' && !clipboard) return;
+    event.preventDefault();event.stopPropagation();
+    if(key==='c') copyItem(selection.single());else pasteItem();
+  });
+
   function editShot(s,index) {
     if (ctx.busy()) return;
     const shot=s.shots[index], config=s.settings[index] ?? {};
@@ -280,6 +367,7 @@ window.mountEditTimeline = function (host, ctx) {
     const duration=input('number',config.duration,.1,86400,.001); duration.placeholder='跟随候选素材';
     const smart=input('checkbox'); smart.checked=!!config.smartTrim;
     d.field('名称',name); d.field('分镜说明',desc); d.field('指定时长（秒）',duration); d.field('随机选择素材起点',smart);
+    insertButtons(d,index);
     d.foot.append(btn('添加候选',()=>{d.wrapper.close();ctx.importShot(shot);}));
     d.save(()=>ctx.shotSettings(shot,{name:name.value.trim(),description:desc.value,duration:duration.value ? duration.valueAsNumber : null,smartTrim:smart.checked}));
     d.wrapper.showModal();
@@ -410,6 +498,12 @@ window.mountEditTimeline = function (host, ctx) {
     if (fit!==false) zoomScales=scalesAround(timeScale);
     ctx.showZoom(zoomScales.indexOf(timeScale)+1,zoomScales.length);
     const timelineWidth=Math.max(host.clientWidth-98,totalTime*timeScale);
+    const oldFrames = new Map();
+    for (const image of host.querySelectorAll('img[data-thumb][src]')) {
+      const key = image.dataset.thumb + '/' + image.dataset.time;
+      if (!oldFrames.has(key)) oldFrames.set(key, []);
+      oldFrames.get(key).push(image);
+    }
     const canvas=el('div','sequence-canvas');
     waveforms.clear();
     canvas.style.setProperty('--sequence-width',timelineWidth+'px');
@@ -452,6 +546,31 @@ window.mountEditTimeline = function (host, ctx) {
       node.append(head,track);canvas.append(node);
       return track;
     }
+    function eventPosition(event,row) {
+      const bounds=canvas.querySelector('.sequence-ruler .sequence-content').getBoundingClientRect();
+      const node=event.target.closest('[data-drop-shot],[data-voice-shot]');
+      const position=positionAt(event.clientX ? (event.clientX-bounds.left)/timeScale : playTime);
+      if(node) {
+        position.index=Number(node.dataset.dropShot ?? node.dataset.voiceShot);
+        if(!event.clientX || position.time<shotTimes[position.index] || position.time>=shotTimes[position.index]+widths[position.index]) position.time=shotTimes[position.index];
+      }
+      if(row!==undefined) position.row=row;
+      return position;
+    }
+    canvas.addEventListener('click',event=>{
+      if(!event.target.closest('.sequence-block,.sequence-content')) return;
+      const voice=event.target.closest('[data-voice-row]');
+      pastePosition=eventPosition(event,voice ? Number(voice.dataset.voiceRow) : undefined);
+    },true);
+    canvas.addEventListener('contextmenu',event=>{
+      if(event.defaultPrevented || ctx.busy() || !event.target.closest('.sequence-content')) return;
+      event.preventDefault();
+      const node=event.target.closest('.sequence-block');
+      const position=eventPosition(event,node?.hasAttribute('data-voice-row') ? Number(node.dataset.voiceRow) : undefined);
+      const d=dialog('时间轴');
+      clipboardButtons(d,node,position);
+      d.wrapper.showModal();
+    });
     function block(track,from,duration,text,action,title) {
       const b=btn(text,action,title ?? text);
       b.classList.add('sequence-block');
@@ -480,8 +599,11 @@ window.mountEditTimeline = function (host, ctx) {
         b.dataset.dropShot=String(i);
         b.dataset.candidateIndex=String(j);
         if (!clip) {b.classList.add('sequence-empty');continue;}
+        b.dataset.clipSource = clip.asset.sourceKey ?? clip.asset.id;
+        b.classList.toggle('material-instance', b.dataset.clipSource === locatedMaterial);
         const owner=s.shots[i];
         selection.bind(b,clip,()=>ctx.removeClip(owner,clip));
+        bindCopy(b,'视频',()=>ctx.copyClip(clip));
         if (clip.enabled===false) b.classList.add('sequence-disabled');
         if (clip===s.selected) b.classList.add('sequence-selected');
         const seconds=clipSpan(clip);
@@ -496,13 +618,14 @@ window.mountEditTimeline = function (host, ctx) {
         const ranges=clip.ranges ?? [{start:clip.start,end:clip.end}];
         const retained=ranges.reduce((sum,r)=>sum+r.end-r.start,0);
         for(let n=0;n<count;n++) {
-          const img=el('img','sequence-thumb');img.alt='';img.draggable=false;
+          let img=el('img','sequence-thumb');img.alt='';img.draggable=false;
           if(clip.asset.kind==='image') img.src=clip.asset.url;
           else {
             let remaining=retained*(n+.5)/count;
             let seconds=clip.start;
             for(const r of ranges){seconds=r.start+remaining;if(seconds<r.end) break;remaining-=r.end-r.start;}
             img.dataset.thumb=clip.asset.id;img.dataset.time=String(Math.max(0,seconds));
+            img = oldFrames.get(img.dataset.thumb + '/' + img.dataset.time)?.pop() ?? img;
           }
           frames.append(img);
         }
@@ -513,6 +636,7 @@ window.mountEditTimeline = function (host, ctx) {
         b.oncontextmenu=(e)=>{
           e.preventDefault();focusShot=s.shots[i];focusClip=clip;voiceTarget=undefined;
           const d=dialog('候选 · '+clip.asset.name);
+          clipboardButtons(d,b,eventPosition(e));
           d.body.append(btn(clip.enabled===false ? '参与混剪' : '排除此候选',()=>{ctx.toggleClip(clip); d.wrapper.close();}),
             btn('候选包装',()=>{d.wrapper.close();editLayer({key:'local'});}));
           d.body.append(btn('截取封面帧',()=>{d.wrapper.close();ctx.captureCover(clip);}));
@@ -539,26 +663,41 @@ window.mountEditTimeline = function (host, ctx) {
         b.setAttribute('aria-keyshortcuts','Alt+ArrowLeft Alt+ArrowRight');
       }
       b.dataset.dropShot=String(i);
-      if(i===0 && shot) b.oncontextmenu=(event)=>{event.preventDefault();ctx.firstCover();};
+      if(shot) b.oncontextmenu=(event)=>{
+        event.preventDefault();const d=dialog('分镜 '+(i+1));
+        insertButtons(d,i);clipboardButtons(d,b,eventPosition(event));
+        if(i===0) d.body.append(btn('首分镜封面',()=>{d.wrapper.close();ctx.firstCover();}));
+        d.wrapper.showModal();
+      };
     }
     bindShotStrip(strip,[...s.shots]);
     function voiceBlock(lane,voice,from,span) {
       const asset=voice.asset;
       const si=s.shots.indexOf(voice.shot), delay=si>=0 ? s.voiceOffset(si,voice.row) : 0;
-      const duration=si>=0 ? s.voiceDuration(si,voice.row) : asset?.duration;
+      const speed=asset ? s.voiceSpeed(asset,voice.shot,voice.row) : 1;
+      const duration=!asset ? undefined : si>=0 ? s.voiceDuration(si,voice.row) : asset.duration/speed;
       const displayed=Math.min(Math.max(.1,span-delay),duration ?? span);
       const b=block(lane,from+delay,displayed,asset?.name ?? '＋ 添加口播',()=>{
         if (asset) {voiceTarget=voice;focusShot=voice.shot;focusClip=undefined;ctx.voice(voice);}
         else ctx.addVoice(voice);
       });
+      if(asset) b.title=asset.name+' · '+speed+' 倍 · 右键调整倍速或复制口播';
       b.dataset.voiceRow=String(voice.row);
       if(si>=0) b.dataset.voiceShot=String(si);
       if (!asset) b.classList.add('sequence-empty');
       else {
-        waveforms.add(b,asset,{ranges:voice.shot && s.voiceRanges(voice.shot,voice.row),span:displayed,volume:s.voiceVolume(asset,voice.shot,voice.row)});
+        waveforms.add(b,asset,{ranges:voice.shot && s.voiceRanges(voice.shot,voice.row),span:displayed*speed,volume:s.voiceVolume(asset,voice.shot,voice.row)});
         selection.bind(b,'voice:'+si+'/'+voice.row+'/'+asset.id,()=>ctx.removeVoice(voice));
         b.ondblclick=()=>ctx.editVoice(voice);
-        b.oncontextmenu=(e)=>{e.preventDefault();voiceTarget=voice;focusShot=voice.shot;focusClip=undefined;editLayer({key:'voice'});};
+        bindCopy(b,'口播',()=>ctx.copyVoice(voice));
+        b.oncontextmenu=(e)=>{
+          e.preventDefault();voiceTarget=voice;focusShot=voice.shot;focusClip=undefined;
+          const d=dialog('口播 · '+asset.name);
+          clipboardButtons(d,b,eventPosition(e,voice.row));
+          d.body.append(btn('口播包装',()=>{d.wrapper.close();editLayer({key:'voice'});}));
+          speedField(d,speed,value=>ctx.setVoiceSpeed(asset,voice.shot,voice.row,value));
+          d.wrapper.showModal();
+        };
       }
     }
     if(s.segmented) {
@@ -574,8 +713,10 @@ window.mountEditTimeline = function (host, ctx) {
     for(const [i,asset] of s.music.entries()) {
       const start=shotTimes[s.musicAt] ?? 0;
       const cell=block(row('音乐 '+(i+1),'sequence-music','music'+i),start,totalTime-start,asset.name,()=>ctx.music(asset));
-      waveforms.add(cell,asset,{span:totalTime-start,loop:true,volume:s.musicVolume(asset)});
+      cell.title=asset.name+' · '+s.musicSpeed(asset)+' 倍 · 右键调整倍速';
+      waveforms.add(cell,asset,{span:(totalTime-start)*s.musicSpeed(asset),loop:true,volume:s.musicVolume(asset)});
       selection.bind(cell,asset,()=>removeItem(s.music,asset));
+      cell.oncontextmenu=(e)=>{e.preventDefault();const d=dialog('配乐 · '+asset.name);speedField(d,s.musicSpeed(asset),speed=>ctx.setMusicSpeed(asset,speed));d.wrapper.showModal();};
     }
     if(s.selected?.videoSubtitles && s.shots.some((shot)=>shot.includes(s.selected))) {
       const clip=s.selected, i=s.shots.findIndex((shot)=>shot.includes(clip));
@@ -586,6 +727,7 @@ window.mountEditTimeline = function (host, ctx) {
           const begin=Math.max(range.start,cue.start/1000),end=Math.min(range.end,cue.end/1000);
           if(end>begin) {
             const cell=block(lane,shotTimes[i]+elapsed+(begin-range.start)/clip.speed,(end-begin)/clip.speed,cue.text,()=>{},'双击编辑字幕');
+            bindCopy(cell,'字幕',()=>({text:cue.text,highlights:structuredClone(cue.highlights),duration:Math.max(1,Math.round((end-begin)/clip.speed*1000))}));
             selection.bind(cell,cue,()=>{
               if(!clip.videoSubtitles) return;
               removeItem(clip.videoSubtitles.cues,cue);
@@ -605,16 +747,37 @@ window.mountEditTimeline = function (host, ctx) {
         const span=caption.shot==null ? totalTime-offset : widths[caption.shot];
         if(span>caption.start) {
           const cell=block(lanes.get(caption.row),offset+caption.start,Math.min(span-caption.start,caption.duration),caption.name,()=>{},'双击编辑口播字幕');
+          bindCopy(cell,'字幕',()=>({text:caption.name,highlights:structuredClone(caption.highlights),duration:Math.max(1,Math.round(caption.duration*1000))}));
           selection.bind(cell,caption.key,caption.remove);
           cell.ondblclick=caption.open;
         }
+      }
+    }
+    if(s.timelineCaptions.length) {
+      const lane=row('时间轴字幕','sequence-caption','pasted-captions');
+      for(const cue of s.timelineCaptions) {
+        const start=cue.start/1000, length=(cue.end-cue.start)/1000;
+        if(start>=totalTime) continue;
+        const cell=block(lane,start,Math.min(length,totalTime-start),cue.text,()=>{},'双击编辑字幕');
+        selection.bind(cell,cue,()=>removeItem(s.timelineCaptions,cue));
+        bindCopy(cell,'字幕',()=>({text:cue.text,highlights:structuredClone(cue.highlights),duration:cue.end-cue.start}));
+        cell.ondblclick=()=>{
+          const d=dialog('编辑时间轴字幕'), words=el('textarea');
+          words.value=cue.text;words.required=true;d.field('字幕内容',words);
+          const begin=input('number',start,0,null,.001),end=input('number',cue.end/1000,0,null,.001);
+          d.field('入点（秒）',begin);d.field('出点（秒）',end);
+          d.save(()=>{if(!words.value.trim() || !(end.valueAsNumber>begin.valueAsNumber)) throw Error('请填写字幕并检查起止时间。');
+            Object.assign(cue,{text:words.value.trim(),start:Math.round(begin.valueAsNumber*1000),end:Math.round(end.valueAsNumber*1000)});});
+          d.wrapper.showModal();
+        };
       }
     }
     function layerRow(target,items,start,span) {
       const lanes=new Map();
       for(const [i,layer] of (items ?? []).entries()) {
         const limit=ctx.asset(layer.id)?.duration;
-        const sourceSpan=limit>0 ? limit-(layer.mediaOffset ?? 0) : Infinity;
+        const speed=layer.speed ?? 1;
+        const sourceSpan=limit>0 ? (limit-(layer.mediaOffset ?? 0))/speed : Infinity;
         const length=Math.min(layer.end ?? Infinity,span,layer.start+sourceSpan)-layer.start;
         const id=layer.kind+'-'+(layer.laneId ?? i);
         if(!lanes.has(id)) lanes.set(id,row(target.label+' · '+kinds[layer.kind],'sequence-layer kind-'+layer.kind,target.label+'/'+(target.column ?? 0)+'/'+id));
@@ -624,7 +787,7 @@ window.mountEditTimeline = function (host, ctx) {
         const cell=block(lane,start+layer.start,Math.max(.1,length),title,()=>{},title+' · 双击编辑');
         if (length>0 && (layer.kind==='sound' || layer.kind==='pip')) {
           const offset=layer.mediaOffset ?? 0;
-          waveforms.add(cell,ctx.asset(layer.id),{ranges:[{start:offset,end:offset+length}],volume:layer.volume ?? (layer.kind==='pip'?0:100)});
+          waveforms.add(cell,ctx.asset(layer.id),{ranges:[{start:offset,end:offset+length*speed}],volume:layer.volume ?? (layer.kind==='pip'?0:100)});
         }
         selection.bind(cell,layer,()=>removeItem(items,layer));
         cell.ondblclick=()=>{
@@ -644,7 +807,7 @@ window.mountEditTimeline = function (host, ctx) {
             if(Math.abs(event.clientX-x)<3 && !dragged) return;
             dragged=true;
             const delta=(event.clientX-x)/timeScale;
-            if(edge==='left') a=snap(Math.max(Math.max(0,original-(layer.mediaOffset ?? 0)),Math.min(b-.05,original+delta)));
+            if(edge==='left') a=snap(Math.max(Math.max(0,original-(layer.mediaOffset ?? 0)/speed),Math.min(b-.05,original+delta)));
             else if(edge==='right') b=snap(Math.min(span,original+sourceSpan,Math.max(a+.05,oldEnd+delta)));
             else {
               a=snap(Math.max(0,Math.min(span-.05,original+delta)));
@@ -655,7 +818,7 @@ window.mountEditTimeline = function (host, ctx) {
           cell.onpointerup=()=>{
             cell.onpointermove=cell.onpointerup=cell.onpointercancel=null;
             if(!dragged) return;
-            if(edge==='left') layer.mediaOffset=snap((layer.mediaOffset ?? 0)+a-original);
+            if(edge==='left') layer.mediaOffset=snap((layer.mediaOffset ?? 0)+(a-original)*speed);
             layer.start=a;layer.end=edge==='move' && layer.end==null ? null : b;
             ctx.change();
           };
@@ -670,7 +833,7 @@ window.mountEditTimeline = function (host, ctx) {
             const offset=Math.round(at*1000)/1000;
             const cut=layer.start+offset;
             layer.laneId ??= crypto.randomUUID();
-            const after={...structuredClone(layer),start:cut,mediaOffset:(layer.mediaOffset ?? 0)+offset};
+            const after={...structuredClone(layer),start:cut,mediaOffset:(layer.mediaOffset ?? 0)+offset*speed};
             layer.end=cut;items.splice(i+1,0,after);d.wrapper.close();ctx.change();
           });
           split.disabled=at<.05 || length-at<.05;
@@ -715,7 +878,7 @@ window.mountEditTimeline = function (host, ctx) {
       }
       refocusShot=undefined;
     }
-    for (const thumb of canvas.querySelectorAll('[data-thumb]')) thumbObserver.observe(thumb);
+    for (const thumb of canvas.querySelectorAll('[data-thumb]:not([src])')) thumbObserver.observe(thumb);
     if (zoomAnchor) {
       host.scrollLeft=zoomAnchor.time*timeScale-zoomAnchor.offset;
       zoomAnchor=undefined;
@@ -778,6 +941,7 @@ window.mountEditTimeline = function (host, ctx) {
     const viewport=host.getBoundingClientRect();
     const visibleX=Math.max(viewport.left+96,Math.min(viewport.right,x));
     playTime=Math.max(0,Math.min(totalTime,(visibleX-ruler.getBoundingClientRect().left)/timeScale));
+    pastePosition=positionAt(playTime);
     syncCursor();
     if(ctx.seekComposition(playTime)) return;
     const index=shotTimes.findLastIndex((t)=>t<=playTime);
@@ -953,6 +1117,22 @@ window.mountEditTimeline = function (host, ctx) {
     const closed=new Promise((resolve)=>d.wrapper.addEventListener('close',()=>{media.pause();media.removeAttribute('src');if(processing) ctx.cancelRecognition();resolve(outcome);},{once:true}));
     display();d.wrapper.showModal();return closed;
   }
+  function locateMaterial(source, reveal = false) {
+    locatedMaterial = source;
+    let first;
+    for (const block of host.querySelectorAll('[data-clip-source]')) {
+      const match = block.dataset.clipSource === source;
+      block.classList.toggle('material-instance', match);
+      if (match && (!first || Number(block.dataset.dropShot) < Number(first.dataset.dropShot))) first = block;
+    }
+    if (reveal && first) {
+      const area = host.getBoundingClientRect(), rect = first.getBoundingClientRect();
+      const left = area.left + (first.closest('.sequence-row')?.firstElementChild.offsetWidth ?? 0);
+      if (rect.left < left || rect.left >= area.right) host.scrollLeft += rect.left - left;
+      if (rect.top < area.top) host.scrollTop += rect.top - area.top;
+      else if (rect.bottom > area.bottom) host.scrollTop += rect.bottom - area.bottom;
+    }
+  }
   function selectClip(clip) {
     draftTransport.stop();
     activeSeek=undefined;
@@ -965,7 +1145,7 @@ window.mountEditTimeline = function (host, ctx) {
     }
     if(lastState.selected!==clip && (clip?.videoSubtitles || lastState.selected?.videoSubtitles)) refresh();
   }
-  return {refresh,syncPlayer,selectClip,editCaptions,removeSelected:selection.removeSelection,clearSelection:selection.clear,get selectionCount(){return selection.size;},editLayer:()=>editLayer(),textSettings:()=>textSettings(ctx.state()),
+  return {refresh,syncPlayer,selectClip,locateMaterial,editCaptions,removeSelected:selection.removeSelection,clearSelection:selection.clear,get selectionCount(){return selection.size;},editLayer:()=>editLayer(),textSettings:()=>textSettings(ctx.state()),
     toggleDraftPlayback:()=>draftTransport.toggle(draftTransport.playing()?[]:draftPlan(),playTime),
     stopDraftPlayback:draftTransport.stop,isDraftPlaying:draftTransport.playing,
     canPlayDraft:()=>draftPlan().length>0,get playheadTime(){return playTime;},
@@ -985,6 +1165,8 @@ window.mountEditTimeline = function (host, ctx) {
     },
     fold(expanded){folded.clear();for(const node of host.querySelectorAll('[data-lane-key]')) setFold(node,node.dataset.laneKey,!expanded);ctx.scroll();},
     reset(newProject=false) {
+      pastePosition=undefined;
+      if(newProject) clipboard=undefined;
       draftTransport.stop();selection.clear();focusShot=focusClip=voiceTarget=activeSeek=undefined;
       folded.clear();heights.clear();playTime=0;zoomAnchor=undefined;
       if (newProject && fit===false) {

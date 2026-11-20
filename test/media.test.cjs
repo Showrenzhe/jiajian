@@ -502,6 +502,36 @@ test('exports reordered cut ranges, smart trims and both reference narration len
   assert.ok(Math.abs(await toneAt(stretched, '0.22') - 660) < 65);
 });
 
+test('exports adjusted narration, looped music and sound effects at the edited speed', async t => {
+  const {catalog,output}=await fixtureDirectory(t);
+  const file=path.join(path.dirname(output),'倍速双音.wav');
+  await ffmpeg(['-f','lavfi','-i','sine=frequency=440:duration=0.8','-f','lavfi','-i','sine=frequency=880:duration=0.8',
+    '-filter_complex','[0:a][1:a]concat=n=2:v=0:a=1',file]);
+  catalog.set('tone',await inspectAsset(file,'audio'));
+  const config={...montage,shots:[[{id:'still',start:0,end:2.4}]],count:1,musicIds:[],priority:'voice'};
+  const captions={name:'双音',cues:[{start:800,end:1600,text:'高音'}]};
+  const pasted={name:'时间轴',cues:[{start:50,end:100,text:'复制的字幕'}]};
+  const whole=planMontage({...config,narrationId:'tone',narrationSpeed:2,subtitles:captions,timelineCaptions:pasted},catalog)[0];
+  assert.equal(whole.duration,.8);
+  assert.deepEqual(whole.subtitles.cues,[...pasted.cues,{start:400,end:800,text:'高音'}]);
+  const segmented=planMontage({...config,narrationMode:'segmented',segmentNarrationIds:[['tone']],
+    segmentVoiceCuts:[[{ranges:[{start:.8,end:1.6},{start:0,end:.8}],speed:2,offset:.2}]],generatedCaptions:{tone:captions}},catalog)[0];
+  assert.equal(segmented.duration,1);
+  assert.deepEqual(segmented.subtitles.cues,[{start:200,end:600,text:'高音'}]);
+  const bgm=planMontage({...config,musicIds:['tone'],musicSpeeds:[2]},catalog)[0];
+  const fx=planMontage({...config,packaging:{global:[{kind:'sound',id:'tone',speed:.5,start:.2,mediaOffset:.4}]}},catalog)[0];
+  assert.equal(fx.layers[0].tempo,.5);
+  const batch=await exportBatch([whole,segmented,bgm,fx],output);
+  assert.deepEqual(batch.failures,[]);
+  for(const [i,probes] of [[[.1,440],[.5,880]],[[.02,0],[.3,880],[.75,440]],
+    [[.1,440],[.5,880],[.94,440]],[[.02,0],[.5,440],[1.2,880]]].entries()) {
+    for(const [at,hz] of probes) {
+      const measured=await toneAt(batch.results[i].path,String(at));
+      assert.ok(Math.abs(measured-hz)<65,`第 ${i+1} 条成片在 ${at} 秒应为 ${hz} Hz，实际为 ${measured} Hz`);
+    }
+  }
+});
+
 test('renders per-row narration cuts in edit order and remaps the original SRT timestamps', async (t) => {
   const { catalog, output } = await fixtureDirectory(t);
   const voice = path.join(path.dirname(output), '三段语音.wav');

@@ -10,21 +10,22 @@
       return Math.max(.1,(priority==='voice' && speech) || settings[i]?.duration || (clip && clipSpan(clip)) || speech || 3);
     });
     const wholeVoice=whole.find((entry)=>entry.asset);
-    let target=!segmented && priority==='voice' ? wholeVoice?.asset.duration : 0;
+    const wholeDuration=wholeVoice ? wholeVoice.asset.duration/(state.voiceSpeed?.(wholeVoice.asset,null,whole.indexOf(wholeVoice)) ?? 1) : 0;
+    let target=!segmented && priority==='voice' ? wholeDuration : 0;
     let preserve=0;
     if (!shots.some((shot)=>shot.some((c)=>c.enabled!==false)) && !settings.some((row)=>row?.duration)
         && !(segmented && segments.some((row)=>row.some(Boolean)))) {
       const sounds=[...state.pack.global,...(state.pack.composites.find((row)=>row.length) ?? [])];
       const lengths=sounds.filter((layer)=>['sound','pip'].includes(layer.kind)).map((layer)=>
-        layer.end ?? layer.start + Math.max(0,(assetFor(layer.id)?.duration ?? 0)-(layer.mediaOffset ?? 0)));
+        layer.end ?? layer.start + Math.max(0,(assetFor(layer.id)?.duration ?? 0)-(layer.mediaOffset ?? 0))/(layer.speed ?? 1));
       function audioEnd(index,duration) {
         if(!(duration>0)) return 0;
         const follow=Math.max(0,Math.min(widths.length-1,index ?? 0));
         preserve=Math.max(preserve,follow);
         return widths.slice(0,follow).reduce((sum,width)=>sum+width,0)+duration;
       }
-      target=Math.max(target || 0,segmented ? 0 : audioEnd(priority==='picture'?wholeVoice?.follow:0,wholeVoice?.asset.duration),
-        audioEnd(state.musicAt,state.music[0]?.duration),...lengths);
+      target=Math.max(target || 0,segmented ? 0 : audioEnd(priority==='picture'?wholeVoice?.follow:0,wholeDuration),
+        audioEnd(state.musicAt,state.music[0]?.duration/(state.musicSpeed?.(state.music[0]) ?? 1)),...lengths);
     }
     if (target>0) {
       const prefix=widths.slice(0,preserve).reduce((sum,width)=>sum+width,0);
@@ -38,7 +39,7 @@
 
   function makePlan(s,{starts,widths,total},assetFor,sourceRanges,focus) {
     const entries=[];
-    function add(lane,asset,start,span,{ranges,head,tail,volume=100,visual=false,fit=false,loop=false,layer}={}) {
+    function add(lane,asset,start,span,{ranges,head,tail,volume=100,visual=false,fit=false,loop=false,layer,speed=1}={}) {
       if(!asset?.url || !(span>0) || (!visual && !(volume>0))) return;
       const stop=Math.min(total,start+span);
       const base={lane,asset,volume,visual,layer};
@@ -48,8 +49,8 @@
       }
       const source=sourceRanges(ranges ?? [{start:0,end:asset.duration}],head,tail);
       if(!(source.duration>0)) return;
-      if(loop) {entries.push({...base,start,end:stop,source:0,rate:1,loop:true});return;}
-      const rate=fit ? source.duration/span : 1;
+      if(loop) {entries.push({...base,start,end:stop,source:0,rate:speed,loop:true});return;}
+      const rate=fit ? source.duration/span : speed;
       let at=start;
       source.visit(0,source.duration,false,(begin,end)=>{
         const next=at+(end-begin)/rate;
@@ -57,14 +58,16 @@
         at=next;
       });
     }
-    function layers(items,start,span) {
+    function layers(items,start,span,seek=0,ownerSpeed=1) {
       for(const layer of items ?? []) {
         if(layer.kind!=='sound' && layer.kind!=='pip') continue;
         const asset=assetFor(layer.id);
-        const source=layer.mediaOffset ?? 0;
-        const available=asset?.duration>0 ? asset.duration-source : Infinity;
-        const length=Math.min(span-layer.start,(layer.end ?? Infinity)-layer.start,available);
-        add(layer,asset,start+layer.start,length,{ranges:[{start:source,end:source+length}],
+        const speed=layer.speed ?? 1;
+        const begin=Math.max(seek,layer.start);
+        const source=(layer.mediaOffset ?? 0)+(begin-layer.start)*speed;
+        const available=asset?.duration>0 ? (asset.duration-source)/speed : Infinity;
+        const length=Math.min(seek+span*ownerSpeed-begin,(layer.end ?? Infinity)-begin,available);
+        add(layer,asset,start+(begin-seek)/ownerSpeed,length/ownerSpeed,{ranges:[{start:source,end:source+length*speed}],speed:speed*ownerSpeed,
           volume:layer.volume ?? (layer.kind==='sound'?100:0),visual:layer.kind==='pip',layer});
       }
     }
@@ -75,34 +78,51 @@
         const volume=s.keepAudio && !s.muted.has(shot.indexOf(clip)) ? (clip.volume ?? 100) : 0;
         add('picture',clip.asset,at,span,{ranges:clip.ranges ?? [{start:clip.start,end:clip.end}],
           head:clip.look?.head,tail:clip.look?.tail,visual:true,volume,fit:true});
-        layers(clip.layers,at,span);
+        const ranges=clip.ranges ?? [{start:clip.start,end:clip.end}];
+        const source=sourceRanges(ranges,clip.look?.head,clip.look?.tail);
+        const speed=source.duration/span;
+        let offset=at;
+        source.visit(0,source.duration,false,(begin,end)=>{
+          const length=(end-begin)/speed;
+          layers(clip.layers,offset,length,begin-(clip.start ?? 0),speed);
+          offset+=length;
+        });
       }
       if(s.segmented) {
         const row=s.segments[i]?.findIndex(Boolean) ?? -1;
         if(row<0) return;
         const asset=s.segments[i][row], delay=s.voiceOffset(i,row);
-        add('voice',asset,at+delay,span-delay,{ranges:s.voiceRanges(shot,row),volume:s.voiceVolume(asset,shot,row)});
-        layers(s.pack.segmentNarration[i]?.[row],at,span);
+        const speed=s.voiceSpeed?.(asset,shot,row) ?? 1;
+        const ranges=s.voiceRanges(shot,row) ?? [{start:0,end:asset.duration}];
+        add('voice',asset,at+delay,span-delay,{ranges,speed,volume:s.voiceVolume(asset,shot,row)});
+        let offset=at+delay;
+        for(const {start,end} of ranges) {
+          const length=Math.min((end-start)/speed,at+span-offset);
+          if(length<=0) break;
+          layers(s.pack.segmentNarration[i]?.[row],offset,length,start,speed);
+          offset+=length;
+        }
       }
     });
     if(!s.segmented) {
       const row=s.whole.findIndex((track)=>track.asset);
       if(row>=0) {
         const {asset,follow}=s.whole[row], at=s.priority==='picture' ? starts[follow] ?? 0 : 0;
-        add('voice',asset,at,total-at,{volume:s.voiceVolume(asset,null,row)});
-        layers(s.pack.wholeNarration[row],0,total);
+        const speed=s.voiceSpeed?.(asset,null,row) ?? 1;
+        add('voice',asset,at,total-at,{volume:s.voiceVolume(asset,null,row),speed});
+        layers(s.pack.wholeNarration[row],at,Math.min(total-at,asset.duration/speed),0,speed);
       }
     }
     if(s.music.length) {
       const at=starts[s.musicAt] ?? 0, asset=s.music[0];
-      add('music',asset,at,total-at,{volume:s.musicVolume(asset),loop:true});
+      add('music',asset,at,total-at,{volume:s.musicVolume(asset),loop:true,speed:s.musicSpeed?.(asset) ?? 1});
     }
     layers(s.pack.global,0,total);
     layers(s.pack.composites.find((items)=>items.length),0,total);
     return entries.sort((a,b)=>a.start-b.start);
   }
 
-  function transport(stage,{tick,changed}) {
+  function transport(stage,{tick,changed,previewSource}) {
     const overlay=document.createElement('div');
     overlay.className='draft-transport-preview';overlay.hidden=true;
     const label=document.createElement('span');
@@ -133,9 +153,24 @@
         node.preload='auto';node.playsInline=true;node.loop=!!entry.loop;
         node.volume=Math.max(0,Math.min(1,entry.volume/100));node.muted=!node.volume;
       }
-      node.src=entry.asset.url;
       overlay.append(node);
-      return {node,asset:entry.asset,entry:null,targetSet:false,waitingSince:0};
+      const proxy=previewSource?.(entry.asset);
+      const item={node,asset:entry.asset,entry:null,targetSet:false,waitingSince:0,mayUseProxy:Boolean(proxy)};
+      if (proxy) Promise.resolve(proxy).catch(()=>null).then(url=>{
+        if (!node.isConnected || !item.mayUseProxy) return;
+        item.mayUseProxy=Boolean(url);
+        node.src=url || entry.asset.url;
+      });
+      else node.src=entry.asset.url;
+      return item;
+    }
+    function retryOriginal(item) {
+      if (!item.mayUseProxy) return false;
+      item.mayUseProxy=false;
+      item.waitingSince=0;
+      item.targetSet=false;
+      item.node.src=item.asset.url;
+      return true;
     }
     function render() {
       active=active.filter((entry)=>entry.end>time);
@@ -155,7 +190,9 @@
         if(node.tagName!=='IMG' && (node.readyState<2 || node.seeking)) item.waitingSince ||= now;
         else item.waitingSince=0;
         if(node.error || (item.waitingSince && now-item.waitingSince>10000)) {
-          failed.add(entry.asset);continue;
+          if(retryOriginal(item)) ready=false;
+          else failed.add(entry.asset);
+          continue;
         }
         if(node.tagName==='IMG') continue;
         if(item.entry!==entry) {item.entry=entry;item.targetSet=false;node.volume=Math.max(0,Math.min(1,entry.volume/100));node.muted=!node.volume;}
@@ -174,10 +211,16 @@
       const visuals=active.some((e)=>e.visual && !failed.has(e.asset));
       label.hidden=visuals;
       if(!visuals) label.textContent=active.filter((e)=>!failed.has(e.asset)).map((e)=>e.asset.name).join(' · ') || '轨道试听';
-      for(const {node,asset} of media.values()) {
+      for(const item of media.values()) {
+        const {node,asset}=item;
         if(node.tagName==='IMG')continue;
         if(!ready) {if(!node.paused)node.pause();continue;}
-        if(node.paused && !node.ended) node.play().catch((error)=>{if(error.name!=='AbortError')failed.add(asset);});
+        if(node.paused && !node.ended) {
+          const src=node.src;
+          node.play().catch(error=>{
+            if(error.name!=='AbortError' && node.isConnected && node.src===src && !retryOriginal(item)) failed.add(asset);
+          });
+        }
       }
       return ready;
     }

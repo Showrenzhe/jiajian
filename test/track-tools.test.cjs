@@ -80,6 +80,13 @@ test('draft playback maps sliced narration, original sound, looping music and ef
   assert.equal(plan.find((item)=>item.lane==='music').loop,true);
   assert.deepEqual(pieces(sounds[0]),[[.2,.55,.45,1,65]]);
 
+  const fast={...state,voiceSpeed:()=>2,voiceDuration:()=>.35,musicSpeed:()=>.5};
+  const layoutFast=timing(fast,()=>.3,library);
+  const planFast=makePlan(fast,layoutFast,library,waveformSource);
+  assert.deepEqual(layoutFast.widths,[.3,.6]);
+  assert.deepEqual(planFast.filter(e=>e.lane==='voice').map(e=>[e.start,e.end,e.rate].map(value)),[[.55,.7,2],[.7,.9,2]]);
+  assert.equal(planFast.find(e=>e.lane==='music').rate,.5);
+
   // A narration-only project may follow a later, empty shot.
   Object.assign(state,{shots:[[],[],[]],settings:[],segments:[],segmented:false,
     music:[],whole:[{asset:null},{asset:voice,follow:2}]});

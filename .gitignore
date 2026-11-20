@@ -10,5 +10,6 @@
 *.key
 /runtime/
 /tools/ffmpeg*/
+/tools/project-thumbnail/
 /dist/
 /*.zip

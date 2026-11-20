@@ -1,9 +1,9 @@
 'use strict';
 
-const { randomUUID } = require('node:crypto');
+const { createHash, randomUUID } = require('node:crypto');
 const fs = require('node:fs/promises');
 const path = require('node:path');
-const { saveProject, loadProject } = require('./project-format.cjs');
+const { saveProject, loadProject, readProject, embeddedThumbnail, projectReferences } = require('./project-format.cjs');
 const { imageExtensions, videoExtensions } = require('./media.cjs');
 
 const maxBytes = 1024 * 1024;
@@ -16,45 +16,31 @@ function cleanName(value, fallback = '未命名剪辑') {
   return value.toWellFormed().replace(/[\x00-\x1f\x7f-\x9f]/g, ' ').trim() || fallback;
 }
 
-async function readDocument(file) {
-  const reader = await fs.open(file, 'r');
-  try {
-    const info = await reader.stat();
-    if (!info.isFile() || info.size > maxBytes) throw new Error('草稿文件无效或超过大小上限。');
-    const buffer = Buffer.allocUnsafe(info.size + 1);
-    let length = 0;
-    while (length < buffer.length) {
-      const { bytesRead } = await reader.read(buffer, length, buffer.length - length, null);
-      if (!bytesRead) break;
-      length += bytesRead;
-    }
-    if (length !== info.size) throw new Error('草稿文件正在变化。');
-    return JSON.parse(new TextDecoder('utf-8', { fatal: true }).decode(buffer.subarray(0, length)));
-  } finally { await reader.close(); }
-}
-
 function firstVisual(document) {
   if (!Array.isArray(document.config?.shots) || !Array.isArray(document.assets)) return null;
   const cover = document.config.cover;
   const chosen = cover?.mode === 'library' && cover.items?.[Math.max(0,cover.active ?? 0)];
-  const clip = chosen || document.config.shots.find((shot) => Array.isArray(shot) && shot.length)?.[0];
+  const clip = chosen || document.config.shots.find((shot) => Array.isArray(shot) && shot.length)?.[0] || document.assets.find((item) => ['video', 'image'].includes(item?.kind));
   const asset = clip && document.assets.find((item) => item?.id === clip.id);
+  const time = chosen?.time ?? (cover?.mode === 'first-shot' ? clip.ranges?.[0]?.start ?? clip.start : undefined);
+  return localCover(asset, time);
+}
+
+function localCover(asset, time) {
   const file = asset?.path;
   if (typeof file !== 'string' || !path.isAbsolute(file) || file.includes('\0') || /^[\\/]{2}/.test(file)
       || (process.platform === 'win32' && (!/^[a-z]:[\\/]/i.test(file) || file.slice(2).includes(':')))) return null;
   const allowed = asset.kind === 'image' ? imageExtensions : asset.kind === 'video' ? videoExtensions : [];
-  const time = chosen?.time ?? (cover?.mode === 'first-shot' ? clip.ranges?.[0]?.start ?? clip.start : undefined);
   return allowed.includes(path.extname(file).slice(1).toLowerCase()) ? { path: file, kind: asset.kind, ...(asset.kind === 'video' && Number.isFinite(time) && {time}) } : null;
 }
 
-function readDraftRecord(id, document) {
-  const draft = document?.draft;
-  if (document?.format !== 'sdworkbench' || document.version !== 1 || draft?.id !== id
+function draftMeta(id, draft) {
+  if (draft?.id !== id
       || !Number.isSafeInteger(draft.revision) || draft.revision < 1 || typeof draft.name !== 'string'
       || typeof draft.updatedAt !== 'string' || !Number.isFinite(Date.parse(draft.updatedAt))) throw new Error('草稿记录无效。');
   const meta = { id, name: cleanName(draft.name), revision: draft.revision, updatedAt: new Date(draft.updatedAt).toISOString() };
   if (Number.isFinite(draft.duration) && draft.duration >= 0) meta.duration = draft.duration;
-  return { meta, cover: firstVisual(document) };
+  return meta;
 }
 
 function estimateDuration(config) {
@@ -68,31 +54,120 @@ function estimateDuration(config) {
   return Number.isFinite(seconds) && seconds > 0 ? Math.round(seconds * 1000) / 1000 : undefined;
 }
 
-function createDraftStore(directory,resolvePath) {
+function createDraftStore(directory,resolvePath,inspect) {
   const records = new Map();
   let ready;
   let writes = Promise.resolve();
   const snapshotPath = (id) => path.join(directory, `${id}.sdworkbench`);
+  const cacheDir=path.join(directory,'.list-cache');
+  const indexPath=path.join(cacheDir,'index.json');
+  const coverPath=id=>path.join(cacheDir,id+'.jpg');
+  const digest=bytes=>createHash('sha256').update(bytes).digest('hex');
+  const pendingThumbnails=new WeakMap();
+  let indexDirty=false;
 
-  async function scan() {
+  async function fileStamp(file) {
+    const info=await fs.lstat(file,{bigint:true});
+    if(!info.isFile()) throw Error('找不到这个本地草稿。');
+    return [info.size,info.mtimeNs,info.ctimeNs,info.ino].join(':');
+  }
+
+  async function cacheWrite(file,bytes) {
+    const temp=path.join(cacheDir,'.'+randomUUID()+'.tmp');
+    try {
+      await fs.mkdir(cacheDir,{recursive:true,mode:0o700});
+      await fs.writeFile(temp,bytes,{flag:'wx',mode:0o600});
+      await fs.rename(temp,file);
+      return true;
+    } catch {return false;}
+    finally {await fs.rm(temp,{force:true}).catch(()=>{});}
+  }
+
+  async function readSmallFile(file,limit) {
+    const handle=await fs.open(file,'r');
+    try {
+      const info=await handle.stat();
+      if(!info.isFile() || info.size>limit) throw Error('缓存大小无效。');
+      const bytes=Buffer.alloc(info.size+1);
+      let size=0;
+      while(size<bytes.length) {
+        const {bytesRead}=await handle.read(bytes,size,bytes.length-size,null);
+        if(!bytesRead) break;
+        size+=bytesRead;
+      }
+      if(size!==info.size) throw Error('缓存正在改变。');
+      return bytes.subarray(0,size);
+    } finally {await handle.close();}
+  }
+
+  async function readIndex() {
+    try {
+      const index=JSON.parse(await readSmallFile(indexPath,16*maxBytes));
+      if(index.version!==1 || !Array.isArray(index.entries) || index.entries.length>maxDrafts ||
+          digest(JSON.stringify(index.entries))!==index.checksum) throw Error('索引无效。');
+      const cached=new Map();
+      for(const row of index.entries) {
+        const id=row.meta?.id;
+        if(!idPattern.test(id) || cached.has(id) || typeof row.stamp!=='string' ||
+            typeof row.embedded!=='boolean' || row.embedded!==Boolean(row.hash) ||
+            (row.hash && !/^[a-f0-9]{64}$/.test(row.hash))) throw Error('索引条目无效。');
+        const cover=localCover(row.cover,row.cover?.time);
+        if(row.cover!==null && !cover) throw Error('索引封面无效。');
+        cached.set(id,{...row,cover,meta:draftMeta(id,row.meta)});
+      }
+      return cached;
+    } catch {indexDirty=true;return new Map();}
+  }
+
+  async function persistIndex() {
+    const entries=[...records.values()];
+    const checksum=digest(JSON.stringify(entries));
+    indexDirty=!(await cacheWrite(indexPath,JSON.stringify({version:1,checksum,entries})));
+  }
+
+  async function recordDocument(id,doc,stamp) {
+    if(doc?.format!=='sdworkbench' || doc.version!==1) throw Error('草稿记录无效。');
+    const meta=draftMeta(id,doc.draft);
+    const jpeg=embeddedThumbnail(doc);
+    if(jpeg) await cacheWrite(coverPath(id),jpeg);
+    return {meta,cover:firstVisual(doc),embedded:Boolean(jpeg),hash:jpeg ? digest(jpeg) : null,stamp};
+  }
+
+  async function scan(initial=false) {
+    const previous=initial ? await readIndex() : records;
+    const next=new Map();
     let directoryHandle;
     try { directoryHandle = await fs.opendir(directory); } catch (error) {
-      if (error.code === 'ENOENT') return;
+      if (error.code === 'ENOENT') {records.clear();return;}
       throw new Error('无法读取本地草稿目录。');
     }
     let scanned = 0;
     for await (const entry of directoryHandle) {
-      if (++scanned > 4096 || records.size >= maxDrafts) break;
+      if (++scanned > 4096 || next.size >= maxDrafts) break;
       if (!entry.isFile() || path.extname(entry.name) !== '.sdworkbench') continue;
       const id = path.basename(entry.name, '.sdworkbench');
       if (!idPattern.test(id)) continue;
-      try { records.set(id, readDraftRecord(id, await readDocument(snapshotPath(id)))); } catch {
-        // A damaged draft is left on disk and cannot be chosen from the library.
+      const file=snapshotPath(id);
+      try {
+        const stamp=await fileStamp(file), old=previous.get(id);
+        if(old?.stamp===stamp) {next.set(id,old);continue;}
+        indexDirty=true;
+        const doc=await readProject(file);
+        if(await fileStamp(file)===stamp) next.set(id,await recordDocument(id,doc,stamp));
+      } catch {
+        // Leave damaged or concurrently replaced drafts on disk for the next scan.
       }
     }
+    for(const id of previous.keys()) if(!next.has(id)) {
+      indexDirty=true;
+      records.delete(id);
+      await fs.rm(coverPath(id),{force:true}).catch(()=>{});
+    }
+    for(const [id,row] of next) records.set(id,row);
+    if(indexDirty) await persistIndex();
   }
 
-  function initialize() { return ready ??= scan(); }
+  function initialize() { return ready ??= scan(true); }
 
   function serialize(action) {
     const operation = writes.then(async () => { await initialize(); return action(); });
@@ -105,12 +180,12 @@ function createDraftStore(directory,resolvePath) {
     const stage = path.join(directory, `.draft-${randomUUID()}.sdworkbench`);
     try {
       await saveProject(stage, config, catalog, { overwrite: true });
-      const document = await readDocument(stage);
+      const document = await readProject(stage);
       const duration = estimateDuration(document.config);
       const draft = { ...meta, ...(duration !== undefined && { duration }) };
       document.draft = draft;
       const contents = Buffer.from(JSON.stringify(document), 'utf8');
-      if (contents.length > maxBytes) throw new Error('草稿超过 1 MiB 的大小上限。');
+      if (contents.length - (document.thumbnail?.length ?? 0) > maxBytes) throw new Error('草稿超过 1 MiB 的大小上限。');
       const writer = await fs.open(stage, 'r+');
       try {
         await writer.writeFile(contents);
@@ -118,7 +193,8 @@ function createDraftStore(directory,resolvePath) {
         await writer.sync();
       } finally { await writer.close(); }
       await fs.rename(stage, snapshotPath(meta.id));
-      records.set(meta.id, { meta: draft, cover: firstVisual(document) });
+      records.set(meta.id,await recordDocument(meta.id,document,await fileStamp(snapshotPath(meta.id))));
+      await persistIndex();
       return draft;
     } finally { await fs.rm(stage, { force: true }).catch(() => {}); }
   }
@@ -130,7 +206,9 @@ function createDraftStore(directory,resolvePath) {
   }
 
   async function list() {
-    await initialize();
+    const refresh=writes.then(()=>ready ? scan() : initialize());
+    writes=refresh.catch(()=>{});
+    await refresh;
     return [...records.values()].map(({ meta }) => ({ ...meta })).sort((a, b) => b.updatedAt.localeCompare(a.updatedAt));
   }
 
@@ -142,8 +220,12 @@ function createDraftStore(directory,resolvePath) {
   }
 
   function save({ id, name, config, expectedRevision }, catalog) {
-    return serialize(() => {
-      const { meta } = find(id);
+    return serialize(async () => {
+      const record=find(id), {meta}=record;
+      if (await fileStamp(snapshotPath(id))!==record.stamp) {
+        await scan();
+        throw new Error('草稿已更新，请重新打开后再保存。');
+      }
       if (!Number.isSafeInteger(expectedRevision) || expectedRevision !== meta.revision || meta.revision >= Number.MAX_SAFE_INTEGER) {
         throw new Error('草稿已更新，请重新打开后再保存。');
       }
@@ -153,10 +235,10 @@ function createDraftStore(directory,resolvePath) {
 
   function open(id) {
     return serialize(async () => {
-      const { meta } = find(id);
       const file = snapshotPath(id);
-      if (!(await fs.lstat(file)).isFile()) throw new Error('找不到这个本地草稿。');
-      return { ...meta, ...(await loadProject(file,resolvePath)) };
+      if (await fileStamp(file)!==find(id).stamp) await scan();
+      const {meta}=find(id);
+      return { ...meta, ...(await loadProject(file,resolvePath,inspect)) };
     });
   }
 
@@ -165,7 +247,38 @@ function createDraftStore(directory,resolvePath) {
     return record?.meta.revision === revision ? record.cover : null;
   }
 
-  return { list, create, save, open, cover };
+  async function thumbnail(id, revision) {
+    const record = records.get(id);
+    if (!record?.embedded || record.meta.revision !== revision) return null;
+    if(pendingThumbnails.has(record)) return pendingThumbnails.get(record);
+    const task=(async()=>{
+      const file=snapshotPath(id);
+      if(await fileStamp(file)!==record.stamp) {
+        await list();
+        return records.get(id)!==record ? thumbnail(id,revision) : null;
+      }
+      try {
+        const bytes=await readSmallFile(coverPath(id),256*1024);
+        if(digest(bytes)===record.hash) return bytes;
+      } catch {}
+      const jpeg=embeddedThumbnail(await readProject(file));
+      if(!jpeg || digest(jpeg)!==record.hash) return null;
+      await cacheWrite(coverPath(id),jpeg);
+      return jpeg;
+    })();
+    pendingThumbnails.set(record,task);
+    try {return await task;} finally {pendingThumbnails.delete(record);}
+  }
+
+  async function* assetReferences() {
+    await initialize();
+    for (const id of records.keys()) {
+      let project;
+      try { project = projectReferences(await readProject(snapshotPath(id))); } catch { continue; }
+      for (const row of project.rows) yield {...row, proxyEnabled:project.config.proxyEnabled};
+    }
+  }
+  return { list, create, save, open, cover, thumbnail, assetReferences };
 }
 
 module.exports = { createDraftStore };

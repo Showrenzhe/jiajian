@@ -81,7 +81,7 @@
   };
   const jobKey = ({ index, voiceId }) => JSON.stringify([index, voiceId]);
   const textLimit = (state) => state.seedAudio ? 3000 : state.breeze ? 1000 : 500;
-  const textLength = (state, text) => state.seedAudio || state.breeze ? [...text.trim()].length : text.trim().length;
+  const textLength = (_state, text) => [...text.trim()].length;
   const preferenceProfile = (state) => state.seedAudio ? 'seed-audio' : state.breeze ? 'breezeblue' : 'gateway';
   const languageNames = new Intl.DisplayNames(['zh-CN'], { type: 'language' });
   const voiceLanguage = (code) => /^[a-z]{2}$/i.test(code) ? languageNames.of(code) : '';
@@ -166,7 +166,8 @@
       const state = session;
       const busy = Boolean(state.working || state.applying);
       const count = state.items.filter(({ text }) => text.trim()).length;
-      const valid = state.items.every(({ text }) => textLength(state, text) <= textLimit(state));
+      const totalLength = state.segmented ? textLength(state, state.items.map(item => item.text.trim()).filter(Boolean).join('\n')) : 0;
+      const valid = state.items.every(({ text }) => textLength(state, text) <= textLimit(state)) && totalLength <= textLimit(state);
       const voices = voiceChoices(state).length;
       $('options').disabled = busy || state.sampling || state.loadingVoices || !state.configured;
       $('source').disabled = busy;
@@ -179,10 +180,10 @@
       $('open-settings').disabled = busy || Boolean(state.sampling);
       $('captions').disabled = busy;
       $('trim-pauses').disabled = busy;
-      $('source-summary').textContent = !valid ? `检查台词 · 单条上限 ${textLimit(state)} 字`
+      $('source-summary').textContent = !valid ? `检查台词 · ${state.segmented ? '整篇' : '单条'}上限 ${textLimit(state)} 字`
         : count ? `查看或编辑台词 · ${count} 条` : '填写台词或提示词';
       $('source-summary').classList.toggle('cloud-tts-error', !valid);
-      $('job-count').textContent = `本批 ${count} 条`;
+      $('job-count').textContent = state.segmented ? `整篇 ${totalLength} / ${textLimit(state)} 字 · ${count} 段` : `本批 ${count} 条`;
       $('job-count').classList.toggle('cloud-tts-error', count > maxItems);
       $('generate').disabled = busy || state.sampling || state.loadingVoices || !state.configured || !valid || !count || count > maxItems || !voices
         || !speed.validity.valid || !volume.validity.valid || (state.seedAudio && !pitch.validity.valid) || typeof synthesize !== 'function';
@@ -304,8 +305,9 @@
       $('provider').textContent = state.breeze ? 'Breeze Blue · TTS 2 多语言' : state.seedAudio ? '火山引擎 · Seed Audio 1.0' : '云端服务';
       $('catalog').hidden = !state.breeze || !state.configured;
       dialog.classList.toggle('breeze-voices', Boolean(state.breeze));
-      $('source-title').textContent = state.seedAudio ? '音频提示词' : '待配音台词';
-      $('source-hint').textContent = state.seedAudio ? '每条最多 3000 字。可描述场景、环境声、配乐和对白。'
+      $('source-title').textContent = state.segmented ? '分镜台词' : state.seedAudio ? '音频提示词' : '待配音台词';
+      $('source-hint').textContent = state.segmented ? '按分镜顺序连续朗读一次，再按台词切分到各分镜。'
+        : state.seedAudio ? '每条最多 3000 字。可描述场景、环境声、配乐和对白。'
         : '每条最多 ' + textLimit(state) + ' 字，可在这里修改后提交。';
       $('disclosure').textContent = state.seedAudio ? '生成时会将本批提示词发送到火山引擎。'
         : '点击生成后，本批台词会发送到已配置的云端语音服务。';
@@ -331,7 +333,7 @@
         text.value = item.text;
         text.maxLength = 10000;
         text.rows = state.items.length === 1 ? 7 : 3;
-        if (state.seedAudio) text.placeholder = '例如，远处传来雨声。男子压低声音说：“快走。”';
+        if (state.seedAudio && !state.segmented) text.placeholder = '例如，远处传来雨声。男子压低声音说：“快走。”';
         text.setAttribute('aria-label', item.label);
         const updateCount = () => {
           const length = textLength(state, item.text);
@@ -464,7 +466,7 @@
       return loadVoices(state);
     }
 
-    function open({ items, onUse: apply } = {}) {
+    function open({ items, segmented = false, onUse: apply } = {}) {
       if (session?.working || session?.applying) return;
       const source = Array.isArray(items) && items.length ? items : [{ text: '', index: 0, label: '口播台词' }];
       const prepared = source.map((item, position) => {
@@ -474,7 +476,7 @@
           label: item?.label || `第 ${position + 1} 条台词`, text,
         };
       });
-      const state = { items: prepared, seedAudio: false, voiceMode: 'fixed',
+      const state = { items: prepared, segmented, seedAudio: false, voiceMode: 'fixed',
         voices: new Map(), voicePool: new Set(), results: [], failures: [], apply: apply ?? onUse };
       session = state;
       clearAudio(samplePlayer);
@@ -506,6 +508,12 @@
       const bounded = Math.max(0, Math.min(total, completed));
       const active = Number.isFinite(progress.index) && progress.index >= 0 && progress.index < total && bounded < total;
       $('progress').max = total;
+      if (progress.phase) {
+        if (bounded) $('progress').value = bounded;
+        else $('progress').removeAttribute('value');
+        $('progress-label').textContent = progress.phase + (bounded ? ' · ' + bounded + ' / ' + total : '');
+        return;
+      }
       if (session.seedAudio && (active ? progress.fraction === 0 : bounded === 0)) {
         $('progress').removeAttribute('value');
       } else {
@@ -536,18 +544,23 @@
       renderResults();
       $('progress-row').hidden = false;
       onProgress();
-      say(state.seedAudio ? '火山引擎正在生成音频，每项最多等待 5 分钟。' : '正在生成配音…');
+      say(state.segmented ? '正在生成整篇配音…' : state.seedAudio ? '火山引擎正在生成音频，每项最多等待 5 分钟。' : '正在生成配音…');
       update();
       try {
         const enableSubtitles = $('captions').checked;
         const reply = await synthesize({
-          jobs, speed: speed.valueAsNumber, volume: volume.valueAsNumber,
+          jobs, ...(state.segmented && { segmented: true }), speed: speed.valueAsNumber, volume: volume.valueAsNumber,
           ...($('trim-pauses').checked && {trimPauses:true}),
           ...(state.seedAudio && { pitch: pitch.valueAsNumber }), ...((state.seedAudio || state.breeze) && { enableSubtitles }),
         });
         if (session !== state) return;
         const results = new Map((reply?.results ?? []).filter(({ asset }) => isLocalAudio(asset)).map((item) => [jobKey(item), item]));
         const failures = new Map((reply?.failures ?? []).map((item) => [jobKey(item), item.message]));
+        if (state.segmented && (reply?.cancelled || jobs.some(job => !results.has(jobKey(job))))) {
+          $('progress-row').hidden = true;
+          say(reply?.cancelled ? '已取消整篇配音。' : '分镜配音不完整，请重试。', reply?.cancelled ? '' : 'error');
+          return;
+        }
         for (const job of jobs) {
           const key = jobKey(job);
           const label = labels.get(key);

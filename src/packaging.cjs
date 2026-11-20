@@ -60,6 +60,7 @@ function normalizeLayers(value, mapId, allowed) {
     const end = item.end == null ? null : number(item.end, 0, Number.MAX_SAFE_INTEGER, '图层出点');
     if (end !== null && end <= start) throw new Error('图层出点须晚于入点。');
     const layer = { kind, start, end };
+    if(kind==='sound' && item.speed!==undefined) layer.speed=number(item.speed,.5,3,'音效倍速');
     if(item.mediaOffset!==undefined) layer.mediaOffset=number(item.mediaOffset,0,Number.MAX_SAFE_INTEGER,'素材起点');
     if(item.laneId!==undefined) {
       if(typeof item.laneId!=='string' || !/^[a-zA-Z0-9_-]{1,80}$/.test(item.laneId)) throw new Error('包装轨道编号无效。');
@@ -137,19 +138,20 @@ function packagingChoices(pack, shotCount) {
   };
 }
 
-function scheduleLayers({ pack, selection, catalog, clips, duration, wholeIndex, narration, voiceStart=0 }) {
+function scheduleLayers({ pack, selection, catalog, clips, duration, wholeIndex, narration, voiceStart=0, narrationSpeed=1 }) {
   const result = [];
   // Each owner has its own clock. Seek and tempo convert an owner's source range into final output seconds.
   function add(items, offset, span, seek = 0, tempo = 1) {
     for (const layer of items ?? []) {
       const asset = layer.id ? catalog.get(layer.id) : null;
-      const mediaLength = asset && asset.kind !== 'image' ? asset.duration-(layer.mediaOffset ?? 0) : Infinity;
+      const speed = layer.speed ?? 1;
+      const mediaLength = asset && asset.kind !== 'image' ? (asset.duration-(layer.mediaOffset ?? 0))/speed : Infinity;
       const sourceStart = Math.max(layer.start, seek);
       const sourceEnd = Math.min(layer.end ?? Infinity, layer.start + mediaLength, seek + span * tempo);
       const start = offset + (sourceStart - seek) / tempo;
       const end = Math.min(duration, offset + (sourceEnd - seek) / tempo);
       if (end <= start || !Number.isFinite(end)) continue;
-      result.push({ ...layer, start, end, mediaStart: sourceStart - layer.start+(layer.mediaOffset ?? 0), tempo, ...(asset && { asset }) });
+      result.push({ ...layer, start, end, mediaStart: (sourceStart - layer.start)*speed+(layer.mediaOffset ?? 0), tempo: tempo*speed, ...(asset && { asset }) });
     }
   }
   let pictureTime = 0;
@@ -175,16 +177,17 @@ function scheduleLayers({ pack, selection, catalog, clips, duration, wholeIndex,
       const keep = clip.narrationRanges ?? [{ start: 0, end: clip.narration.duration }];
       const delay = clip.voiceOffset ?? 0;
       let offset = speechTime + delay;
-      for (const range of sliceSource(keep, clip.narrationStart ?? 0, Math.max(0, (clip.timelineDuration ?? span) - delay))) {
-        const length = range.end - range.start;
-        add(items, offset, length, range.start);
+      const speed = clip.narrationSpeed ?? 1;
+      for (const range of sliceSource(keep, (clip.narrationStart ?? 0)*speed, Math.max(0, (clip.timelineDuration ?? span) - delay)*speed)) {
+        const length = (range.end - range.start)/speed;
+        add(items, offset, length, range.start, speed);
         offset += length;
       }
     }
     pictureTime += span;
     speechTime += clip.timelineDuration ?? span;
   }
-  if (narration) add(pack.wholeNarration[wholeIndex], voiceStart, Math.min(duration-voiceStart, narration.duration));
+  if (narration) add(pack.wholeNarration[wholeIndex], voiceStart, Math.min(duration-voiceStart, narration.duration/narrationSpeed), 0, narrationSpeed);
   add(pack.composites[selection.composite], 0, duration);
   if (pack.textMode === 'whole') add(pack.textGroups[selection.textRows[0]]?.[0], 0, duration);
   add(pack.global, 0, duration);

@@ -9,7 +9,7 @@ const { promisify } = require('node:util');
 const { formatSubtitles, normalizeSubtitles, parseSubtitles } = require('./subtitles.cjs');
 const { normalizeShotSettings, normalizeRanges, candidateKey, normalizeSegmentVoiceCuts, sliceSource } = require('./shot-timing.cjs');
 const { normalizeCover, selectCover, publishCover } = require('./cover.cjs');
-const { normalizeVolumeOverrides } = require('./shot-timing.cjs');
+const { audioSpeed, normalizeMusicSpeeds, normalizeVolumeOverrides } = require('./shot-timing.cjs');
 const { normalizeLook, chooseLooks, prepareLooks, lookGraph } = require('./visual-style.cjs');
 const { normalizeLayers, normalizeTransform, normalizePackaging, packagingChoices, scheduleLayers } = require('./packaging.cjs');
 const { composeLayers, writeLayerTexts } = require('./packaging-render.cjs');
@@ -34,6 +34,7 @@ const stillInput = ['-protocol_whitelist', 'file,pipe', '-f', 'image2', '-patter
 const maxShots = 1000;
 const maxCandidates = 100;
 const maxExports = 50;
+const maxMontageBatch = 1000;
 const maxWholeTracks = 250;
 const minClipSeconds = 0.1;
 const maxStillSeconds = 60;
@@ -174,10 +175,15 @@ async function extractAudioWaveform(asset, range, {signal} = {}) {
   return {start,end,duration,step:samplesPerPeak / audioRate,peaks};
 }
 
-async function createVideoThumbnail(asset, { signal, time: requestedTime } = {}) {
+function createVideoThumbnail(asset, options) {
+  return asset?.kind === 'video' ? createFrameThumbnail(asset, options) : Promise.resolve(null);
+}
+
+async function createFrameThumbnail(asset, { signal, time: requestedTime } = {}) {
   const file = asset?.path;
-  if (asset?.kind !== 'video' || typeof file !== 'string' || !path.isAbsolute(file) || file.includes('\0')
-      || /^[\\/]{2}/.test(file) || !videoExtensions.includes(path.extname(file).slice(1).toLowerCase())
+  const extensions = asset?.kind === 'image' ? imageExtensions : asset?.kind === 'video' ? videoExtensions : [];
+  if (typeof file !== 'string' || !path.isAbsolute(file) || file.includes('\0')
+      || /^[\\/]{2}/.test(file) || !extensions.includes(path.extname(file).slice(1).toLowerCase())
       || (process.platform === 'win32' && (!/^[a-z]:[\\/]/i.test(file) || file.slice(2).includes(':')))
       || !Number.isInteger(asset.videoIndex) || asset.videoIndex < 0) return null;
   signal?.throwIfAborted();
@@ -199,9 +205,9 @@ async function createVideoThumbnail(asset, { signal, time: requestedTime } = {})
     && stdout.at(-2) === 0xff && stdout.at(-1) === 0xd9 ? stdout : null;
 }
 
-async function createTrackProxy(asset, output, signal) {
+async function createTrackProxy(asset, output, signal, edge = 640) {
   const args = ['-hide_banner', '-loglevel', 'error', '-nostdin', '-threads', '2', ...mediaInput, '-i', asset.path,
-    '-map', `0:${asset.videoIndex}`, '-filter_threads', '1', '-vf', 'scale=640:640:force_original_aspect_ratio=decrease:force_divisible_by=2:reset_sar=1',
+    '-map', `0:${asset.videoIndex}`, '-filter_threads', '1', '-vf', `scale=${edge}:${edge}:force_original_aspect_ratio=decrease:force_divisible_by=2:reset_sar=1`,
     '-c:v', 'libx264', '-threads', '2', '-preset', 'veryfast', '-crf', '26', '-pix_fmt', 'yuv420p', '-fps_mode', 'passthrough'];
   if (asset.audioIndex !== null) args.push('-map', `0:${asset.audioIndex}`, '-c:a', 'aac', '-ac', '2', '-b:a', '96k');
   else args.push('-an');
@@ -292,21 +298,47 @@ function normalizeSubtitleStyle(value = {}) {
 }
 
 function drawCombinations(shots, count, random) {
-  const choices = new Map();
-  const add = (indices) => choices.set(indices.join(','), indices);
-  for (let attempt = 0; choices.size < count && attempt < count * 8; attempt += 1) {
-    add(shots.map((shot) => Math.floor(random() * shot.length)));
-  }
-  // When almost every combination was requested, fill the few remaining slots without repeated retries.
-  for (let index = 0; choices.size < count; index += 1) {
-    let cursor = index;
-    add(shots.map((shot) => {
-      const selected = cursor % shot.length;
-      cursor = Math.floor(cursor / shot.length);
-      return selected;
-    }));
-  }
-  return [...choices.values()];
+  if (count === 1) return [shots.map(shot => Math.floor(random() * shot.length))];
+  // Advance every group's shuffled deck together. After their common period,
+  // shift to a new orbit. gcd(previous period, size) counts distinct offsets:
+  // this covers the Cartesian product without rejection sampling or repeats.
+  let period = 1n;
+  const decks = shots.map(group => {
+    const size = BigInt(group.length);
+    let a = period, b = size;
+    while (b) [a, b] = [b, a % b];
+    period = period / a * size;
+    const order = group.map((_, i) => i);
+    for (let i = 0; i < order.length - 1; i++) {
+      const j = i + Math.floor(random() * (order.length - i));
+      [order[i], order[j]] = [order[j], order[i]];
+    }
+    // Original and mirrored variants share a source. Interleave those variants
+    // so both versions of one file don't crowd out the other shots in a short batch.
+    if (group.some(item => item?.mirror)) {
+      const variants = new Map();
+      for (const index of order) {
+        const source = group[index].asset;
+        if (!variants.has(source)) variants.set(source, []);
+        variants.get(source).push(index);
+      }
+      const bySource = [...variants.values()];
+      order.length = 0;
+      for (let pass = 0; order.length < group.length; pass++) {
+        for (const items of bySource) if (pass < items.length) order.push(items[pass]);
+      }
+    }
+    return { order, offsets: a };
+  });
+  return Array.from({length: count}, (_, i) => {
+    const step = BigInt(i) % period;
+    let orbit = BigInt(i) / period;
+    return decks.map(({order, offsets}) => {
+      const shift = orbit % offsets;
+      orbit /= offsets;
+      return order[Number((step + shift) % BigInt(order.length))];
+    });
+  });
 }
 
 function normalizeGeneratedCaptions(value, config) {
@@ -354,6 +386,7 @@ function segmentNarrationGroups(config, catalog, captions) {
       caption: captionFor(captions, id),
       ranges: cuts?.[index][rowIndex]?.ranges,
       offset: cuts?.[index][rowIndex]?.offset,
+      speed: cuts?.[index][rowIndex]?.speed,
       rowIndex,
     });
   });
@@ -381,6 +414,7 @@ function wholeNarrationTracks(config, catalog, captions) {
     if (!track || typeof track !== 'object' || Array.isArray(track)) throw new Error('整段口播轨道设置无效。');
     return {
       narration: track.narrationId == null ? null : requireAsset(catalog, track.narrationId, 'audio'),
+      speed: audioSpeed(track.narrationSpeed ?? 1),
       subtitles: normalizeSubtitles(track.subtitles),
       caption: track.narrationId == null ? null : captionFor(captions, track.narrationId),
     };
@@ -408,10 +442,11 @@ function segmentSpeechDuration(clip) {
 }
 
 function voiceLength(clip) {
-  return clip.narrationRanges?.reduce((sum, range) => sum + range.end - range.start, 0) ?? clip.narration.duration;
+  const source = clip.narrationRanges?.reduce((sum, range) => sum + range.end - range.start, 0) ?? clip.narration.duration;
+  return source / (clip.narrationSpeed ?? 1);
 }
 
-function appendCaptionCues(cues, caption, offset, speechDuration, speechStart = 0) {
+function appendCaptionCues(cues, caption, offset, speechDuration, speechStart = 0, speed = 1) {
   if (!caption) return;
   const start = Math.round(offset * 1000);
   const stop = Math.round((offset + speechDuration) * 1000);
@@ -422,29 +457,30 @@ function appendCaptionCues(cues, caption, offset, speechDuration, speechStart = 
   }
   const sourceStart = Math.round(speechStart * 1000);
   for (const cue of caption.cues) {
-    const shiftedStart = Math.max(start, start + cue.start - sourceStart);
-    const shiftedEnd = Math.min(start + cue.end - sourceStart, stop);
+    const shiftedStart = Math.max(start, start + Math.round((cue.start - sourceStart)/speed));
+    const shiftedEnd = Math.min(start + Math.round((cue.end - sourceStart)/speed), stop);
     if (shiftedEnd > shiftedStart) cues.push({ ...cue,start: shiftedStart, end: shiftedEnd });
   }
 }
 
-function generatedSubtitleTrack({ segmented, clips, narration, caption, duration }) {
+function generatedSubtitleTrack({ segmented, clips, narration, caption, duration, narrationSpeed }) {
   const cues = [];
   if (segmented) {
     let position = 0;
     for (const clip of clips) {
+      const speed = clip.narrationSpeed ?? 1;
       if (clip.caption && clip.narrationRanges && typeof clip.caption !== 'string') {
-        const retained = sliceSource(clip.narrationRanges, clip.narrationStart ?? 0, segmentSpeechDuration(clip));
+        const retained = sliceSource(clip.narrationRanges, (clip.narrationStart ?? 0)*speed, segmentSpeechDuration(clip)*speed);
         let time = position + (clip.voiceOffset ?? 0);
         for (const range of retained) {
-          appendCaptionCues(cues, clip.caption, time, range.end - range.start, range.start);
-          time += range.end - range.start;
+          appendCaptionCues(cues, clip.caption, time, (range.end - range.start)/speed, range.start, speed);
+          time += (range.end - range.start)/speed;
         }
-      } else if (clip.caption) appendCaptionCues(cues, clip.caption, position + (clip.voiceOffset ?? 0), segmentSpeechDuration(clip), clip.narrationStart);
+      } else if (clip.caption) appendCaptionCues(cues, clip.caption, position + (clip.voiceOffset ?? 0), segmentSpeechDuration(clip), (clip.narrationStart ?? 0)*speed, speed);
       position += clip.timelineDuration ?? clip.outputDuration;
     }
   } else if (narration) {
-    appendCaptionCues(cues, caption, 0, Math.min(narration.duration, duration));
+    appendCaptionCues(cues, caption, 0, Math.min(narration.duration/narrationSpeed, duration), 0, narrationSpeed);
   }
   return cues.length ? normalizeSubtitles({ name: caption?.name ?? '口播字幕', cues }) : null;
 }
@@ -455,8 +491,9 @@ function voiceRange(clips, index) {
   const duration = voiceLength(clip);
   const { leading = 0, trailing = 0 } = voice.edgeSilence ?? {};
   const first = clip.narrationRanges?.[0], last = clip.narrationRanges?.at(-1);
-  const head = first ? Math.min(first.end - first.start, leading - first.start) : leading;
-  const tail = last ? Math.min(last.end - last.start, trailing - (voice.duration - last.end)) : trailing;
+  const speed = clip.narrationSpeed ?? 1;
+  const head = (first ? Math.min(first.end - first.start, leading - first.start) : leading)/speed;
+  const tail = (last ? Math.min(last.end - last.start, trailing - (voice.duration - last.end)) : trailing)/speed;
   const start = clips[index - 1]?.narration && head >= minEdgeSilence ? head - seamPadding : 0;
   const end = clips[index + 1]?.narration && tail >= minEdgeSilence ? tail - seamPadding : 0;
   if (!Number.isFinite(start + end) || duration - start - end < minClipSeconds) {
@@ -600,7 +637,7 @@ function fitReferenceWhole(clips, target, fps) {
   return result;
 }
 
-function planMontage(config, catalog, random = Math.random, batchLimit = maxExports) {
+function planMontage(config, catalog, random = Math.random, batchLimit = maxMontageBatch) {
   const checkLayerAsset = (id, kind) => {
     const expected = kind === 'sound' ? ['audio'] : kind === 'lut' ? ['lut'] : kind === 'sticker' ? ['image'] : ['image', 'video'];
     requireAsset(catalog, id, ...expected);
@@ -709,6 +746,8 @@ function planMontage(config, catalog, random = Math.random, batchLimit = maxExpo
   if (musicStartShot !== null && (!Number.isInteger(musicStartShot) || musicStartShot < 0 || musicStartShot >= shots.length)) {
     throw new Error('配乐起始分镜无效。');
   }
+  const musicSpeeds = config.musicSpeeds === undefined ? [] : normalizeMusicSpeeds(config.musicSpeeds, config.musicIds.length);
+  const timelineCaptions = normalizeSubtitles(config.timelineCaptions);
   const musicPool = config.musicIds.map((id) => requireAsset(catalog, id, 'audio'));
   const musicVolume = musicPool.length ? requireNumber(config.musicVolume, 0, 100, '配乐音量') / 100 : 0;
   const narrationVolume = config.narrationVolume === undefined ? 1 : requireNumber(config.narrationVolume, 0, 100, '口播音量') / 100;
@@ -724,7 +763,8 @@ function planMontage(config, catalog, random = Math.random, batchLimit = maxExpo
     const narrationChoices = indices.slice(shots.length, shots.length + voiceGroups.length);
     const selection = packaging.select(indices.slice(shots.length + voiceGroups.length));
     const wholeTrackIndex = narrationChoices[0] ?? 0;
-    const { narration = null, subtitles = null, caption = null } = wholeTracks[wholeTrackIndex] ?? {};
+    const { narration = null, subtitles = null, caption = null, speed: narrationSpeed = 1 } = wholeTracks[wholeTrackIndex] ?? {};
+    const wholeDuration = narration ? narration.duration/narrationSpeed : 0;
     const scenes = shots.map((shot, index) => {
       const candidate = shot[indices[index]];
       const match = segmented?.pick(narrationChoices, index);
@@ -736,6 +776,7 @@ function planMontage(config, catalog, random = Math.random, batchLimit = maxExpo
         ...(match && { narrationRow: match.rowIndex }),
         ...(match && gain('segment',config.segmentNarrationIds[index][match.rowIndex],index,match.rowIndex)!=null && {voiceGain:gain('segment',config.segmentNarrationIds[index][match.rowIndex],index,match.rowIndex)}),
         ...(match?.caption && { caption: match.caption }),
+        ...(match?.speed && { narrationSpeed: match.speed }),
         ...(match?.ranges && { narrationRanges: match.ranges }),
         ...(match?.offset && { voiceOffset: match.offset }),
       };
@@ -756,8 +797,8 @@ function planMontage(config, catalog, random = Math.random, batchLimit = maxExpo
     const pools = scenes.map(({ shot, index }) => visualPool(shot, shot[indices[index]]));
     if (voicePriority) {
       if (segmented) clips = fitSegmentedVoice(clips, pools, config.fps, alignment);
-      else if (alignment === 'reference') clips = fitReferenceWhole(clips, narration.duration, config.fps);
-      else clips = fitWholeVoice(clips, pools, narration.duration, config.fps);
+      else if (alignment === 'reference') clips = fitReferenceWhole(clips, wholeDuration, config.fps);
+      else clips = fitWholeVoice(clips, pools, wholeDuration, config.fps);
     } else if (frameAligned) {
       clips = clips.map((clip, index) => {
         const duration = clip.shotDuration ?? clip.duration;
@@ -781,7 +822,7 @@ function planMontage(config, catalog, random = Math.random, batchLimit = maxExpo
     const sourceVisualDuration = segmented || voicePriority ? baseDuration : pictureDuration;
     const duration = segmented && voicePriority
       ? clips.reduce((samples, clip) => samples + Math.round(clip.timelineDuration * audioRate), 0) / audioRate
-      : (narration && voicePriority ? narration.duration : pictureDuration);
+      : (narration && voicePriority ? wholeDuration : pictureDuration);
     const leading = clips.slice(0, musicStartIndex);
     const musicStart = frameAligned ? leading.reduce((frames, clip) => frames + clip.outputFrames, 0) / config.fps
       : leading.reduce((seconds, clip) => seconds + clip.duration, 0);
@@ -789,12 +830,21 @@ function planMontage(config, catalog, random = Math.random, batchLimit = maxExpo
     const anchorIndex=followShot==null ? 0 : clips.findIndex((c)=>c.shotIndex===followShot);
     if(anchorIndex<0) throw new Error('整段口播跟随的分镜不存在。');
     const voiceStart=clips.slice(0,anchorIndex).reduce((sum,c)=>sum+(c.outputDuration ?? c.duration),0);
-    const scheduled = chooseLooks(scheduleLayers({ pack, selection, catalog, clips, duration, fps: config.fps, wholeIndex: wholeTrackIndex, narration,voiceStart }),catalog,random,effectUseCounts);
-    let voiceSubtitles=subtitleStyle?.enabled === false ? null : subtitles ?? generatedSubtitleTrack({segmented,clips,narration,caption,duration});
+    const scheduled = chooseLooks(scheduleLayers({ pack, selection, catalog, clips, duration, fps: config.fps, wholeIndex: wholeTrackIndex, narration,voiceStart,narrationSpeed }),catalog,random,effectUseCounts);
+    const importedSubtitles = narration && subtitles && narrationSpeed !== 1 ? generatedSubtitleTrack({
+      segmented:false, clips, narration, caption:subtitles, duration, narrationSpeed,
+    }) : subtitles;
+    let voiceSubtitles=subtitleStyle?.enabled === false ? null : subtitles ? importedSubtitles : generatedSubtitleTrack({segmented,clips,narration,caption,duration,narrationSpeed});
     if(voiceStart && voiceSubtitles) {
       const ms=Math.round(voiceStart*1000),stop=Math.round(duration*1000);
       const cues=voiceSubtitles.cues.map((cue)=>({...cue,start:cue.start+ms,end:Math.min(stop,cue.end+ms)})).filter((cue)=>cue.start<cue.end);
       voiceSubtitles=cues.length ? {...voiceSubtitles,cues} : null;
+    }
+    if (timelineCaptions && subtitleStyle?.enabled !== false) {
+      const end=Math.round(duration*1000);
+      const pasted=timelineCaptions.cues.filter(cue=>cue.start<end).map(cue=>({...cue,end:Math.min(cue.end,end)}));
+      if(pasted.length) voiceSubtitles={name:voiceSubtitles?.name ?? timelineCaptions.name,
+        cues:[...(voiceSubtitles?.cues ?? []),...pasted].sort((a,b)=>a.start-b.start)};
     }
     const layers=scheduled.filter((layer)=>!layer.sourceCaption);
     const videoCues=scheduled.filter((layer)=>layer.sourceCaption).map((l)=>({start:Math.round(l.start*1000),end:Math.round(l.end*1000),text:l.text,...(l.highlights && {highlights:l.highlights})})).filter((c)=>c.end>c.start);
@@ -805,6 +855,7 @@ function planMontage(config, catalog, random = Math.random, batchLimit = maxExpo
       kind: 'montage', clips, size, fps: config.fps, fit: config.fit, backgroundColor,
       ...(layers.length && { layers }), ...(selection.composite !== undefined && { composite: selection.composite }),
       keepAudio: config.keepAudio, music: musicPool[musicIndex] ?? null, musicVolume:gain('music',config.musicIds[musicIndex])??musicVolume, musicStart,
+      ...(musicSpeeds[musicIndex] && {musicSpeed:musicSpeeds[musicIndex]}), ...(narrationSpeed!==1 && {narrationSpeed}),
       narration, narrationVolume:(segmented?undefined:gain('whole',voiceId,null,wholeTrackIndex))??narrationVolume, narrationMode, priority, visualDuration: sourceVisualDuration,
       ...(videoCues.length && {videoSubtitles:{name:'视频字幕',cues:videoCues}}),
       subtitles: voiceSubtitles,...(voiceStart && {voiceStart}),
@@ -849,8 +900,12 @@ function volumeFilter(gain) {
   return gain === 1 ? '' : `,volume=${gain}`;
 }
 
-function voiceInputFilter(input, asset, start, seconds, gain, output) {
-  return `[${input}:${asset.audioIndex}]asetpts=PTS-STARTPTS,atrim=start=${time(start)}:duration=${seconds},asetpts=PTS-STARTPTS,aresample=48000,aformat=channel_layouts=stereo${volumeFilter(gain)}${output}`;
+function tempoFilter(speed) {
+  return audioTempo(speed).map(filter => ',' + filter).join('');
+}
+
+function voiceInputFilter(input, asset, start, seconds, gain, output, speed=1) {
+  return `[${input}:${asset.audioIndex}]asetpts=PTS-STARTPTS,atrim=start=${time(start)}:duration=${seconds},asetpts=PTS-STARTPTS,aresample=48000,aformat=channel_layouts=stereo${tempoFilter(speed)}${volumeFilter(gain)}${output}`;
 }
 
 function sceneFades(plan) {
@@ -979,15 +1034,17 @@ function montageArgs(plan, { intermediate = false } = {}) {
       filters.push([audio, `atrim=duration=${seconds}`, ...tempo, `apad=whole_dur=${outputSeconds}`, `atrim=duration=${outputSeconds}`, `asetpts=PTS-STARTPTS${bed}`].join(','));
       if (hasVoice) {
         const voiceInput = inputCount++;
-        const voiceStart = clip.narrationStart ?? 0;
+        const voiceSpeed = clip.narrationSpeed ?? 1;
+        const voiceStart = (clip.narrationStart ?? 0)*voiceSpeed;
         const voiceDuration = segmentSpeechDuration(clip);
         const sampleCount = Math.round((clip.timelineDuration ?? voiceDuration) * audioRate);
         const delay = Math.round((clip.voiceOffset ?? 0) * audioRate);
         const fill = (delay ? `,adelay=${delay}S:all=1` : '') + (alignVoices ? `,apad=whole_len=${sampleCount},atrim=end_sample=${sampleCount},asetpts=N/SR/TB` : '');
-        const segments = clip.narrationRanges ? sliceSource(clip.narrationRanges, voiceStart, voiceDuration) : [{ start: voiceStart, end: voiceStart + voiceDuration }];
+        const sourceDuration = voiceDuration*voiceSpeed;
+        const segments = clip.narrationRanges ? sliceSource(clip.narrationRanges, voiceStart, sourceDuration) : [{ start: voiceStart, end: voiceStart + sourceDuration }];
         args.push(...mediaInput, '-t', time(Math.max(...segments.map((part) => part.end))), '-i', voice.path);
         if (segments.length === 1) {
-          filters.push(voiceInputFilter(voiceInput, voice, segments[0].start, time(voiceDuration), clip.voiceGain??narrationVolume, `${fill}[voice${index}]`));
+          filters.push(voiceInputFilter(voiceInput, voice, segments[0].start, time(sourceDuration), clip.voiceGain??narrationVolume, `${fill}[voice${index}]`, voiceSpeed));
         } else {
           const branches = segments.map((_, n) => `[s${index}voice${n}]`);
           filters.push(`[${voiceInput}:${voice.audioIndex}]aresample=${audioRate},asplit=${branches.length}${branches.join('')}`);
@@ -996,7 +1053,7 @@ function montageArgs(plan, { intermediate = false } = {}) {
             filters.push(`${branches[n]}atrim=start_sample=${Math.round(start * audioRate)}:end_sample=${Math.round(end * audioRate)},asetpts=N/SR/TB${output}`);
             return output;
           });
-          filters.push(`${outputs.join('')}concat=n=${outputs.length}:v=0:a=1,aformat=channel_layouts=stereo${volumeFilter(clip.voiceGain??narrationVolume)}${fill}[voice${index}]`);
+          filters.push(`${outputs.join('')}concat=n=${outputs.length}:v=0:a=1,aformat=channel_layouts=stereo${tempoFilter(voiceSpeed)}${volumeFilter(clip.voiceGain??narrationVolume)}${fill}[voice${index}]`);
         }
         if (!alignVoices) filters.push(`${bed}[voice${index}]amix=inputs=2:duration=first:normalize=0[a${index}]`);
       } else if (alignVoices) {
@@ -1073,13 +1130,13 @@ function montageArgs(plan, { intermediate = false } = {}) {
     const index = inputCount++;
     args.push(...mediaInput, '-stream_loop', '-1', '-i', music.path);
     const delay = musicDelay > 0 ? `,adelay=${musicDelay}S:all=1` : '';
-    filters.push(`[${index}:${music.audioIndex}]aresample=48000,aformat=channel_layouts=stereo,volume=${musicVolume},atrim=duration=${time(musicDuration)},asetpts=PTS-STARTPTS${delay}[music]`);
+    filters.push(`[${index}:${music.audioIndex}]aresample=48000,aformat=channel_layouts=stereo${tempoFilter(plan.musicSpeed ?? 1)},volume=${musicVolume},atrim=duration=${time(musicDuration)},asetpts=PTS-STARTPTS${delay}[music]`);
     audioTracks.push('[music]');
   }
   if (narration) {
     args.push(...mediaInput, '-i', narration.path);
     const delay=plan.voiceStart ? ',adelay='+Math.round(plan.voiceStart*48000)+'S:all=1' : '';
-    filters.push(voiceInputFilter(inputCount, narration, 0, time(duration-(plan.voiceStart ?? 0)), narrationVolume, delay+'[narration]'));
+    filters.push(voiceInputFilter(inputCount, narration, 0, time((duration-(plan.voiceStart ?? 0))*(plan.narrationSpeed ?? 1)), narrationVolume, delay+'[narration]', plan.narrationSpeed));
     audioTracks.push('[narration]');
   }
   let audioOutput = audioTracks[0];
@@ -1279,6 +1336,6 @@ module.exports = {
   recognizeLocalSpeech,
   createTrackProxy,
   normalizeMutedVideoTracks,
-  videoExtensions, imageExtensions, audioExtensions, maxShots, maxCandidates, maxExports, maxWholeTracks, minClipSeconds, maxStillSeconds,
-  inspectAsset, createVideoThumbnail, analyzeNarrationSilence, normalizeGeneratedCaptions, normalizeSubtitleStyle, previewSubtitleStyle, planMontage, planExtraction, exportBatch,
+  videoExtensions, imageExtensions, audioExtensions, maxShots, maxCandidates, maxExports, maxMontageBatch, maxWholeTracks, minClipSeconds, maxStillSeconds,
+  inspectAsset, createFrameThumbnail, createVideoThumbnail, analyzeNarrationSilence, normalizeGeneratedCaptions, normalizeSubtitleStyle, previewSubtitleStyle, planMontage, planExtraction, exportBatch,
 };

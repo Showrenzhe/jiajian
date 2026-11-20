@@ -37,6 +37,7 @@ async function verifyManifest(dist, version, notes) {
 
 async function verifyPackagedResources(dist) {
   const resources = path.join(dist, 'win-unpacked', 'resources');
+  assert.ok((await fs.stat(path.join(resources,'ProjectThumbnail.dll'))).size > 0, '缺少 Windows 工程缩略图处理器');
   const config = yaml.load(await fs.readFile(path.join(resources, 'app-update.yml'), 'utf8'));
   assert.equal(config.provider, 'github');
   assert.equal(config.owner, 'Showrenzhe');

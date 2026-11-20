@@ -305,6 +305,7 @@ button:disabled { opacity: .46; cursor: default; }
 .workspace-heading { margin-bottom: 17px; }
 .page-tabs { margin-top: 32px; padding-block: 8px 12px; border-bottom: 1px solid var(--hairline); }
 .page-tabs span { margin-right: auto; font-weight: 600; }
+.project-thumbnail { width: 54px; height: 36px; object-fit: contain; border-radius: 4px; background: var(--control); }
 .project-reopen { width: 100%; border-radius: 0; background: transparent; text-align: left; }
 #home-project-status, #project-list-status, .service-summary { color: var(--secondary-ink); overflow-wrap: anywhere; }
 #home-project-status, #project-list-status { margin-top: 12px; }
@@ -483,7 +484,7 @@ input[type="checkbox"], progress { accent-color: var(--accent); }
 .line-field { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
 .line-field input { width: 76px; }
 .narration-subs2srs { width: 100%; margin-top: 8px; }
-#combinations { margin-top: 5px; }
+#combinations { margin-top: 5px; overflow-wrap: anywhere; }
 .export-actions { margin-top: 12px; flex-wrap: wrap; }
 #start-export { flex: 1; }
 #output { margin-top: 10px; }

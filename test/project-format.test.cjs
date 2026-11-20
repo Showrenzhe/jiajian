@@ -7,7 +7,7 @@ const path = require('node:path');
 const { test } = require('node:test');
 const { inspectAsset, planMontage } = require('../src/media.cjs');
 const { saveProject, loadProject, normalizeScriptModel } = require('../src/project-format.cjs');
-const { fixtures } = require('./fixtures.cjs');
+const { fixtures, ffmpeg } = require('./fixtures.cjs');
 
 async function testDirectory(t) {
   const parent = await fs.realpath(os.tmpdir());
@@ -45,6 +45,13 @@ test('persists packaging-only assets and voice, text-group and candidate layers 
       segmentNarration: [[], [[text]]], wholeNarration: [[text]] },
   });
   await saveProject(file, config, catalog);
+  const saved = JSON.parse(await fs.readFile(file, 'utf8'));
+  assert.equal(Object.keys(saved)[0], 'thumbnail');
+  assert.match(saved.thumbnail, /^data:image\/jpeg;base64,\/9j\//);
+  const jpeg = path.join(root, '封面.jpg');
+  await fs.writeFile(jpeg, Buffer.from(saved.thumbnail.split(',')[1], 'base64'));
+  const pixel = await ffmpeg(['-i', jpeg, '-vf', 'scale=1:1', '-frames:v', '1', '-pix_fmt', 'rgb24', '-f', 'rawvideo', '-']);
+  assert.ok(pixel[0] > 220 && pixel[1] < 30 && pixel[2] < 30, '工程内嵌缩略图应来自第一个红色视频候选');
   const loaded = await loadProject(file);
   assert.equal(loaded.assets.get('still').path, files.still);
   assert.equal(loaded.config.shots[1][0].layers[0].id, 'still');
@@ -222,6 +229,75 @@ test('round-trips a legacy project and restores narration that shares its music 
   assert.deepEqual(restoredSegments.config, segmented);
   assert.equal(restoredSegments.assets.get('otherMusic').path, files.otherMusic);
   await assert.rejects(saveProject(file, { ...segmented, segmentNarrationIds: [[]] }, catalog, { overwrite: true }), /数量不匹配/);
+});
+
+test('cold draft lists reuse their index and JPEG and recover from external edits and cache damage',async t=>{
+  const {createDraftStore}=require('../src/draft-store.cjs');
+  const directory=await testDirectory(t), catalog=new Map(), config=editingConfig();
+  const initial=createDraftStore(directory);
+  const first=await initial.create({name:'旧稿甲',config},catalog);
+  const second=await initial.create({name:'旧稿乙',config},catalog);
+  const file=path.join(directory,first.id+'.sdworkbench');
+  const jpeg=await initial.thumbnail(first.id,1);
+  assert.ok(jpeg?.length);
+  const cache=path.join(directory,'.list-cache'), index=path.join(cache,'index.json');
+  let reads=0;
+  const open=fs.open.bind(fs);
+  t.mock.method(fs,'open',(name,...args)=>{
+    if(typeof name==='string' && name.endsWith('.sdworkbench') && args[0]==='r') reads++;
+    return open(name,...args);
+  });
+
+  const cold=createDraftStore(directory);
+  assert.deepEqual(new Set((await cold.list()).map(r=>r.id)),new Set([first.id,second.id]));
+  assert.deepEqual(await cold.thumbnail(first.id,1),jpeg);
+  assert.equal(reads,0,'冷启动列表和封面均跳过工程正文');
+
+  const source=JSON.parse(await fs.readFile(file,'utf8'));
+  source.draft.name='外改甲';
+  const assetPath=path.join(directory,'素材.mp4');
+  source.assets=[{id:'clip',path:assetPath,kind:'video'}];
+  source.config.shots=[[{id:'clip',start:.25,end:1}]];
+  source.config.cover={mode:'first-shot'};
+  await fs.writeFile(file,JSON.stringify(source));
+  assert.equal((await cold.list()).find(r=>r.id===first.id).name,'外改甲');
+  assert.deepEqual(cold.cover(first.id,1),{path:assetPath,kind:'video',time:.25});
+  assert.equal(reads,1,'只重读外改的草稿');
+  const before=await fs.stat(file);
+  source.draft.name='同长甲';
+  await fs.writeFile(file,JSON.stringify(source));
+  await fs.utimes(file,before.atime,before.mtime);
+  const restart=createDraftStore(directory);
+  assert.equal((await restart.list()).find(r=>r.id===first.id).name,'同长甲');
+  assert.equal(reads,2,'同长度并恢复 mtime 的改稿也会刷新');
+  assert.deepEqual(restart.cover(first.id,1),cold.cover(first.id,1));
+
+  await fs.writeFile(path.join(cache,first.id+'.jpg'),'damaged');
+  const repaired=await Promise.all([restart.thumbnail(first.id,1),restart.thumbnail(first.id,1)]);
+  assert.deepEqual(repaired,[jpeg,jpeg]);
+  assert.equal(reads,3,'并发请求仅重读一次正文以修复 JPEG');
+  assert.deepEqual(await restart.thumbnail(first.id,1),jpeg);
+  assert.equal(reads,3);
+  await fs.writeFile(index,'{}');
+  assert.equal((await createDraftStore(directory).list()).length,2);
+  assert.equal(reads,5);
+  await fs.rm(index);
+  assert.equal((await createDraftStore(directory).list()).length,2);
+  assert.equal(reads,7);
+  const rebuilt=createDraftStore(directory);
+  assert.equal((await rebuilt.list()).length,2);
+  assert.deepEqual(rebuilt.cover(first.id,1),cold.cover(first.id,1));
+  assert.equal(reads,7,'索引修复后下一次冷启动再次命中');
+  delete source.thumbnail;
+  await fs.writeFile(file,JSON.stringify(source));
+  assert.equal(await rebuilt.thumbnail(first.id,1),null,'移除内嵌封面后不会返回旧图');
+  assert.equal(reads,8);
+  assert.deepEqual(rebuilt.cover(first.id,1),{path:assetPath,kind:'video',time:.25});
+  const legacy=createDraftStore(directory);
+  await legacy.list();
+  assert.equal(await legacy.thumbnail(first.id,1),null);
+  assert.deepEqual(legacy.cover(first.id,1),rebuilt.cover(first.id,1));
+  assert.equal(reads,8,'旧格式封面路径和无内嵌封面标记可从索引加载');
 });
 
 test('allows empty drafts and atomically rejects unconfirmed same-name saves', async (t) => {

@@ -1,6 +1,6 @@
 'use strict';
 const {normalizeSubtitles}=require('./subtitles.cjs');
-const {normalizeSegmentVoiceCuts}=require('./shot-timing.cjs');
+const {audioSpeed, normalizeSegmentVoiceCuts}=require('./shot-timing.cjs');
 
 function normalizeVoice(value,count,ref) {
   if(!value || typeof value!=='object')throw new Error('子工程口播无效。');
@@ -15,6 +15,7 @@ function normalizeVoice(value,count,ref) {
         if(typeof row.caption==='string' && row.caption.length<=500) v.caption=row.caption;
         else v.caption=normalizeSubtitles(row.caption);
       }
+      if(whole && row.speed !== undefined) v.speed = audioSpeed(row.speed);
       if(whole && row.srt) v.srt=normalizeSubtitles(row.srt);
       if(whole && row.follow!=null) {
         if(!Number.isInteger(row.follow)||row.follow<0||row.follow>=count)throw new Error('子工程跟随分镜无效。');
@@ -39,7 +40,7 @@ function normalizeVoice(value,count,ref) {
 
 function projectVoiceConfig(config,project,base) {
   if(!base && !project.voice)return {};
-  const primary=[{id:config.narrationId,srt:config.subtitles},...(config.extraWholeTracks??[]).map((t)=>({id:t.narrationId,srt:t.subtitles}))];
+  const primary=[{id:config.narrationId,srt:config.subtitles,speed:config.narrationSpeed},...(config.extraWholeTracks??[]).map((t)=>({id:t.narrationId,srt:t.subtitles,speed:t.narrationSpeed}))];
   const fallback=(id)=>({id,...(id && config.generatedCaptions?.[id] && {caption:config.generatedCaptions[id]})});
   const mainWhole=base?.whole ?? primary.map((t,i)=>({...fallback(t.id),...t,follow:config.wholeStartShots?.[i]}));
   const whole=project.voice?.whole ?? mainWhole;
@@ -47,7 +48,7 @@ function projectVoiceConfig(config,project,base) {
   for(const row of base?.segments??[])ids[row.index]=row.items;
   for(const row of project.voice?.segments??[])ids[row.index]=row.items;
   for(const row of [...whole,...ids.flat()])if(row?.id && row.caption)caption[row.id]=row.caption;
-  return {narrationId:whole[0]?.id??null,subtitles:whole[0]?.srt??null,extraWholeTracks:whole.slice(1).map((r)=>({narrationId:r?.id??null,subtitles:r?.srt??null})),
+  return {narrationId:whole[0]?.id??null,narrationSpeed:whole[0]?.speed??1,subtitles:whole[0]?.srt??null,extraWholeTracks:whole.slice(1).map((r)=>({narrationId:r?.id??null,...(r?.speed && {narrationSpeed:r.speed}),subtitles:r?.srt??null})),
     wholeStartShots:whole.map((r)=>r?.follow??null),segmentNarrationIds:ids.map((row)=>row.map((r)=>r?.id??null)),
     segmentVoiceCuts:ids.map((row)=>row.map((r)=>r?.cut??null)),generatedCaptions:caption};
 }

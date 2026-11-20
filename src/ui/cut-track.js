@@ -173,9 +173,10 @@
       showRangeTools(s);
       return true;
     }
-    function openVoice(asset, ranges, commit, initialOffset = 0) {
+    function openVoice(asset, ranges, commit, initialOffset = 0, speed = 1) {
       if (asset?.kind !== 'audio' || typeof commit !== 'function') return false;
       const s = makeView('voice', asset);
+      s.video.defaultPlaybackRate=speed; s.video.playbackRate=speed;
       s.ranges = (ranges ?? [{ start: 0, end: asset.duration }]).map((r) => ({ ...r }));
       s.voiceOffset = initialOffset;
       s.commit = (parts) => commit(parts, s.voiceOffset);

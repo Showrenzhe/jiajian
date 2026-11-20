@@ -39,6 +39,16 @@ function candidateKey(clip) {
   return JSON.stringify([clip.id, clip.start, clip.end, clip.ranges?.map(({ start, end }) => [start, end])]);
 }
 
+function audioSpeed(value) {
+  if (!Number.isFinite(value) || value < .5 || value > 3) throw new Error('音频倍速应为 0.5 到 3 倍。');
+  return value;
+}
+
+function normalizeMusicSpeeds(values, count) {
+  if (!Array.isArray(values) || values.length !== count) throw new Error('配乐倍速数量与素材不符。');
+  return Array.from(values, audioSpeed);
+}
+
 function normalizeSegmentVoiceCuts(cuts, ids, catalog) {
   if (cuts === undefined) return undefined;
   if (!Array.isArray(cuts) || !Array.isArray(ids) || cuts.length !== ids.length) throw new Error('口播裁剪轨道与分镜不匹配。');
@@ -47,9 +57,10 @@ function normalizeSegmentVoiceCuts(cuts, ids, catalog) {
     return Array.from(row, (cut, k) => {
       if (cut === null) return null;
       const id = ids[i][k];
-      if (!id || !cut || !Array.isArray(cut.ranges)) throw new Error('口播裁剪缺少原始音频。');
+      if (!id || !cut || (cut.ranges === undefined && cut.speed === undefined)) throw new Error('口播裁剪缺少原始音频。');
       if (cut.offset !== undefined && (!Number.isFinite(cut.offset) || cut.offset < 0 || cut.offset > 86400)) throw new Error('口播起点无效。');
-      return { ranges: normalizeRanges(cut.ranges, 0, catalog ? catalog.get(id)?.duration ?? 0 : Infinity),
+      return { ...(cut.ranges !== undefined && {ranges: normalizeRanges(cut.ranges, 0, catalog ? catalog.get(id)?.duration ?? 0 : Infinity)}),
+        ...(cut.speed !== undefined && {speed: audioSpeed(cut.speed)}),
         ...(cut.offset !== undefined && { offset: cut.offset }) };
     });
   });
@@ -105,4 +116,4 @@ function sliceSource(ranges, offset, length) {
   return result;
 }
 
-module.exports = { normalizeShotSettings, normalizeRanges, candidateKey, normalizeSegmentVoiceCuts, normalizeSceneCuts, normalizeVolumeOverrides, sliceSource };
+module.exports = { audioSpeed, normalizeMusicSpeeds, normalizeShotSettings, normalizeRanges, candidateKey, normalizeSegmentVoiceCuts, normalizeSceneCuts, normalizeVolumeOverrides, sliceSource };
