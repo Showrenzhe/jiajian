@@ -8,7 +8,7 @@
   function read() {
     try {
       const saved = JSON.parse(localStorage.getItem(key));
-      return Object.fromEntries(ids.filter((id) => Number.isFinite(saved?.[id]) && saved[id] > 0 && saved[id] < 1)
+      return Object.fromEntries(ids.filter((id) => Number.isFinite(saved?.[id]) && saved[id] > 0 && saved[id] <= 1)
         .map((id) => [id, saved[id]]));
     } catch { return {}; }
   }

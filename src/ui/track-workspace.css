@@ -47,7 +47,7 @@
 }
 
 .workspace-divider { display: none; }
-.app-frame[data-mode="montage"] #editor-workspace:not([data-panel-layout="custom"]):not([data-layout-editing]) > .workspace-divider {
+.app-frame[data-mode="montage"] #editor-workspace:not([data-layout-editing]) > .workspace-divider {
   display: block;
   position: relative;
   z-index: 2;
@@ -189,7 +189,7 @@ body:has(.workspace-divider[data-dragging]) {
 }
 
 .app-frame[data-mode="montage"] .editor-player {
-  grid-area: player;
+  grid-area: var(--panel-grid-area, player);
   display: flex;
   flex-direction: column;
   overflow: hidden;
@@ -291,7 +291,7 @@ body:has(.workspace-divider[data-dragging]) {
 #clip-inspector-name { display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 13px; }
 #clip-inspector-meta { margin: 3px 0 6px; }
 
-.app-frame[data-mode="montage"] .editor-materials { grid-area: materials; position: relative; container-type: inline-size; padding: 12px 13px; overflow: auto; }
+.app-frame[data-mode="montage"] .editor-materials { grid-area: var(--panel-grid-area, materials); position: relative; container-type: inline-size; padding: 12px 13px; overflow: auto; }
 .material-marquee {
   position: absolute;
   z-index: 2;
@@ -493,7 +493,7 @@ body:has(.workspace-divider[data-dragging]) {
 #timeline-selection-count {color:#9de8e6;font-size:12px;white-space:nowrap;}
 
 .app-frame[data-mode="montage"] .montage-inspector {
-  grid-area: properties;
+  grid-area: var(--panel-grid-area, properties);
   display: flex;
   flex-direction: column;
   overflow: hidden;
@@ -564,7 +564,7 @@ body:has(.workspace-divider[data-dragging]) {
 .app-frame[data-mode="montage"] .montage-inspector #output { margin: 0; }
 
 .app-frame[data-mode="montage"] #montage-pane {
-  grid-area: timeline;
+  grid-area: var(--panel-grid-area, timeline);
   display: flex;
   flex-direction: column;
   overflow: hidden;
@@ -894,31 +894,42 @@ body:has(.workspace-divider[data-dragging]) {
 .app-frame[data-mode="montage"] #script-brief .list-heading:has(.script-brief-toggle) h2 { flex: 1; min-width: 0; overflow-wrap: anywhere; }
 .app-frame[data-mode="montage"] #script-brief .list-heading:has(.script-brief-toggle[aria-expanded="false"]) { margin-bottom: 0; }
 
-.app-frame[data-mode="montage"] #editor-workspace[data-panel-layout="custom"] {
-  grid-template-rows: auto auto minmax(0, 1fr) 0 0;
-  overflow: hidden;
-}
-.app-frame[data-mode="montage"] #editor-workspace[data-panel-layout="custom"] .panel-layout-pane,
 .app-frame[data-mode="montage"] .panel-layout-box {
-  position: absolute;
-  grid-area: auto;
-  inset: var(--panel-layout-top, 0) auto auto var(--panel-layout-left, 0);
-  width: var(--panel-layout-width, 0);
-  height: var(--panel-layout-height, 0);
-  z-index: var(--panel-layout-order, 1);
+  position: relative;
+  grid-area: var(--panel-grid-area);
+  z-index: 12;
+  min-width: 0;
+  min-height: 0;
 }
 .app-frame[data-mode="montage"] .panel-layout-controls { display: flex; flex-wrap: wrap; align-items: center; gap: 5px; }
 .app-frame[data-mode="montage"] #panel-layout-target { max-width: 135px; padding: 4px 5px; font-size: 12px; }
 .app-frame[data-mode="montage"] #panel-layout-toggle[aria-pressed="true"] { border-color: var(--selected-edge); background: var(--selected-surface); color: var(--accent); }
 .app-frame[data-mode="montage"] .panel-layout-status { position: absolute; width: 1px; height: 1px; overflow: hidden; clip-path: inset(50%); }
-.app-frame[data-mode="montage"] #panel-layout-layer { position: absolute; inset: 0; z-index: 12; overflow: hidden; pointer-events: none; }
-.app-frame:not([data-mode="montage"]) #panel-layout-layer { display: none; }
+#panel-layout-layer { display: none; }
+.app-frame[data-mode="montage"] #panel-layout-layer:not([hidden]) { display: contents; }
 .app-frame[data-mode="montage"] .panel-layout-box {
-  border: 1px dashed var(--selected-edge);
   border-radius: var(--workspace-radius);
   pointer-events: none;
 }
-.app-frame[data-mode="montage"] .panel-layout-box.panel-layout-active { border-color: var(--accent); }
+.app-frame[data-mode="montage"] .panel-layout-box[data-drop-target] {
+  background-color: color-mix(in srgb, var(--accent) 14%, transparent);
+}
+.app-frame[data-mode="montage"] .panel-layout-box[data-drop-target]::after {
+  content: "松开交换";
+  position: absolute;
+  inset: 50% auto auto 50%;
+  translate: -50% -50%;
+  padding: 5px 10px;
+  border-radius: 999px;
+  background: var(--surface);
+  color: var(--ink);
+  box-shadow: var(--glass-shadow);
+  font-size: 12px;
+  white-space: nowrap;
+}
+@media (prefers-reduced-motion: no-preference) {
+  .panel-layout-box { transition: background-color 110ms ease-out; }
+}
 .app-frame[data-mode="montage"] .panel-layout-handle {
   position: absolute;
   padding: 0;
@@ -931,19 +942,31 @@ body:has(.workspace-divider[data-dragging]) {
 }
 .app-frame[data-mode="montage"] .panel-layout-handle[data-pointer-focus]:focus-visible { outline: none; }
 .app-frame[data-mode="montage"] .panel-layout-handle[data-edge="move"] {
-  top: 7px;
-  left: 50%;
-  width: 34px;
-  height: 20px;
-  transform: translateX(-50%);
-  border: 1px solid var(--selected-edge);
-  border-radius: 999px;
-  background: var(--glass-surface);
-  box-shadow: var(--glass-shadow);
-  backdrop-filter: var(--glass-filter);
+  inset: 0;
+  border-radius: inherit;
+  outline: none;
   cursor: grab;
 }
-.app-frame[data-mode="montage"] .panel-layout-handle[data-edge="move"]::before { content: '⠿'; font-size: 16px; line-height: 1; }
+.app-frame[data-mode="montage"] .panel-layout-handle[data-edge="move"]::before {
+  content: "";
+  position: absolute;
+  inset: 6px auto auto 50%;
+  translate: -50% 0;
+  width: 28px;
+  height: 15px;
+  border-radius: 999px;
+  background:
+    radial-gradient(circle, var(--secondary-ink) 1px, transparent 1.3px) center / 4px 4px content-box,
+    var(--glass-surface);
+  padding: 3.5px 6px;
+}
+.app-frame[data-mode="montage"] .panel-layout-handle[data-edge="move"]:focus-visible:not([data-pointer-focus])::before {
+  outline: 2px solid var(--focus-ring);
+  outline-offset: 2px;
+}
+.app-frame[data-mode="montage"] .panel-layout-box[data-drag-source] [data-edge="move"]::before {
+  background-color: var(--selected-surface);
+}
 .app-frame[data-mode="montage"] .panel-layout-dragging { user-select: none; }
 .app-frame[data-mode="montage"] .panel-layout-dragging .panel-layout-handle[data-edge="move"] { cursor: grabbing; }
 .app-frame[data-mode="montage"] .panel-layout-handle:is([data-edge="n"], [data-edge="s"]) { left: 11px; right: 11px; height: 7px; cursor: ns-resize; }
@@ -951,9 +974,6 @@ body:has(.workspace-divider[data-dragging]) {
 .app-frame[data-mode="montage"] .panel-layout-handle:is([data-edge="nw"], [data-edge="ne"], [data-edge="sw"], [data-edge="se"]) {
   width: 11px;
   height: 11px;
-  border: 1px solid var(--system-blue);
-  border-radius: 50%;
-  background: var(--surface);
 }
 .app-frame[data-mode="montage"] .panel-layout-handle:is([data-edge="n"], [data-edge="nw"], [data-edge="ne"]) { top: 0; }
 .app-frame[data-mode="montage"] .panel-layout-handle:is([data-edge="s"], [data-edge="sw"], [data-edge="se"]) { bottom: 0; }
@@ -961,9 +981,9 @@ body:has(.workspace-divider[data-dragging]) {
 .app-frame[data-mode="montage"] .panel-layout-handle:is([data-edge="e"], [data-edge="ne"], [data-edge="se"]) { right: 0; }
 .app-frame[data-mode="montage"] .panel-layout-handle:is([data-edge="nw"], [data-edge="se"]) { cursor: nwse-resize; }
 .app-frame[data-mode="montage"] .panel-layout-handle:is([data-edge="ne"], [data-edge="sw"]) { cursor: nesw-resize; }
-#editor-workspace:not([data-panel-layout="custom"]) .panel-layout-handle[data-split-axes="none"] { display: none; }
-#editor-workspace:not([data-panel-layout="custom"]) .panel-layout-handle[data-split-axes="x"] { cursor: ew-resize; }
-#editor-workspace:not([data-panel-layout="custom"]) .panel-layout-handle[data-split-axes="y"] { cursor: ns-resize; }
+#editor-workspace .panel-layout-handle[data-split-axes="none"] { display: none; }
+#editor-workspace .panel-layout-handle[data-split-axes="x"] { cursor: ew-resize; }
+#editor-workspace .panel-layout-handle[data-split-axes="y"] { cursor: ns-resize; }
 
 .app-frame[data-mode="montage"] :is(.workbench-actions, .timeline-empty-actions, .timeline-header, .track-toolbar) button:has(.ui-icon) {
   display: inline-flex;

@@ -542,40 +542,32 @@ async function run() {
   // The viewport can report its restored size a frame before the pane ResizeObserver lays out the grid.
   await runInWindow('new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve)))');
   const defaultMaterial = await runInWindow(materialBox);
-  await runInWindow('document.querySelector("#panel-layout-toggle").click()');
-  await waitFor('!document.querySelector("#panel-layout-layer").hidden && document.querySelectorAll(".panel-layout-box .panel-layout-handle").length === 36', '布局编辑应提供四个移动手柄和各面板的八个缩放边');
-  async function dragPanel(edge, dx, dy) {
-    await runInWindow(`(() => {
-      const handle = document.querySelector('.panel-layout-box[data-pane="materials"] [data-edge="${edge}"]');
-      const rect = handle.getBoundingClientRect();
-      const x = rect.x + rect.width / 2, y = rect.y + rect.height / 2;
-      const event = (type, clientX, clientY) => new PointerEvent(type, {
-        bubbles: true, cancelable: true, pointerId: 41, pointerType: 'mouse', button: 0,
-        buttons: type === 'pointerup' ? 0 : 1, clientX, clientY,
-      });
-      handle.dispatchEvent(event('pointerdown', x, y));
-      window.dispatchEvent(event('pointermove', x + ${dx}, y + ${dy}));
-      window.dispatchEvent(event('pointerup', x + ${dx}, y + ${dy}));
-    })()`);
+  const defaultPlayer = await runInWindow("document.querySelector('.editor-player').getBoundingClientRect().toJSON()");
+  await navigate('#panel-layout-toggle');
+  const grip = '.panel-layout-box[data-pane="materials"] [data-edge="move"]';
+  await waitFor(`document.querySelectorAll('.panel-layout-box [data-edge="move"]').length === 4
+    && document.querySelector(${JSON.stringify(grip)}).checkVisibility()`, '布局编辑时四个面板都应可拖动');
+  const start = await runInWindow(`document.querySelector(${JSON.stringify(grip)}).getBoundingClientRect().toJSON()`);
+  client.attach();
+  try {
+    const from = { x: start.x + start.width / 2, y: start.y + start.height / 2 };
+    const to = { x: defaultPlayer.x + defaultPlayer.width / 2, y: defaultPlayer.y + defaultPlayer.height / 2 };
+    await client.sendCommand('Input.dispatchMouseEvent', { type: 'mousePressed', ...from, button: 'left', buttons: 1, clickCount: 1 });
+    await client.sendCommand('Input.dispatchMouseEvent', { type: 'mouseMoved', ...to, button: 'left', buttons: 1 });
+    await client.sendCommand('Input.dispatchMouseEvent', { type: 'mouseReleased', ...to, button: 'left', clickCount: 1 });
+  } finally {
+    client.detach();
   }
-  await dragPanel('move', 36, 25);
-  await waitFor(`document.querySelector('#editor-workspace').dataset.panelLayout === 'custom' && (${materialBox}).x > ${defaultMaterial.x + 30}`, '向画布内部拖动手柄应移动素材库');
-  const movedMaterial = await runInWindow(materialBox);
-  assert.ok(movedMaterial.y > defaultMaterial.y + 18);
-  await dragPanel('se', 31, 19);
-  await waitFor(`(${materialBox}).width > ${movedMaterial.width + 25} && (${materialBox}).height > ${movedMaterial.height + 13}`, '拖动右下角应同时调整面板宽高');
-  const resizedMaterial = await runInWindow(materialBox);
-  await runInWindow(`document.querySelector('.panel-layout-box[data-pane="materials"] [data-edge="w"]').dispatchEvent(new KeyboardEvent('keydown', { key: 'ArrowLeft', bubbles: true, cancelable: true }))`);
-  await waitFor(`(${materialBox}).width > ${resizedMaterial.width + 6}`, '方向键应能调整面板边缘');
-  const customMaterial = await runInWindow(materialBox);
+  const materialInPlayerSlot = `Math.abs((${materialBox}).x - ${defaultPlayer.x}) < 2
+    && Math.abs((${materialBox}).width - ${defaultPlayer.width}) < 2`;
+  await waitFor(materialInPlayerSlot, '素材库应取得原播放器的位置和宽度');
+  await navigate('#panel-layout-toggle');
   const layoutReload = once(win.webContents, 'did-finish-load');
   win.webContents.reload();
   await layoutReload;
   await navigate('#tab-montage');
   await navigate('#project-new');
-  await waitFor(`document.querySelector('#editor-workspace').dataset.panelLayout === 'custom' && Math.abs((${materialBox}).x - ${customMaterial.x}) < 2 && Math.abs((${materialBox}).width - ${customMaterial.width}) < 2`, '重开工作台应保留自定义布局');
-  await runInWindow(`(() => { const picker = document.querySelector('#panel-layout-target'); picker.value = 'timeline'; picker.dispatchEvent(new Event('change')); })()`);
-  await waitFor(`Number(getComputedStyle(document.querySelector('#montage-pane')).zIndex) > Number(getComputedStyle(document.querySelector('.editor-materials')).zIndex)`, '置顶选择应能找回重叠的面板');
+  await waitFor(materialInPlayerSlot, '重开工作台应保留互换后的面板位置和宽度');
   try {
     win.setSize(850, 600);
     await waitFor(`(() => {
