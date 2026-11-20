@@ -171,10 +171,6 @@
   border-color: var(--system-blue);
 }
 .layer-motion-keys button[aria-pressed="true"], .jj-cover-grid button[aria-pressed="true"] { outline-color: var(--system-blue); }
-.caption-type-options :is(b, i, u) { color: var(--ink); background: var(--control-fill); }
-#caption-presets button { color: var(--ink); background: var(--well); border-color: var(--hairline); }
-#caption-presets button strong { width: 100%; background: #343a43; border-radius: 3px; }
-#caption-presets button[aria-pressed="true"] { background: var(--selected-surface); border-color: var(--system-blue); }
 
 @media (max-width: 940px) {
   .app-frame[data-mode="montage"] #timeline-view-actions button:disabled { display: none; }
@@ -182,7 +178,7 @@
 @media (prefers-contrast: more) {
   #timeline-clock .sequence-head, #timeline-clock .sequence-ruler,
   #timeline-clock .sequence-empty { color: var(--ink); }
-  .sequence-dialog :is(button, select, input), .caption-type-options :is(b, i, u) { border-color: currentColor; }
+  .sequence-dialog :is(button, select, input) { border-color: currentColor; }
 }
 @media (forced-colors: active) {
   #timeline-clock .sequence-cursor { border-inline-start: 2px solid Highlight; background: transparent; }

@@ -391,6 +391,13 @@ async function worker(phase, root) {
     'Editor text and surfaces should finish changing');
   await contrast('#material-search', 'light');
   assert.deepEqual(await mediaPixel(), original, 'Preview pixels should remain stable after the transition');
+  await clickVisible(wc, '#inspector-tab-subtitles');
+  const swatch = '#caption-presets button[title="醒目黄字"]';
+  const surfaceLightness = async selector => luminance((await read('(' + sampleSurface + ')(' + JSON.stringify(selector) + ')')).background);
+  const tileLightness = await surfaceLightness(swatch);
+  const inspectorLightness = await surfaceLightness('#inspector-panel-subtitles');
+  assert.ok(tileLightness > .55 && Math.abs(tileLightness - inspectorLightness) < .25,
+    'Light caption swatches should share the inspector palette: ' + [tileLightness, inspectorLightness]);
   await settings();
   await click(radio('dark'));
   await expectMode('dark', 'dark');

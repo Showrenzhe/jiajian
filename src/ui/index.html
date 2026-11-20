@@ -587,37 +587,56 @@
               </details>
             </div>
             <div id="inspector-panel-subtitles" data-inspector-panel role="tabpanel" aria-labelledby="inspector-tab-subtitles" tabindex="0" hidden>
-              <div class="caption-master"><h3 class="inspector-section-title">成片字幕</h3><label class="check"><input id="caption-enabled" type="checkbox" role="switch" checked>导出时显示字幕</label></div>
+              <div class="caption-master"><h3 class="inspector-section-title">成片字幕</h3><label class="p-switch">导出时显示<input id="caption-enabled" type="checkbox" role="switch" aria-label="导出时显示字幕" checked><span aria-hidden="true"></span></label></div>
               <div id="subtitle-style-settings">
-                <div class="caption-section-head"><h4>预设样式</h4><button type="button" class="quiet" id="caption-save-preset">保存当前预设</button></div>
-                <div id="caption-presets" aria-label="字幕样式预设"></div>
+                <div class="caption-section-head"><h4>预设样式</h4><span id="caption-preset-label"></span><button type="button" class="quiet" id="caption-save-preset" title="保存当前预设" aria-label="保存当前预设"><svg class="ui-icon" aria-hidden="true"><use href="#icon-plus"></use></svg></button></div>
+                <div id="caption-presets" class="caption-swatches" role="group" aria-label="字幕样式预设"></div>
+                <div id="caption-personal-group" hidden>
+                  <h4>我的预设</h4>
+                  <div id="caption-personal-presets" class="caption-swatches" role="group" aria-label="我的字幕预设"></div>
+                </div>
                 <div class="caption-save-row" id="caption-save-row" hidden>
                   <input id="caption-preset-name" maxlength="36" aria-label="新预设名称" placeholder="预设名称">
                   <button type="button" class="secondary" id="caption-confirm-preset">保存</button>
                   <button type="button" class="quiet" id="caption-cancel-preset">取消</button>
                 </div>
-                <div class="caption-section-head"><h4>基础样式</h4></div>
+                <div class="caption-section-head"><h4>文字样式</h4></div>
                 <div class="caption-fields">
-                  <label>字体<select id="caption-font"><option value="yahei">微软雅黑</option><option value="heiti">黑体</option><option value="song">宋体</option><option value="kai">楷体</option><option value="fang">仿宋</option><option value="arial">Arial</option></select></label>
-                  <label>字号<input type="number" id="caption-size" min="8" max="72" step="1" value="18"></label>
-                  <div class="caption-type-options" aria-label="字体样式">
-                    <label title="粗体"><input id="caption-bold" type="checkbox" aria-label="粗体"><b>B</b></label>
-                    <label title="斜体"><input id="caption-italic" type="checkbox" aria-label="斜体"><i>I</i></label>
-                    <label title="下划线"><input id="caption-underline" type="checkbox" aria-label="下划线"><u>U</u></label>
+                  <label class="caption-field">字体<select id="caption-font"><option value="yahei">微软雅黑</option><option value="heiti">黑体</option><option value="song">宋体</option><option value="kai">楷体</option><option value="fang">仿宋</option><option value="arial">Arial</option></select></label>
+                  <div class="caption-field"><span id="caption-emphasis-label">字形</span><div class="caption-segments" role="group" aria-labelledby="caption-emphasis-label">
+                    <label title="粗体"><input id="caption-bold" type="checkbox" aria-label="粗体"><b aria-hidden="true">B</b></label>
+                    <label title="下划线"><input id="caption-underline" type="checkbox" aria-label="下划线"><u aria-hidden="true">U</u></label>
+                    <label title="斜体"><input id="caption-italic" type="checkbox" aria-label="斜体"><i aria-hidden="true">I</i></label>
+                  </div></div>
+                  <div class="caption-field"><span>颜色</span>
+                    <div class="caption-colors">
+                      <label>文字<input type="color" id="caption-color" aria-label="文字颜色" value="#ffffff"></label>
+                      <label>描边<input type="color" id="caption-outline" aria-label="描边颜色" value="#000000"></label>
+                    </div>
                   </div>
-                  <label>字间距<input type="number" id="caption-spacing" min="0" max="12" step="1" value="0"></label>
-                  <label>文字颜色<input type="color" id="caption-color" value="#ffffff"></label>
-                  <label>描边颜色<input type="color" id="caption-outline" value="#000000"></label>
-                  <label>描边宽度<input type="number" id="caption-outline-width" min="0" max="8" step="1" value="2"></label>
+                  <div class="caption-field-pair">
+                    <label class="caption-field">字间距<input type="number" id="caption-spacing" min="0" max="12" step="1" value="0"></label>
+                    <label class="caption-field">描边宽度<input type="number" id="caption-outline-width" min="0" max="8" step="1" value="2"></label>
+                  </div>
+                  <div class="caption-field"><span id="caption-align-label">对齐</span><fieldset id="caption-align" class="caption-segments" aria-labelledby="caption-align-label">
+                    <label title="靠左"><input type="radio" name="caption-align" id="caption-align-left" value="left" aria-label="靠左对齐"><span class="caption-align-symbol" aria-hidden="true"></span></label>
+                    <label title="居中"><input type="radio" name="caption-align" id="caption-align-center" value="center" aria-label="居中对齐" checked><span class="caption-align-symbol" aria-hidden="true"></span></label>
+                    <label title="靠右"><input type="radio" name="caption-align" id="caption-align-right" value="right" aria-label="靠右对齐"><span class="caption-align-symbol" aria-hidden="true"></span></label>
+                  </fieldset></div>
                 </div>
-                <div class="caption-section-head"><h4>画面位置</h4></div>
-                <div class="caption-fields">
-                  <label>垂直<select id="caption-position"><option value="bottom">底部</option><option value="middle">居中</option><option value="top">顶部</option><option value="custom">自由定位</option></select></label>
-                  <label>水平<select id="caption-align"><option value="left">靠左</option><option value="center" selected>居中</option><option value="right">靠右</option></select></label>
-                  <label>安全边距<input id="caption-margin" type="number" min="0" max="64" value="16"></label>
-                  <label id="caption-x-field" hidden>水平 X (%)<input id="caption-x" type="number" min="0" max="100" value="50"></label>
-                  <label id="caption-y-field" hidden>垂直 Y (%)<input id="caption-y" type="number" min="0" max="100" value="85"></label>
-                </div>
+                <details class="caption-section" open>
+                  <summary>位置与大小</summary>
+                  <div class="caption-fields">
+                    <div class="caption-field"><label for="caption-size">字号</label><div class="caption-size-controls">
+                      <input type="range" id="caption-size-slider" aria-label="调整字幕字号" min="8" max="72" step="1" value="18">
+                      <input type="number" id="caption-size" min="8" max="72" step="1" value="18">
+                    </div></div>
+                    <label class="caption-field">位置<select id="caption-position"><option value="bottom">底部</option><option value="middle">居中</option><option value="top">顶部</option><option value="custom">自由定位</option></select></label>
+                    <label class="caption-field">安全边距<input id="caption-margin" type="number" min="0" max="64" value="16"></label>
+                    <label class="caption-field" id="caption-x-field" hidden>水平 X (%)<input id="caption-x" type="number" min="0" max="100" value="50"></label>
+                    <label class="caption-field" id="caption-y-field" hidden>垂直 Y (%)<input id="caption-y" type="number" min="0" max="100" value="85"></label>
+                  </div>
+                </details>
                 <details id="caption-preview-pane" open>
                   <summary>样式预览</summary>
                   <div id="caption-sample-stage" data-ratio="16:9"><canvas id="caption-preview-canvas" aria-label="当前画幅下的字幕位置和样式"></canvas></div>

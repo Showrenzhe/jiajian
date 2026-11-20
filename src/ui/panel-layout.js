@@ -96,6 +96,9 @@
     const layer = create('div', { id: 'panel-layout-layer' });
     layer.hidden = true;
     workspace.append(layer);
+    const pickup = create('span', { className: 'panel-layout-pickup', hidden: true });
+    pickup.setAttribute('aria-hidden', 'true');
+    layer.append(pickup);
     const panes = new Map(definitions.map(([id, selector, label]) => {
       const element = workspace.querySelector(selector);
       const overlay = create('div', { className: 'panel-layout-box' });
@@ -305,12 +308,22 @@
       sync();
     }
 
+    function positionPickup(x, y) {
+      pickup.style.setProperty('--pickup-x', x + 'px');
+      pickup.style.setProperty('--pickup-y', y + 'px');
+    }
+
     function startDrag(pane, edge, handle, event) {
       if (!editing || drag || event.button !== 0) return;
       event.preventDefault();
       active = pane.id;
       drag = { pane, edge, handle, pointerId: event.pointerId, x: event.clientX, y: event.clientY, changed: false };
-      if (edge !== 'move') {
+      if (edge === 'move') {
+        pane.overlay.dataset.dragSource = '';
+        positionPickup(event.clientX, event.clientY);
+        pickup.textContent = '已抓起' + pane.label;
+        pickup.hidden = false;
+      } else {
         drag.split = splitView.sizes();
         drag.before = splitView.snapshot();
       }
@@ -324,8 +337,8 @@
     function updateDrag(x, y) {
       const dx = x - drag.x, dy = y - drag.y;
       if (drag.edge === 'move') {
+        positionPickup(x, y);
         if (!drag.changed && Math.hypot(dx, dy) < 4) return;
-        drag.pane.overlay.dataset.dragSource = '';
         const target = targetAt(drag.pane, x, y);
         if (target !== drag.target) {
           if (drag.target) delete drag.target.overlay.dataset.dropTarget;
@@ -370,6 +383,7 @@
         sync();
       }
       delete pane.overlay.dataset.dragSource;
+      pickup.hidden = true;
       if (target) delete target.overlay.dataset.dropTarget;
       workspace.classList.remove('panel-layout-dragging');
       if (handle.hasPointerCapture(pointerId)) handle.releasePointerCapture(pointerId);

@@ -168,15 +168,38 @@ async function run() {
   }
   const moveGrip = pane => `.panel-layout-box[data-pane="${pane}"] [data-edge="move"]`;
   const targetPane = () => evaluate("document.querySelector('.panel-layout-box[data-drop-target]')?.dataset.pane ?? null");
+  const pickupState = () => evaluate(`(() => {
+    const chip = document.querySelector('.panel-layout-pickup');
+    const source = document.querySelector('.panel-layout-box[data-drag-source]');
+    return {
+      source: source?.dataset.pane ?? null,
+      label: chip.checkVisibility() ? chip.textContent : null,
+      shadow: source && getComputedStyle(source).boxShadow,
+      hitTest: getComputedStyle(chip).pointerEvents,
+      rect: chip.getBoundingClientRect().toJSON(),
+    };
+  })()`);
+  async function checkReleased() {
+    const state = await pickupState();
+    assert.equal(state.source, null);
+    assert.equal(state.label, null);
+    assert.equal(await targetPane(), null);
+  }
   async function paneCenter(pane) {
     const rect = (await snapshot())[paneSelectors[pane]];
     return { x: rect.left + rect.width / 2, y: rect.top + rect.height / 2 };
   }
   async function beginSwap(pane) {
-    const start = await center(moveGrip(pane));
+    const box = (await snapshot())[paneSelectors[pane]];
+    const start = { x: box.left + box.width / 2, y: box.top + 14 };
     await mouse('mouseMoved', start, {});
     await mouse('mousePressed', start, { button: 'left', buttons: 1, clickCount: 1 });
-    await settle();
+    const state = await pickupState();
+    assert.equal(state.source, pane, 'pressing the visible grip immediately picks up its pane');
+    assert.ok(state.label?.startsWith('已抓起'));
+    assert.notEqual(state.shadow, 'none');
+    assert.equal(state.hitTest, 'none');
+    return start;
   }
   async function hoverAt(point, expected) {
     await mouse('mouseMoved', point, { buttons: 1 });
@@ -187,7 +210,7 @@ async function run() {
   async function dropAt(point) {
     await mouse('mouseReleased', point, { button: 'left', clickCount: 1 });
     await settle();
-    assert.equal(await targetPane(), null);
+    await checkReleased();
   }
   async function verifyClipping() {
     const spill = await evaluate(`(() => {
@@ -433,8 +456,8 @@ async function run() {
   samePanes(await snapshot(), original);
 
   // Vary motion independently of the light/dark appearance tested above.
-  const motion = value => wc.debugger.sendCommand('Emulation.setEmulatedMedia', { features: [
-    { name: 'prefers-color-scheme', value: 'dark' }, { name: 'prefers-reduced-motion', value },
+  const motion = (value, theme = 'dark') => wc.debugger.sendCommand('Emulation.setEmulatedMedia', { features: [
+    { name: 'prefers-color-scheme', value: theme }, { name: 'prefers-reduced-motion', value },
   ] });
   await motion('no-preference');
   await adjust();
@@ -443,8 +466,41 @@ async function run() {
   const seamPoint = { x: (left.right + middle.left) / 2, y: left.top + left.height / 2 };
   const playerPoint = await paneCenter('player');
   const inspectorPoint = await paneCenter('inspector');
+  const stationary = await beginSwap('materials');
+  assert.equal((await pickupState()).label, '已抓起素材库');
+  assert.equal(await targetPane(), null);
+  if (process.env.JIAJIAN_PICKUP_CAPTURE) {
+    await evaluate("Promise.all(document.querySelector('.panel-layout-pickup').getAnimations().map(a => a.finished))");
+    await settle();
+    assert.equal(await evaluate("document.querySelector('#panel-layout-target').value"), 'materials');
+    const chip = (await pickupState()).rect;
+    const [width, height] = await evaluate('[innerWidth, innerHeight]');
+    const probes = [{ x: chip.left + 5, y: chip.top + chip.height / 2 }, { x: stationary.x - 10, y: stationary.y }];
+    let painted = false;
+    for (let attempt = 0; attempt < 20 && !painted; attempt++) {
+      const picture = await wc.capturePage(undefined, { stayHidden: true });
+      if (!picture.isEmpty()) {
+        const frame = picture.resize({ width, height });
+        const pixels = frame.toBitmap();
+        // Electron's bitmap is BGRA on Windows. Both blue fills must be in this exact frame.
+        painted = probes.every(({ x, y }) => {
+          const offset = 4 * (Math.round(y) * width + Math.round(x));
+          return pixels[offset] - pixels[offset + 2] > 90;
+        });
+        if (painted) writeFileSync(process.env.JIAJIAN_PICKUP_CAPTURE, picture.toPNG());
+      }
+      if (!painted) await settle();
+    }
+    assert.ok(painted, 'the captured frame must show the blue pickup chip and source grip');
+  }
+  await dropAt(stationary);
+  samePanes(await snapshot(), stage);
   await beginSwap('materials');
   await hoverAt(playerPoint, 'player');
+  const hovering = await pickupState();
+  assert.equal(hovering.source, 'materials');
+  assert.ok(hovering.rect.left > playerPoint.x && hovering.rect.left < playerPoint.x + 22,
+    'the pickup label stays beside the pointer while the target changes');
   await hoverAt(inspectorPoint, 'inspector');
   samePanes(await snapshot(), stage);
   await hoverAt(seamPoint, null);
@@ -463,12 +519,13 @@ async function run() {
   await wc.debugger.sendCommand('Emulation.setTouchEmulationEnabled', { enabled: true });
   try {
     await touch('touchStart', [await center(moveGrip('materials'))]);
+    assert.equal((await pickupState()).label, '已抓起素材库', 'touch pickup needs no movement or long press');
     await touch('touchMove', [playerPoint]);
     await settle();
     assert.equal(await targetPane(), 'player');
     await touch('touchCancel', []);
     await settle();
-    assert.equal(await targetPane(), null);
+    await checkReleased();
     samePanes(await snapshot(), stage);
   } finally {
     await wc.debugger.sendCommand('Emulation.setTouchEmulationEnabled', { enabled: false });
@@ -496,8 +553,12 @@ async function run() {
   await reopen();
   samePanes(await snapshot(), stage);
 
-  await motion('reduce');
+  await motion('reduce', 'light');
   await adjust();
+  const reducedGrip = await beginSwap('player');
+  assert.equal(await evaluate('document.documentElement.dataset.theme'), 'light');
+  assert.equal(await evaluate("getComputedStyle(document.querySelector('.panel-layout-pickup')).animationName"), 'none');
+  await dropAt(reducedGrip);
   await evaluate(`document.querySelector(${JSON.stringify(moveGrip('materials'))}).focus()`);
   await press('ArrowRight');
   samePanes(await snapshot(), exchanged(stage, 'materials', 'player'));
@@ -540,10 +601,15 @@ async function run() {
   await click('#panel-layout-reset');
   await settle();
   samePanes(await snapshot(), original);
+  await adjust();
+  const held = await beginSwap('timeline');
   await click('#title-home');
+  await settle();
+  await checkReleased();
+  await dropAt(held);
   assert.equal(await visible(), 0);
   wc.debugger.detach();
-  console.log('Passed panel swaps, drag targets, keyboard, motion, legacy migration, clipping, paired resizing, and persistence.');
+  console.log('Passed immediate mouse and touch pickup, cancellation, panel swaps, drag targets, keyboard, motion, legacy migration, clipping, paired resizing, and persistence.');
   win.close();
 }
 
