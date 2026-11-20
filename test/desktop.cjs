@@ -1050,6 +1050,13 @@ async function run() {
   assert.equal(marquee.startsOnBlank, true, '框选应从素材库空白处开始');
   win.webContents.sendInputEvent({ type: 'mouseDown', button: 'left', clickCount: 1, ...marquee.start });
   win.webContents.sendInputEvent({ type: 'mouseMove', modifiers: ['leftButtonDown'], ...marquee.end });
+  await waitFor('!document.querySelector(".material-marquee").hidden', '素材框选应显示范围');
+  for (const type of ['keyDown', 'keyUp']) win.webContents.sendInputEvent({ type, keyCode: 'Escape' });
+  await waitFor('document.querySelector(".material-marquee").hidden', 'Esc 应立即收起素材选框');
+  win.webContents.sendInputEvent({ type: 'mouseUp', button: 'left', clickCount: 1, ...marquee.end });
+  assert.equal(await runInWindow('document.querySelectorAll("#material-list .material-select:checked").length'), 0, '取消后松手仍应保留原选区');
+  win.webContents.sendInputEvent({ type: 'mouseDown', button: 'left', clickCount: 1, ...marquee.start });
+  win.webContents.sendInputEvent({ type: 'mouseMove', modifiers: ['leftButtonDown'], ...marquee.end });
   await waitFor('document.querySelector(".material-marquee")?.hidden === false', '拖动左键时应显示选框');
   win.webContents.sendInputEvent({ type: 'mouseUp', button: 'left', clickCount: 1, ...marquee.end });
   await waitFor('document.querySelector(".material-marquee").hidden && document.querySelectorAll("#material-list .material-select:checked").length === 2', '松开左键应勾选框内的视频和图片');

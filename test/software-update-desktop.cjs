@@ -134,8 +134,9 @@ async function run() {
   await click('update-action');
   await until('document.getElementById("update-action").textContent === "重试下载" && !document.getElementById("update-action").disabled');
   assert.equal(await textOf('update-status'), '测试下载失败');
-  await click('update-action');
+  await clickVisible(win.webContents, '#update-action');
   await until('document.getElementById("update-progress").value === 37');
+  assert.equal(await read('document.activeElement.id'), 'update-close', '下载时键盘应停在仍可用的关闭按钮');
   clock += fourHours;
   win.emit('focus');
   assert.equal(checks, 2, 'An active download must keep its state');

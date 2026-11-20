@@ -35,7 +35,7 @@ window.mountCaptionInspector = ({ api, sourceCue, player, still }) => {
   const canvas = get('caption-preview-canvas'), text = get('caption-preview-text'), feedback = get('caption-feedback');
   const ctx = canvas.getContext('2d');
   const zoom = get('caption-zoom-dialog'), largeCanvas = get('caption-zoom-canvas');
-  let moving = false;
+  let drag;
   let schedule, loading = false, lastKey = '', queuedKey = '', bitmap;
   let previous = {...defaults}, preferredPreset;
   let saved = [];
@@ -79,8 +79,8 @@ window.mountCaptionInspector = ({ api, sourceCue, player, still }) => {
       ctx.drawImage(source,(width-w*scale)/2,(height-h*scale)/2,w*scale,h*scale);
     }
     if (bitmap && get('caption-enabled').checked) ctx.drawImage(bitmap,0,0,width,height);
-    if (moving) {
-      const x = width*get('caption-x').valueAsNumber/100, y = height*get('caption-y').valueAsNumber/100;
+    if (drag) {
+      const x = width*drag.position.x/100, y = height*drag.position.y/100;
       ctx.strokeStyle = '#60e0e6'; ctx.lineWidth = Math.max(2,width/350);
       ctx.beginPath(); ctx.arc(x,y,width/95,0,2*Math.PI); ctx.stroke();
     }
@@ -93,7 +93,7 @@ window.mountCaptionInspector = ({ api, sourceCue, player, still }) => {
     if (panel.hidden || !pane.open) return null;
     const sample = sourceCue();
     const cue = text.value.trim() ? {text:text.value.trim()} : sample || {text:'在这里预览字幕样式'};
-    return {style:read(),ratio:get('ratio').value,cue:{text:cue.text.slice(0,320),highlights:cue.highlights}};
+    return {style:{...read(), ...drag?.position},ratio:get('ratio').value,cue:{text:cue.text.slice(0,320),highlights:cue.highlights}};
   }
   async function render() {
     const data = request();
@@ -217,31 +217,60 @@ window.mountCaptionInspector = ({ api, sourceCue, player, still }) => {
   for (const eventName of ['input','change']) {
     sizeSlider.addEventListener(eventName,() => { get('caption-size').value = sizeSlider.value; });
   }
-  get('caption-save-preset').addEventListener('click',() => {
-    get('caption-save-row').hidden = false; get('caption-preset-name').focus();
+  const savePreset = get('caption-save-preset'), saveRow = get('caption-save-row');
+  function showPresetForm(open) {
+    saveRow.hidden = !open;
+    savePreset.setAttribute('aria-expanded',String(open));
+    (open ? get('caption-preset-name') : savePreset).focus();
+  }
+  savePreset.addEventListener('click',() => showPresetForm(saveRow.hidden));
+  get('caption-cancel-preset').addEventListener('click',() => showPresetForm(false));
+  saveRow.addEventListener('keydown', event => {
+    if (event.isComposing || event.ctrlKey || event.metaKey || event.altKey || event.shiftKey) return;
+    if (event.key === 'Escape') showPresetForm(false);
+    else if (event.key === 'Enter' && event.target === get('caption-preset-name')) get('caption-confirm-preset').click();
+    else return;
+    event.preventDefault();
+    event.stopPropagation();
   });
-  get('caption-cancel-preset').addEventListener('click',() => { get('caption-save-row').hidden = true; });
   get('caption-enlarge').addEventListener('click',() => { zoom.showModal(); draw(); refresh(); });
   get('caption-zoom-close').addEventListener('click',() => zoom.close());
+  function pointerPosition(stage,event) {
+    const rect = stage.getBoundingClientRect();
+    const coordinate = (offset,span) => Math.max(0,Math.min(100,Math.round(100*offset/span)));
+    return {position:'custom', x:coordinate(event.clientX-rect.left,rect.width), y:coordinate(event.clientY-rect.top,rect.height)};
+  }
+  function endDrag(event) {
+    if (!drag || (event?.pointerId != null && event.pointerId !== drag.id)) return;
+    const {stage,id} = drag;
+    drag = undefined;
+    if (stage.hasPointerCapture(id)) stage.releasePointerCapture(id);
+    if (event?.type === 'pointerup') {
+      set(pointerPosition(stage,event));
+      get('caption-position').dispatchEvent(new Event('input',{bubbles:true}));
+    } else refresh();
+  }
   for (const stage of [canvas,largeCanvas]) {
-    function move(event) {
-      const rect = stage.getBoundingClientRect();
-      const coordinate = (offset,span) => Math.max(0,Math.min(100,Math.round(100*offset/span)));
-      set({position:'custom', x:coordinate(event.clientX-rect.left,rect.width), y:coordinate(event.clientY-rect.top,rect.height)});
-      refresh();
-    }
     stage.addEventListener('pointerdown',(event) => {
-      if (event.button || !get('caption-enabled').checked || get('montage-settings').disabled) return;
-      moving = true; stage.setPointerCapture(event.pointerId); move(event);
+      if (event.button || !event.isPrimary || drag || !get('caption-enabled').checked || get('montage-settings').disabled) return;
+      stage.setPointerCapture(event.pointerId);
+      drag = {stage,id:event.pointerId,position:pointerPosition(stage,event)};
+      refresh();
     });
     stage.addEventListener('pointermove',(event) => {
-      if (stage.hasPointerCapture(event.pointerId)) move(event);
+      if (drag?.stage !== stage || drag.id !== event.pointerId) return;
+      drag.position = pointerPosition(stage,event);
+      refresh();
     });
-    stage.addEventListener('lostpointercapture',() => {
-      moving = false;
-      get('caption-position').dispatchEvent(new Event('input',{bubbles:true}));
-    });
+    for (const type of ['pointerup','pointercancel','lostpointercapture']) stage.addEventListener(type,endDrag);
   }
+  window.addEventListener('blur', () => endDrag());
+  window.addEventListener('keydown',event => {
+    if (!drag || event.isComposing || event.key !== 'Escape') return;
+    event.preventDefault();
+    event.stopPropagation();
+    endDrag();
+  },true);
   get('caption-confirm-preset').addEventListener('click',() => {
     const name = get('caption-preset-name').value.trim();
     if (!name) { status('请输入预设名称。'); return; }
@@ -252,9 +281,9 @@ window.mountCaptionInspector = ({ api, sourceCue, player, still }) => {
     try { localStorage.setItem(storageKey,JSON.stringify(items)); }
     catch { status('预设未保存，当前存储不可用。'); return; }
     saved = items;
-    get('caption-preset-name').value = ''; get('caption-save-row').hidden = true;
+    get('caption-preset-name').value = '';
     renderPresets(name);
-    get('caption-save-preset').focus();
+    showPresetForm(false);
     status('已保存「'+name+'」。');
   });
   pane.addEventListener('toggle',() => { lastKey = ''; refresh(); });

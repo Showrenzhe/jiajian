@@ -336,6 +336,11 @@ window.mountEditTimeline = function (host, ctx) {
     }
   }
   window.addEventListener('keydown',(event)=>{
+    if (event.key==='Escape' && resizeDrag && !event.isComposing) {
+      event.preventDefault();event.stopPropagation();
+      endResize(false);
+      return;
+    }
     if (event.key==='Escape' && shotDrag) {
       event.preventDefault();event.stopPropagation();
       shotDrag.cancelled=true;shotDrag.active=false;
@@ -393,6 +398,7 @@ window.mountEditTimeline = function (host, ctx) {
     refreshFrame=undefined;
     if (!host.clientWidth) return;
     finishShotDrag();
+    endResize(false);
     const s=ctx.state();
     lastState=s;
     const index=s.shots.indexOf(focusShot);
@@ -421,11 +427,12 @@ window.mountEditTimeline = function (host, ctx) {
         handle.setAttribute('role','separator');
         handle.setAttribute('aria-orientation','horizontal');
         handle.setAttribute('aria-label',label+'轨道高度');
-        handle.title='上下拖动调整轨高，双击恢复默认';
+        handle.title='上下拖动或按方向键调整轨高，Esc 取消拖动，双击或按 Home 恢复默认';
         handle.onpointerdown=(event)=>{
           if(event.button!==0 || resizeDrag || scrubPointer!=null) return;
           event.preventDefault();
-          resizeDrag={key,node,y:event.clientY,height:node.offsetHeight,id:event.pointerId};
+          resizeDrag={key,node,handle,y:event.clientY,height:node.offsetHeight,id:event.pointerId,
+            savedHeight:heights.get(key),wasFolded:folded.has(key)};
           if(node.getAnimations().some((animation)=>animation.transitionProperty==='height')) {
             resizeLane(node,key,resizeDrag.height);
           }
@@ -748,6 +755,22 @@ window.mountEditTimeline = function (host, ctx) {
     setFold(node,key,compact);
     ctx.scroll();
   }
+  function endResize(commit) {
+    if (!resizeDrag) return;
+    const {node,key,handle,id,savedHeight,wasFolded}=resizeDrag;
+    resizeDrag=undefined;
+    if (handle.hasPointerCapture(id)) handle.releasePointerCapture(id);
+    if (commit) return;
+    if (savedHeight===undefined) {
+      heights.delete(key);
+      node.style.removeProperty('--lane-height');
+    } else {
+      heights.set(key,savedHeight);
+      node.style.setProperty('--lane-height',savedHeight+'px');
+    }
+    setFold(node,key,wasFolded);
+    ctx.scroll();
+  }
   function scrubAt(x) {
     draftTransport.stop();
     const ruler=host.querySelector('.sequence-ruler .sequence-content');
@@ -789,7 +812,7 @@ window.mountEditTimeline = function (host, ctx) {
     }
     if(resizeDrag?.id===event.pointerId) {
       const {node,key,height,y}=resizeDrag;
-      if(event.clientY!==y) resizeLane(node,key,height+event.clientY-y);
+      resizeLane(node,key,height+event.clientY-y);
     } else if(event.pointerId===scrubPointer) {
       scrubX=event.clientX;
       if(scrubFrame===undefined) scrubFrame=requestAnimationFrame(frameScrub);
@@ -802,12 +825,12 @@ window.mountEditTimeline = function (host, ctx) {
       scrubPointer=undefined;
       cancelAnimationFrame(scrubFrame);scrubFrame=undefined;
     }
-    if(resizeDrag?.id===event.pointerId) resizeDrag=undefined;
+    if(resizeDrag?.id===event.pointerId) endResize(event.type==='pointerup');
     if(host.hasPointerCapture(event.pointerId)) host.releasePointerCapture(event.pointerId);
   }
   for(const type of ['pointerup','pointercancel']) window.addEventListener(type,endDrag,true);
   window.addEventListener('blur',()=>{
-    scrubPointer=undefined;resizeDrag=undefined;cancelAnimationFrame(scrubFrame);scrubFrame=undefined;
+    scrubPointer=undefined;endResize(false);cancelAnimationFrame(scrubFrame);scrubFrame=undefined;
   });
   function syncPlayer(clip,sourceTime) {
     if(draftTransport.playing()) return;

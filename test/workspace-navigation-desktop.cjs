@@ -128,7 +128,53 @@ async function run() {
     assert.ok(await read("originalPlayer === document.querySelector('#preview') && document.querySelectorAll('#preview').length === 1"));
     await wait(arrival + '.length === 0', '动画结束后页面应恢复稳定');
     await capture('04-project-open');
-    console.log('首页进出、快速返回、取消选取、减少动态、强制色、真实草稿与工程预览通过。');
+    await media('reduce');
+    await click('#title-home');
+    win.setSize(850, 600);
+    await wait('innerWidth <= 850', '窗口应缩小至支持的最小宽度');
+    const focused = selector => read('document.activeElement.matches(' + JSON.stringify(selector) + ')');
+    for (const [tool, heading] of [
+      ['#tab-montage', '#project-workspace h1'], ['#tab-scene-split', '#scene-split-title'],
+      ['#tab-audio', '#workflow-title'], ['#tab-script', '#script-workspace h1'],
+    ]) {
+      await click(tool);
+      assert.ok(await focused(heading), tool + ' 打开后应聚焦页面标题');
+      await click(tool === '#tab-script' ? '#script-back' : '#title-home');
+      assert.ok(await focused(tool), '返回后应聚焦原来的工具入口 ' + tool);
+      assert.ok(await read(`(() => {
+        const {left, right, top, bottom} = document.activeElement.getBoundingClientRect();
+        const hit = document.elementFromPoint((left + right) / 2, (top + bottom) / 2);
+        return left >= 0 && right <= innerWidth && top >= 0 && bottom <= innerHeight && document.activeElement.contains(hit);
+      })()`), '恢复焦点的入口应在小窗口内可见');
+    }
+    await click('[data-workflow=tasks]');
+    await wait(current + " === 'workflow'", '应打开任务中心');
+    assert.ok(await focused('#service-title'));
+    await click('#service-actions button');
+    assert.ok(await focused('#recent-heading'), '查看本地导出应把键盘焦点带到结果');
+    await read(`(async () => {
+      document.querySelector('[data-workflow=replicate]').click();
+      document.querySelector('#tab-drafts').click();
+      await window.workbench.creativeSettings();
+      await window.workbench.workflows();
+    })()`);
+    assert.equal(await read(current), 'drafts', '迟到的创作服务响应不应覆盖最后一次导航');
+    assert.ok(await focused('#draft-heading'));
+    await click('#title-home');
+    await click('#tab-script');
+    await click('.script-dialogue');
+    await wc.insertText('导航回归台词');
+    await click('#script-go-montage');
+    await click('#edit-attached-script');
+    assert.equal(await read('document.querySelector("#script-back").title'), '返回视频混剪');
+    await click('.script-dialogue');
+    await wc.insertText('已修改');
+    await click('#script-back');
+    assert.equal(await read(current), 'montage');
+    assert.ok(await focused('#edit-attached-script'));
+    assert.ok(await read('document.querySelector("#script-brief-rows").textContent.includes("已修改")'),
+      '从剪辑台返回时应同步已编辑脚本');
+    console.log('首页与各工作区往返、快速返回、减少动态、强制色、最小窗口、真实草稿与关联脚本通过。');
   } finally {
     wc.debugger.detach();
     win.destroy();

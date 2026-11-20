@@ -183,7 +183,7 @@
             </section>
           </section>
           <section id="recent-work" class="recent-work" aria-labelledby="recent-heading">
-            <h2 id="recent-heading">最近导出</h2>
+            <h2 id="recent-heading" tabindex="-1">最近导出</h2>
             <button type="button" class="home-outline" id="rename-outputs" disabled>重命名所选作品</button>
             <p id="history-status" role="status"></p>
             <ul id="history-list"></ul>
@@ -238,7 +238,7 @@
         </section>
       </main>
       <main id="workflow-workspace" class="home" hidden>
-        <div class="workspace-heading"><h1 id="service-title"></h1><span id="service-status" class="service-status"></span></div>
+        <div class="workspace-heading"><h1 id="service-title" tabindex="-1"></h1><span id="service-status" class="service-status"></span></div>
         <p id="service-summary" class="service-summary"></p>
         <div class="service-layout">
           <section><h2>操作流程</h2><ol id="service-steps"></ol></section>
@@ -591,7 +591,7 @@
             <div id="inspector-panel-subtitles" data-inspector-panel role="tabpanel" aria-labelledby="inspector-tab-subtitles" tabindex="0" hidden>
               <div class="caption-master"><h3 class="inspector-section-title">成片字幕</h3><label class="p-switch">导出时显示<input id="caption-enabled" type="checkbox" role="switch" aria-label="导出时显示字幕" checked><span aria-hidden="true"></span></label></div>
               <div id="subtitle-style-settings">
-                <div class="caption-section-head"><h4>预设样式</h4><span id="caption-preset-label"></span><button type="button" class="quiet" id="caption-save-preset" title="保存当前预设" aria-label="保存当前预设"><svg class="ui-icon" aria-hidden="true"><use href="#icon-plus"></use></svg></button></div>
+                <div class="caption-section-head"><h4>预设样式</h4><span id="caption-preset-label"></span><button type="button" class="quiet" id="caption-save-preset" title="保存当前预设" aria-label="保存当前预设" aria-controls="caption-save-row" aria-expanded="false"><svg class="ui-icon" aria-hidden="true"><use href="#icon-plus"></use></svg></button></div>
                 <div id="caption-presets" class="caption-swatches" role="group" aria-label="字幕样式预设"></div>
                 <div id="caption-personal-group" hidden>
                   <h4>我的预设</h4>

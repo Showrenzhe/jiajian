@@ -162,6 +162,7 @@ input[value="right"] + .caption-align-symbol { --align-edge: right; }
 #caption-preview-canvas { display:block; background:#232931; width:100%; max-width:355px; height:auto; aspect-ratio:16/9; }
 #caption-sample-stage[data-ratio="9:16"] canvas { aspect-ratio:9/16; max-width:117px; }
 #caption-sample-stage[data-ratio="1:1"] canvas { aspect-ratio:1; max-width:205px; }
+#caption-preview-canvas, #caption-zoom-canvas { touch-action: none; cursor: crosshair; }
 #caption-preview-text {
   appearance: none;
   width: 100%;

@@ -48,6 +48,17 @@ module.exports = async function checkTimelineInteraction(win, read, waitFor, che
     const enlarged = await trackHeight(lane);
     assert.ok(Math.abs(enlarged - original - 24) < 2, '拖住边界时轨道高度应即时跟随指针');
     await mouse('mouseReleased', gx, gy + 24);
+    const expandedGrip = await rect(lane + ' .sequence-height-handle');
+    const expandedY = expandedGrip.top + expandedGrip.height / 2;
+    await mouse('mousePressed', gx, expandedY);
+    await mouse('mouseMoved', gx, expandedY - enlarged);
+    assert.equal(await trackHeight(lane),17,'往上拖过边界时应折叠轨道');
+    for (const type of ['rawKeyDown','keyUp']) {
+      await win.webContents.debugger.sendCommand('Input.dispatchKeyEvent',{type,key:'Escape',code:'Escape',windowsVirtualKeyCode:27});
+    }
+    await mouse('mouseReleased', gx, expandedY - enlarged);
+    assert.equal(await trackHeight(lane),enlarged,'取消后应还原已经设置的轨高');
+    assert.equal(await read(`document.querySelector('${lane} [aria-expanded]').getAttribute('aria-expanded')`),'true');
     assert.equal(await trackHeight('.sequence-shots'), other);
     const toggle = () => read(`document.querySelector('${lane} [aria-expanded]').click()`);
     assert.equal(await checkFold(lane + ' [aria-expanded]', lane), 17, '折叠后的轨道应收至色带高度');

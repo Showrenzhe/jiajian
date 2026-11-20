@@ -6,7 +6,7 @@ window.mountAudioTools = function({ api, onBusy, onGenerated }) {
   const player = get('audio-tool-player'), list = get('audio-pauses'), status = get('audio-tool-status');
   const showWaveform=window.attachPlayerWaveform(player);
   const settings = get('audio-pause-settings'), generate = get('audio-tool-generate'), close = get('audio-tool-close');
-  let assets = [], working = false, cancelled = false;
+  let assets = [], working = false, cancelled = false, job = 0;
   const proposals = new Map();
   const current = () => assets[picker.selectedIndex];
   const number = (id) => get(id).valueAsNumber;
@@ -20,10 +20,10 @@ window.mountAudioTools = function({ api, onBusy, onGenerated }) {
     get('audio-with-video').disabled=working;
     generate.disabled = working || !current() || (!settings.hidden && ![...proposals.values()].some((items)=>items.some((r)=>r.checked!==false)));
     generate.textContent = assets.length > 1 ? '处理全部素材' : '生成素材';
-    get('audio-detect').disabled = working;
+    settings.disabled = working;
     modes.disabled = picker.disabled = working;
-    close.textContent = working ? '取消处理' : '关闭';
-    for (const input of settings.querySelectorAll('input')) input.disabled = working;
+    close.textContent = working ? (cancelled ? '正在取消…' : '取消处理') : '关闭';
+    close.setAttribute('aria-disabled', String(working && cancelled));
   }
   function getProposals() { return proposals.get(current()?.id) ?? []; }
   function showRows() {
@@ -53,26 +53,31 @@ window.mountAudioTools = function({ api, onBusy, onGenerated }) {
   }
   async function execute(action) {
     if (working) return;
-    working=true; cancelled=false; onBusy(true); display();
+    const trigger = document.activeElement;
+    job++; working=true; cancelled=false; onBusy(true); display();
+    if (trigger?.matches(':disabled')) close.focus({ preventScroll: true });
     try { await action(); }
-    catch (error) {status.textContent=error.message;}
-    finally {working=false;onBusy(false);display();}
+    catch (error) { if (!cancelled) status.textContent=error.message; }
+    finally {
+      if (cancelled) status.textContent='已取消，已完成的结果已保留。';
+      working=false;onBusy(false);showRows();
+    }
   }
   function config() {return {threshold:number('audio-threshold'),minimum:number('audio-minimum'),padding:number('audio-padding'),fillers:get('audio-fillers').checked};}
   get('audio-detect').onclick=()=>execute(async()=>{
-    status.textContent='正在检测音轨中的停顿…';
-    for (const asset of assets) {
-      if (cancelled) throw new Error('已取消检测。');
-      proposals.set(asset.id,await api.detectPauses({id:asset.id,...config()}));
+    for (const [i,asset] of assets.entries()) {
+      status.textContent='正在检测 '+(i+1)+' / '+assets.length+' · '+asset.name;
+      const intervals=await api.detectPauses({id:asset.id,...config()});
+      if (cancelled) return;
+      proposals.set(asset.id,intervals);
     }
-    showRows();
     const count=[...proposals.values()].reduce((sum,items)=>sum+items.length,0);
     status.textContent='检测到 '+count+' 处停顿。可切换来源，调整每处起止时间。';
   });
   generate.onclick=()=>execute(async()=>{
     player.pause(); let count=0;
     for (const [i,asset] of assets.entries()) {
-      if (cancelled) throw new Error('已取消后续处理。');
+      if (cancelled) break;
       const intervals=(proposals.get(asset.id)??[]).filter((r)=>r.checked!==false);
       if (modes.value==='trim' && !intervals.length) continue;
       status.textContent='正在处理 '+(i+1)+' / '+assets.length+' · '+asset.name;
@@ -80,9 +85,20 @@ window.mountAudioTools = function({ api, onBusy, onGenerated }) {
       const results=await api.processAudio({id:asset.id,mode:modes.value,intervals,withVideo});
       onGenerated(results);count+=results.length;
     }
-    status.textContent='已添加 '+count+' 项到素材库的「已处理素材」。';
+    if (!cancelled) status.textContent='已添加 '+count+' 项到素材库的「已处理素材」。';
   });
-  close.onclick=()=>{if(working){cancelled=true;api.cancel().catch((error)=>{status.textContent=error.message;});}else dialog.close();};
+  close.onclick=async()=>{
+    if (!working) { dialog.close(); return; }
+    if (cancelled) return;
+    const pendingJob=job;
+    cancelled=true;
+    display();
+    status.textContent='正在取消处理…';
+    try { await api.cancel(); }
+    catch (error) {
+      if (working && job===pendingJob) { cancelled=false;display();status.textContent=error.message; }
+    }
+  };
   dialog.addEventListener('cancel',(event)=>{if(working){event.preventDefault();close.click();}});
   dialog.addEventListener('close',()=>{if(dialog.open)return;player.pause();player.removeAttribute('src');player.load();showWaveform();assets=[];proposals.clear();});
   picker.onchange=setSource; modes.onchange=display;

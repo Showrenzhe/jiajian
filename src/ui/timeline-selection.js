@@ -49,7 +49,7 @@ window.mountTimelineSelection = function (host, {busy, changed, removed}) {
       y:Math.max(Math.max(canvas.top,pane.top), Math.min(canvas.bottom,pane.bottom,y))-canvas.top};
   }
   function update() {
-    if (!gesture?.active || !frame.parentElement) return;
+    if (!gesture?.active || gesture.cancelled || !frame.parentElement) return;
     const end = point(gesture.x,gesture.y), start = gesture.start;
     const x = Math.min(start.x,end.x), y = Math.min(start.y,end.y);
     Object.assign(frame.style, {left:x+'px', top:y+'px', width:Math.abs(end.x-start.x)+'px', height:Math.abs(end.y-start.y)+'px'});
@@ -64,7 +64,7 @@ window.mountTimelineSelection = function (host, {busy, changed, removed}) {
     paint();
   }
   function autoScroll() {
-    if (!gesture?.active) return;
+    if (!gesture?.active || gesture.cancelled) return;
     const bounds = host.getBoundingClientRect(), pane = scroller.getBoundingClientRect();
     const step = (value,low,high) => value<low+15 ? -12 : value>high-15 ? 12 : 0;
     const left = host.scrollLeft, top = scroller.scrollTop;
@@ -100,7 +100,7 @@ window.mountTimelineSelection = function (host, {busy, changed, removed}) {
     if (node && additive) {event.stopPropagation();event.preventDefault();}
   },true);
   window.addEventListener('pointermove',(event)=>{
-    if (gesture?.id!==event.pointerId) return;
+    if (gesture?.id!==event.pointerId || gesture.cancelled) return;
     gesture.x=event.clientX;gesture.y=event.clientY;
     if (!gesture.active) {
       if (Math.hypot(gesture.x-gesture.initialX,gesture.y-gesture.initialY)<4) return;
@@ -111,7 +111,17 @@ window.mountTimelineSelection = function (host, {busy, changed, removed}) {
     update();
   },true);
   window.addEventListener('pointerup',(event)=>{if(gesture?.id===event.pointerId) {gesture.x=event.clientX;gesture.y=event.clientY;update();finish(false);}},true);
-  host.addEventListener('pointercancel',()=>finish(true));
+  host.addEventListener('pointercancel',(event)=>{if(gesture?.id===event.pointerId) finish(true);});
+  window.addEventListener('keydown',(event)=>{
+    if (event.key!=='Escape' || event.isComposing || !gesture?.active) return;
+    event.preventDefault();event.stopPropagation();
+    gesture.cancelled=true;
+    cancelAnimationFrame(scrollFrame);
+    frame.hidden=true;
+    selected=new Set(gesture.before);
+    paint();
+    // Retain capture through release so the resulting click cannot select a clip.
+  },true);
   window.addEventListener('blur',()=>finish(true));
   host.addEventListener('click',(event)=>{
     if (suppressClick) {event.preventDefault();event.stopPropagation();return;}

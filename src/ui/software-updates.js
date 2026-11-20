@@ -19,6 +19,7 @@ window.bindSoftwareUpdates = (api) => {
   }
 
   function render() {
+    const focused = document.activeElement;
     const { status = 'idle', currentVersion, version, notes, percent, message, retry } = state || {};
     if (currentVersion) {
       $('app-version').textContent = currentVersion;
@@ -58,6 +59,11 @@ window.bindSoftwareUpdates = (api) => {
     dismiss.hidden = notice.hidden;
     const reminder = status === 'downloaded' ? '更新已就绪' : descriptions.available;
     notice.textContent = notice.hidden ? '' : reminder;
+    if (focused === dismiss && dismiss.hidden) entry.focus({ preventScroll: true });
+    if (dialog.open && ((focused === action && action.disabled) ||
+      (focused === $('update-manage-installation') && focused.hidden))) {
+      $('update-close').focus({ preventScroll: true });
+    }
   }
 
   function open() {

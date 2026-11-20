@@ -50,6 +50,9 @@ let timelinePlaybackRequest;
 let projectName = '';
 let attachedScript = null;
 let activeWorkflow = '';
+let navigationRequest = 0;
+let homeToolOpener;
+let scriptOrigin;
 let scriptWorkspace;
 let workflowManifest;
 let editHistory;
@@ -1986,6 +1989,7 @@ document.addEventListener('pointerdown', finishWorkspaceGesture, true);
 document.addEventListener('keydown', finishWorkspaceGesture, true);
 
 function navigateWorkspace(value, change) {
+  navigationRequest++;
   const libraryModes = ['home', 'drafts', 'project'];
   const enteringEditor = value === 'montage' && libraryModes.includes(mode);
   const returningToLibrary = mode === 'montage' && libraryModes.includes(value);
@@ -2027,12 +2031,11 @@ function setMode(value) {
   return navigateWorkspace(value, () => commitMode(value));
 }
 
-function commitMode(value, { focusDraft = false } = {}) {
-  if (value === mode) return;
-  const previousMode = mode;
+function commitMode(value, { focusDraft = false, workflowId = activeWorkflow } = {}) {
+  if (value === mode && (value !== 'workflow' || workflowId === activeWorkflow)) return;
   const localTools = $('#home-local-tools');
-  const leavingLocalTool = localTools.contains(document.activeElement);
-  const focus = document.activeElement;
+  const returningTool = value === 'home' ? homeToolOpener : null;
+  homeToolOpener = mode === 'home' && localTools.contains(document.activeElement) ? document.activeElement : null;
   draftLibrary.cancelCoverTransition();
   timeline?.stopDraftPlayback();
   if(timelinePlaybackRequest) timelinePlaybackRequest.autoplay=false;
@@ -2040,6 +2043,7 @@ function commitMode(value, { focusDraft = false } = {}) {
   const selectionOrigin = workspaceNavigation.selectionBounds();
   const savingDraft = mode === 'montage' ? draftAutosave.flush() : null;
   mode = value;
+  if (mode === 'workflow') activeWorkflow = workflowId;
   const home = mode === 'home' || mode === 'drafts';
   const audio = mode === 'audio';
   const editor = audio || mode === 'montage';
@@ -2075,11 +2079,11 @@ function commitMode(value, { focusDraft = false } = {}) {
   if (editor) $('#workflow-title').textContent = audio ? '音频提取' : '分镜混剪';
   const page = $('.work-area > main:not([hidden])');
   const heading = page.querySelector('h1');
-  if (leavingLocalTool || (!focusDraft && (mode === 'montage' || (previousMode === 'montage' && (home || project)))
-      && (focus === document.body || focus.closest('main, #title-home, .tabs')))) {
-    heading?.focus({ preventScroll: true });
-  }
   if (window.scrollY) window.scrollTo(0, 0);
+  if (!focusDraft) {
+    (returningTool ?? heading)?.focus({ preventScroll: true });
+    returningTool?.scrollIntoView({ block: 'nearest' });
+  }
   clearPreview();
   say('');
   if (home) {
@@ -2153,11 +2157,22 @@ async function refreshProjects() {
 
 function showScript(model) {
   if (operation) return;
+  scriptOrigin = { mode, opener: document.activeElement };
   scriptWorkspace ??= window.mountScriptWorkspace($('#script-workspace'), {
     onMontage: attachScript,
-    onBack: () => setMode('home'),
+    onBack: () => {
+      if (scriptOrigin.mode === 'montage') {
+        if (!scriptWorkspace.applyToMontage()) return;
+      } else setMode(scriptOrigin.mode);
+      if (scriptOrigin.opener.matches('button:enabled') && scriptOrigin.opener.checkVisibility()) {
+        scriptOrigin.opener.focus();
+      }
+    },
     onNarrate: openScriptSpeech,
   });
+  const back = $('#script-back');
+  back.title = '返回' + $('#title-tab').textContent;
+  back.setAttribute('aria-label', back.title);
   if (model) scriptWorkspace.restore(model);
   setMode('script');
 }
@@ -2314,16 +2329,21 @@ async function runSceneSplit() {
 
 async function showWorkflow(id) {
   if (operation) return;
+  const request = ++navigationRequest;
   try {
     const creative = id === 'digital-avatar' || id === 'replicate';
-    if (creative && (await api.creativeSettings()).baseUrl) {
-      await creativeWorkspace.open(id === 'replicate' ? 'replicate' : 'avatar');
-      return;
+    if (creative) {
+      const settings = await api.creativeSettings();
+      if (request !== navigationRequest || operation) return;
+      if (settings.baseUrl) {
+        await creativeWorkspace.open(id === 'replicate' ? 'replicate' : 'avatar');
+        return;
+      }
     }
     workflowManifest ??= await api.workflows();
+    if (request !== navigationRequest || operation) return;
     const flow = workflowManifest.find((item) => item.id === id);
     if (!flow) return;
-    activeWorkflow = id;
     $('#service-title').textContent = flow.title;
     $('#service-summary').textContent = flow.summary;
     $('#service-status').textContent = flow.status === 'partial' ? '本地部分可用' : flow.status === 'local' ? '本地可用' : '待接入 API';
@@ -2348,7 +2368,10 @@ async function showWorkflow(id) {
       'script.edit': () => showScript(),
       'audio.open': () => setMode('audio'),
       'scene-split.open': () => setMode('scene-split'),
-      'tasks.recent': () => $('#recent-work').scrollIntoView(),
+      'tasks.recent': () => {
+        $('#recent-heading').focus({ preventScroll: true });
+        $('#recent-work').scrollIntoView({ block: 'nearest' });
+      },
     };
     $('#service-actions').replaceChildren(...flow.localActions.filter((action) => localActions[action.id]).map((action) => {
       const button = document.createElement('button');
@@ -2362,10 +2385,9 @@ async function showWorkflow(id) {
       $('#service-history').append($('#recent-work'));
       refreshHistory();
     } else $('.home-content').append($('#recent-work'));
-    if (mode === 'workflow') mode = '';
-    setMode('workflow');
+    navigateWorkspace('workflow', () => commitMode('workflow', { workflowId: id }));
   } catch (error) {
-    sayProject(error.message);
+    if (request === navigationRequest) sayProject(error.message);
   }
 }
 
@@ -3399,8 +3421,8 @@ api.onProgress((data) => {
 });
 
 function showHome() {
-  setMode('home');
   if (mode === 'home') window.scrollTo(0, 0);
+  setMode('home');
 }
 const workspaceNavigation = (() => {
   const frame = $('.app-frame');
@@ -3700,9 +3722,17 @@ function renderProcessedMaterials(usage) {
 materialPanel.addEventListener('pointerdown', startMaterialMarquee);
 materialPanel.addEventListener('pointermove', moveMaterialMarquee);
 materialPanel.addEventListener('pointerup', finishMaterialMarquee);
-materialPanel.addEventListener('lostpointercapture', (event) => {
-  if (materialSelectionDrag?.pointerId === event.pointerId) cancelMaterialMarquee();
-});
+for (const type of ['pointercancel', 'lostpointercapture']) {
+  materialPanel.addEventListener(type, (event) => {
+    if (materialSelectionDrag?.pointerId === event.pointerId) cancelMaterialMarquee();
+  });
+}
+window.addEventListener('keydown', (event) => {
+  if (event.key !== 'Escape' || event.isComposing || !materialSelectionDrag) return;
+  event.preventDefault();
+  event.stopPropagation();
+  cancelMaterialMarquee();
+}, true);
 materialPanel.addEventListener('scroll', () => {
   if (materialSelectionDrag) drawMaterialMarquee();
 });

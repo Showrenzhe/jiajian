@@ -33,7 +33,7 @@
     dialog:not(.color-wheel-panel)[open] { opacity: 0; scale: .978; }
     dialog:not(.color-wheel-panel)[open]::backdrop { opacity: 0; }
   }
-  dialog details::details-content {
+  :is(dialog, .montage-inspector) details::details-content {
     block-size: 0;
     opacity: 0;
     overflow: clip;
@@ -41,7 +41,7 @@
     transition: block-size var(--menu-exit) var(--menu-ease), opacity var(--menu-exit) ease-out,
       content-visibility var(--menu-exit) allow-discrete;
   }
-  dialog details[open]::details-content { block-size: auto; opacity: 1; transition-duration: var(--menu-enter); }
+  :is(dialog, .montage-inspector) details[open]::details-content { block-size: auto; opacity: 1; transition-duration: var(--menu-enter); }
 }
 
 @supports (appearance: base-select) and selector(::picker(select)) {

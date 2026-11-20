@@ -50,11 +50,12 @@ async function check() {
   const send = (method, params) => win.webContents.debugger.sendCommand('Input.' + method, params);
   const mouse = (type, x, y) => send('dispatchMouseEvent', { type, x, y, button: type === 'mouseMoved' ? 'none' : 'left',
     buttons: type === 'mouseReleased' ? 0 : 1, clickCount: type === 'mouseMoved' ? 0 : 1 });
-  async function pressDelete() {
-    const event = { key:'Delete', code:'Delete', windowsVirtualKeyCode:46, nativeVirtualKeyCode:46 };
+  async function pressKey(key, code) {
+    const event = { key, code:key, windowsVirtualKeyCode:code, nativeVirtualKeyCode:code };
     await send('dispatchKeyEvent', { ...event, type:'rawKeyDown' });
     await send('dispatchKeyEvent', { ...event, type:'keyUp' });
   }
+  const pressDelete = () => pressKey('Delete', 46);
   async function actualClick(selector) {
     const point = await read('(() => {const el=' + query(selector) + ';el.scrollIntoView({block:"nearest",inline:"nearest"});'
       + 'const r=el.getBoundingClientRect();for (const n of [.5,.25,.65,.85,.12]) {const x=r.left+r.width*n,y=r.top+r.height/2;if(el.contains(document.elementFromPoint(x,y)))return {x,y};}return null;})()');
@@ -82,6 +83,16 @@ async function check() {
       +'const one=a.getBoundingClientRect(),two=b.getBoundingClientRect(),row=a.closest(".sequence-row").getBoundingClientRect();'
       +'const x=one.left+one.width*.45,y=row.top+1.4;return {x,y,toX:two.left+two.width*.65,toY:two.top+two.height*.62,hit:document.elementFromPoint(x,y)?.className};})()');
     assert.match(box.hit,/sequence-content/,'从轨道空白处框选');
+    await actualClick(video);
+    const originalSelection = await read(query(video+'.sequence-marked')+'.textContent');
+    await mouse('mousePressed',box.x,box.y);
+    await mouse('mouseMoved',box.toX,box.toY);
+    await wait(count(video+'.sequence-marked')+'===2','拖动中应预览两个候选');
+    await pressKey('Escape',27);
+    await wait(query('.timeline-marquee')+'.hidden','Esc 应立即收起时间线选框');
+    await mouse('mouseReleased',box.toX,box.toY);
+    assert.equal(await read(count(video+'.sequence-marked')),1,'取消后松手应保留原来的单选');
+    assert.equal(await read(query(video+'.sequence-marked')+'.textContent'),originalSelection);
     await mouse('mousePressed',box.x,box.y);
     await mouse('mouseMoved',(box.x+box.toX)/2,box.toY);
     await mouse('mouseMoved',box.toX,box.toY);

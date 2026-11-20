@@ -30,7 +30,9 @@ async function run() {
   const wc = win.webContents;
   wc.setBackgroundThrottling(false);
   wc.debugger.attach();
-  const read = code => wc.executeJavaScript(code, true);
+  const read = code => wc.executeJavaScript(code, true).catch(error => {
+    throw new Error('Renderer check failed: ' + code, { cause: error });
+  });
   const el = selector => 'document.querySelector(' + JSON.stringify(selector) + ')';
   const count = selector => 'document.querySelectorAll(' + JSON.stringify(selector) + ').length';
   const click = selector => read(el(selector) + '.click()');
@@ -43,9 +45,11 @@ async function run() {
     }
   }
   async function point(selector) {
-    return read('(() => {const target=' + el(selector) + ';target.scrollIntoView({block:"nearest"});'
+    const coordinates = '(() => {const target=' + el(selector) + ';target.scrollIntoView({block:"nearest"});'
       + 'const rect=target.getBoundingClientRect(),x=rect.x+rect.width/2,y=rect.y+rect.height/2;'
-      + 'if(!target.contains(document.elementFromPoint(x,y))) throw new Error("控件被遮挡");return {x,y};})()');
+      + 'return target.contains(document.elementFromPoint(x,y)) ? {x,y} : null;})()';
+    await wait(coordinates, '控件被遮挡 ' + selector);
+    return read(coordinates);
   }
   async function mouseClick(selector, button = 'left', times = 1) {
     const coords = await point(selector);
@@ -77,11 +81,23 @@ async function run() {
   const undo = () => key('z', 90, 2);
 
   try {
+    await wc.debugger.sendCommand('Emulation.setFocusEmulationEnabled', { enabled: true });
     await click('#home-create');
     await wait('!' + el('#materials-pane') + '.hidden && !' + el('#material-audio-open') + '.disabled', '新建草稿应打开素材库');
     picks.push({ title: '选择待处理音频', files: [files.music, files.otherMusic] });
     await mouseClick('#material-audio-open');
     await wait(el('#audio-tools-dialog') + '.open && ' + count('#audio-tool-source option') + '===2', '空素材库也应能选择多个音频进入处理窗口');
+    const audioMode = el('#audio-tool-mode');
+    await read(audioMode + '.value="both";' + audioMode + '.dispatchEvent(new Event("change"))');
+    await mouseClick('#audio-tool-generate');
+    assert.equal(await read('document.activeElement.id'), 'audio-tool-close');
+    await key('Escape', 27);
+    await wait(el('#audio-tool-status') + '.textContent.includes("已取消") && !' + audioMode + '.disabled', '取消处理后应保留窗口并可以重试');
+    assert.equal(await read(el('#audio-tools-dialog') + '.open'), true);
+    await read(audioMode + '.value="trim";' + audioMode + '.dispatchEvent(new Event("change"))');
+    await mouseClick('#audio-detect');
+    await wait(el('#audio-tool-status') + '.textContent.includes("检测到")', '重新操作应能完成两项素材的停顿检测');
+    assert.equal(await read('document.activeElement.id'), 'audio-tool-close');
     await mouseClick('#audio-tool-close');
     picks.push({ title: '选择分镜素材', files: [files.red] });
     await mouseClick('#material-import');

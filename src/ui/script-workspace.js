@@ -268,15 +268,17 @@
       onNarrate?.(normalize(model));
     });
     $('script-go-montage').disabled = !onMontage;
-    $('script-go-montage').addEventListener('click', () => {
+    function applyToMontage() {
       persist();
       const next = normalize(model);
       if (new TextEncoder().encode(JSON.stringify(next)).byteLength > 256 * 1024) {
         status.textContent = '脚本内容超过工程上限，请缩短后再进入混剪。';
-        return;
+        return false;
       }
       onMontage?.(next);
-    });
+      return true;
+    }
+    $('script-go-montage').addEventListener('click', applyToMontage);
     $('script-content-tab').addEventListener('click', () => switchTab('narration'));
     $('script-text-group-tab').addEventListener('click', () => switchTab('textGroups'));
     for (const mode of ['whole', 'segmented']) {
@@ -325,6 +327,7 @@
     renderRows();
 
     return {
+      applyToMontage,
       getModel: () => normalize(model),
       flush: () => !pendingSave || persist(),
       restore(value) {

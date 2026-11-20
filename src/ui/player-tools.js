@@ -122,6 +122,7 @@ window.mountPlayerTools = ({ panel, getClip, isEditor, isTrack, validClip, notif
     }
   }
   function dock() {
+    endMove();
     if (panel.matches(':popover-open')) panel.hidePopover();
     panel.removeAttribute('popover');
     panel.style.removeProperty('left');
@@ -145,18 +146,40 @@ window.mountPlayerTools = ({ panel, getClip, isEditor, isTrack, validClip, notif
   video.addEventListener('enterpictureinpicture', () => float.setAttribute('aria-pressed', 'true'));
   video.addEventListener('leavepictureinpicture', () => float.setAttribute('aria-pressed', String(panel.matches(':popover-open'))));
   const heading = find('.panel-heading');
+  function endMove(event) {
+    if (!drag || (event?.pointerId != null && drag.id !== event.pointerId)) return;
+    const {id, left, top} = drag;
+    drag = undefined;
+    if (event?.type !== 'pointerup') {
+      panel.style.left = left;
+      panel.style.top = top;
+    }
+    if (heading.hasPointerCapture(id)) heading.releasePointerCapture(id);
+  }
   heading.addEventListener('pointerdown', (event) => {
-    if (!panel.matches(':popover-open') || event.button !== 0) return;
+    if (!panel.matches(':popover-open') || !event.isPrimary || event.button !== 0 || drag) return;
     const bounds = panel.getBoundingClientRect();
-    drag = { x: event.clientX - bounds.left, y: event.clientY - bounds.top };
+    drag = { id:event.pointerId, x:event.clientX - bounds.left, y:event.clientY - bounds.top,
+      left:panel.style.left, top:panel.style.top };
+    event.preventDefault();
     heading.setPointerCapture(event.pointerId);
   });
   heading.addEventListener('pointermove', (event) => {
-    if (!drag) return;
+    if (drag?.id !== event.pointerId) return;
     panel.style.left = `${Math.max(0, Math.min(innerWidth - panel.offsetWidth, event.clientX - drag.x))}px`;
     panel.style.top = `${Math.max(0, Math.min(innerHeight - panel.offsetHeight, event.clientY - drag.y))}px`;
   });
-  heading.addEventListener('lostpointercapture', () => { drag = null; });
+  for (const type of ['pointerup','pointercancel','lostpointercapture']) heading.addEventListener(type,endMove);
+  window.addEventListener('blur', () => endMove());
+  window.addEventListener('keydown', (event) => {
+    if (event.key !== 'Escape' || event.isComposing || !panel.matches(':popover-open')
+      || document.querySelector('dialog[open], select:open, [popover]:popover-open:not(#player-pane), .app-frame[data-navigation="floating"]')
+      || (!drag && !panel.contains(event.target) && event.target !== document.body)) return;
+    event.preventDefault();
+    event.stopPropagation();
+    if (drag) endMove();
+    else { dock(); float.focus({preventScroll:true}); }
+  },true);
   async function toggleFullscreen() {
     try {
       if (document.fullscreenElement === panel) await document.exitFullscreen();
@@ -183,7 +206,7 @@ window.mountPlayerTools = ({ panel, getClip, isEditor, isTrack, validClip, notif
   window.addEventListener('keydown', (event) => {
     const { target, key } = event;
     if (!isEditor() || event.defaultPrevented || event.isComposing || event.altKey || event.ctrlKey || event.metaKey
-      || event.shiftKey || document.querySelector('dialog[open], :popover-open, .app-frame[data-navigation="floating"]')
+      || event.shiftKey || document.querySelector('dialog[open], :popover-open:not(#player-pane), .app-frame[data-navigation="floating"]')
       || !(target instanceof Element) || target.isContentEditable
       || target.closest('input, textarea, select, [role="textbox"], [role="tab"], [role="separator"]')) return;
     const onPlayer = panel.contains(target) && (!target.closest('button, a') || target.closest('.player-buttons'));
