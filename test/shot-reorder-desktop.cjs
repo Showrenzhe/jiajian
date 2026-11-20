@@ -62,7 +62,7 @@ async function check() {
       if(await read(expr)) return;
       await delay(30);
     }
-    throw Error(label+' '+JSON.stringify(await read('['+order+','+query('#notice')+'.textContent,document.activeElement.outerHTML.slice(0,180)]')));
+    throw Error(label+' '+JSON.stringify(await read('['+order+','+query('#notice')+'.textContent,document.activeElement.outerHTML.slice(0,180),'+host+'.scrollLeft,'+host+'.clientWidth,'+host+'.scrollWidth]')));
   }
   const verify=(names)=>wait('JSON.stringify('+order+')==='+JSON.stringify(JSON.stringify(names)),'分镜顺序应为 '+names);
   const send=(method,params)=>wc.debugger.sendCommand('Input.'+method,params);
@@ -153,8 +153,12 @@ async function check() {
     await read(host+'.scrollLeft=0');
     const start=await point(0,.2);
     const end={x:await read(host+'.getBoundingClientRect().right-2'),y:start.y};
+    // Editing a large project on a slow GPU can deliver fewer than ten animation frames per second.
+    const originalRate=wc.getFrameRate();
+    wc.setFrameRate(6);
     await mouse('mousePressed',start);await mouse('mouseMoved',end);
     await wait(host+'.scrollLeft>0 && '+host+'.scrollWidth-'+host+'.clientWidth-'+host+'.scrollLeft<3','拖动至右边缘应持续滚到片尾');
+    wc.setFrameRate(originalRate);
     await mouse('mouseReleased',end);
     await wait(order+'.at(-1)==="C"','首镜跨屏移到最后');
     const last=await point(9,.8);

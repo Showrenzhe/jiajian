@@ -395,15 +395,18 @@ window.mountEditTimeline = function (host, ctx) {
     const edge=(shotTimes[drag.slot] ?? totalTime)*timeScale;
     drag.marker.style.left=Math.max(0,Math.min(bounds.width-3,edge-1))+'px';
   }
-  function scrollShotDrag() {
+  function scrollShotDrag(now) {
     const drag=shotDrag;
     if (!drag?.active) return;
+    const elapsed=Math.max(0,Math.min(.25,(now-drag.lastScrollTime)/1000));
+    drag.lastScrollTime=now;
     const bounds=host.getBoundingClientRect(), strip=drag.strip.getBoundingClientRect();
     if (drag.y>=strip.top && drag.y<=strip.bottom) {
       const left=bounds.left+drag.strip.previousElementSibling.offsetWidth;
       const step=drag.x<left+20 ? drag.x-left-20 : Math.max(0,drag.x-bounds.right+20);
       if (step) {
-        host.scrollLeft+=Math.sign(step)*Math.min(36,Math.ceil(Math.abs(step)*1.8));
+        const pixelsPerSecond=Math.sign(step)*Math.min(2160,Math.abs(step)*108);
+        host.scrollLeft+=pixelsPerSecond*elapsed;
         updateShotDrop();
       }
     }
@@ -467,6 +470,7 @@ window.mountEditTimeline = function (host, ctx) {
       if (Math.abs(drag.x-drag.startX)<5) return;
       drag.active=true;drag.strip.classList.add('reordering');drag.button.classList.add('shot-drag-source');
       draftTransport.stop();ctx.pause();
+      drag.lastScrollTime=performance.now();
       drag.frame=requestAnimationFrame(scrollShotDrag);
     }
     updateShotDrop();

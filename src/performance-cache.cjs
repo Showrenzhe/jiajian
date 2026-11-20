@@ -140,7 +140,7 @@ function createPerformanceCache(directory, {inspect,thumbnail,encode,bootTime=()
     const order = ++sequence;
     await writes;
     const edge={smart:640,smooth:480,quality:1280}[state.optimization];
-    if(closing || asset.kind!=='video' || asset.alpha || Math.max(asset.width,asset.height)<=edge) return null;
+    if(closing || (background && warmScope.signal.aborted) || asset.kind!=='video' || asset.alpha || Math.max(asset.width,asset.height)<=edge) return null;
     const dir=state.location, signal=proxyScope.signal;
     const key=await fingerprint(asset.path,['proxy-v1',edge]), file=path.join(dir,'jj-'+key+'.mp4');
     const cached = (await fs.stat(file).catch(()=>null))?.size;

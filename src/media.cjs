@@ -758,7 +758,20 @@ function planMontage(config, catalog, random = Math.random, batchLimit = maxMont
   const gains = new Map(normalizeVolumeOverrides(config.volumeOverrides??[],(id)=>{requireAsset(catalog,id,'audio');return id;},shots.length)
     .map(row=>[JSON.stringify([row.kind,row.id,row.shot??null,row.track??null]),row.value/100]));
   const gain=(kind,id,shot,track)=>gains.get(JSON.stringify([kind,id,shot??null,track??null]));
-  return drawCombinations(groups, count, random).map((indices) => {
+  let draws = drawCombinations(groups, count, random);
+  // With ordered narration, repeated takes of the same picture combination
+  // follow the rows from top to bottom, retaining the shuffled picture order.
+  if (segmented && config.segmentNarrationSelection !== 'random' && voiceGroups[0].length > 1) {
+    const takes = new Map();
+    const keys = draws.map(row => row.slice(0, shots.length).join(','));
+    draws.forEach((row, index) => {
+      if (!takes.has(keys[index])) takes.set(keys[index], []);
+      takes.get(keys[index]).push(row);
+    });
+    for (const rows of takes.values()) rows.sort((a,b) => b[shots.length] - a[shots.length]);
+    draws = keys.map(key => takes.get(key).pop());
+  }
+  return draws.map((indices) => {
     if (coverShot) indices[0] = Math.min(shots[0].length - 1,Math.floor(random()*shots[0].length));
     const narrationChoices = indices.slice(shots.length, shots.length + voiceGroups.length);
     const selection = packaging.select(indices.slice(shots.length + voiceGroups.length));
