@@ -1,6 +1,6 @@
 'use strict';
 
-const { contextBridge, ipcRenderer } = require('electron');
+const { contextBridge, ipcRenderer, webUtils } = require('electron');
 
 async function invoke(channel, value) {
   const response = await ipcRenderer.invoke(channel, value);
@@ -37,6 +37,10 @@ contextBridge.exposeInMainWorld('workbench', {
     ipcRenderer.on('workbench:update-state', (_event, state) => callback(state));
   },
   setWindowAppearance: (theme) => invoke('workbench:window-appearance', theme),
+  performanceSettings: () => invoke('workbench:performance-settings'),
+  savePerformanceSettings: (patch) => invoke('workbench:performance-save', patch),
+  chooseProxyFolder: () => invoke('workbench:performance-folder'),
+  clearProxyCache: () => invoke('workbench:performance-clear'),
   history: () => invoke('workbench:history'),
   renameOutputs: (files,prefix) => invoke('workbench:rename-outputs',{files,prefix}),
   workflows: () => invoke('workbench:workflows'),
@@ -63,6 +67,10 @@ contextBridge.exposeInMainWorld('workbench', {
   detectSceneCuts: (assetId, options) => invoke('workbench:detect-scene-cuts', { assetId, options }),
   pickLut: () => invoke('workbench:pick-lut'),
   previewLook: (value) => invoke('workbench:preview-look',value),
+  importDroppedMaterials: (files, destination) => invoke('workbench:drop-materials', {
+    paths: files.map((file) => webUtils.getPathForFile(file)), destination,
+  }),
+  materialTilePreview: (id) => invoke('workbench:material-tile-preview', id),
   pickMaterialFolder: () => invoke('workbench:pick-material-folder'),
   browseMaterialFolder: (folderId) => invoke('workbench:browse-material-folder', folderId),
   loadMaterialFile: (fileId) => invoke('workbench:load-material-file', fileId),
@@ -74,6 +82,8 @@ contextBridge.exposeInMainWorld('workbench', {
   detectPauses: (request) => invoke('workbench:detect-pauses',request),
   processAudio: (request) => invoke('workbench:process-audio',request),
   trackProxy: (assetId) => invoke('workbench:track-proxy', assetId),
+  playbackProxy: (id) => invoke('workbench:playback-proxy',id),
+  proxyDefault: () => invoke('workbench:proxy-default'),
   pickSubtitles: () => invoke('workbench:pick-subtitles'),
   recognizeSpeech: (id) => invoke('workbench:recognize-speech',id),
   pickSubtitleBatch: (limit) => invoke('workbench:pick-subtitles', { limit }),

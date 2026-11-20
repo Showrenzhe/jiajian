@@ -65,9 +65,9 @@ function fixtureServer(wave, captions, fixtureKey, seed) {
         assert.match(request.headers['x-api-request-id'], /^[0-9a-f-]{36}$/);
         const payload = await readJson(request);
         seedSubmissions.push(payload);
-        const cue = seed.cuesByPrompt.get(payload.text_prompt) ?? seed.cue;
+        const cues = seed.cuesByPrompt.get(payload.text_prompt) ?? [seed.cue];
         return json({ audio: (await seed.mp3).toString('base64'), duration: 1.8, original_duration: 1.8,
-          subtitle: { text: cue.text, sentences: [{ start_time: cue.start, end_time: cue.end, text: cue.text }] } });
+          subtitle: { text: cues.map(cue => cue.text).join(''), sentences: cues.map(cue => ({ start_time: cue.start, end_time: cue.end, text: cue.text })) } });
       }
       assert.ok(request.headers.authorization === `Bearer ${fixtureKey}`, '模拟服务应只收到界面输入的测试密钥');
       if (request.method === 'GET' && request.url === '/v1/voices') {
@@ -125,11 +125,11 @@ async function run() {
   const yunzhou = 'zh_male_m191_uranus_bigtts';
   const seedCue = { start: 450, end: 1300, text: '列车即将到站。' };
   const seedPrompt = `开头加入轻柔背景音乐与雨声，再由旁白朗读：${seedCue.text}`;
-  const segmentCues = [{ start: 150, end: 700, text: '第一分镜开始。' }, { start: 250, end: 900, text: '第二分镜继续。' }];
+  const segmentCues = [{ start: 150, end: 600, text: '第一分镜开始。' }, { start: 1000, end: 1600, text: '第二分镜继续。' }];
   const wave = ffmpeg(['-f', 'lavfi', '-i', 'sine=frequency=1000', '-t', '1.8', '-c:a', 'pcm_s16le', voice]).then(() => fs.readFile(voice));
   const mp3 = ffmpeg(['-f', 'lavfi', '-i', 'sine=frequency=700:sample_rate=48000', '-t', '1.8', '-c:a', 'libmp3lame', seedVoice]).then(() => fs.readFile(seedVoice));
   const fixture = fixtureServer(wave, captions, fixtureKey, {
-    key: seedKey, mp3, cue: seedCue, cuesByPrompt: new Map(segmentCues.map((cue) => [cue.text, cue])),
+    key: seedKey, mp3, cue: seedCue, cuesByPrompt: new Map([[segmentCues.map(cue => cue.text).join('\n'), segmentCues]]),
   });
   const open = [
     { title: '选择分镜素材', file: video },
@@ -442,11 +442,11 @@ async function run() {
     })()`);
     assert.equal(draws, 1, '整批台词只应抽取一次音色');
     await waitFor('!document.querySelector("#cloud-tts-use").disabled && document.querySelector("#cloud-tts-result-choice").options.length === 2', '应使用同一随机音色生成两个分段结果');
-    assert.deepEqual(fixture.seedSubmissions.slice(1), segmentCues.map(({ text }) => ({
-      model: 'seed-audio-1.0', text_prompt: text, references: [{ speaker: yunzhou }],
+    assert.deepEqual(fixture.seedSubmissions.slice(1), [{
+      model: 'seed-audio-1.0', text_prompt: segmentCues.map(cue => cue.text).join('\n'), references: [{ speaker: yunzhou }],
       audio_config: { format: 'mp3', sample_rate: 48000, speech_rate: -10, loudness_rate: -5, pitch_rate: 3, enable_subtitle: true },
       watermark: {},
-    })));
+    }]);
     await captureScreen('seed-segmented-batch.png');
     await click('#cloud-tts-use');
     await waitFor(`(() => {
@@ -477,7 +477,9 @@ async function run() {
     assert.deepEqual(segmented.config.segmentNarrationIds.map((track) => track.length), [1, 1]);
     const segmentIds = segmented.config.segmentNarrationIds.flat();
     assert.equal(new Set(segmentIds).size, 2);
-    assert.deepEqual(segmentIds.map((id) => segmented.config.generatedCaptions[id].cues), segmentCues.map((cue) => [cue]));
+    assert.deepEqual(segmentIds.map((id) => segmented.config.generatedCaptions[id].cues), [
+      [segmentCues[0]], [{ ...segmentCues[1], start: 200, end: 800 }],
+    ]);
     open.push({ title: '打开工程', file: segmentedProject });
     await click('#open-project');
     await waitFor(`document.querySelector('#notice').textContent.includes('已打开工程') && ${segmentedLanes}`, '重开工程应恢复两个独立口播片段');
@@ -489,8 +491,8 @@ async function run() {
     const segmentOutput = path.join(segmentedExportDir, segmentMp4);
     const segmentedInfo = await inspectAsset(segmentOutput, 'video');
     assert.notEqual(segmentedInfo.audioIndex, null);
-    assert.ok(Math.abs(segmentedInfo.duration - 3.6) < 0.1, '成片应使用两条口播的长度');
-    const [segmentBefore, segmentDuring] = await Promise.all([whitePixels(segmentOutput, 1.95), whitePixels(segmentOutput, 2.3)]);
+    assert.ok(Math.abs(segmentedInfo.duration - 1.8) < 0.1, '成片应保留一次连续朗读的总长度');
+    const [segmentBefore, segmentDuring] = await Promise.all([whitePixels(segmentOutput, 0.9), whitePixels(segmentOutput, 1.3)]);
     assert.ok(segmentDuring > segmentBefore + 15, '第二条口播的字幕应使用对应分镜的成片时间');
     await click('#inspector-tab-narration');
     await click('#cloud-narration');
@@ -501,7 +503,7 @@ async function run() {
     assert.deepEqual(open, []);
     assert.deepEqual(save, []);
     assert.deepEqual(fixture.errors, []);
-    assert.equal(fixture.requests.filter((request) => request === `POST ${seedEndpoint.pathname}`).length, 3);
+    assert.equal(fixture.requests.filter((request) => request === `POST ${seedEndpoint.pathname}`).length, 2);
     assert.equal(fixture.submissions.length, 1, '切换 Seed Audio 后不应将提示词交给网关');
     await fs.writeFile(path.join(root, 'passed.json'), JSON.stringify({ cloudJobs: fixture.submissions.length, duration: info.duration, before, during, mp4,
       seed: { requests: fixture.seedSubmissions.length, mp4: seedMp4, before: seedBefore, during: seedDuring, segments: segmentIds.length, segmentMp4 } }, null, 2));

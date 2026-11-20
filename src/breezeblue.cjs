@@ -121,7 +121,7 @@ function createBreezeBlue({ apiKey, outputDirectory, timeout, requestBytes, publ
       next: result.has_more ? { page: page + 1, token: typeof result.next_page_token === 'string' ? result.next_page_token : '' } : null };
   }
 
-  async function synthesize({ text, voiceId, speed = 1, volume = 100, enableSubtitles = true, signal, onProgress } = {}) {
+  async function synthesize({ text, voiceId, speed = 1, volume = 100, enableSubtitles = true, wordTiming = false, signal, onProgress } = {}) {
     requireKey();
     const source = typeof text === 'string' ? text.trim() : '';
     if (!validId(voiceId) || !source || source.includes('\0') || [...source].length > maxText) throw new Error('请选择音色并输入 1 至 1000 字台词。');
@@ -135,16 +135,21 @@ function createBreezeBlue({ apiKey, outputDirectory, timeout, requestBytes, publ
     let bytes = await request(url, { method: 'POST', signal, accept: enableSubtitles ? 'application/json' : 'audio/wav',
       maxBytes: enableSubtitles ? Math.ceil(maxAudio / 3) * 4 + 2 * 1024 * 1024 : maxAudio,
       body: { text: source, model_id: model, voice_settings: { speed, volume: volume / 100 } } });
-    let captions;
+    let captions, wordCues;
     if (enableSubtitles) {
       const result = parseJson(bytes);
       if (typeof result?.audio_base64 !== 'string' || result.audio_base64.length > Math.ceil(maxAudio / 3) * 4) throw new Error('Breeze Blue 未返回 WAV 音频。');
       bytes = Buffer.from(result.audio_base64, 'base64');
       captions = safeCaptions(captionLines(result.word_timestamps, source));
+      if (wordTiming && Array.isArray(result.word_timestamps)) {
+        wordCues = result.word_timestamps.map(token => ({
+          text: token?.word, start: Math.round(token?.start * 1000), end: Math.round(token?.end * 1000),
+        }));
+      }
     }
     const file = await publishWave(outputDirectory, bytes, '配音', signal);
     onProgress?.(1);
-    return { path: file, ...(captions && { captions }) };
+    return { path: file, ...(captions && { captions }), ...(wordCues && { wordCues }) };
   }
 
   async function sample(voiceId, { signal } = {}) {

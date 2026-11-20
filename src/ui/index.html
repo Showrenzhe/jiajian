@@ -435,7 +435,7 @@
       <div id="material-empty" class="material-empty">
         <svg class="ui-icon empty-material-glyph" aria-hidden="true"><use href="#icon-folder"></use></svg>
         <strong id="material-empty-title">暂无素材</strong>
-        <p id="material-empty-hint" class="muted compact">添加文件夹后，可以打开并拖入需要的素材。</p>
+        <p id="material-empty-hint" class="muted compact">拖入本地视频、图片、音频或文件夹。</p>
       </div>
       <ul id="material-list" class="material-list"></ul>
       <div popover="auto" id="material-context-menu" role="menu" aria-label="素材操作">
@@ -818,6 +818,8 @@
         <button type="button" class="track-disclosure shot-toggle"></button>
         <div><h3 class="shot-name"></h3><span class="shot-size muted"></span></div>
         <div class="shot-actions">
+          <button type="button" class="insert-left quiet" title="在左侧插入空分镜">左插</button>
+          <button type="button" class="insert-right quiet" title="在右侧插入空分镜">右插</button>
           <button type="button" class="move-up quiet" aria-label="上移分镜" title="上移分镜">↑</button>
           <button type="button" class="move-down quiet" aria-label="下移分镜" title="下移分镜">↓</button>
           <button type="button" class="remove-shot quiet">移除组</button>

@@ -23,6 +23,21 @@ const config = {
   useOriginal: true, useMirrors: false, musicIds: [], musicVolume: 35, count: 2,
 };
 
+test('large batches cover each candidate evenly and never repeat a combination', () => {
+  const group = ['a', 'b', 'c'].map(id => ({ id, start: 0, end: 1 }));
+  const settings = { ...config, shots: Array.from({length: 4}, () => group), count: 81 };
+  const {plans} = createPreviewBatch(settings, catalog);
+  const names = plans.map(plan => plan.clips.map(clip => clip.asset.name));
+  assert.equal(new Set(names.map(row => row.join('/'))).size, 81);
+  for (let start = 0; start < names.length; start += 3) {
+    for (let shot = 0; shot < 4; shot++) {
+      assert.equal(new Set(names.slice(start, start + 3).map(row => row[shot])).size, 3);
+    }
+  }
+  const mirrored = createPreviewBatch({...config,shots:[group],count:6,useMirrors:true}, catalog).plans;
+  assert.equal(new Set(mirrored.slice(0,3).map(plan=>plan.clips[0].asset.name)).size,3);
+});
+
 test('selection exports the same combinations, with the preview choices and order preserved', () => {
   const batch = createPreviewBatch(config, catalog);
   assert.deepEqual(batch.entries.map(({ index }) => index), [0, 1]);

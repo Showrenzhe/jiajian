@@ -14,13 +14,14 @@ const {
 } = require('./media.cjs');
 const { readHistory, remember, renameOutputs, resolveOutput } = require('./history.cjs');
 const { createPreviewBatch, selectPreviewPlans, prepareMontagePlans, prepareSubprojectPlans } = require('./preview-plans.cjs');
-const { loadProject, saveProject } = require('./project-format.cjs');
+const { loadProject, saveProject, readProject, embeddedThumbnail, projectReferences } = require('./project-format.cjs');
 const { readSubtitles } = require('./subtitles.cjs');
 const { listWorkflows } = require('./workflow-provider.cjs');
 const { readProjectLibrary, rememberProject } = require('./project-library.cjs');
 const { normalizeSubprojects } = require('./subprojects.cjs');
 const { createDraftStore } = require('./draft-store.cjs');
 const { createCloudTts, isSeedAudioVoiceId } = require('./cloud-tts.cjs');
+const { synthesizeSegmented } = require('./segmented-speech.cjs');
 const { createCloudTtsSettings, publicSettings } = require('./cloud-tts-settings.cjs');
 const { splitVideos, detectSceneCuts, videoExtensions: sceneVideoExtensions } = require('./scene-splitter.cjs');
 const { splitNarration: splitNarrationAudio } = require('./subs2srs.cjs');
@@ -30,6 +31,7 @@ const { createForeground } = require('./foreground.cjs');
 const { detectPauses, processAudio, retimeCaptions } = require('./audio-tools.cjs');
 const { createCreativeSettings, runCreative } = require('./creative-service.cjs');
 const { createWaveformCache } = require('./waveform-cache.cjs');
+const { createPerformanceCache, readPerformance } = require('./performance-cache.cjs');
 const { createAppUpdates } = require('./app-updates.cjs');
 
 const scheme = 'sd-workbench';
@@ -39,7 +41,7 @@ const uiFiles = new Set(['/index.html', '/app.js', '/styles.css', '/dialog-focus
   '/track-organizer.js', '/cover-editor.js', '/visual-editor.js', '/batch-edit.js',
   '/timeline.js', '/timeline-selection.js', '/timeline.css', '/cut-track.js', '/cut-track.css', '/layer-motion.js', '/layer-motion.css', '/subprojects.js',
   '/track-workspace.css', '/edit-history.js', '/track-tools.js', '/track-tools.css', '/cloud-tts-dialog.js', '/cloud-tts-dialog.css',
-  '/cloud-tts-settings.js', '/cloud-tts-settings.css', '/split-view.js', '/panel-layout.js', '/draft-workspace.js', '/player-tools.js', '/assets/jiajian-logo.png',
+  '/cloud-tts-settings.js', '/cloud-tts-settings.css', '/split-view.js', '/panel-layout.js', '/draft-workspace.js', '/player-tools.js', '/assets/jiajian-logo.png', '/assets/project-cover.jpg',
   '/glass-material.css', '/inspector-controls.css', '/editor-surfaces.css', '/appearance.js', '/appearance.css', '/software-updates.js',
   '/color-wheel.js', '/color-wheel.css', '/menu-motion.js', '/menu-motion.css']);
 const maxCatalog = (maxShots + 1) * (maxCandidates + maxWholeTracks);
@@ -175,6 +177,7 @@ async function launchDesktop({
   app.setName('佳剪');
   mkdirSync(dataDirectory, { recursive: true });
   app.setPath('userData', dataDirectory);
+  if (!app.isReady() && !readPerformance(dataDirectory).gpu) app.disableHardwareAcceleration();
   if (show && !app.requestSingleInstanceLock()) {
     app.quit();
     return null;
@@ -193,7 +196,8 @@ async function launchDesktop({
   const recent = await readHistory(dataDirectory);
   const projects = await readProjectLibrary(dataDirectory);
   const resolveOutputFile=(file)=>resolveOutput(recent,file);
-  const drafts = createDraftStore(path.join(dataDirectory, 'drafts'),resolveOutputFile);
+  const performanceCache = createPerformanceCache(dataDirectory, {inspect:inspectAsset, thumbnail:createVideoThumbnail, encode:createTrackProxy});
+  const drafts = createDraftStore(path.join(dataDirectory, 'drafts'),resolveOutputFile,performanceCache.inspectCached);
   const published = new Set(recent.map((item) => item.path));
   let job;
   let pickerOpen = false;
@@ -291,7 +295,7 @@ async function launchDesktop({
 
   async function inspectFolderFile(file, kind, signal) {
     signal.throwIfAborted();
-    try { return await inspectAsset(file, kind, { signal }); } catch {
+    try { return await performanceCache.inspectCached(file, kind, { signal }); } catch {
       signal.throwIfAborted();
       throw new Error('无法读取这个素材，文件可能已移动或损坏。');
     }
@@ -385,58 +389,22 @@ async function launchDesktop({
     return !scope.aborted && (catalog.get(id) ?? voiceSamples.get(id)) === asset ? waveform : null;
   }
   const trackProxies = new Map();
-  let pendingProxy;
+  let proxyGeneration = 0;
+  function clearTrackProxies() { proxyGeneration++; trackProxies.clear(); }
 
-  async function clearTrackProxies() {
-    const pending = pendingProxy;
-    pending?.controller.abort();
-    const entries = [...trackProxies.values()];
-    trackProxies.clear();
-    await Promise.all([pending?.promise, ...entries.map(({ directory, file }) => cleanPreviewFiles(directory, file))]);
-  }
-
-  async function trackProxyUrl(id) {
+  async function trackProxyUrl(id, readyOnly=false) {
     const asset = catalog.get(id);
-    if (asset?.kind !== 'video' || Math.max(asset.width, asset.height) <= 640) return null;
-    const record = folderAssetOrigins.get(asset);
-    if (record) await checkedMaterialPath(record);
-    const source = await fs.stat(asset.path);
-    if (asset !== catalog.get(id)) return null;
-    const version = `${source.size}-${source.mtimeMs}`;
-    const cached = trackProxies.get(id);
-    if (cached?.version === version) {
-      trackProxies.delete(id);
-      trackProxies.set(id, cached);
-      return cached.url;
-    }
-    if (pendingProxy?.id === id && pendingProxy.version === version) return pendingProxy.promise;
-    pendingProxy?.controller.abort();
-    const task = { id, version, controller: new AbortController() };
-    pendingProxy = task;
-    task.promise = (async () => {
-      let directory, file;
-      try {
-        directory = await fs.mkdtemp(path.join(os.tmpdir(), 'jiajian-track-'));
-        file = path.join(directory, 'preview.mp4');
-        await createTrackProxy(asset, file, task.controller.signal);
-        const after = await fs.stat(asset.path);
-        if (task.controller.signal.aborted || catalog.get(id) !== asset || version !== `${after.size}-${after.mtimeMs}`) return null;
-        if (cached) void cleanPreviewFiles(cached.directory, cached.file);
-        const url = `${scheme}://asset/track-proxy/${id}`;
-        trackProxies.set(id, { directory, file, url, version });
-        directory = file = undefined;
-        if (trackProxies.size > 4) {
-          const [key, oldest] = trackProxies.entries().next().value;
-          trackProxies.delete(key);
-          await cleanPreviewFiles(oldest.directory, oldest.file);
-        }
-        return url;
-      } catch { return null; } finally {
-        if (task === pendingProxy) pendingProxy = undefined;
-        await cleanPreviewFiles(directory, file);
-      }
-    })();
-    return task.promise;
+    const generation = proxyGeneration;
+    if (asset?.kind !== 'video') return null;
+    try {
+      const record = folderAssetOrigins.get(asset);
+      if (record) await checkedMaterialPath(record);
+      if (generation !== proxyGeneration) return null;
+      const file = await performanceCache.proxy(asset,{readyOnly});
+      if (!file || generation !== proxyGeneration || catalog.get(id) !== asset) return null;
+      trackProxies.set(id,{file});
+      return `${scheme}://asset/track-proxy/${id}`;
+    } catch { return null; }
   }
   const thumbnailPending = new Map();
   const thumbnailQueue = [];
@@ -468,7 +436,8 @@ async function launchDesktop({
           const draftSource = draftThumbnailSource(task.id);
           const file = record ? await checkedMaterialPath(record) : draftSource ? await checkedDraftCover(draftSource) : null;
           const asset = task.asset.root || draftSource ? await inspectFolderFile(file, task.asset.kind, task.signal) : task.asset;
-          const bytes = await createVideoThumbnail(asset, { signal: task.signal, time:task.time ?? draftSource?.time });
+          if (task.asset.root) task.asset.duration = asset.duration;
+          const bytes = await performanceCache.poster(asset, { signal: task.signal, time:task.time ?? draftSource?.time });
           if (bytes && !task.signal.aborted && thumbnailSource(task.id) === task.asset) {
             thumbnails.set(task.key, bytes);
             if (thumbnails.size > maxThumbnailCache) thumbnails.delete(thumbnails.keys().next().value);
@@ -538,8 +507,10 @@ async function launchDesktop({
 
   async function draftCoverResponse(id, revision) {
     const source = drafts.cover(id, revision);
-    if (!source) return new Response(null, { status: 404 });
     try {
+      const stored = await drafts.thumbnail(id, revision);
+      if (stored) return jpegResponse(stored);
+      if (!source) return jpegResponse(null);
       if (source.kind === 'image') return await net.fetch(pathToFileURL(await checkedDraftCover(source)).href);
       const key = `draft:${id}:${revision}`;
       return jpegResponse(await videoThumbnail(key) ? thumbnails.get(key) : null);
@@ -561,6 +532,11 @@ async function launchDesktop({
         const id = url.pathname.slice('/track-proxy/'.length);
         const proxy = catalog.has(id) && trackProxies.get(id);
         return proxy ? mediaResponse(proxy.file, request.headers.get('range')) : new Response(null, { status: 404 });
+      }
+      const projectCover = /^\/project-cover\/([a-f0-9-]{36})$/.exec(url.pathname);
+      if (projectCover) {
+        const project = projects.find((item) => item.id === projectCover[1]);
+        return project ? readProject(project.path).then((doc) => jpegResponse(embeddedThumbnail(doc))).catch(() => jpegResponse(null)) : jpegResponse(null);
       }
       const draftCover = /^\/draft-cover\/([a-f0-9-]{36})\/(\d{1,16})$/.exec(url.pathname);
       if (draftCover) return draftCoverResponse(draftCover[1], Number(draftCover[2]));
@@ -639,6 +615,7 @@ async function launchDesktop({
   win.webContents.on('will-navigate', (event) => event.preventDefault());
   win.webContents.on('will-attach-webview', (event) => event.preventDefault());
   app.on('window-all-closed', () => {
+    performanceCache.close();
     resetThumbnails();
     Promise.allSettled([discardPreview(), clearTrackProxies()]).finally(() => app.quit());
   });
@@ -802,10 +779,52 @@ async function launchDesktop({
       return result;
     } finally { finishJob(); }
   });
+  async function materialTilePreview(id) {
+    if (materialFolders.has(id)) {
+      const queue = [id];
+      for (let i = 0; i < queue.length && i < maxFolderDepth; i++) {
+        const listing = await browseMaterialFolder(queue[i]);
+        const first = listing.files[0];
+        if (first) return first.previewUrl ? { url: first.previewUrl } : { url: await videoThumbnail(first.id) };
+        queue.push(...listing.folders.map((item) => item.id));
+      }
+      return {};
+    }
+    const source = catalog.get(id) ?? materialFiles.get(id);
+    return source ? { url: await videoThumbnail(id), duration: source.duration } : {};
+  }
+
+  handle('workbench:material-tile-preview', materialTilePreview);
   handle('workbench:video-thumbnail', (id) => (catalog.has(id) || materialFiles.has(id)) ? videoThumbnail(id) : null);
   handle('workbench:clip-thumbnail', ({id,time}={})=>catalog.has(id) ? videoThumbnail(id,time) : null);
   handle('workbench:audio-waveform', audioWaveform);
   handle('workbench:track-proxy', trackProxyUrl);
+  handle('workbench:playback-proxy', async (id) => {
+    const generation = proxyGeneration;
+    const url = await trackProxyUrl(id,true);
+    if (!url && generation === proxyGeneration) void trackProxyUrl(id);
+    return url;
+  });
+  handle('workbench:proxy-default', () => performanceCache.settings.defaultProxy);
+  handle('workbench:performance-settings', () => performanceCache.view());
+  handle('workbench:performance-save', (patch) => {
+    if (!patch || Object.keys(patch).some(key => !['gpu','optimization','defaultProxy'].includes(key))) throw new Error('性能设置无效。');
+    if (patch.optimization && patch.optimization !== performanceCache.settings.optimization) clearTrackProxies();
+    return performanceCache.change(patch);
+  });
+  handle('workbench:performance-folder', async () => {
+    const result = await dialogs.showOpenDialog(win,{title:'选择代理缓存目录',properties:['openDirectory','createDirectory']});
+    if (result.canceled || !result.filePaths[0]) return performanceCache.view();
+    const parent = result.filePaths[0];
+    if (!localMaterialPath(parent)) throw new Error('请选择本地的代理目录。');
+    const location=path.basename(parent)==='佳剪代理' ? parent : path.join(parent,'佳剪代理');
+    clearTrackProxies();
+    return performanceCache.change({location});
+  });
+  handle('workbench:performance-clear', async () => {
+    clearTrackProxies();
+    return performanceCache.clear();
+  });
   handle('workbench:subtitle-style-preview', previewSubtitleStyle);
   handle('workbench:list-drafts', async () => (await drafts.list()).map(publicDraft));
   handle('workbench:create-draft', async (value) => {
@@ -879,6 +898,45 @@ async function launchDesktop({
       finishJob();
     }
   });
+  const folderGrantDirectory = path.join(dataDirectory, 'material-folders');
+
+  async function rememberFolderGrant(file, sourceKey) {
+    await fs.mkdir(folderGrantDirectory, { recursive: true });
+    const grant = path.join(folderGrantDirectory, sourceKey);
+    const stage = grant + '-' + randomUUID();
+    try {
+      await fs.writeFile(stage, file, { flag: 'wx', mode: 0o600 });
+      await fs.rename(stage, grant);
+    } finally { await fs.rm(stage, { force: true }).catch(() => {}); }
+  }
+
+  async function registerMaterialFolder(selected) {
+    if (!localMaterialPath(selected)) throw new Error('请选择本机素材文件夹。');
+    const file = path.resolve(selected);
+    const key = materialPathKey(file);
+    const existing = materialRoots.get(key);
+    if (existing) return await browseMaterialFolder(existing.id);
+    if (materialRoots.size >= maxMaterialRoots || materialFolders.size + materialFiles.size >= maxMaterialRecords) {
+      throw new Error('本次会话的素材文件夹已达到上限。');
+    }
+    const id = randomUUID();
+    const record = { id, name: path.basename(file) || path.parse(file).root, path: file, root: file, rootId: id, depth: 0, kind: 'folder' };
+    materialRoots.set(key, record);
+    materialFolders.set(id, record);
+    try {
+      const listing = await browseMaterialFolder(id);
+      return listing;
+    } catch (error) {
+      materialRoots.delete(key);
+      materialFolders.delete(id);
+      for (const [entryKey, child] of materialPaths) {
+        if (child.rootId !== id) continue;
+        materialPaths.delete(entryKey);
+        (child.kind === 'folder' ? materialFolders : materialFiles).delete(child.id);
+      }
+      throw error;
+    }
+  }
   handle('workbench:pick-material-folder', async () => {
     if (pickerOpen || job) throw new Error('请先完成当前操作。');
     pickerOpen = true;
@@ -887,31 +945,7 @@ async function launchDesktop({
         title: '选择素材文件夹', properties: ['openDirectory'],
       });
       if (canceled || !filePaths[0]) return null;
-      const selected = filePaths[0];
-      if (!localMaterialPath(selected)) throw new Error('请选择本机素材文件夹。');
-      const file = path.resolve(selected);
-      const key = materialPathKey(file);
-      const existing = materialRoots.get(key);
-      if (existing) return await browseMaterialFolder(existing.id);
-      if (materialRoots.size >= maxMaterialRoots || materialFolders.size + materialFiles.size >= maxMaterialRecords) {
-        throw new Error('本次会话的素材文件夹已达到上限。');
-      }
-      const id = randomUUID();
-      const record = { id, name: path.basename(file) || path.parse(file).root, path: file, root: file, rootId: id, depth: 0, kind: 'folder' };
-      materialRoots.set(key, record);
-      materialFolders.set(id, record);
-      try {
-        return await browseMaterialFolder(id);
-      } catch (error) {
-        materialRoots.delete(key);
-        materialFolders.delete(id);
-        for (const [entryKey, child] of materialPaths) {
-          if (child.rootId !== id) continue;
-          materialPaths.delete(entryKey);
-          (child.kind === 'folder' ? materialFolders : materialFiles).delete(child.id);
-        }
-        throw error;
-      }
+      return await registerMaterialFolder(filePaths[0]);
     } finally {
       pickerOpen = false;
     }
@@ -988,15 +1022,15 @@ async function launchDesktop({
     const seedAudio = provider.status().provider === 'seed-audio';
     const breeze = provider.status().provider === 'breezeblue';
     if (job || pickerOpen || savingCloudSettings) throw new Error('请先完成当前操作。');
-    const { jobs, speed = 1, volume = 100, pitch = 0, enableSubtitles = true, trimPauses = false } = value ?? {};
+    const { jobs, speed = 1, volume = 100, pitch = 0, enableSubtitles = true, trimPauses = false, segmented = false } = value ?? {};
     if (!Array.isArray(jobs) || !jobs.length || jobs.length > maxSpeechJobs
       || jobs.some((item) => !Number.isInteger(item?.index) || item.index < 0 || item.index >= maxShots
         || typeof item.voiceId !== 'string' || !item.voiceId || item.voiceId.length > 128
         || (seedAudio && !isSeedAudioVoiceId(item.voiceId))
         || typeof item.text !== 'string' || !item.text.trim()
-        || (seedAudio || breeze ? [...item.text].length > (seedAudio ? 3000 : 1000) : item.text.length > 500))
+        || [...item.text].length > (seedAudio ? 3000 : breeze ? 1000 : 500))
       || new Set(jobs.map(({ index, voiceId }) => JSON.stringify([index, voiceId]))).size !== jobs.length
-      || typeof trimPauses!=='boolean' || !Number.isFinite(speed) || speed < 0.5 || speed > 2
+      || typeof segmented !== 'boolean' || typeof trimPauses!=='boolean' || !Number.isFinite(speed) || speed < 0.5 || speed > 2
       || !Number.isFinite(volume) || volume < (seedAudio ? 50 : breeze ? 1 : 0) || volume > (seedAudio || breeze ? 200 : 100)
       || (breeze && typeof enableSubtitles !== 'boolean')
       || (seedAudio && (!Number.isInteger(pitch) || pitch < -12 || pitch > 12 || typeof enableSubtitles !== 'boolean'))) {
@@ -1013,6 +1047,23 @@ async function launchDesktop({
       });
     };
     try {
+      if (segmented) {
+        try {
+          const segments = await synthesizeSegmented({ provider, jobs, speed, volume, pitch, trimPauses, signal,
+            directory: voiceoverDirectory, progress: (phase, completed = 0) => {
+              if (!win.isDestroyed()) win.webContents.send('workbench:progress', { kind: 'cloud-tts', total: jobs.length, completed, phase });
+            } });
+          for (const { index, voiceId, asset, scriptText, timedCaptions } of segments) {
+            const id = randomUUID();
+            catalog.set(id, asset);
+            lookupByPath.set('audio:' + path.normalize(asset.path), id);
+            results.push({ index, voiceId, asset: { ...describeAsset(id, asset), scriptText, timedCaptions } });
+          }
+        } catch (error) {
+          if (!signal.aborted) throw error;
+        }
+        return { results, failures, cancelled: signal.aborted };
+      }
       for (const [position, { index, text, voiceId }] of jobs.entries()) {
         if (signal.aborted) break;
         progress(position, 0);
@@ -1225,7 +1276,16 @@ async function launchDesktop({
     }
     previewBatch = undefined;
     await discardPreview();
-    return { config: restoredConfig, assets: descriptions };
+    const folders = [];
+    for (const key of config.materialFolderKeys ?? []) {
+      try {
+        const file = await fs.readFile(path.join(folderGrantDirectory, key), 'utf8');
+        if (!localMaterialPath(file) || materialSourceKey(file) !== key) continue;
+        const { id, name, sourceKey } = await registerMaterialFolder(file);
+        folders.push({ id, name, sourceKey });
+      } catch { /* A moved folder can be added again without blocking the project. */ }
+    }
+    return { config: restoredConfig, assets: descriptions, folders };
   }
 
   handle('workbench:open-draft', async (id) => {
@@ -1254,7 +1314,7 @@ async function launchDesktop({
         projectPath = projects.find((project) => project.id === id)?.path;
         if (!projectPath) throw new Error('找不到这个本地项目。');
       }
-      const { config, assets } = await loadProject(projectPath,resolveOutputFile);
+      const { config, assets } = await loadProject(projectPath,resolveOutputFile,performanceCache.inspectCached);
       const restored = await restoreCatalog(config, assets);
       const libraryWarning = await trackProject(projectPath);
       return { name: path.basename(projectPath, path.extname(projectPath)), ...restored, libraryWarning };
@@ -1294,6 +1354,49 @@ async function launchDesktop({
     finally{if(lookRequest===request)lookRequest=undefined;}
   });
 
+  async function importLocalFile(file, fileKind) {
+    const key = assetPathKey(fileKind, file);
+    let id = lookupByPath.get(key);
+    if (!id) {
+      if (catalog.size >= maxCatalog) throw new Error('本次会话的素材已达到上限。');
+      const asset = await performanceCache.inspectCached(file, fileKind);
+      id = randomUUID();
+      catalog.set(id, asset);
+      lookupByPath.set(key, id);
+    }
+    return describeAsset(id, catalog.get(id));
+  }
+
+  handle('workbench:drop-materials', async ({ paths, destination } = {}) => {
+    if (job || pickerOpen) throw new Error('请先完成当前操作。');
+    if (!Array.isArray(paths) || !['library', 'visual', 'audio'].includes(destination)) throw new Error('拖入的文件无效。');
+    pickerOpen = true;
+    const assets = [], folders = [], warnings = [];
+    try {
+      for (const file of new Set(paths.slice(0, maxCandidates))) {
+        try {
+          if (!localMaterialPath(file)) throw new Error('请选择本机文件。');
+          const info = await fs.lstat(file);
+          if (info.isDirectory() && destination === 'library') {
+            const listing = await registerMaterialFolder(file);
+            await rememberFolderGrant(file, listing.sourceKey);
+            folders.push(listing);
+          } else {
+            const kind = materialKind(file) ?? (audioExtensions.includes(path.extname(file).slice(1).toLowerCase()) ? 'audio' : null);
+            if (destination === 'audio' && kind !== 'audio') throw new Error('请将音频拖入口播或配乐轨。');
+            if (destination === 'visual' && kind === 'audio') throw new Error('请将音频拖入口播或配乐轨。');
+            if (!kind || !info.isFile()) throw new Error(info.isDirectory() ? '文件夹请拖到素材库。' : '不支持此素材类型。');
+            assets.push(await importLocalFile(file, kind));
+          }
+        } catch (error) {
+          warnings.push((typeof file === 'string' ? path.basename(file) + '：' : '') + error.message);
+        }
+      }
+      if (paths.length > maxCandidates) warnings.push('单次最多导入 ' + maxCandidates + ' 项。');
+      return { assets, folders, warnings };
+    } finally { pickerOpen = false; }
+  });
+
   handle('workbench:pick', async (value) => {
     const { kind, limit } = value || {};
     if (!['visual', 'video', 'image', 'audio', 'narration', 'audio-tools'].includes(kind) || !Number.isInteger(limit)
@@ -1323,16 +1426,7 @@ async function launchDesktop({
         try {
           const extension = path.extname(file).slice(1).toLowerCase();
           const fileKind = mediaKind === 'visual' ? (imageExtensions.includes(extension) ? 'image' : 'video') : mediaKind;
-          const key = assetPathKey(fileKind, file);
-          let id = lookupByPath.get(key);
-          if (!id) {
-            if (catalog.size >= maxCatalog) throw new Error('本次会话的素材已达到上限。');
-            const asset = await inspectAsset(file, fileKind);
-            id = randomUUID();
-            catalog.set(id, asset);
-            lookupByPath.set(key, id);
-          }
-          assets.push(describeAsset(id, catalog.get(id)));
+          assets.push(await importLocalFile(file, fileKind));
         } catch (error) {
           warnings.push(`${path.basename(file)}：${error.message}`);
         }
@@ -1554,6 +1648,23 @@ async function launchDesktop({
   });
 
   await win.loadURL(page);
+  if (show) {
+    const timer=setTimeout(() => {
+      performanceCache.preload(async function* () {
+        for await (const row of drafts.assetReferences()) {
+          if (row.kind !== 'lut') yield {...row,path:await resolveOutputFile(row.path)};
+        }
+        for (const recentProject of projects) {
+          let manifest;
+          try { manifest=projectReferences(await readProject(recentProject.path)); } catch { continue; }
+          for (const row of manifest.rows) {
+            if (row.kind !== 'lut') yield {...row,path:await resolveOutputFile(row.path),proxyEnabled:manifest.config.proxyEnabled};
+          }
+        }
+      }).catch(() => {});
+    },1500);
+    win.once('closed',()=>{clearTimeout(timer); performanceCache.close();});
+  }
   if (checkOnStartup && updates.getState().status !== 'unsupported') {
     checkUpdatesIfDue();
     updateTimer = setInterval(checkUpdatesIfDue, updateCheckInterval);

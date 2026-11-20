@@ -23,6 +23,35 @@
               <label><input type="radio" name="appearance" value="system"><span class="appearance-preview" aria-hidden="true"></span><span>跟随系统</span></label>
             </div>
           </fieldset>
+          <details id="performance-settings" hidden>
+            <summary>性能与代理</summary>
+            <fieldset id="performance-options" aria-label="性能与代理设置" disabled>
+              <label class="cloud-settings-check"><input id="performance-gpu" type="checkbox">启用 GPU 绘制界面</label>
+              <p class="cloud-settings-muted">GPU 设置在下次启动佳剪时生效。</p>
+              <div class="cloud-settings-field">
+                <label for="performance-optimization">自动优化</label>
+                <select id="performance-optimization"><option value="smart">智能</option><option value="smooth">优先流畅</option><option value="quality">优先画质</option></select>
+              </div>
+              <label class="cloud-settings-check"><input id="performance-default-proxy" type="checkbox">新草稿默认开启代理</label>
+              <div class="cloud-settings-field">
+                <strong>代理位置</strong><span id="performance-location"></span>
+                <div class="performance-actions"><button id="performance-folder" type="button">选择文件夹…</button></div>
+              </div>
+              <div class="performance-cache">
+                <span>代理大小 <strong id="performance-size">—</strong></span>
+                <button id="performance-clear" type="button">清理代理</button>
+              </div>
+              <div id="performance-confirm" hidden>
+                <p>清理此位置的代理文件？再次预览时可以重新生成。</p>
+                <div class="performance-actions">
+                  <button id="performance-keep" type="button">取消</button>
+                  <button id="performance-confirm-clear" type="button">确认清理</button>
+                </div>
+              </div>
+            </fieldset>
+            <p id="performance-status" role="status" hidden></p>
+            <button id="performance-retry" type="button" hidden>重新读取</button>
+          </details>
           <h3 id="cloud-settings-section" hidden>云端配音</h3>
           <div class="cloud-settings-field">
             <label for="cloud-settings-provider">配音服务</label>
@@ -68,7 +97,7 @@
     return !message || (key && message.includes(key)) ? fallback : message.slice(0, 500);
   }
 
-  window.mountCloudTtsSettings = (container, { load, save, verify, openKeys, onSaved } = {}) => {
+  window.mountCloudTtsSettings = (container, { load, save, verify, openKeys, onSaved, performance } = {}) => {
     const template = document.createElement('template');
     template.innerHTML = markup;
     container.replaceChildren(template.content);
@@ -80,7 +109,60 @@
     const address = $('base-url');
     const password = $('api-key');
     const clearKey = $('clear-key');
+    const perf = id => container.querySelector('#performance-' + id);
     let session;
+
+    function showPerformance(data) {
+      perf('gpu').checked = data.gpu;
+      perf('optimization').value = data.optimization;
+      perf('default-proxy').checked = data.defaultProxy;
+      perf('location').textContent = data.location;
+      const unit = Math.min(3, Math.floor(Math.log(Math.max(1, data.bytes)) / Math.log(1024)));
+      perf('size').textContent = new Intl.NumberFormat('zh-CN', { maximumFractionDigits: unit ? 1 : 0 }).format(data.bytes / 1024 ** unit)
+        + ' ' + ['B', 'KiB', 'MiB', 'GiB'][unit];
+      perf('clear').disabled = !data.bytes;
+    }
+
+    async function changePerformance(action, value) {
+      const state = session;
+      if (!state?.showAppearance || state.performanceBusy) return;
+      state.performanceBusy = true;
+      perf('retry').hidden = true;
+      perf('options').disabled = true;
+      perf('confirm').hidden = true;
+      perf('status').textContent = action === 'load' ? '正在读取代理位置和大小…' : action === 'clear' ? '正在清理代理…' : '';
+      perf('status').classList.remove('cloud-settings-error');
+      perf('status').hidden = !perf('status').textContent;
+      try {
+        const data = await performance[action](value);
+        if (session !== state) return;
+        state.performance = data;
+        showPerformance(data);
+        perf('status').textContent = action === 'clear' ? '代理已清理。' : action === 'save' ? '已保存。' : '';
+      } catch (error) {
+        if (session !== state) return;
+        if (state.performance) showPerformance(state.performance);
+        perf('status').textContent = error?.message || '无法读取或保存性能设置。';
+        perf('status').classList.add('cloud-settings-error');
+        perf('retry').hidden = false;
+      } finally {
+        if (session === state) {
+          state.performanceBusy = false;
+          perf('options').disabled = !state.performance;
+          perf('status').hidden = !perf('status').textContent;
+        }
+      }
+    }
+    perf('settings').addEventListener('toggle', () => { if (perf('settings').open) void changePerformance('load'); });
+    perf('retry').addEventListener('click', () => changePerformance('load'));
+    for (const [id, key] of [['gpu', 'gpu'], ['default-proxy', 'defaultProxy'], ['optimization', 'optimization']]) {
+      perf(id).addEventListener('change', () => changePerformance('save', { [key]: key === 'optimization' ? perf(id).value : perf(id).checked }));
+    }
+    perf('folder').addEventListener('click', () => changePerformance('folder'));
+    perf('clear').addEventListener('click', () => { perf('confirm').hidden = false; perf('keep').focus(); });
+    function keepCache() { perf('confirm').hidden = true; perf('clear').focus(); }
+    perf('keep').addEventListener('click', keepCache);
+    perf('confirm-clear').addEventListener('click', () => changePerformance('clear'));
 
     function say(message, error = false) {
       $('status').textContent = message;
@@ -126,6 +208,12 @@
       const state = { showAppearance, loading: true, ready: false, provider: breeze, selection: breeze, gatewayAddress: '', baseUrl: breezeEndpoint, hasApiKey: false };
       session = state;
       appearance.hidden = !showAppearance;
+      perf('settings').open = false;
+      perf('settings').hidden = !showAppearance;
+      perf('options').disabled = true;
+      perf('status').hidden = true;
+      perf('confirm').hidden = true;
+      perf('retry').hidden = true;
       $('section').hidden = !showAppearance;
       $('title').textContent = showAppearance ? '设置' : '云端配音设置';
       $('cancel').textContent = showAppearance ? '关闭' : '取消';
@@ -209,7 +297,10 @@
       Promise.resolve().then(() => onSaved?.()).catch(() => {});
     });
     $('cancel').addEventListener('click', () => { if (!session?.saving) dialog.close(); });
-    dialog.addEventListener('cancel', (event) => { if (session?.saving) event.preventDefault(); });
+    dialog.addEventListener('cancel', (event) => {
+      if (!perf('confirm').hidden) { event.preventDefault(); keepCache(); }
+      else if (session?.saving) event.preventDefault();
+    });
     dialog.addEventListener('close', () => {
       if (dialog.open) return;
       session = undefined;

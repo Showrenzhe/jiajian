@@ -81,13 +81,30 @@ async function check() {
     await run(query('#timeline-fit')+'.click()');
     const resized=await levels('.sequence-music',[.12,.37,.62,.87]);
     assert.ok(resized[1]>resized[0]+2 && resized[3]>resized[2]+2,'适配缩放后波形仍严格对应时间');
+    async function setSpeed(selector,value) {
+      await run(query(selector)+'.dispatchEvent(new MouseEvent("contextmenu",{bubbles:true,cancelable:true}))');
+      await run('(()=>{const d=document.querySelector("dialog[open]");d.querySelector("input[type=number]").value='+value+';d.querySelector("form").requestSubmit();})()');
+      await wait('!document.querySelector("dialog[open]")','应用倍速');
+      await wait(query(selector)+'.title.includes("'+value+' 倍")','倍速轨道刷新');
+    }
+    await setSpeed('.sequence-music .sequence-block',2);
+    const doubleMusic=await levels('.sequence-music',[.07,.19,.31,.43]);
+    assert.ok(doubleMusic[1]>doubleMusic[0]+2 && doubleMusic[3]>doubleMusic[2]+2,'配乐加速后两次波峰在一半时间内出现');
     const section=await run('(()=>{const box=document.querySelector("#timeline-clock").getBoundingClientRect();const y=Math.ceil(Math.max(0,box.y));return {x:Math.ceil(box.x),y,width:Math.floor(box.width),height:Math.floor(Math.min(box.bottom,innerHeight)-y)};})()');
     await fs.writeFile(path.join(root,'时间线音频轨.png'),(await win.webContents.capturePage(section)).toPNG());
     await run('(()=>{const field=document.querySelector("#narration-mode");field.value="segmented";field.dispatchEvent(new Event("change",{bubbles:true}));})()');
     await wait(query('.sequence-voice .sequence-block')+'?.hasAttribute("data-voice-shot")','分段口播');
     const segmented=await levels('.sequence-voice',[.17,.8]);
     assert.ok(segmented[0]>segmented[1]+2,'分段口播按照重排后的原声区间取样');
-    await run(query('.sequence-voice .sequence-block')+'.dispatchEvent(new MouseEvent("dblclick",{bubbles:true}))');
+    const voiceCell=query('.sequence-voice .sequence-block');
+    const originalWidth=await run(voiceCell+'.getBoundingClientRect().width');
+    await setSpeed('.sequence-voice .sequence-block',2);
+    const newWidth=await run(voiceCell+'.getBoundingClientRect().width');
+    assert.ok(Math.abs(newWidth*2-originalWidth)<4,'分段口播变为 2 倍速后宽度减半');
+    const fastVoice=await levels('.sequence-voice',[.17,.8]);
+    assert.ok(fastVoice[0]>fastVoice[1]+2,'压缩后的波形仍显示原有两个保留区间');
+    await run(voiceCell+'.dispatchEvent(new MouseEvent("dblclick",{bubbles:true}))');
+    assert.equal(await run(query('#timeline-cut-editor audio')+'.playbackRate'),2);
     const cut=await levels('.cut-source-overview',[.15,.8]);
     assert.ok(cut[1]>cut[0]+2,'口播裁剪播放头应与原音频波形同步');
     await fs.writeFile(path.join(root,'波形验收.png'),(await win.webContents.capturePage()).toPNG());

@@ -62,7 +62,7 @@ async function check() {
       if(await read(expr)) return;
       await delay(30);
     }
-    throw Error(label+' '+JSON.stringify(await read('['+order+','+query('#notice')+'.textContent,document.activeElement.outerHTML.slice(0,180)]')));
+    throw Error(label+' '+JSON.stringify(await read('['+order+','+query('#notice')+'.textContent,document.activeElement.outerHTML.slice(0,180),'+host+'.scrollLeft,'+host+'.clientWidth,'+host+'.scrollWidth]')));
   }
   const verify=(names)=>wait('JSON.stringify('+order+')==='+JSON.stringify(JSON.stringify(names)),'分镜顺序应为 '+names);
   const send=(method,params)=>wc.debugger.sendCommand('Input.'+method,params);
@@ -153,8 +153,12 @@ async function check() {
     await read(host+'.scrollLeft=0');
     const start=await point(0,.2);
     const end={x:await read(host+'.getBoundingClientRect().right-2'),y:start.y};
+    // Editing a large project on a slow GPU can deliver fewer than ten animation frames per second.
+    const originalRate=wc.getFrameRate();
+    wc.setFrameRate(6);
     await mouse('mousePressed',start);await mouse('mouseMoved',end);
     await wait(host+'.scrollLeft>0 && '+host+'.scrollWidth-'+host+'.clientWidth-'+host+'.scrollLeft<3','拖动至右边缘应持续滚到片尾');
+    wc.setFrameRate(originalRate);
     await mouse('mouseReleased',end);
     await wait(order+'.at(-1)==="C"','首镜跨屏移到最后');
     const last=await point(9,.8);
@@ -162,8 +166,52 @@ async function check() {
     await mouse('mousePressed',last);await mouse('mouseMoved',beginning);
     await wait(host+'.scrollLeft===0','拖动至左边缘应持续滚到片头');
     await mouse('mouseReleased',beginning);await wait(order+'[0]==="C"','尾镜跨屏移到最前面');
+    const context=selector=>read(query(selector)+'.dispatchEvent(new MouseEvent("contextmenu",{bubbles:true,cancelable:true}))');
+    const action=text=>read('[...document.querySelectorAll("dialog[open] button")].find(b=>b.textContent==='+JSON.stringify(text)+').click()');
+    const shotCell=i=>'.sequence-shots [data-drop-shot="'+i+'"]';
+    const firstVoice='[data-voice-shot="0"][data-voice-row="0"]';
+    await context(firstVoice);
+    await read('document.querySelector("dialog[open] input[type=number]").value="2"');
+    await action('保存');
+    await wait('!document.querySelector("dialog[open]")','保存口播速度');
+    await context('.sequence-music .sequence-block');
+    await read('document.querySelector("dialog[open] input[type=number]").value=".75"');
+    await action('保存');
+
+    await context(shotCell(0));await action('在左侧插入分镜');
+    await wait(order+'[1]==="C"','在首镜左侧插入');
+    await context(shotCell(1));await action('在右侧插入分镜');
+    await wait(order+'[3]==="A"','在已有分镜右侧插入');
+    const srcVoice='[data-voice-shot="1"][data-voice-row="0"]';
+    await context(srcVoice);await action('复制口播');
+    await context(shotCell(0));await action('粘贴口播');
+    await wait('!'+query(firstVoice)+'.classList.contains("sequence-empty")','口播粘贴到目标分镜');
+
+    const srcVideo='[data-candidate-index="0"][data-drop-shot="1"]';
+    await click(srcVideo);await read(query(srcVideo)+'.focus()');await key('c',67,2);
+    await click(shotCell(2));await read(query(shotCell(2))+'.focus()');await key('v',86,2);
+    await wait('!'+query('[data-candidate-index="0"][data-drop-shot="2"]')+'.classList.contains("sequence-empty")','快捷键粘贴完整视频');
+    await context('[data-lane-key="caption0"] .sequence-block');await action('复制字幕');
+    await click(shotCell(2));await read(query(shotCell(2))+'.focus()');await key('v',86,2);
+    await wait('!!'+query('[data-lane-key="pasted-captions"] .sequence-block'),'独立时间轴字幕');
+    await click('#track-undo');await wait('!'+query('[data-lane-key="pasted-captions"]'),'撤销粘贴字幕');
+    await click('#track-redo');await wait('!!'+query('[data-lane-key="pasted-captions"]'),'重做粘贴字幕');
+    const afterPaste=path.join(root,'粘贴与倍速.sdworkbench');
+    saves.push(afterPaste);opens.push(afterPaste);
+    await click('#save-project');await wait(query('#notice')+'.textContent.includes("工程已保存")','保存粘贴和倍速');
+    const revised=(await loadProject(afterPaste)).config;
+    assert.deepEqual(revised.segmentVoiceCuts[0][0],revised.segmentVoiceCuts[1][0]);
+    assert.equal(revised.segmentVoiceCuts[0][0].speed,2);
+    assert.deepEqual(revised.musicSpeeds,[.75]);
+    assert.deepEqual(revised.shots[2][0],revised.shots[1][0]);
+    assert.equal(revised.timelineCaptions.cues[0].text,'出锅');
+    assert.equal(revised.timelineCaptions.cues[0].end-revised.timelineCaptions.cues[0].start,90);
+    await click('#open-project');await wait(query('#notice')+'.textContent.includes("已打开工程")','重开粘贴工程');
+    await context(firstVoice);
+    assert.equal(await read('document.querySelector("dialog[open] input[type=number]").valueAsNumber'),2);
+    await action('关闭');
     assert.deepEqual(opens,[]);assert.deepEqual(saves,[]);
-    console.log('分镜拖动、键盘、取消、跨屏、撤销重做、保存重开与成片排序通过。');
+    console.log('分镜拖动、左右插入、倍速、音频字幕视频复制粘贴、撤销重做、保存重开与成片排序通过。');
   } finally {
     wc.debugger.detach();win.destroy();
   }

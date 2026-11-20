@@ -143,6 +143,7 @@ window.mountTimelineSelection = function (host, {busy, changed, removed}) {
     if (event.key==='Escape' && selected.size) {selected.clear();paint();event.preventDefault();}
   });
   return {bind,attach,removeSelection,get size(){return selected.size;},
+    single(){return selected.size===1 ? visible.find(node=>selected.has(entries.get(node).key)) : undefined;},
     selectOnly(key){selected=new Set([key]);paint();},
     clear(){finish(true);selected.clear();paint();}};
 };

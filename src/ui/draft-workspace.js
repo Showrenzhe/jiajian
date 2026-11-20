@@ -144,14 +144,12 @@
       symbol.setAttribute('href', '#icon-film');
       icon.append(symbol);
       cover.append(icon);
-      if (draft.coverUrl) {
-        const image = document.createElement('img');
-        image.alt = '';
-        image.loading = 'lazy';
-        image.addEventListener('error', () => image.remove(), { once: true });
-        image.src = draft.coverUrl;
-        cover.append(image);
-      }
+      const image = document.createElement('img');
+      image.alt = '';
+      image.loading = 'lazy';
+      image.addEventListener('error', () => { image.src = 'assets/project-cover.jpg'; }, { once: true });
+      image.src = draft.coverUrl ?? 'assets/project-cover.jpg';
+      cover.append(image);
       copy.className = 'draft-card-copy';
       name.textContent = draft.name;
       time.dateTime = draft.updatedAt;

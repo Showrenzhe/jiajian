@@ -72,7 +72,7 @@
           const edit = config.segmentVoiceCuts?.[i]?.[j];
           if (selected.start && edit?.offset > 0) { edit.offset = 0; counts.start++; }
           const duration = edit?.ranges?.reduce((sum, r) => sum + r.end - r.start, 0) ?? getAsset(id)?.duration;
-          if (Number.isFinite(duration)) longest = Math.max(longest, duration + (edit?.offset ?? 0));
+          if (Number.isFinite(duration)) longest = Math.max(longest, duration/(edit?.speed ?? 1) + (edit?.offset ?? 0));
         }
         if (selected.duration && longest >= .1) {
           config.shotSettings ??= config.shots.map(() => null);

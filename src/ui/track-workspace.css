@@ -480,11 +480,34 @@ body:has(.workspace-area-handle[data-dragging]) {
   background: var(--selected-surface);
   box-shadow: inset 0 0 0 1px var(--selected-edge);
 }
-.app-frame[data-mode="montage"] .material-folder-icon {
-  width: 62%;
-  max-width: 88px;
+.app-frame[data-mode="montage"] .folder-art {
+  position: relative;
+  display: block;
+  width: 84%;
+  max-width: 160px;
   aspect-ratio: 48 / 38;
-  color: var(--system-blue);
+}
+.app-frame[data-mode="montage"] .material-folder-icon {
+  display: block;
+  width: 100%;
+  height: 100%;
+  color: #626771;
+}
+.folder-preview {
+  position: absolute;
+  inset: 19% 13% 22%;
+  overflow: hidden;
+  border-radius: 3px;
+  transform: rotate(-4deg);
+}
+.folder-preview img { width: 100%; height: 100%; object-fit: cover; }
+.folder-art:has(.folder-preview img)::after {
+  content: '';
+  position: absolute;
+  inset: 54% 4% 8%;
+  background: linear-gradient(#5a6069, #3f434c);
+  border-radius: 2px 2px 6px 6px;
+  border-top: 1px solid #8b9097;
 }
 .app-frame[data-mode="montage"] .material-folder-name {
   max-width: 100%;
@@ -525,8 +548,8 @@ body:has(.workspace-area-handle[data-dragging]) {
 .app-frame[data-mode="montage"] .material-select {
   position: absolute;
   z-index: 1;
-  top: 7px;
-  right: 7px;
+  bottom: 25px;
+  left: 7px;
   width: 15px;
   height: 15px;
   margin: 0;
@@ -575,6 +598,7 @@ body:has(.workspace-area-handle[data-dragging]) {
 .app-frame[data-mode="montage"] .material-tile[draggable="true"]:active { cursor: grabbing; }
 .app-frame[data-mode="montage"] .material-tile[draggable="true"] img { -webkit-user-drag: none; }
 .app-frame[data-mode="montage"] .material-thumbnail {
+  position: relative;
   display: grid;
   place-items: center;
   width: 100%;
@@ -584,7 +608,7 @@ body:has(.workspace-area-handle[data-dragging]) {
   background: var(--well);
   color: var(--accent);
 }
-.app-frame[data-mode="montage"] .material-tile img { width: 100%; height: 100%; object-fit: cover; }
+.app-frame[data-mode="montage"] .material-thumbnail img { position: absolute; inset: 0; width: 100%; height: 100%; object-fit: contain; }
 .app-frame[data-mode="montage"] .material-tile > :is(strong, span):not(.material-thumbnail) {
   min-width: 0;
   overflow: hidden;
@@ -592,7 +616,30 @@ body:has(.workspace-area-handle[data-dragging]) {
   white-space: nowrap;
   font-size: 11px;
 }
-.app-frame[data-mode="montage"] .material-tile > span:not(.material-thumbnail, .material-used) { color: var(--muted); }
+.app-frame[data-mode="montage"] .material-tile > .material-duration {
+  position: absolute;
+  top: 6px;
+  right: 6px;
+  padding: 1px 4px;
+  border-radius: 4px;
+  background: #131518de;
+  color: white;
+  font-variant-numeric: tabular-nums;
+  line-height: 1.35;
+  pointer-events: none;
+}
+.material-duration:empty { display: none; }
+.app-frame[data-mode="montage"] .material-thumbnail { background: #24262a; }
+.app-frame[data-mode="montage"] .material-tile { background: var(--control); }
+.app-frame[data-mode="montage"] #materials-pane[data-material-drop],
+.app-frame[data-mode="montage"] .sequence-block[data-material-drop],
+#timeline-clock .sequence-block.material-instance,
+#visual-track-lane .material-instance,
+#visual-track-lane .material-shot {
+  outline: 2px solid var(--system-blue);
+  outline-offset: -2px;
+  box-shadow: inset 0 0 0 3px color-mix(in srgb, var(--system-blue) 40%, transparent);
+}
 .app-frame[data-mode="montage"] .material-tile > .material-used {
   position:absolute;left:7px;top:7px;color:#efffff;background:#124b4cec;border-radius:3px;
   font-weight:600;font-size:10px;line-height:15px;padding:0 4px;pointer-events:auto;
@@ -1223,6 +1270,8 @@ body:has(.workspace-area-handle[data-dragging]) {
     line-height: 1;
   }
   .material-list .material-tile > strong { padding-right: 21px; font-size: 12px; }
+  .material-list > li:not(:hover, :focus-within) > .material-select:not(:checked),
+  .material-list > li:not(:hover, :focus-within) > .material-quick-add { opacity: 0; }
   .material-select { width: 14px; height: 14px; outline: 0; }
   .material-empty { align-content: start; margin-top: 25px; }
   .editor-materials h2, .editor-player h2, .editor-properties h2 { font-size: 14px; }
