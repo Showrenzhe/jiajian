@@ -193,38 +193,43 @@ async function run() {
     const rect = (await slotSnapshot())[paneSelectors[pane]];
     return { x: rect.left + rect.width / 2, y: rect.top + rect.height / 2 };
   }
-  async function verifyLift(pane, before, slots) {
-    const lifted = await paneVisual(pane);
-    assert.ok(lifted.lifted, 'the original pane receives the lift on pointerdown');
-    assert.notEqual(lifted.shadow, before.shadow, 'the original pane casts its own raised shadow');
-    assert.notEqual(lifted.shadow, 'none');
+  const storedLayout = () => evaluate(`['sd-workbench-panel-layout-v1', 'sd-workbench-split-view-v1']
+    .map(key => localStorage.getItem(key))`);
+  let held;
+  async function preparePickup(pane, start) {
+    held = { pane, start, before: await paneVisual(pane), slots: await slotSnapshot(), stored: await storedLayout() };
+  }
+  async function verifyFollow(point) {
+    const { pane, start, before, slots, stored } = held;
+    const visual = await paneVisual(pane);
+    assert.ok(visual.lifted, 'the original pane is raised');
+    assert.notEqual(visual.shadow, before.shadow);
+    assert.notEqual(visual.shadow, 'none');
+    const scaleX = visual.box.width / before.box.width, scaleY = visual.box.height / before.box.height;
+    if (visual.reduced) {
+      near(visual.box.width, before.box.width);
+      near(visual.box.height, before.box.height);
+    } else {
+      assert.ok(scaleX > 1.001 && scaleY > 1.001, 'the held surface rises around the grab point');
+    }
+    // The exact content under the initial press must still be under the pointer.
+    near(visual.box.left + (start.x - before.box.left) * scaleX, point.x);
+    near(visual.box.top + (start.y - before.box.top) * scaleY, point.y);
+    near(visual.content.left, visual.box.left + (before.content.left - before.box.left) * scaleX);
+    near(visual.content.top, visual.box.top + (before.content.top - before.box.top) * scaleY);
+    near(visual.content.width, before.content.width * scaleX);
     samePanes(await slotSnapshot(), slots);
     const neighbors = await snapshot();
-    for (const [selector, rect] of Object.entries(neighbors)) {
-      if (selector === paneSelectors[pane]) continue;
-      assert.deepEqual(rect, slots[selector], 'neighboring panes remain aligned with their slots');
-      assert.ok(rect.left >= lifted.box.right || rect.right <= lifted.box.left
-        || rect.top >= lifted.box.bottom || rect.bottom <= lifted.box.top,
-      'the raised pane must stay clear of its neighbors');
+    for (const selector of selectors.filter(selector => selector !== paneSelectors[pane])) {
+      assert.deepEqual(neighbors[selector], slots[selector], 'neighboring panels remain in their slots');
     }
-    if (lifted.reduced) {
-      assert.deepEqual(lifted.box, before.box, 'reduced motion keeps the shadow cue without positional movement');
-      assert.equal(lifted.transform, 'none');
-    } else {
-      const scale = lifted.box.width / before.box.width;
-      assert.ok(scale > 1.001 && lifted.box.height > before.box.height + .5,
-        'the actual pane scales in both dimensions while held');
-      assert.ok((lifted.box.top + lifted.box.bottom) / 2 < (before.box.top + before.box.bottom) / 2 - 1,
-        'the actual pane rises vertically');
-      assert.ok(Math.abs(lifted.content.width - before.content.width * scale) < .12,
-        'actual pane content scales with the surface');
-    }
+    assert.deepEqual(await storedLayout(), stored, 'hover never writes a layout');
+    return visual;
   }
   async function beginSwap(pane) {
-    const before = await paneVisual(pane);
-    const slots = await slotSnapshot();
-    const box = slots[paneSelectors[pane]];
-    const start = { x: box.left + box.width / 2, y: box.top + 14 };
+    const box = (await slotSnapshot())[paneSelectors[pane]];
+    const start = { x: Math.round(box.left + box.width * .37), y: Math.round(box.top + 24) };
+    await preparePickup(pane, start);
     await mouse('mouseMoved', start, {});
     await mouse('mousePressed', start, { button: 'left', buttons: 1, clickCount: 1 });
     const pressed = await paneVisual(pane);
@@ -234,14 +239,48 @@ async function run() {
         'the reduced-motion shadow appears without a transition');
     }
     await finishPaneMotion();
-    await verifyLift(pane, before, slots);
+    await verifyFollow(start);
     return start;
   }
   async function hoverAt(point, expected) {
     await mouse('mouseMoved', point, { buttons: 1 });
-    await settle();
-    assert.equal(await targetPane(), expected, 'only the pane under the pointer offers to swap');
+    await verifyFollow(point);
+    assert.equal(await targetPane(), expected, 'only the fixed slot under the pointer offers to swap');
     return point;
+  }
+  async function paintedContent(box) {
+    // Compare the actual rendered material list, including the part crossing into the neighboring slot.
+    const rect = { x: Math.round(box.left) + 10, y: Math.round(box.top) + 32,
+      width: Math.floor(box.width) - 20, height: Math.min(118, Math.floor(box.height) - 40) };
+    const image = (await wc.capturePage(rect, { stayHidden: true })).resize({ width: rect.width, height: rect.height });
+    return { pixels: image.toBitmap(), rect };
+  }
+  function samePaint(original, moved, targetLeft) {
+    const before = original.pixels, after = moved.pixels;
+    const { x, width, height } = moved.rect;
+    const seam = Math.round(targetLeft - x);
+    assert.ok(seam > 2 && seam < width - 3, 'the target edge crosses the photographed controls');
+    assert.equal(after.length, before.length);
+    let details = 0, matched = 0, tinted = 0;
+    const seamChanges = [0, 0, 0, 0, 0];
+    for (let i = 4; i < before.length; i += 4) {
+      if (Math.abs(before[i] - after[i]) > 8 || Math.abs(before[i + 1] - after[i + 1]) > 8 ||
+          Math.abs(before[i + 2] - after[i + 2]) > 8) {
+        tinted++;
+        const column = (i / 4) % width - seam;
+        if (Math.abs(column) <= 2) seamChanges[column + 2]++;
+      }
+      const edge = before[i + 1] - before[i - 3];
+      if (Math.abs(edge) < 28) continue;
+      details++;
+      const now = after[i + 1] - after[i - 3];
+      if (Math.sign(now) === Math.sign(edge) && Math.abs(now) >= .50 * Math.abs(edge)) matched++;
+    }
+    assert.ok(seamChanges.every(count => count < height * .25), 'the drop border must stay behind the original controls');
+    assert.ok(tinted < before.length / 4 * .09,
+      `target decorations must paint behind the held panel (${tinted} visibly altered pixels)`);
+    assert.ok(details > 100 && matched / details > .80,
+      `the original text and controls must paint above the target (${matched}/${details} matching edges)`);
   }
   async function dropAt(point) {
     await mouse('mouseReleased', point, { button: 'left', clickCount: 1 });
@@ -516,11 +555,17 @@ async function run() {
   await dropAt(stationary);
   samePanes(await snapshot(), stage);
   assert.equal((await paneVisual('materials')).shadow, rest.shadow);
-  await beginSwap('materials');
-  await hoverAt(playerPoint, 'player');
-  await verifyLift('materials', rest, slots);
+  const grab = await beginSwap('materials');
+  await settle();
+  const originalPaint = await paintedContent((await paneVisual('materials')).box);
+  const diagonal = { x: Math.round(middle.left + 52), y: Math.round(left.top + 75) };
+  await hoverAt({ x: grab.x + 3, y: grab.y }, null);
+  await hoverAt(diagonal, 'player');
+  await evaluate("Promise.allSettled(document.querySelector('[data-drop-target]').getAnimations().map(a => a.finished))");
+  await settle();
+  samePaint(originalPaint, await paintedContent((await paneVisual('materials')).box), middle.left);
+  await hoverAt({ x: grab.x + 1, y: grab.y + 1 }, null);
   await hoverAt(inspectorPoint, 'inspector');
-  await verifyLift('materials', rest, slots);
   await hoverAt(seamPoint, null);
   await dropAt(seamPoint);
   samePanes(await snapshot(), stage);
@@ -534,6 +579,12 @@ async function run() {
   await dropAt(seamPoint);
   samePanes(await snapshot(), stage);
 
+  await beginSwap('materials');
+  const outside = { x: -36, y: left.top + 30 };
+  await hoverAt(outside, null);
+  await dropAt(outside);
+  samePanes(await snapshot(), stage);
+
   const lostGrip = await beginSwap('materials');
   await hoverAt(playerPoint, 'player');
   await evaluate(`document.querySelector(${JSON.stringify(moveGrip('materials'))}).releasePointerCapture(1)`);
@@ -544,13 +595,16 @@ async function run() {
 
   await wc.debugger.sendCommand('Emulation.setTouchEmulationEnabled', { enabled: true });
   try {
-    await touch('touchStart', [await center(moveGrip('materials'))]);
+    const touchStart = await center(moveGrip('materials'));
+    await preparePickup('materials', touchStart);
+    await touch('touchStart', [touchStart]);
     assert.ok((await paneVisual('materials')).lifted, 'touch pickup needs no movement or long press');
     await finishPaneMotion();
-    await verifyLift('materials', rest, slots);
+    await verifyFollow(touchStart);
     await touch('touchMove', [playerPoint]);
     await settle();
     assert.equal(await targetPane(), 'player');
+    await verifyFollow(playerPoint);
     await touch('touchCancel', []);
     await settle();
     await checkReleased();
@@ -576,13 +630,51 @@ async function run() {
       const style = getComputedStyle(el, pseudo);
       return ![style.outlineStyle, style.borderTopStyle, style.borderRightStyle, style.borderBottomStyle, style.borderLeftStyle].includes('dashed');
     })))`), 'editing and targeting should use a continuous surface without a dashed outline');
+  const airborne = await snapshot();
+  const swapped = exchanged(stage, 'materials', 'player');
   await mouse('mouseReleased', playerPoint, { button: 'left', clickCount: 1 });
-  assert.ok(await evaluate(animatedTransforms) > 0, 'the contents should transition when the two slots exchange');
-  samePanes(await slotSnapshot(), exchanged(stage, 'materials', 'player'));
+  assert.ok(await evaluate(animatedTransforms) > 0, 'release starts the slot exchange');
+  samePanes(await slotSnapshot(), swapped);
+  // Seek the real animations to inspect their first and intermediate frames without depending on CI frame timing.
+  const seekArrival = fraction => evaluate(`(() => {
+    const arrivals = document.getAnimations().filter(a => a.id === 'panel-slot-arrival');
+    for (const a of arrivals) { a.pause(); a.currentTime = a.effect.getTiming().duration * ${fraction}; }
+    return arrivals.length;
+  })()`);
+  assert.ok(await seekArrival(0) >= 2);
+  samePanes(await snapshot(), airborne);
+  await seekArrival(.5);
+  const landing = await snapshot();
+  for (const selector of ['#materials-pane', '.editor-player']) {
+    for (const prop of ['left', 'top', 'width', 'height']) {
+      const from = airborne[selector][prop], to = swapped[selector][prop], now = landing[selector][prop];
+      if (Math.abs(from - to) > 10) {
+        assert.ok(now > Math.min(from, to) && now < Math.max(from, to),
+          `${selector} ${prop} must move continuously from ${from} to ${to}, got ${now}`);
+      }
+    }
+  }
+  await evaluate("document.getAnimations().filter(a => a.id === 'panel-slot-arrival').forEach(a => a.play())");
   await checkReleased();
-  samePanes(await snapshot(), exchanged(stage, 'materials', 'player'));
-  await evaluate(`Promise.allSettled(document.getAnimations().filter(a => a.effect?.target?.closest('.panel-layout-pane') &&
-    Number.isFinite(a.effect.getComputedTiming().endTime)).map(a => a.finished))`);
+  samePanes(await snapshot(), swapped);
+
+  // Re-grab the same panel while its return animation is still running.
+  const regrab = await beginSwap('materials');
+  const offset = { x: regrab.x + 34, y: regrab.y + 28 };
+  await hoverAt(offset, null);
+  await mouse('mouseReleased', offset, { button: 'left', clickCount: 1 });
+  assert.ok(await evaluate(animatedTransforms) > 0);
+  await mouse('mousePressed', offset, { button: 'left', buttons: 1, clickCount: 1 });
+  await finishPaneMotion();
+  const caught = await paneVisual('materials');
+  assert.ok(caught.lifted);
+  const next = { x: offset.x - 59, y: offset.y + 38 };
+  await mouse('mouseMoved', next, { buttons: 1 });
+  const pulled = await paneVisual('materials');
+  near(pulled.box.left - caught.box.left, next.x - offset.x);
+  near(pulled.box.top - caught.box.top, next.y - offset.y);
+  await dropAt(next);
+  samePanes(await snapshot(), swapped);
   await beginSwap('inspector');
   await hoverAt(await paneCenter('timeline'), 'timeline');
   const cancelledTarget = await paneCenter('timeline');
@@ -597,7 +689,9 @@ async function run() {
   await adjust();
   const reducedGrip = await beginSwap('player');
   assert.equal(await evaluate('document.documentElement.dataset.theme'), 'light');
+  await hoverAt(await paneCenter('materials'), 'materials');
   await dropAt(reducedGrip);
+  samePanes(await snapshot(), stage);
   await evaluate(`document.querySelector(${JSON.stringify(moveGrip('materials'))}).focus()`);
   await press('ArrowRight');
   samePanes(await snapshot(), exchanged(stage, 'materials', 'player'));
@@ -641,14 +735,14 @@ async function run() {
   await settle();
   samePanes(await snapshot(), original);
   await adjust();
-  const held = await beginSwap('timeline');
+  const timelineGrip = await beginSwap('timeline');
   await click('#title-home');
   await settle();
   await checkReleased();
-  await dropAt(held);
+  await dropAt(timelineGrip);
   assert.equal(await visible(), 0);
   wc.debugger.detach();
-  console.log('Passed immediate mouse and touch pickup, cancellation, panel swaps, drag targets, keyboard, motion, legacy migration, clipping, paired resizing, and persistence.');
+  console.log('Passed pointer-anchored panel movement, painted content, animated slot exchange, cancellation and re-grab, touch, reduced motion, keyboard, migration, clipping, resizing, and persistence.');
   win.close();
 }
 

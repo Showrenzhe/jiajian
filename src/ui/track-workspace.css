@@ -897,7 +897,6 @@ body:has(.workspace-divider[data-dragging]) {
 .app-frame[data-mode="montage"] .panel-layout-box {
   position: relative;
   grid-area: var(--panel-grid-area);
-  z-index: 12;
   min-width: 0;
   min-height: 0;
 }
@@ -911,17 +910,39 @@ body:has(.workspace-divider[data-dragging]) {
   border-radius: var(--workspace-radius);
   pointer-events: none;
 }
-.app-frame[data-mode="montage"] .panel-layout-pane[data-lifted] {
+.panel-layout-vacancy:not([hidden]) {
+  grid-area: var(--panel-grid-area);
+  min-width: 0;
+  min-height: 0;
+  border-radius: var(--workspace-radius);
+  background: color-mix(in srgb, var(--ink) 4%, var(--canvas));
+  box-shadow: inset 0 1px 3px rgb(12 22 38 / 12%);
+  pointer-events: none;
+}
+#editor-workspace .panel-layout-pane[data-floating] {
+  position: fixed;
+  inset: var(--panel-float-top) auto auto var(--panel-float-left);
+  width: var(--panel-float-width);
+  height: var(--panel-float-height);
+  margin: 0;
   z-index: 3;
+  pointer-events: none;
+  transform-origin: top left;
+  will-change: transform;
+}
+#editor-workspace .panel-layout-pane[data-floating="front"] { z-index: 4; }
+.app-frame[data-mode="montage"] .panel-layout-pane[data-lifted] {
   border-color: var(--selected-edge);
   box-shadow: 0 8px 17px -5px rgb(12 22 38 / 38%), 0 2px 5px rgb(12 22 38 / 22%);
 }
 .app-frame[data-mode="montage"] .panel-layout-box[data-drop-target] {
   background-color: color-mix(in srgb, var(--accent) 14%, transparent);
+  box-shadow: inset 0 0 0 2px var(--selected-edge);
 }
 .app-frame[data-mode="montage"] .panel-layout-box[data-drop-target]::after {
   content: "松开交换";
   position: absolute;
+  z-index: 13;
   inset: 50% auto auto 50%;
   translate: -50% -50%;
   padding: 5px 10px;
@@ -934,23 +955,14 @@ body:has(.workspace-divider[data-dragging]) {
 }
 @media (prefers-reduced-motion: no-preference) {
   .panel-layout-box { transition: background-color 110ms ease-out; }
-  [data-layout-editing] .panel-layout-pane {
-    transition: transform 180ms cubic-bezier(.2,.75,.25,1), box-shadow 180ms ease-out, border-color 180ms ease-out;
-  }
   [data-layout-editing] .panel-layout-pane[data-lifted] {
-    transform: translateY(-3px) scale(var(--panel-lift-scale));
-    transition-duration: 150ms;
-  }
-  .panel-layout-handle[data-edge="move"]::before {
-    transition: transform 180ms cubic-bezier(.2,.75,.25,1);
-  }
-  .panel-layout-box[data-drag-source] [data-edge="move"]::before {
-    transform: translateY(var(--panel-grip-offset));
-    transition-duration: 150ms;
+    transform: scale(var(--panel-lift-scale));
+    transition: transform 150ms cubic-bezier(.2,.75,.25,1), box-shadow 150ms ease-out, border-color 150ms ease-out;
   }
 }
 .app-frame[data-mode="montage"] .panel-layout-handle {
   position: absolute;
+  z-index: 12;
   padding: 0;
   border: 0;
   border-radius: 2px;
@@ -983,10 +995,8 @@ body:has(.workspace-divider[data-dragging]) {
   outline: 2px solid var(--focus-ring);
   outline-offset: 2px;
 }
-.app-frame[data-mode="montage"] .panel-layout-box[data-drag-source] [data-edge="move"]::before {
-  background:
-    radial-gradient(circle, white 1px, transparent 1.3px) center / 4px 4px content-box,
-    var(--action-fill);
+.app-frame[data-mode="montage"] .panel-layout-dragging:has([data-drag-source]) [data-edge="move"]::before {
+  visibility: hidden;
 }
 .app-frame[data-mode="montage"] .panel-layout-dragging { user-select: none; }
 .app-frame[data-mode="montage"] .panel-layout-dragging .panel-layout-handle[data-edge="move"] { cursor: grabbing; }

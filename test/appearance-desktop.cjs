@@ -398,10 +398,20 @@ async function worker(phase, root) {
   const inspectorLightness = await surfaceLightness('#inspector-panel-subtitles');
   assert.ok(tileLightness > .55 && Math.abs(tileLightness - inspectorLightness) < .25,
     'Light caption swatches should share the inspector palette: ' + [tileLightness, inspectorLightness]);
+  const previewText = '#caption-preview-text';
+  await contrast(previewText, 'light');
+  assert.equal(await colorAt(previewText, 'borderTopWidth'), '0px', 'Preview input should have a flat idle surface');
+  await clickVisible(wc, '#caption-enlarge');
+  await key('Escape', 27);
+  await key('Tab', 9);
+  assert.equal(await read('document.activeElement.id'), 'caption-preview-text');
+  assert.equal(await colorAt(previewText, 'outlineStyle'), 'solid', 'Preview input should show keyboard focus');
   await settings();
   await click(radio('dark'));
   await expectMode('dark', 'dark');
   await close();
+  await until(() => read("!document.documentElement.hasAttribute('data-theme-changing')"), 'Dark palette did not settle');
+  await contrast(previewText, 'dark');
   await wc.session.flushStorageData();
 }
 

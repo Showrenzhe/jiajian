@@ -94,6 +94,8 @@
     actions.append(controls);
 
     const layer = create('div', { id: 'panel-layout-layer' });
+    const vacancy = create('div', { className: 'panel-layout-vacancy', hidden: true });
+    layer.append(vacancy);
     layer.hidden = true;
     workspace.append(layer);
     const panes = new Map(definitions.map(([id, selector, label]) => {
@@ -114,6 +116,7 @@
     let active = 'player';
     let drag;
     let scheduled = 0;
+    const reducedMotion = matchMedia('(prefers-reduced-motion: reduce)');
 
     if (saved.split) {
       splitView.restore(saved.split);
@@ -191,6 +194,7 @@
       scheduled = 0;
       if (frame?.dataset.mode !== 'montage' || workspace.hidden || !workspace.clientWidth) {
         releaseDrag();
+        stopArrivals();
         if (frame?.dataset.mode !== 'montage' || workspace.hidden) {
           editing = false;
           beforeEdit = undefined;
@@ -217,12 +221,13 @@
       }
     }
 
-    function targetAt(source, x, y) {
-      for (const pane of panes.values()) {
-        if (pane === source) continue;
-        const rect = pane.overlay.getBoundingClientRect();
-        if (x >= rect.left && x < rect.right && y >= rect.top && y < rect.bottom) return pane;
-      }
+    function containsPoint(rect, x, y) {
+      return x >= rect.left && x < rect.right && y >= rect.top && y < rect.bottom;
+    }
+
+    function measureTargets(source) {
+      return [...panes.values()].filter(pane => pane !== source)
+        .map(pane => ({ pane, rect: pane.overlay.getBoundingClientRect() }));
     }
 
     function neighbor(pane, dx, dy) {
@@ -251,36 +256,54 @@
       return nearest;
     }
 
-    function animateArrival(pane, dx, dy) {
-      // Move the contents inside their destination. The slots and pointer targets stay put.
-      const distance = Math.hypot(dx, dy);
-      const fraction = Math.min(.3, 40 / (distance || 1));
-      const style = getComputedStyle(pane.element);
-      // Keep translated content inside a scrolling pane's trailing padding to avoid flashing scrollbars.
-      const x = Math.min(dx * fraction, style.overflowX === 'auto' ? parseFloat(style.paddingRight) : Infinity);
-      const y = Math.min(dy * fraction, style.overflowY === 'auto' ? parseFloat(style.paddingBottom) : Infinity);
-      const from = { translate: `${x}px ${y}px`, opacity: .55 };
-      const reducedMotion = matchMedia('(prefers-reduced-motion: reduce)').matches;
-      for (const child of pane.element.children) {
-        for (const animation of child.getAnimations()) {
-          if (animation.id === 'panel-slot-arrival') animation.cancel();
-        }
-        if (!reducedMotion && child.checkVisibility()) {
-          child.animate([from, { translate: '0 0', opacity: 1 }], {
-            id: 'panel-slot-arrival', duration: 230, easing: 'cubic-bezier(.2,.75,.25,1)',
-          });
-        }
+    // Pin the original node to the viewport. Even a full-width timeline dragged
+    // beyond the window must not add scrollable overflow to its old grid.
+    function floatAt(pane, box) {
+      for (const key of ['left', 'top', 'width', 'height']) {
+        pane.element.style.setProperty('--panel-float-' + key, box[key] + 'px');
+      }
+      pane.element.dataset.floating = '';
+    }
+
+    function dock(pane) {
+      delete pane.element.dataset.floating;
+      for (const key of ['left', 'top', 'width', 'height']) pane.element.style.removeProperty('--panel-float-' + key);
+    }
+
+    function stopArrivals() {
+      for (const pane of panes.values()) {
+        if (!pane.arrival) continue;
+        pane.arrival.cancel();
+        pane.arrival = undefined;
+        dock(pane);
       }
     }
 
-    function exchange(source, target) {
-      const from = source.overlay.getBoundingClientRect();
-      const to = target.overlay.getBoundingClientRect();
-      const dx = (from.left + from.right - to.left - to.right) / 2;
-      const dy = (from.top + from.bottom - to.top - to.bottom) / 2;
+    function animateArrival(pane, from, foreground = false) {
+      if (reducedMotion.matches) return;
+      const to = pane.overlay.getBoundingClientRect();
+      if (!to.width || !to.height) return;
+      floatAt(pane, to);
+      if (foreground) pane.element.dataset.floating = 'front';
+      const dx = from.left - to.left, dy = from.top - to.top;
+      const start = `translate(${dx}px, ${dy}px) scale(${from.width / to.width}, ${from.height / to.height})`;
+      const arrival = pane.element.animate([{ transform: start }, { transform: 'none' }], {
+        id: 'panel-slot-arrival', duration: 240, easing: 'cubic-bezier(.2,.75,.25,1)',
+      });
+      pane.arrival = arrival;
+      arrival.finished.then(() => {
+        if (pane.arrival !== arrival) return;
+        pane.arrival = undefined;
+        dock(pane);
+      }, () => { /* A new gesture can interrupt the landing. */ });
+    }
+
+    function exchange(source, target, from = source.element.getBoundingClientRect()) {
+      const displaced = target.element.getBoundingClientRect();
+      stopArrivals();
       swapPanes(source.id, target.id);
-      animateArrival(source, dx, dy);
-      animateArrival(target, -dx, -dy);
+      animateArrival(target, displaced);
+      animateArrival(source, from, true);
       live.textContent = `${source.label}与${target.label}已交换位置。`;
       save();
     }
@@ -308,14 +331,37 @@
     function startDrag(pane, edge, handle, event) {
       if (!editing || drag || event.button !== 0) return;
       event.preventDefault();
+      let visibleBox;
+      if (edge === 'move') {
+        // While panels are landing, pick the visible surface under the pointer.
+        // The overlay that delivered the event is still in its final grid slot.
+        for (const candidate of panes.values()) {
+          if (!candidate.arrival) continue;
+          const box = candidate.element.getBoundingClientRect();
+          if (!containsPoint(box, event.clientX, event.clientY)) continue;
+          pane = candidate;
+          visibleBox = box;
+          if (candidate.element.dataset.floating === 'front') break;
+        }
+        if (pane.arrival && !visibleBox) return;
+        handle = pane.overlay.querySelector('[data-edge="move"]');
+      }
+      stopArrivals();
       active = pane.id;
       drag = { pane, edge, handle, pointerId: event.pointerId, x: event.clientX, y: event.clientY, changed: false };
       if (edge === 'move') {
-        // Cap expansion at three pixels per edge, even for the full-width timeline.
-        const { width, height } = pane.overlay.getBoundingClientRect();
-        const expansion = Math.min(.014, 6 / Math.max(1, width, height));
+        const box = pane.overlay.getBoundingClientRect();
+        const visual = visibleBox ?? box;
+        const scaleX = visual.width / box.width, scaleY = visual.height / box.height;
+        const grabX = (event.clientX - visual.left) / scaleX, grabY = (event.clientY - visual.top) / scaleY;
+        floatAt(pane, { width: box.width, height: box.height, left: event.clientX - grabX, top: event.clientY - grabY });
+        if (visibleBox) pane.element.style.scale = `${scaleX} ${scaleY}`;
+        const expansion = Math.min(.014, 3 / Math.max(1, box.width, box.height));
         pane.element.style.setProperty('--panel-lift-scale', String(1 + expansion));
-        pane.overlay.style.setProperty('--panel-grip-offset', `${-3 - height * expansion / 2}px`);
+        pane.element.style.transformOrigin = `${grabX}px ${grabY}px`;
+        drag.targets = measureTargets(pane);
+        vacancy.style.setProperty('--panel-grid-area', pane.overlay.style.getPropertyValue('--panel-grid-area'));
+        vacancy.hidden = false;
         pane.element.dataset.lifted = '';
         pane.overlay.dataset.dragSource = '';
       } else {
@@ -332,8 +378,12 @@
     function updateDrag(x, y) {
       const dx = x - drag.x, dy = y - drag.y;
       if (drag.edge === 'move') {
+        // The threshold gates slot exchange, never the actual pointer tracking.
+        drag.pane.element.style.translate = `${dx}px ${dy}px`;
+        drag.lastX = x;
+        drag.lastY = y;
         if (!drag.changed && Math.hypot(dx, dy) < 4) return;
-        const target = targetAt(drag.pane, x, y);
+        const target = drag.targets.find(({ rect }) => containsPoint(rect, x, y))?.pane;
         if (target !== drag.target) {
           if (drag.target) delete drag.target.overlay.dataset.dropTarget;
           if (target) target.overlay.dataset.dropTarget = '';
@@ -360,8 +410,10 @@
       if (event.type !== 'pointerup') return releaseDrag();
       updateDrag(event.clientX, event.clientY);
       const { pane, target, edge, changed } = drag;
+      const from = edge === 'move' ? pane.element.getBoundingClientRect() : null;
       releaseDrag(true);
-      if (target) exchange(pane, target);
+      if (target) exchange(pane, target, from);
+      else if (from) animateArrival(pane, from, true);
       if (changed && edge !== 'move') {
         live.textContent = `已调整${pane.label}的大小。`;
         save();
@@ -380,8 +432,12 @@
       if (pane.element.hasAttribute('data-lifted')) {
         delete pane.element.dataset.lifted;
         pane.element.style.removeProperty('--panel-lift-scale');
+        pane.element.style.removeProperty('transform-origin');
+        pane.element.style.removeProperty('translate');
+        pane.element.style.removeProperty('scale');
+        dock(pane);
         delete pane.overlay.dataset.dragSource;
-        pane.overlay.style.removeProperty('--panel-grip-offset');
+        vacancy.hidden = true;
       }
       if (target) delete target.overlay.dataset.dropTarget;
       workspace.classList.remove('panel-layout-dragging');
@@ -408,6 +464,7 @@
 
     function reset() {
       releaseDrag();
+      stopArrivals();
       slots = { ...defaultSlots };
       active = 'player';
       editing = false;
@@ -421,6 +478,7 @@
 
     function endEditing(cancel) {
       releaseDrag();
+      stopArrivals();
       if (cancel) {
         slots = beforeEdit.slots;
         applySlots();
@@ -464,9 +522,26 @@
     window.addEventListener('pointermove', move, { passive: false });
     window.addEventListener('pointerup', finish);
     window.addEventListener('pointercancel', finish);
-    window.addEventListener('blur', () => releaseDrag());
+    function interrupt() {
+      releaseDrag();
+      stopArrivals();
+    }
+    window.addEventListener('blur', interrupt);
+    window.addEventListener('resize', interrupt);
+    window.addEventListener('scroll', event => {
+      if (event.target !== document && !event.target.contains?.(workspace)) return;
+      stopArrivals();
+      if (drag?.edge !== 'move') return;
+      drag.targets = measureTargets(drag.pane);
+      updateDrag(drag.lastX ?? drag.x, drag.lastY ?? drag.y);
+    }, true);
+    reducedMotion.addEventListener('change', stopArrivals);
     applySlots();
-    const observer = new ResizeObserver(sync);
+    const observer = new ResizeObserver(() => {
+      if (drag?.edge === 'move') releaseDrag();
+      stopArrivals();
+      sync();
+    });
     for (const target of [workspace, toolbar, notice]) observer.observe(target);
     sync();
     return { sync, reset };
