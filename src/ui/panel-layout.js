@@ -240,6 +240,7 @@
       drag = { pane, edge, handle, split: !state && edge !== 'move' ? splitView.sizes() : null,
         pointerId: event.pointerId, x: event.clientX, y: event.clientY,
         box: fit(currentBox(pane, canvas), canvas, pane), changed: false };
+      handle.dataset.pointerFocus = '';
       handle.focus({ preventScroll: true });
       try { handle.setPointerCapture(event.pointerId); } catch { /* Window listeners also handle uncaptured drags. */ }
       workspace.classList.add('panel-layout-dragging');
@@ -296,7 +297,11 @@
         handle.setAttribute('aria-label', label);
         handle.addEventListener('pointerdown', (event) => startDrag(pane, edge, handle, event));
         handle.addEventListener('lostpointercapture', finish);
-        handle.addEventListener('keydown', (event) => nudge(pane, edge, event));
+        handle.addEventListener('blur', () => handle.removeAttribute('data-pointer-focus'));
+        handle.addEventListener('keydown', (event) => {
+          if (!drag) handle.removeAttribute('data-pointer-focus');
+          nudge(pane, edge, event);
+        });
         pane.overlay.append(handle);
       }
       const bringForward = () => {

@@ -2,7 +2,7 @@
 
 const assert = require('node:assert/strict');
 const { once } = require('node:events');
-const { mkdirSync, mkdtempSync } = require('node:fs');
+const { mkdirSync, mkdtempSync, writeFileSync } = require('node:fs');
 const path = require('node:path');
 const { app } = require('electron');
 const { launchDesktop } = require('../src/desktop.cjs');
@@ -42,50 +42,49 @@ async function run() {
   wc.debugger.attach();
   await wc.debugger.sendCommand('Emulation.setFocusEmulationEnabled', { enabled: true });
   const mouse = (type, pos, fields) => wc.debugger.sendCommand('Input.dispatchMouseEvent', { type, ...pos, ...fields });
-  async function checkDivider(id, keyboard = false) {
-    const style = await evaluate(`(() => {
-      const handle = document.querySelector('[data-split="${id}"]');
-      const horizontal = handle.getAttribute('aria-orientation') === 'horizontal';
-      const line = getComputedStyle(handle, '::before');
-      const brush = document.createElement('canvas').getContext('2d');
-      brush.fillStyle = line.backgroundColor;
-      brush.fillRect(0, 0, 1, 1);
-      const [r, g, b, alpha] = brush.getImageData(0, 0, 1, 1).data;
-      return {
-        thickness: parseFloat(horizontal ? line.height : line.width),
-        grip: getComputedStyle(handle, '::after').content,
-        neutral: Math.max(r, g, b) - Math.min(r, g, b) < 48,
-        visible: alpha > 0, hovered: handle.matches(':hover'),
-        focused: document.activeElement === handle,
-        outlined: getComputedStyle(handle).outlineStyle !== 'none',
-        forcedColors: matchMedia('(forced-colors: active)').matches,
-      };
+  async function checkHandlePaint(selector, keyboard = false) {
+    const visual = await evaluate(`(() => {
+      const handle = document.querySelector(${JSON.stringify(selector)});
+      const style = getComputedStyle(handle);
+      const paint = document.createElement('canvas').getContext('2d');
+      function painted(layer) {
+        paint.clearRect(0, 0, 1, 1);
+        paint.fillStyle = layer.backgroundColor;
+        paint.fillRect(0, 0, 1, 1);
+        return paint.getImageData(0, 0, 1, 1).data[3] > 0 || layer.backgroundImage !== 'none' || layer.boxShadow !== 'none';
+      }
+      const decoration = ['::before', '::after'].some(pseudo => {
+        const layer = getComputedStyle(handle, pseudo);
+        return !['none', 'normal'].includes(layer.content) && painted(layer);
+      });
+      return { marked: painted(style) || style.outlineStyle !== 'none' || decoration, focus: handle.matches(':focus-visible') };
     })()`);
-    assert.ok(['none', 'normal'].includes(style.grip), id + ' has no central grip');
-    if (keyboard) {
-      assert.ok(style.focused && style.visible && (style.outlined || style.thickness > 1), id + ' keyboard focus: ' + JSON.stringify(style));
-    } else {
-      if (style.hovered || style.forcedColors) assert.ok(style.visible, id + ' should highlight its gutter');
-      assert.equal(style.thickness, 1, id + ' uses a one-pixel pointer divider');
-      assert.ok(style.forcedColors || style.neutral, id + ' pointer feedback uses a neutral line');
-    }
+    assert.equal(visual.marked, keyboard, selector + ' has a visible focus indicator only during keyboard use');
+    if (keyboard) assert.ok(visual.focus, selector + ' should have keyboard focus');
   }
-  async function move(id, distance, { offset = 0, cancel = false } = {}) {
+  async function move(id, distance, { offset = 0, cancel = false, checkPaint = false, capture } = {}) {
     const selector = `[data-split="${id}"]`;
     const pos = await center(selector);
     const axis = id === 'timeline' ? 'y' : 'x';
     pos[axis] += offset;
     const before = await snapshot();
     await mouse('mouseMoved', pos, {});
-    assert.ok(await evaluate(`document.elementFromPoint(${pos.x}, ${pos.y}).matches('${selector}')`), id + ' has a hit area on both sides of the line');
-    await checkDivider(id);
+    assert.ok(await evaluate(`document.elementFromPoint(${pos.x}, ${pos.y}).matches('${selector}:hover')`), id + ' receives hover on both sides of the gutter');
+    if (checkPaint) await checkHandlePaint(selector);
     await mouse('mousePressed', pos, { button: 'left', buttons: 1, clickCount: 1 });
     assert.ok(await evaluate(`document.querySelector('[data-split="${id}"]').hasPointerCapture(1)`), 'drag captures the pointer');
     const end = { ...pos };
     end[axis] += distance;
     await mouse('mouseMoved', end, { buttons: 1 });
     await settle();
-    await checkDivider(id);
+    if (checkPaint) {
+      assert.equal(await evaluate(`getComputedStyle(document.elementFromPoint(${end.x}, ${end.y})).cursor`), id === 'timeline' ? 'row-resize' : 'col-resize');
+      await checkHandlePaint(selector);
+    }
+    if (capture) {
+      const rect = await evaluate(`(() => { const {x, y, width, height} = document.querySelector('#editor-workspace').getBoundingClientRect(); return {x, y, width, height}; })()`);
+      writeFileSync(capture, (await wc.capturePage(rect, { stayHidden: true })).toPNG());
+    }
     checkGutters(await snapshot());
     if (cancel) {
       near(size(await snapshot(), id), size(before, id) + distance * (id === 'materials' ? 1 : -1));
@@ -158,18 +157,24 @@ async function run() {
       for (const prop of ['left', 'top', 'right', 'bottom']) near(boxes[selector][prop], expected[selector][prop]);
     }
   }
-  async function dragSeam(pane, edge, distances, { cancel = false } = {}) {
-    const origin = await center(`.panel-layout-box[data-pane="${pane}"] [data-edge="${edge}"]`);
+  async function dragSeam(pane, edge, distances, { cancel = false, checkPaint = false } = {}) {
+    const selector = `.panel-layout-box[data-pane="${pane}"] [data-edge="${edge}"]`;
+    const origin = await center(selector);
     const before = await snapshot();
     const horizontal = edge !== 'n';
     const axis = horizontal ? 'x' : 'y';
     const preview = before['.editor-player'];
     let point;
+    if (checkPaint) {
+      await mouse('mouseMoved', origin, {});
+      await checkHandlePaint(selector);
+    }
     await mouse('mousePressed', origin, { button: 'left', buttons: 1, clickCount: 1 });
     for (const distance of distances) {
       point = { ...origin, [axis]: origin[axis] + distance };
       await mouse('mouseMoved', point, { buttons: 1 });
       await settle();
+      if (checkPaint && distance === distances[0]) await checkHandlePaint(selector);
       const boxes = await snapshot();
       checkGutters(boxes);
       near(boxes['.editor-player'][horizontal ? 'right' : 'bottom'], preview[horizontal ? 'right' : 'bottom'] + distance);
@@ -200,10 +205,22 @@ async function run() {
     const controlled = document.getElementById(el.getAttribute('aria-controls'));
     return [el.getAttribute('role'), el.getAttribute('aria-orientation'), controlled?.checkVisibility(), el.tabIndex];
   })`), [['separator', 'vertical', true, 0], ['separator', 'vertical', true, 0], ['separator', 'horizontal', true, 0]]);
+  for (const theme of ['light', 'dark']) {
+    await wc.debugger.sendCommand('Emulation.setEmulatedMedia', { features: [
+      { name: 'prefers-color-scheme', value: theme }, { name: 'prefers-reduced-motion', value: 'reduce' },
+    ] });
+    await settle();
+    assert.equal(await evaluate('document.documentElement.dataset.theme'), theme);
+    for (const id of ids) {
+      await mouse('mouseMoved', { x: 10, y: 10 }, {});
+      await checkHandlePaint(`[data-split="${id}"]`);
+      const capture = theme === 'dark' && id === 'timeline' && process.env.JIAJIAN_SPLIT_CAPTURE;
+      await move(id, 20, { cancel: true, checkPaint: true, capture });
+    }
+  }
   for (const id of ids) {
     const sign = id === 'materials' ? 1 : -1;
     const start = size(await snapshot(), id);
-    await checkDivider(id);
     await move(id, sign * 40, { offset: -5 });
     near(size(await snapshot(), id), start + 40);
     await move(id, -sign * 22, { offset: 5 });
@@ -211,12 +228,12 @@ async function run() {
     await move(id, sign * 30, { cancel: true });
     await key(id, id === 'materials' ? 'ArrowRight' : id === 'inspector' ? 'ArrowLeft' : 'ArrowUp');
     near(size(await snapshot(), id), start + 26);
-    await checkDivider(id, true);
+    await checkHandlePaint(`[data-split="${id}"]`, true);
     if (id === 'materials') {
       await press('Tab');
       await press('Tab', 8); // CDP Shift modifier.
       assert.equal(await evaluate('document.activeElement.dataset.split'), id);
-      await checkDivider(id, true);
+      await checkHandlePaint(`[data-split="${id}"]`, true);
     }
     await doubleClick(id);
     near(size(await snapshot(), id), size(original, id));
@@ -287,9 +304,16 @@ async function run() {
     return [handle('inspector', 'e').checkVisibility(), handle('timeline', 's').checkVisibility(),
       getComputedStyle(handle('player', 'ne')).cursor, getComputedStyle(handle('timeline', 'nw')).cursor];
   })()`), [false, false, 'ew-resize', 'ns-resize'], 'docked handles only offer the available resizing axes');
-  await dragSeam('player', 'e', [-16, -42, -67]);
+  await dragSeam('player', 'e', [-16, -42, -67], { checkPaint: true });
+  const playerEdge = '.panel-layout-box[data-pane="player"] [data-edge="e"]';
+  await checkHandlePaint(playerEdge);
+  await press('ArrowLeft');
+  await checkHandlePaint(playerEdge, true);
+  await press('Tab');
+  await press('Tab', 8);
+  await checkHandlePaint(playerEdge, true);
   await dragSeam('inspector', 'w', [14, 30]);
-  await dragSeam('timeline', 'n', [-12, -25]);
+  await dragSeam('timeline', 'n', [-12, -25], { checkPaint: true });
   await click('#nav-toggle');
   await press('Escape');
   assert.ok(await editing(), 'the first Escape dismisses the open navigation drawer');
@@ -371,7 +395,7 @@ async function run() {
   await click('#title-home');
   assert.equal(await visible(), 0);
   wc.debugger.detach();
-  console.log('Passed native splitters, paired pane resizing during layout edits, Escape rollback, persistence, and legacy layouts.');
+  console.log('Passed light/dark gutter paint, keyboard focus, paired pane resizing, Escape rollback, persistence, and legacy layouts.');
   win.close();
 }
 

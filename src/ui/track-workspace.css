@@ -46,11 +46,7 @@
   overflow: auto;
 }
 
-.workspace-divider {
-  display: none;
-  --divider-color: transparent;
-  --divider-thickness: 1px;
-}
+.workspace-divider { display: none; }
 .app-frame[data-mode="montage"] #editor-workspace:not([data-panel-layout="custom"]):not([data-layout-editing]) > .workspace-divider {
   display: block;
   position: relative;
@@ -72,29 +68,18 @@
   transform: translateY(calc(-50% - var(--workspace-gutter) / 2));
   cursor: row-resize;
 }
-.workspace-divider::before {
+.app-frame[data-mode="montage"] .workspace-divider:focus-visible { outline: none; }
+.workspace-divider:where(:focus-visible:not([data-pointer-focus], [data-dragging]))::before {
   content: "";
   position: absolute;
   inset: 0;
   margin: auto;
-  background: var(--divider-color);
+  background: var(--focus-ring);
   pointer-events: none;
+  forced-color-adjust: none;
 }
-.workspace-divider[aria-orientation="vertical"]::before { inset-block: var(--workspace-radius); width: var(--divider-thickness); }
-.workspace-divider[aria-orientation="horizontal"]::before { inset-inline: var(--workspace-radius); height: var(--divider-thickness); }
-.workspace-divider:hover { --divider-color: color-mix(in srgb, var(--ink) 32%, transparent); }
-.workspace-divider[data-dragging] { --divider-color: color-mix(in srgb, var(--ink) 52%, transparent); }
-.app-frame[data-mode="montage"] .workspace-divider:focus-visible { outline: none; }
-.workspace-divider:focus-visible:not([data-pointer-focus], [data-dragging]) {
-  --divider-color: var(--focus-ring);
-  --divider-thickness: 2px;
-}
-@media (prefers-contrast: more), (forced-colors: active) {
-  .workspace-divider, .workspace-divider:is(:hover, [data-dragging]) { --divider-color: CanvasText; }
-}
-@media (forced-colors: active) {
-  .workspace-divider::before { forced-color-adjust: none; }
-}
+.workspace-divider[aria-orientation="vertical"]::before { inset-block: var(--workspace-radius); width: 2px; }
+.workspace-divider[aria-orientation="horizontal"]::before { inset-inline: var(--workspace-radius); height: 2px; }
 /* Retain the resize cursor over other controls when the seam reaches its limit. */
 body:has(.workspace-divider[data-dragging]) {
   cursor: col-resize;
@@ -953,7 +938,7 @@ body:has(.workspace-divider[data-dragging]) {
   pointer-events: auto;
   touch-action: none;
 }
-.app-frame[data-mode="montage"] .panel-layout-handle:hover { background: var(--selected-edge); }
+.app-frame[data-mode="montage"] .panel-layout-handle[data-pointer-focus]:focus-visible { outline: none; }
 .app-frame[data-mode="montage"] .panel-layout-handle[data-edge="move"] {
   top: 7px;
   left: 50%;
