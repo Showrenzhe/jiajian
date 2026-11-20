@@ -293,7 +293,7 @@
     };
     cancel.onclick = () => dialog.close();
     save.onclick = () => { result = layer; dialog.close(); };
-    dialog.onclose = () => { stop(); dialog.remove(); resolve(result); };
+    dialog.onclose = () => { stop(); window.afterDialogExit(dialog); resolve(result); };
     document.body.append(dialog); drawKeys(); dialog.showModal(); display();
   });
 })();

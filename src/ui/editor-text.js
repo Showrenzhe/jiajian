@@ -63,7 +63,7 @@ window.mountEditorTextTools = function (ctx) {
     applyShot.onclick=()=>{if(form.reportValidity()) edit(true,true,true);};
     form.querySelector('[data-import]').onclick=()=>{const count=ctx.importGroups();notice.textContent=count ? '已追加 '+count+' 组' : '脚本中没有可以追加的文字组。';};
     form.querySelector('[data-close]').onclick=()=>dialog.close();
-    dialog.addEventListener('close',()=>dialog.remove(),{once:true});document.body.append(dialog);edit(false);dialog.showModal();f.search.focus();
+    dialog.addEventListener('close',()=>window.afterDialogExit(dialog),{once:true});document.body.append(dialog);edit(false);dialog.showModal();f.search.focus();
   }
   return {open};
 };

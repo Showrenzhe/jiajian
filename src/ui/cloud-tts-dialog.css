@@ -37,7 +37,8 @@
 }
 :is(.cloud-tts-dialog, .cloud-settings-dialog) :is(input[type="checkbox"], input[type="radio"], progress) { accent-color: var(--system-blue); }
 .cloud-tts-dialog { width: min(780px, calc(100vw - 36px)); max-height: calc(100dvh - 42px); }
-.cloud-tts-dialog[open] { display: grid; grid-template-rows: auto minmax(0, 1fr) auto; overflow: hidden; }
+.cloud-tts-dialog[open] { display: grid; }
+.cloud-tts-dialog { grid-template-rows: auto minmax(0, 1fr) auto; overflow: hidden; }
 .cloud-tts-muted, .cloud-settings-muted { color: var(--secondary-ink); font-size: 12px; overflow-wrap: anywhere; }
 .cloud-tts-error, #cloud-tts-status[data-kind="error"] { color: var(--dialog-alert); }
 .cloud-tts-header { display: flex; align-items: center; gap: 6px; padding: 21px 24px 17px; }
@@ -103,6 +104,11 @@
 #cloud-tts-filters { display:flex; gap:5px; flex-wrap:wrap; margin-block:7px; }
 #cloud-tts-filters button { padding:3px 8px; border-radius:12px; font-size:12px; }
 #cloud-tts-filters [aria-pressed="true"] { border-color:var(--system-blue); color:var(--selected-ink); background:var(--selected-fill); }
+@media (prefers-reduced-motion: no-preference) and (forced-colors: none) {
+  #cloud-tts-filters button, .cloud-tts-voice-row {
+    transition: background-color 130ms ease-out, border-color 130ms ease-out;
+  }
+}
 .breeze-voices #cloud-tts-voices { grid-template-columns:repeat(auto-fill,minmax(min(160px,100%),1fr)); max-height:245px; }
 .breeze-voices .cloud-tts-voice-row { min-width:0; min-height:43px; border:1px solid transparent; border-radius:6px; }
 .breeze-voices .cloud-tts-voice-row:has(input:checked) { border-color:var(--system-blue); background:var(--selected-fill); }
@@ -113,14 +119,11 @@
 #cloud-tts-more { margin-top:5px; }
 @media (max-width:720px) { .breeze-voices .cloud-tts-body { grid-template-columns:1fr; } }
 
-@media (prefers-reduced-motion: no-preference) {
-  :is(.cloud-tts-dialog, .cloud-settings-dialog, .script-import-dialog)[open] { animation: sheet-in 160ms ease-out; }
-  @keyframes sheet-in { from { transform: translateY(5px); } to { transform: translateY(0); } }
-}
 @media (prefers-reduced-transparency: reduce), (prefers-contrast: more), (forced-colors: active) {
   :is(.cloud-tts-dialog, .cloud-settings-dialog) { backdrop-filter: none; background: var(--surface); }
 }
 @media (forced-colors: active) {
   :is(.cloud-tts-dialog, .cloud-settings-dialog) { border: 1px solid CanvasText; }
   .cloud-tts-voice-row:has(input:checked) { outline: 1px solid Highlight; outline-offset: -1px; }
+  #cloud-tts-filters [aria-pressed="true"] { border: 1px solid Highlight; text-decoration: underline; }
 }

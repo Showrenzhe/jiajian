@@ -128,7 +128,7 @@
 
 .app-frame[data-mode="montage"] #track-more-options:not([popover]) { display: contents; }
 .app-frame[data-mode="montage"] #track-more { margin-inline-start: auto; anchor-name: --track-more-button; }
-.app-frame[data-mode="montage"] #track-more-options:popover-open {
+.app-frame[data-mode="montage"] #track-more-options[popover] {
   position: fixed;
   position-anchor: --track-more-button;
   position-area: block-end span-inline-start;
@@ -137,7 +137,6 @@
   justify-self: end;
   inset: auto;
   margin: 6px 0;
-  display: grid;
   gap: 9px;
   width: min(290px, 85vw);
   max-height: 80dvh;
@@ -150,7 +149,8 @@
   box-shadow: var(--glass-shadow), 0 9px 24px color-mix(in srgb, var(--ink) 13%, transparent);
   color: var(--ink);
 }
-.app-frame[data-mode="montage"] #track-more-options:popover-open .track-view-options { padding-top: 6px; border-top: 1px solid var(--hairline); }
+.app-frame[data-mode="montage"] #track-more-options:popover-open { display: grid; }
+.app-frame[data-mode="montage"] #track-more-options[popover] .track-view-options { padding-top: 6px; border-top: 1px solid var(--hairline); }
 .app-frame[data-mode="montage"] .timeline-position {
   display: flex;
   align-items: center;

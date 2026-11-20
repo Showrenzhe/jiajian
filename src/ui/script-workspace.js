@@ -11,7 +11,7 @@
     <header class="script-workspace-header">
       <div class="script-title-area">
         <button id="script-back" type="button" aria-label="返回工作台" title="返回工作台" hidden><svg class="ui-icon" aria-hidden="true"><use href="#icon-chevron"></use></svg></button>
-        <h1>脚本编辑</h1>
+        <h1 tabindex="-1">脚本编辑</h1>
       </div>
       <div class="script-header-actions">
         <button id="script-share" type="button" disabled title="云端分享尚未接入">分享脚本</button>
@@ -150,6 +150,7 @@
     const importInput = $('script-import-input');
     const importError = $('script-import-error');
     let model = storedDraft();
+    let pendingSave = false;
     let importKey;
 
     function activeKey() {
@@ -159,9 +160,13 @@
     function persist() {
       try {
         window.localStorage.setItem(storageKey, JSON.stringify(model));
+        pendingSave = false;
         status.textContent = '已保存到本机';
+        return true;
       } catch {
+        pendingSave = true;
         status.textContent = '当前草稿未能保存到本机';
+        return false;
       }
     }
 
@@ -263,15 +268,17 @@
       onNarrate?.(normalize(model));
     });
     $('script-go-montage').disabled = !onMontage;
-    $('script-go-montage').addEventListener('click', () => {
+    function applyToMontage() {
       persist();
       const next = normalize(model);
       if (new TextEncoder().encode(JSON.stringify(next)).byteLength > 256 * 1024) {
         status.textContent = '脚本内容超过工程上限，请缩短后再进入混剪。';
-        return;
+        return false;
       }
       onMontage?.(next);
-    });
+      return true;
+    }
+    $('script-go-montage').addEventListener('click', applyToMontage);
     $('script-content-tab').addEventListener('click', () => switchTab('narration'));
     $('script-text-group-tab').addEventListener('click', () => switchTab('textGroups'));
     for (const mode of ['whole', 'segmented']) {
@@ -320,7 +327,9 @@
     renderRows();
 
     return {
+      applyToMontage,
       getModel: () => normalize(model),
+      flush: () => !pendingSave || persist(),
       restore(value) {
         model = normalize(value);
         title.value = model.title;

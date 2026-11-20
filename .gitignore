@@ -10,4 +10,5 @@
 *.key
 /runtime/
 /tools/ffmpeg*/
+/dist/
 /*.zip

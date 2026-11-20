@@ -232,6 +232,11 @@
       say('');
       update();
     });
-    return { open };
+    function hasUnsavedChanges() {
+      return Boolean(dialog.open && session?.ready && (session.saving || session.testing ||
+        provider.value !== session.provider || address.value.trim() !== (fixedAddress(session.provider) || session.baseUrl) ||
+        password.value.trim() || clearKey.checked));
+    }
+    return { open, hasUnsavedChanges };
   };
 })();

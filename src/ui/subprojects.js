@@ -40,6 +40,14 @@ function createSubprojects({ shots, serialize, revive,voiceIO }) {
     const own=active.localVoice,whole=own.whole??mainVoice.whole??[];
     if(!same(whole,before.whole) || before.segments.some((row)=>!same(row.items,own.segments.get(shots[row.index])??mainVoice.segments.get(shots[row.index])??[])))showVoice();
   }
+  function reorderVoiceFollows(previousShots) {
+    if (!projects.length) return;
+    const positions = new Map(shots.map((shot,index) => [shot,index]));
+    for (const voice of [mainVoice, ...projects.map((project) => project.localVoice)]) {
+      if (voice?.whole) voice.whole = voice.whole.map((track) => Number.isInteger(track?.follow)
+        ? {...track, follow:positions.get(previousShots[track.follow])} : track);
+    }
+  }
   const snapshot = (shot) => structuredClone(shot.map(serialize));
   function replace(shot, clips) { shot.splice(0, shot.length, ...clips.map((row) => revive(row))); }
 
@@ -127,7 +135,7 @@ function createSubprojects({ shots, serialize, revive,voiceIO }) {
     categories=new WeakMap((data?.categories??[]).map(({index,category})=>[shots[index],category]));
     if (active) for (const shot of shots) if (!main.has(shot)) main.set(shot, snapshot(shot));
   }
-  return { select, create, revert, applyFallbacks, removeCandidate, removeMaterialReferences, pack, restore, fill, syncVoices, category:(shot)=>categories.get(shot),
+  return { select, create, revert, applyFallbacks, removeCandidate, removeMaterialReferences, pack, restore, fill, syncVoices, reorderVoiceFollows, category:(shot)=>categories.get(shot),
     inheritsVoice(shot) { return Boolean(active && (shot ? !active.localVoice?.segments.has(shot) : !active.localVoice?.whole)); },
     get projects() { return projects; }, get active() { return active; },
     ready(project) {

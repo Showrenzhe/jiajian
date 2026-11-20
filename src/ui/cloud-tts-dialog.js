@@ -22,7 +22,7 @@
           <p id="cloud-tts-voice-hint" class="cloud-tts-muted"></p>
           <div id="cloud-tts-catalog" hidden>
             <input id="cloud-tts-search" type="search" aria-label="搜索全部音色" placeholder="搜索名称、描述或音色 ID" maxlength="256">
-            <div id="cloud-tts-filters" aria-label="音色筛选">
+            <div id="cloud-tts-filters" role="group" aria-label="音色筛选">
               <button type="button" data-filter="all">全部</button><button type="button" data-filter="zh">中文</button><button type="button" data-filter="female">女声</button><button type="button" data-filter="male">男声</button><button type="button" data-filter="favorites">收藏</button>
             </div>
           </div>
@@ -171,7 +171,8 @@
       $('options').disabled = busy || state.sampling || state.loadingVoices || !state.configured;
       $('source').disabled = busy;
       $('more').hidden = !state.breeze || !state.next;
-      $('more').disabled = busy || state.loadingVoices || Boolean(state.browsing);
+      $('more').disabled = busy || state.loadingVoices;
+      $('more').setAttribute('aria-disabled', String($('more').disabled || Boolean(state.browsing)));
       $('more').textContent = state.browsing ? '正在加载…' : '加载更多音色';
       $('close').disabled = busy;
       $('open-settings').hidden = typeof openSettings !== 'function';
@@ -295,7 +296,7 @@
         }
         return row;
       }));
-      if (state.breeze && state.configured && !voices.length) $('voices').append(element('p', '没有匹配的音色'));
+      if (state.breeze && state.configured && !voices.length && !state.browsing) $('voices').append(element('p', '没有匹配的音色'));
       for (const button of $('filters').children) button.setAttribute('aria-pressed', String(button.dataset.filter === state.filter));
     }
 
@@ -354,6 +355,7 @@
       state.voiceRequest = request;
       state.loadingVoices = true;
       state.browsing = false;
+      $('voices').removeAttribute('aria-busy');
       $('service').textContent = '正在检查云端配音设置…';
       update();
       try {
@@ -394,43 +396,61 @@
       }
     }
 
-    async function browse(append = false) {
+    async function browse(append = false, debounce = false) {
       const state = session;
-      if (!state?.configured || !state.breeze || state.working || (append && !state.next)) return;
+      if (!state?.configured || !state.breeze || state.working || (append && (!state.next || state.browsing))) return;
       const request = Symbol();
       state.voiceRequest = request;
       state.browsing = true;
-      if (!append) state.next = null;
+      if (!append) {
+        state.next = null;
+        state.visible = [];
+        renderVoices(state);
+      }
+      $('voices').setAttribute('aria-busy', 'true');
+      $('service').textContent = append ? '正在加载更多音色…' : '正在筛选音色…';
       update();
       try {
+        if (debounce) {
+          await new Promise(resolve => setTimeout(resolve, 300));
+          if (session !== state || state.voiceRequest !== request) return;
+        }
         const reply = await listVoices({ ...(append ? state.next : {}), search: $('search').value.trim(), filter: state.filter });
         if (session !== state || state.voiceRequest !== request) return;
         const ids = new Set(append ? state.visible : []);
+        const previousCount = ids.size;
+        const focused = document.activeElement;
+        const focusedVoice = focused.closest('.cloud-tts-voice-row')?.querySelector('input').value;
         for (const voice of reply.voices) { state.voices.set(voice.id, voice); ids.add(voice.id); }
         state.visible = [...ids];
         state.next = reply.next;
+        state.browsing = false;
         $('service').textContent = '可用音色 · ' + (reply.total ?? ids.size);
         renderVoices(state);
         if (!append) $('voices').scrollTop = 0;
-        say('');
+        else if (focused === $('more')) {
+          const choices = $('voices').querySelectorAll('input');
+          const next = choices[previousCount] || (!state.next ? choices[choices.length - 1] || $('search') : null);
+          next?.focus();
+        } else if (focusedVoice) {
+          const input = Array.from($('voices').querySelectorAll('input')).find(item => item.value === focusedVoice);
+          (focused.matches('button') ? input?.closest('.cloud-tts-voice-row').querySelector('button') : input)?.focus();
+        }
       } catch (error) {
-        if (session === state && state.voiceRequest === request) say(error.message || '音色加载失败。', 'error');
+        if (session === state && state.voiceRequest === request) {
+          $('service').textContent = (error.message || '音色加载失败。') + (append ? ' 可再次加载更多音色。' : ' 可重新选择筛选项重试。');
+        }
       } finally {
-        if (session === state && state.voiceRequest === request) { state.browsing = false; update(); }
+        if (session === state && state.voiceRequest === request) {
+          state.browsing = false;
+          $('voices').removeAttribute('aria-busy');
+          update();
+        }
       }
     }
-    let searchTimer;
-    $('search').addEventListener('input', () => {
-      clearTimeout(searchTimer);
-      const state = session;
-      state.voiceRequest = Symbol();
-      state.next = null;
-      update();
-      searchTimer = setTimeout(() => { if (session === state) browse(); }, 300);
-    });
+    $('search').addEventListener('input', () => browse(false, true));
     $('filters').addEventListener('click', (event) => {
       if (!event.target.dataset.filter || !session) return;
-      clearTimeout(searchTimer);
       session.filter = event.target.dataset.filter;
       browse();
     });

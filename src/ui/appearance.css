@@ -1,43 +1,8 @@
-/* Animate the gradient stops themselves so the wallpaper stays continuous. */
-@property --wallpaper-start { syntax: "<color>"; inherits: true; initial-value: #d9e3eb; }
-@property --wallpaper-end { syntax: "<color>"; inherits: true; initial-value: #f6f7f8; }
+@property --appearance-mix { syntax: "<percentage>"; inherits: true; initial-value: 0%; }
 
-html[data-theme-changing] {
-  --appearance-duration: 240ms;
-  --appearance-easing: cubic-bezier(.42, 0, .32, 1);
-  transition-property: --wallpaper-start, --wallpaper-end, background-color, color;
-  transition-duration: var(--appearance-duration);
-  transition-timing-function: var(--appearance-easing);
-}
-
-/* Transition the paint of interface elements. Layout, playback and media pixels
-   keep updating normally, including when a second selection reverses the fade. */
-html[data-theme-changing] :where(
-  body, main, nav, section, aside, dialog, header, footer, fieldset, [popover],
-  label, legend, h1, h2, h3, p, output, small, strong, button, input, select, textarea, th, td,
-  [role="tabpanel"], [role="tablist"], [role="toolbar"], [role="status"],
-  .work-area, .home-content, .home-hero-actions, .draft-search-box, .draft-views, .draft-status,
-  .nav-selection-travel, .script-workspace-body, .empty, .viewer.preview-stage,
-  .panel, .panel-layout-pane, .card, .tag, .toolbar, .track-toolbar, .workbench-actions,
-  .timeline-position, .settings-grid, .editor-output,
-  .material-search-box, .sequence-canvas, .sequence-head, .sequence-row,
-  .sequence-ruler, .sequence-empty, .inspector-tabs
-), html[data-theme-changing] dialog::backdrop {
-  transition-property: background-color, color, border-color, outline-color, box-shadow;
-  transition-duration: var(--appearance-duration);
-  transition-timing-function: var(--appearance-easing);
-}
-html[data-theme-changing] .brand-logo {
-  transition: filter var(--appearance-duration) var(--appearance-easing);
-}
-
-@media (prefers-reduced-motion: reduce), (forced-colors: active) {
-  html[data-theme-changing] { --appearance-duration: 0s; }
-  html[data-theme-changing], html[data-theme-changing] *, html[data-theme-changing] ::before,
-  html[data-theme-changing] ::after, html[data-theme-changing] dialog::backdrop {
-    transition-duration: 0s !important;
-  }
-}
+/* Ordinary hover transitions must not interpolate ink or fills across palettes. */
+html[data-theme-changing] button { transition-property: scale !important; }
+html[data-theme-changing] .p-switch > input + span { transition-property: none; }
 
 #appearance-settings {
   padding-block-end: 20px;

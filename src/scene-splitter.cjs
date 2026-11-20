@@ -14,8 +14,7 @@ const minSceneSeconds = 0.1;
 function executablePath() {
   const candidates = [
     process.env.SUPERDIR_REPLICA_SCENEDETECT,
-    path.join(__dirname, '..', 'vendor', 'scenedetect', 'scenedetect.exe'),
-    process.resourcesPath && path.join(process.resourcesPath, 'vendor', 'scenedetect', 'scenedetect.exe'),
+    require('./vendor-path.cjs')('scenedetect', 'scenedetect.exe'),
   ].filter(Boolean);
   return candidates.find((file) => path.isAbsolute(file) && require('node:fs').existsSync(file)) ?? 'scenedetect.exe';
 }

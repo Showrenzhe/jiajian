@@ -8,14 +8,13 @@ const path = require('node:path');
 const { Transform } = require('node:stream');
 const { pipeline } = require('node:stream/promises');
 
-const modelDirectory = [path.join(__dirname, '..', 'vendor', 'foreground'),
-  process.resourcesPath && path.join(process.resourcesPath, 'vendor', 'foreground')].find((folder) => folder && existsSync(path.join(folder, 'foreground.exe')));
+const modelDirectory = require('./vendor-path.cjs')('foreground');
 const frameBytes = 320 * 320;
 const ffmpeg = process.env.SUPERDIR_REPLICA_FFMPEG || 'ffmpeg';
 
 async function createForeground(asset, directory, { signal, onProgress = () => {} } = {}) {
   if (!['image', 'video'].includes(asset?.kind) || !path.isAbsolute(asset.path)) throw new Error('请选择本地图片或视频进行抠像。');
-  if (!modelDirectory || process.platform !== 'win32' || process.arch !== 'x64') throw new Error('离线抠像需要 Windows x64 版佳剪及其 foreground 模型目录。');
+  if (!existsSync(path.join(modelDirectory, 'foreground.exe')) || process.platform !== 'win32' || process.arch !== 'x64') throw new Error('离线抠像需要 Windows x64 版佳剪及其 foreground 模型目录。');
   signal?.throwIfAborted();
   const stats = await fs.stat(asset.path);
   const hash = createHash('sha256').update(JSON.stringify(['u2netp-1', asset.path, stats.size, stats.mtimeMs])).digest('hex').slice(0, 24);

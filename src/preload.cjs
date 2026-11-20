@@ -11,10 +11,11 @@ async function invoke(channel, value) {
 let draftCloseListener;
 function onBeforeDraftClose(callback) {
   if (typeof callback !== 'function' || draftCloseListener) throw new Error('草稿关窗回调无效。');
-  const listener = async (_event, token) => {
+  const listener = async (_event, token, purpose) => {
     let ok = false;
-    try { ok = await callback() === true; } catch { /* Keep the editor open on save failure. */ }
-    await invoke('workbench:complete-draft-close', { token, ok }).catch(() => {});
+    let reason;
+    try { ok = await callback(purpose) === true; } catch (error) { reason = error?.message; }
+    await invoke('workbench:complete-draft-close', { token, ok, reason }).catch(() => {});
   };
   draftCloseListener = listener;
   ipcRenderer.on('workbench:before-draft-close', listener);
@@ -26,6 +27,15 @@ function onBeforeDraftClose(callback) {
 }
 
 contextBridge.exposeInMainWorld('workbench', {
+  getUpdate: () => invoke('workbench:get-update'),
+  checkUpdate: () => invoke('workbench:check-update'),
+  downloadUpdate: () => invoke('workbench:download-update'),
+  installUpdate: () => invoke('workbench:install-update'),
+  openUpdatePage: () => invoke('workbench:open-update-page'),
+  openInstalledApps: () => invoke('workbench:open-installed-apps'),
+  onUpdate: (callback) => {
+    ipcRenderer.on('workbench:update-state', (_event, state) => callback(state));
+  },
   setWindowAppearance: (theme) => invoke('workbench:window-appearance', theme),
   history: () => invoke('workbench:history'),
   renameOutputs: (files,prefix) => invoke('workbench:rename-outputs',{files,prefix}),

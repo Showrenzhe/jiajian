@@ -82,7 +82,7 @@ window.mountEditTimeline = function (host, ctx) {
     form.append(head, body, foot);
     wrapper.append(form);
     document.body.append(wrapper);
-    wrapper.addEventListener('close', () => wrapper.remove(), {once: true});
+    wrapper.addEventListener('close', () => window.afterDialogExit(wrapper), {once: true});
     function field(name, control) {
       const label = el('label');
       label.append(el('span', '', name), control);
@@ -101,7 +101,7 @@ window.mountEditTimeline = function (host, ctx) {
     return {wrapper, form, field, body, foot, save, message};
   }
   let playTime = 0, fit = null, refreshFrame, lastState, lastKey;
-  let focusShot, focusClip, voiceTarget, rowDrag;
+  let focusShot, focusClip, voiceTarget, shotDrag, refocusShot;
   let timeScale = 60, totalTime = 0, shotTimes = [], widths = [];
   const standardScales = [16, 32, 60, 100, 180];
   let zoomScales = standardScales, manualScale = 60, zoomAnchor;
@@ -292,9 +292,113 @@ window.mountEditTimeline = function (host, ctx) {
     d.save(()=>{s.pack.textMode=mode.value; s.pack.textSelection=selection.value;});
     d.wrapper.showModal();
   }
+  function updateShotDrop() {
+    const drag=shotDrag;
+    if (!drag?.active) return;
+    const viewport=host.getBoundingClientRect(), bounds=drag.strip.getBoundingClientRect();
+    const inside=drag.y>=bounds.top && drag.y<=bounds.bottom && drag.x>=viewport.left && drag.x<=viewport.right;
+    drag.marker.hidden=!inside;
+    drag.slot=undefined;
+    if (!inside) return;
+    const left=viewport.left+drag.strip.previousElementSibling.offsetWidth;
+    const time=(Math.max(left,drag.x)-bounds.left)/timeScale;
+    const index=shotTimes.findIndex((start,i)=>time<start+widths[i]/2);
+    drag.slot=index<0 ? widths.length : index;
+    const edge=(shotTimes[drag.slot] ?? totalTime)*timeScale;
+    drag.marker.style.left=Math.max(0,Math.min(bounds.width-3,edge-1))+'px';
+  }
+  function scrollShotDrag() {
+    const drag=shotDrag;
+    if (!drag?.active) return;
+    const bounds=host.getBoundingClientRect(), strip=drag.strip.getBoundingClientRect();
+    if (drag.y>=strip.top && drag.y<=strip.bottom) {
+      const left=bounds.left+drag.strip.previousElementSibling.offsetWidth;
+      const step=drag.x<left+20 ? drag.x-left-20 : Math.max(0,drag.x-bounds.right+20);
+      if (step) {
+        host.scrollLeft+=Math.sign(step)*Math.min(36,Math.ceil(Math.abs(step)*1.8));
+        updateShotDrop();
+      }
+    }
+    drag.frame=requestAnimationFrame(scrollShotDrag);
+  }
+  function finishShotDrag(commit=false) {
+    const drag=shotDrag;
+    if (!drag) return;
+    shotDrag=undefined;
+    cancelAnimationFrame(drag.frame);
+    drag.marker.hidden=true;
+    drag.strip.classList.remove('reordering');
+    drag.button.classList.remove('shot-drag-source');
+    if (drag.button.hasPointerCapture(drag.id)) drag.button.releasePointerCapture(drag.id);
+    if (commit && drag.active && drag.slot!==undefined) {
+      const to=drag.slot>drag.from ? drag.slot-1 : drag.slot;
+      if (ctx.move(drag.shot,to)) refocusShot=drag.shot;
+    }
+  }
+  window.addEventListener('keydown',(event)=>{
+    if (event.key==='Escape' && resizeDrag && !event.isComposing) {
+      event.preventDefault();event.stopPropagation();
+      endResize(false);
+      return;
+    }
+    if (event.key==='Escape' && shotDrag) {
+      event.preventDefault();event.stopPropagation();
+      shotDrag.cancelled=true;shotDrag.active=false;
+      shotDrag.marker.hidden=true;shotDrag.strip.classList.remove('reordering');
+      shotDrag.button.classList.remove('shot-drag-source');
+      cancelAnimationFrame(shotDrag.frame);
+    }
+  },true);
+  window.addEventListener('blur',()=>finishShotDrag());
+  function bindShotStrip(strip, order) {
+    const marker=el('i','shot-insert-marker');
+    marker.hidden=true;marker.setAttribute('aria-hidden','true');strip.prepend(marker);
+    strip.onpointerdown=(event)=>{
+      const button=event.target.closest('[data-reorder-shot]');
+      if (!button || order.length<2 || ctx.busy() || event.button!==0 || !event.isPrimary
+          || event.ctrlKey || event.metaKey || event.shiftKey || event.altKey) return;
+      const from=Number(button.dataset.dropShot);
+      shotDrag={strip,marker,button,from,shot:order[from],id:event.pointerId,startX:event.clientX};
+      button.setPointerCapture(event.pointerId);
+    };
+    strip.onkeydown=(event)=>{
+      const button=event.target.closest('[data-reorder-shot]');
+      if (!button || !event.altKey || event.ctrlKey || event.metaKey || event.shiftKey
+          || !['ArrowLeft','ArrowRight'].includes(event.key)) return;
+      event.preventDefault();event.stopPropagation();
+      const index=Number(button.dataset.dropShot), shot=order[index];
+      if (ctx.move(shot,index+(event.key==='ArrowLeft' ? -1 : 1))) refocusShot=shot;
+    };
+  }
+  window.addEventListener('pointermove',(event)=>{
+    const drag=shotDrag;
+    if (!drag || drag.cancelled || drag.id!==event.pointerId) return;
+    if (!(event.buttons&1)) {finishShotDrag();return;}
+    drag.x=event.clientX;drag.y=event.clientY;
+    if (!drag.active) {
+      if (Math.abs(drag.x-drag.startX)<5) return;
+      drag.active=true;drag.strip.classList.add('reordering');drag.button.classList.add('shot-drag-source');
+      draftTransport.stop();ctx.pause();
+      drag.frame=requestAnimationFrame(scrollShotDrag);
+    }
+    updateShotDrop();
+  },true);
+  window.addEventListener('pointerup',(event)=>{
+    if (shotDrag?.id!==event.pointerId) return;
+    shotDrag.x=event.clientX;shotDrag.y=event.clientY;updateShotDrop();
+    if (shotDrag.active || shotDrag.cancelled) {
+      const ignoreClick=(click)=>{click.preventDefault();click.stopPropagation();};
+      window.addEventListener('click',ignoreClick,true);
+      setTimeout(()=>window.removeEventListener('click',ignoreClick,true),0);
+    }
+    finishShotDrag(true);
+  },true);
+  window.addEventListener('pointercancel',(event)=>{if (shotDrag?.id===event.pointerId) finishShotDrag();},true);
   function draw() {
     refreshFrame=undefined;
     if (!host.clientWidth) return;
+    finishShotDrag();
+    endResize(false);
     const s=ctx.state();
     lastState=s;
     const index=s.shots.indexOf(focusShot);
@@ -323,11 +427,12 @@ window.mountEditTimeline = function (host, ctx) {
         handle.setAttribute('role','separator');
         handle.setAttribute('aria-orientation','horizontal');
         handle.setAttribute('aria-label',label+'轨道高度');
-        handle.title='上下拖动调整轨高，双击恢复默认';
+        handle.title='上下拖动或按方向键调整轨高，Esc 取消拖动，双击或按 Home 恢复默认';
         handle.onpointerdown=(event)=>{
           if(event.button!==0 || resizeDrag || scrubPointer!=null) return;
           event.preventDefault();
-          resizeDrag={key,node,y:event.clientY,height:node.offsetHeight,id:event.pointerId};
+          resizeDrag={key,node,handle,y:event.clientY,height:node.offsetHeight,id:event.pointerId,
+            savedHeight:heights.get(key),wasFolded:folded.has(key)};
           if(node.getAnimations().some((animation)=>animation.transitionProperty==='height')) {
             resizeLane(node,key,resizeDrag.height);
           }
@@ -426,16 +531,17 @@ window.mountEditTimeline = function (host, ctx) {
       };
       const b=block(strip,shotTimes[i],widths[i],(cfg.name || '分镜 '+String(i+1).padStart(2,'0'))+' · '+summary(widths[i]),()=>{
         if(!shot) openShot();
-      },cfg.description || '双击编辑分镜，拖动调整顺序');
+      },[cfg.description,shot ? '左右拖动调整顺序，Alt＋左右方向键移动，双击编辑分镜' : '添加分镜'].filter(Boolean).join(' · '));
       if(shot) {
         selection.bind(b,shot,()=>removeItem(s.shots,shot),false);
         b.ondblclick=openShot;
+        b.dataset.reorderShot='';
+        b.setAttribute('aria-keyshortcuts','Alt+ArrowLeft Alt+ArrowRight');
       }
-      b.dataset.dropShot=String(i);b.draggable=!!shot;
+      b.dataset.dropShot=String(i);
       if(i===0 && shot) b.oncontextmenu=(event)=>{event.preventDefault();ctx.firstCover();};
-      b.ondragstart=(e)=>{rowDrag=shot;e.dataTransfer.setData('application/x-jiajian-shot',String(i)); e.dataTransfer.effectAllowed='move';};
-      b.ondragend=()=>{rowDrag=undefined;};
     }
+    bindShotStrip(strip,[...s.shots]);
     function voiceBlock(lane,voice,from,span) {
       const asset=voice.asset;
       const si=s.shots.indexOf(voice.shot), delay=si>=0 ? s.voiceOffset(si,voice.row) : 0;
@@ -583,7 +689,7 @@ window.mountEditTimeline = function (host, ctx) {
     const cursor=el('i','sequence-cursor');cursor.hidden=!ctx.showAxis();canvas.append(cursor);
     const hover=el('i','sequence-hover');hover.hidden=true;canvas.append(hover);
     function eventTime(e) {return Math.max(0,Math.min(totalTime,(e.clientX-ruler.getBoundingClientRect().left)/timeScale));}
-    canvas.onpointermove=(e)=>{hover.hidden=scrubPointer!=null || resizeDrag!=null || !ctx.showAxis();hover.style.left=(96+eventTime(e)*timeScale)+'px';};
+    canvas.onpointermove=(e)=>{hover.hidden=shotDrag?.active || scrubPointer!=null || resizeDrag!=null || !ctx.showAxis();hover.style.left=(96+eventTime(e)*timeScale)+'px';};
     canvas.onpointerleave=()=>{hover.hidden=true;};
     canvas.onpointerdown=(e)=>{
       if(e.button!==0 || scrubPointer!=null || resizeDrag || (!ruler.contains(e.target) && e.target!==cursor)) return;
@@ -598,6 +704,17 @@ window.mountEditTimeline = function (host, ctx) {
     thumbObserver.disconnect();thumbQueue.length=0;host.replaceChildren(canvas);
     if(restoreFocus && document.activeElement===document.body) host.focus({preventScroll:true});
     selection.attach(canvas);
+    if (refocusShot) {
+      const moved=strip.querySelector('[data-drop-shot="'+s.shots.indexOf(refocusShot)+'"]');
+      moved?.focus({preventScroll:true});
+      if (moved) {
+        selection.selectOnly(refocusShot);
+        const r=moved.getBoundingClientRect(), bounds=host.getBoundingClientRect(), left=bounds.left+strip.previousElementSibling.offsetWidth;
+        if (r.left<left) host.scrollLeft+=r.left-left;
+        else if (r.right>bounds.right) host.scrollLeft+=Math.min(r.left-left,r.right-bounds.right);
+      }
+      refocusShot=undefined;
+    }
     for (const thumb of canvas.querySelectorAll('[data-thumb]')) thumbObserver.observe(thumb);
     if (zoomAnchor) {
       host.scrollLeft=zoomAnchor.time*timeScale-zoomAnchor.offset;
@@ -636,6 +753,22 @@ window.mountEditTimeline = function (host, ctx) {
       node.style.setProperty('--lane-height',heights.get(key)+'px');
     }
     setFold(node,key,compact);
+    ctx.scroll();
+  }
+  function endResize(commit) {
+    if (!resizeDrag) return;
+    const {node,key,handle,id,savedHeight,wasFolded}=resizeDrag;
+    resizeDrag=undefined;
+    if (handle.hasPointerCapture(id)) handle.releasePointerCapture(id);
+    if (commit) return;
+    if (savedHeight===undefined) {
+      heights.delete(key);
+      node.style.removeProperty('--lane-height');
+    } else {
+      heights.set(key,savedHeight);
+      node.style.setProperty('--lane-height',savedHeight+'px');
+    }
+    setFold(node,key,wasFolded);
     ctx.scroll();
   }
   function scrubAt(x) {
@@ -679,7 +812,7 @@ window.mountEditTimeline = function (host, ctx) {
     }
     if(resizeDrag?.id===event.pointerId) {
       const {node,key,height,y}=resizeDrag;
-      if(event.clientY!==y) resizeLane(node,key,height+event.clientY-y);
+      resizeLane(node,key,height+event.clientY-y);
     } else if(event.pointerId===scrubPointer) {
       scrubX=event.clientX;
       if(scrubFrame===undefined) scrubFrame=requestAnimationFrame(frameScrub);
@@ -692,12 +825,12 @@ window.mountEditTimeline = function (host, ctx) {
       scrubPointer=undefined;
       cancelAnimationFrame(scrubFrame);scrubFrame=undefined;
     }
-    if(resizeDrag?.id===event.pointerId) resizeDrag=undefined;
+    if(resizeDrag?.id===event.pointerId) endResize(event.type==='pointerup');
     if(host.hasPointerCapture(event.pointerId)) host.releasePointerCapture(event.pointerId);
   }
   for(const type of ['pointerup','pointercancel']) window.addEventListener(type,endDrag,true);
   window.addEventListener('blur',()=>{
-    scrubPointer=undefined;resizeDrag=undefined;cancelAnimationFrame(scrubFrame);scrubFrame=undefined;
+    scrubPointer=undefined;endResize(false);cancelAnimationFrame(scrubFrame);scrubFrame=undefined;
   });
   function syncPlayer(clip,sourceTime) {
     if(draftTransport.playing()) return;
@@ -720,21 +853,20 @@ window.mountEditTimeline = function (host, ctx) {
   function refresh(key) {
     if(key!==undefined && lastKey!==undefined && key!==lastKey) draftTransport.stop();
     if(key!==undefined && key===lastKey) return;
-    lastKey=key;
+    if (key!==undefined) lastKey=key;
     if(refreshFrame===undefined) refreshFrame=requestAnimationFrame(draw);
   }
   host.ondragover=(e)=>{
     const b=e.target.closest('[data-drop-shot]');
-    if (b && (rowDrag || e.dataTransfer.types.includes('application/x-jiajian-scene-cut'))) {
-      e.stopPropagation(); e.preventDefault();e.dataTransfer.dropEffect=rowDrag?'move':'copy';
+    if (b && e.dataTransfer.types.includes('application/x-jiajian-scene-cut')) {
+      e.stopPropagation(); e.preventDefault();e.dataTransfer.dropEffect='copy';
     }
   };
   host.ondrop=(e)=>{
     const b=e.target.closest('[data-drop-shot]');
     if(!b) return;
     const index=Number(b.dataset.dropShot);
-    if(rowDrag) {e.preventDefault();e.stopPropagation();ctx.move(rowDrag,index);rowDrag=undefined;}
-    else if(e.dataTransfer.types.includes('application/x-jiajian-scene-cut')) {e.preventDefault();e.stopPropagation();ctx.dropScene(e,index);}
+    if(e.dataTransfer.types.includes('application/x-jiajian-scene-cut')) {e.preventDefault();e.stopPropagation();ctx.dropScene(e,index);}
   };
   let observedWidth;
   new ResizeObserver(([entry])=>{

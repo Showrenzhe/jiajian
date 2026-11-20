@@ -1,5 +1,7 @@
 'use strict';
 
+const { clickVisible } = require('./desktop-input.cjs');
+
 const assert = require('node:assert/strict');
 const { once } = require('node:events');
 const { mkdirSync, mkdtempSync } = require('node:fs');
@@ -44,6 +46,7 @@ function fixtureServer(wave, captions, fixtureKey, seed) {
         assert.equal(request.headers.authorization, undefined);
         const url = new URL(request.url, 'http://localhost');
         if (url.pathname === '/breeze/v1/voices') {
+          if (url.searchParams.get('gender') === 'male') return response.writeHead(400).end();
           const second = url.searchParams.has('next_page_token') || url.searchParams.has('search');
           return json({ voices: [{ voice_id: second ? 'voc_two' : 'voc_one', name: second ? '晚晴' : '小风', language_code: 'zh', preview_url: '/preview.wav' }],
             total: 2, has_more: !second, next_page_token: second ? null : 'cursor-A' });
@@ -218,7 +221,7 @@ async function run() {
     await click('#app-settings');
     await checkSettings(breezeEndpoint.href, false);
     await click('#cloud-settings-cancel');
-    await click('#home-import');
+    await clickVisible(win.webContents, '#home-import');
     await waitFor('document.querySelectorAll("#shots .asset").length === 1 && document.querySelector("#inspector-panel-visual").getClientRects().length > 0', '应导入测试画面并默认显示画面属性');
     assert.equal(await js('document.querySelector("#cloud-narration").getClientRects().length'), 0, '口播配音应归在口播标签页');
     await click('#inspector-tab-narration');
@@ -241,8 +244,16 @@ async function run() {
     assert.equal((await js('window.workbench.cloudTtsSettings()')).hasApiKey,false,'测试连接不会保存或替换密钥');
     await click('#cloud-settings-save');
     await waitFor('document.querySelector("#cloud-tts-voice-1")?.value === "voc_one"', '填入 Key 后应显示账号音色');
-    await click('#cloud-tts-more');
+    await clickVisible(win.webContents, '#cloud-tts-more');
     await waitFor('document.querySelectorAll(".cloud-tts-voice").length === 2', '音色目录应展示下一页');
+    assert.equal(await js('document.activeElement.value'), 'voc_two', '翻页后可直接操作新增音色');
+    const failedFilter = '#cloud-tts-filters [data-filter="male"]';
+    await clickVisible(win.webContents, failedFilter);
+    await waitFor('document.querySelector("#cloud-tts-service").textContent.includes("重试")', '目录错误应提供重试入口');
+    assert.equal(await js('document.querySelector("#cloud-tts-filters [aria-pressed=true]").dataset.filter'), 'male');
+    assert.equal(await js('document.querySelectorAll(".cloud-tts-voice").length'), 0, '失败时不能展示前一筛选结果');
+    await clickVisible(win.webContents, '#cloud-tts-filters [data-filter="all"]');
+    await waitFor('document.querySelector(".cloud-tts-voice")?.value === "voc_one"', '可重新筛选恢复目录');
     await setFields([['#cloud-tts-search', '晚晴']]);
     await waitFor('document.querySelectorAll(".cloud-tts-voice").length === 1 && document.querySelector(".cloud-tts-voice").value === "voc_two"', '搜索应覆盖整个账号音色目录');
     await click(voiceChoice('voc_two'));
@@ -399,7 +410,9 @@ async function run() {
     open.push({ title: '选择分镜素材', file: video });
     await click('#import-materials');
     await waitFor('document.querySelectorAll("#shots .asset").length === 2', '应为分段批次准备两个分镜');
-    await click('#tab-script');
+    await clickVisible(win.webContents, '#title-home');
+    await waitFor('document.querySelector(".app-frame").dataset.mode === "home"', '返回首页后应显示本地创作入口');
+    await clickVisible(win.webContents, '#tab-script');
     await waitFor('document.querySelectorAll(".script-dialogue").length > 0', '应打开脚本创作工作区');
     await click('#script-mode-segmented');
     await click('#script-import-dialogue');

@@ -1,0 +1,194 @@
+/* The native swatch paints the actual input value; its transparent padding
+   keeps the whole control clickable, including the space around the strip. */
+input[type="color"] {
+  appearance: none;
+  width: 42px;
+  height: 26px;
+  margin: 0;
+  padding: 0;
+  border: 0;
+  border-radius: 0;
+  background: transparent;
+  cursor: pointer;
+}
+input[type="color"]::-webkit-color-swatch-wrapper { padding: 6px 0; }
+input[type="color"]::-webkit-color-swatch {
+  border: 1px solid --appearance-color(#858a92, #828991);
+  border-radius: 0;
+  forced-color-adjust: none;
+}
+@media (forced-colors: active) {
+  input[type="color"]::-webkit-color-swatch { border-color: ButtonText; }
+}
+
+.color-wheel-panel {
+  position: fixed;
+  inset: auto;
+  margin: 0;
+  padding: 14px 16px 12px;
+  width: 294px;
+  max-width: calc(100vw - 16px);
+  max-height: calc(100dvh - 16px);
+  overflow: auto;
+  color: var(--ink);
+  background: var(--surface);
+  border: 1px solid var(--hairline);
+  border-radius: 14px;
+  box-shadow: var(--sheet-shadow), 0 2px 6px #0002;
+}
+.color-wheel-panel::backdrop { background: transparent; }
+.color-wheel-heading, .color-wheel-values {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+.color-wheel-heading { justify-content: space-between; }
+.color-wheel-heading h2 { margin: 0; font-size: 14px; font-weight: 600; }
+.color-wheel-panel button {
+  display: grid;
+  place-items: center;
+  width: 28px;
+  height: 28px;
+  padding: 0;
+  color: var(--secondary-ink);
+  background: var(--well);
+  border: 1px solid var(--hairline);
+}
+.color-wheel-panel button:hover { background: var(--control-hover); color: var(--ink); }
+.color-wheel-heading button { width: 23px; height: 23px; border-radius: 50%; font: 17px/1 system-ui; }
+.color-wheel-adjust {
+  display: grid;
+  grid-template-columns: 33px minmax(0, 1fr) 33px;
+  align-items: start;
+  gap: 11px;
+  margin-block: 18px 12px;
+}
+.color-wheel-disc {
+  position: relative;
+  align-self: center;
+  width: 100%;
+  aspect-ratio: 1;
+  border-radius: 50%;
+  background: conic-gradient(from -30deg in srgb, red, magenta, blue, cyan, lime, yellow, red);
+  box-shadow: inset 0 0 0 1px #0002;
+  cursor: crosshair;
+  touch-action: none;
+}
+.color-wheel-face {
+  position: absolute;
+  inset: 6%;
+  border-radius: 50%;
+  background: radial-gradient(closest-side in srgb, #fff, #fff0);
+  box-shadow: 0 0 0 1px rgb(35 39 45 / 32%), 0 0 0 2px rgb(255 255 255 / 28%);
+}
+.color-wheel-face::before, .color-wheel-face::after {
+  content: "";
+  position: absolute;
+  inset: 50% 0 auto;
+  height: 1px;
+  background: rgb(45 49 57 / 12%);
+}
+.color-wheel-face::after { transform: rotate(90deg); }
+.color-wheel-point {
+  position: absolute;
+  left: var(--wheel-x);
+  top: var(--wheel-y);
+  transform: translate(-50%, -50%);
+  width: 12px;
+  height: 12px;
+  background: var(--wheel-color);
+  border: 2px solid white;
+  border-radius: 50%;
+  box-shadow: 0 0 0 1px #15171c, 0 1px 3px #0008;
+  pointer-events: none;
+}
+.color-wheel-axis {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 1px;
+  margin: 0;
+  color: var(--secondary-ink);
+  font-size: 10px;
+  line-height: 1.4;
+  white-space: nowrap;
+}
+.color-wheel-axis input {
+  appearance: none;
+  writing-mode: vertical-lr;
+  direction: rtl;
+  width: 25px;
+  height: 132px;
+  margin: 3px 0 6px;
+  padding: 0;
+  border: none;
+  background: transparent;
+  cursor: ns-resize;
+}
+.color-wheel-axis input::-webkit-slider-runnable-track {
+  width: 9px;
+  border-radius: 8px;
+  box-shadow: inset 0 0 0 1px #0003;
+  background: linear-gradient(to bottom, var(--wheel-hue), #fff);
+}
+.color-wheel-axis [data-axis="v"]::-webkit-slider-runnable-track { background: linear-gradient(to bottom, var(--wheel-light), #000); }
+.color-wheel-axis input::-webkit-slider-thumb {
+  appearance: none;
+  width: 17px;
+  height: 6px;
+  margin-left: -4px;
+  border: 1px solid #404249;
+  border-radius: 4px;
+  background: white;
+  box-shadow: 0 1px 2px #0004;
+}
+.color-wheel-axis output { color: var(--ink); font-variant-numeric: tabular-nums; }
+.color-wheel-values { border-top: 1px solid var(--hairline); padding-top: 11px; }
+.color-wheel-sample {
+  width: 30px;
+  height: 27px;
+  border-radius: 6px;
+  border: 1px solid var(--hairline);
+  background: var(--wheel-color);
+}
+.color-wheel-code {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  flex: 1;
+  width: auto;
+  margin: 0;
+  color: var(--secondary-ink);
+  font-size: 10px;
+  font-weight: 600;
+}
+.color-wheel-code input, .color-wheel-rgb input {
+  width: 9ch;
+  min-width: 0;
+  height: 27px;
+  margin: 0;
+  padding: 3px 6px;
+  font: 12px/1.3 ui-monospace, Consolas, monospace;
+  color: var(--ink);
+  background: var(--well);
+  border: 1px solid var(--hairline);
+  border-radius: 5px;
+}
+.color-wheel-rgb {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 10px;
+  margin-top: 9px;
+}
+.color-wheel-rgb label {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin: 0;
+  font-size: 11px;
+  font-weight: 600;
+  color: var(--secondary-ink);
+}
+.color-wheel-rgb input { flex: 1; width: 0; }
+.color-wheel-values svg { width: 17px; height: 17px; }
+.color-wheel-disc, .color-wheel-sample, .color-wheel-axis input { forced-color-adjust: none; }

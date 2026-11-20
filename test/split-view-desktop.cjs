@@ -2,12 +2,13 @@
 
 const assert = require('node:assert/strict');
 const { once } = require('node:events');
-const { mkdirSync, mkdtempSync } = require('node:fs');
+const { mkdirSync, mkdtempSync, writeFileSync } = require('node:fs');
 const path = require('node:path');
 const { app } = require('electron');
 const { launchDesktop } = require('../src/desktop.cjs');
 
 app.disableHardwareAcceleration();
+app.setVersion(require('../package.json').version);
 app.on('web-contents-created', (_event, contents) => {
   contents.on('console-message', ({ level, message }) => { if (level === 'error') console.error(message); });
 });
@@ -22,6 +23,7 @@ async function run() {
   const settle = () => evaluate('new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve)))');
   const ids = ['materials', 'inspector', 'timeline'];
   const selectors = ['#materials-pane', '#montage-inspector', '#montage-pane', '.editor-player'];
+  const paneSelectors = Object.fromEntries([...ids, 'player'].map((id, index) => [id, selectors[index]]));
   const snapshot = () => evaluate(`Object.fromEntries(${JSON.stringify(selectors)}.map(selector =>
     [selector, document.querySelector(selector).getBoundingClientRect().toJSON()]))`);
   const visible = () => evaluate('[...document.querySelectorAll(".workspace-divider")].filter(el => el.checkVisibility()).length');
@@ -34,59 +36,60 @@ async function run() {
       const el = document.querySelector(${JSON.stringify(selector)});
       const r = el.getBoundingClientRect();
       const x = r.x + r.width / 2, y = r.y + r.height / 2;
-      return { x, y, hit: document.elementFromPoint(x, y) === el };
+      return { x, y, hit: el.contains(document.elementFromPoint(x, y)) };
     })()`);
     assert.ok(point.hit, selector + ' should receive input at the visible seam');
     return { x: point.x, y: point.y };
   }
   wc.debugger.attach();
   await wc.debugger.sendCommand('Emulation.setFocusEmulationEnabled', { enabled: true });
-  const mouse = (type, pos, fields) => wc.debugger.sendCommand('Input.dispatchMouseEvent', { type, ...pos, ...fields });
-  async function checkDivider(id, keyboard = false) {
-    const style = await evaluate(`(() => {
-      const handle = document.querySelector('[data-split="${id}"]');
-      const horizontal = handle.getAttribute('aria-orientation') === 'horizontal';
-      const line = getComputedStyle(handle, '::before');
-      const brush = document.createElement('canvas').getContext('2d');
-      brush.fillStyle = line.backgroundColor;
-      brush.fillRect(0, 0, 1, 1);
-      const [r, g, b, alpha] = brush.getImageData(0, 0, 1, 1).data;
-      return {
-        thickness: parseFloat(horizontal ? line.height : line.width),
-        grip: getComputedStyle(handle, '::after').content,
-        neutral: Math.max(r, g, b) - Math.min(r, g, b) < 48,
-        visible: alpha > 0,
-        focused: document.activeElement === handle,
-        outlined: getComputedStyle(handle).outlineStyle !== 'none',
-        forcedColors: matchMedia('(forced-colors: active)').matches,
-      };
+  const mouse = (type, pos, fields) => wc.debugger.sendCommand('Input.dispatchMouseEvent', {
+    type, ...pos, button: fields.buttons === 1 ? 'left' : 'none', ...fields,
+  });
+  async function checkHandlePaint(selector, keyboard = false) {
+    const visual = await evaluate(`(() => {
+      const handle = document.querySelector(${JSON.stringify(selector)});
+      const style = getComputedStyle(handle);
+      const paint = document.createElement('canvas').getContext('2d');
+      function painted(layer) {
+        paint.clearRect(0, 0, 1, 1);
+        paint.fillStyle = layer.backgroundColor;
+        paint.fillRect(0, 0, 1, 1);
+        return paint.getImageData(0, 0, 1, 1).data[3] > 0 || layer.backgroundImage !== 'none' || layer.boxShadow !== 'none';
+      }
+      const decoration = ['::before', '::after'].some(pseudo => {
+        const layer = getComputedStyle(handle, pseudo);
+        return !['none', 'normal'].includes(layer.content) && painted(layer);
+      });
+      return { marked: painted(style) || style.outlineStyle !== 'none' || decoration, focus: handle.matches(':focus-visible') };
     })()`);
-    assert.ok(['none', 'normal'].includes(style.grip), id + ' has no central grip');
-    assert.ok(style.visible, id + ' divider remains visible');
-    if (keyboard) {
-      assert.ok(style.focused && (style.outlined || style.thickness > 1), id + ' keyboard focus: ' + JSON.stringify(style));
-    } else {
-      assert.equal(style.thickness, 1, id + ' uses a one-pixel pointer divider');
-      assert.ok(style.forcedColors || style.neutral, id + ' pointer feedback uses a neutral line');
-    }
+    assert.equal(visual.marked, keyboard, selector + ' has a visible focus indicator only during keyboard use');
+    if (keyboard) assert.ok(visual.focus, selector + ' should have keyboard focus');
   }
-  async function move(id, distance, { offset = 0, cancel = false } = {}) {
+  async function move(id, distance, { offset = 0, cancel = false, checkPaint = false, capture } = {}) {
     const selector = `[data-split="${id}"]`;
     const pos = await center(selector);
     const axis = id === 'timeline' ? 'y' : 'x';
     pos[axis] += offset;
     const before = await snapshot();
     await mouse('mouseMoved', pos, {});
-    assert.ok(await evaluate(`document.elementFromPoint(${pos.x}, ${pos.y}).matches('${selector}')`), id + ' has a hit area on both sides of the line');
-    await checkDivider(id);
+    assert.ok(await evaluate(`document.elementFromPoint(${pos.x}, ${pos.y}).matches('${selector}:hover')`), id + ' receives hover on both sides of the gutter');
+    if (checkPaint) await checkHandlePaint(selector);
     await mouse('mousePressed', pos, { button: 'left', buttons: 1, clickCount: 1 });
     assert.ok(await evaluate(`document.querySelector('[data-split="${id}"]').hasPointerCapture(1)`), 'drag captures the pointer');
     const end = { ...pos };
     end[axis] += distance;
     await mouse('mouseMoved', end, { buttons: 1 });
     await settle();
-    await checkDivider(id);
-    joined(await snapshot());
+    if (checkPaint) {
+      assert.equal(await evaluate(`getComputedStyle(document.elementFromPoint(${end.x}, ${end.y})).cursor`), id === 'timeline' ? 'row-resize' : 'col-resize');
+      await checkHandlePaint(selector);
+    }
+    if (capture) {
+      const rect = await evaluate(`(() => { const {x, y, width, height} = document.querySelector('#editor-workspace').getBoundingClientRect(); return {x, y, width, height}; })()`);
+      writeFileSync(capture, (await wc.capturePage(rect, { stayHidden: true })).toPNG());
+    }
+    checkGutters(await snapshot());
     if (cancel) {
       near(size(await snapshot(), id), size(before, id) + distance * (id === 'materials' ? 1 : -1));
       await press('Escape');
@@ -127,48 +130,292 @@ async function run() {
     await click('#home-create');
     await settle();
   }
-  function joined(boxes) {
-    const preview = boxes['.editor-player'];
-    const inspector = boxes['#montage-inspector'];
-    const materials = boxes['#materials-pane'];
-    const timeline = boxes['#montage-pane'];
-    for (const [a, b] of [[materials.right, preview.left], [preview.right, inspector.left],
-      [materials.bottom, timeline.top], [preview.bottom, timeline.top], [inspector.bottom, timeline.top]]) {
-      assert.ok(Math.abs(a - b) < 1, `Detached pane edges at ${a} and ${b}`);
+  function checkGutters(boxes) {
+    const [bottom, ...top] = Object.values(boxes).sort((a, b) => b.top - a.top);
+    const [left, middle, right] = top.sort((a, b) => a.left - b.left);
+    const gutter = middle.left - left.right;
+    assert.ok(gutter >= 6 && gutter <= 8, 'The panels should have a compact visible gutter, got ' + gutter);
+    near(bottom.left, left.left);
+    near(bottom.right, right.right);
+    near(right.left - middle.right, gutter);
+    for (const box of top) {
+      near(box.top, left.top);
+      near(bottom.top - box.bottom, gutter);
     }
+    return gutter;
   }
   async function contained() {
     const boxes = await snapshot();
     const [width, height] = await evaluate('[innerWidth,innerHeight]');
     const preview = boxes['.editor-player'];
     for (const rect of Object.values(boxes)) assert.ok(rect.x >= 0 && rect.y >= 0 && rect.right <= width + 1 && rect.bottom <= height + 1);
-    assert.ok(preview.width >= 201 && preview.height >= 164);
-    joined(boxes);
+    assert.ok(preview.width >= 75 && preview.height >= 51);
+    checkGutters(boxes);
   }
   async function adjust() {
     await click('#panel-layout-toggle');
     await settle();
   }
   const editing = () => evaluate("document.querySelector('#panel-layout-toggle').getAttribute('aria-pressed') === 'true'");
-  function samePanes(boxes, expected) {
-    for (const selector of selectors) {
-      for (const prop of ['left', 'top', 'right', 'bottom']) near(boxes[selector][prop], expected[selector][prop]);
+  function sameBox(actual, expected, label) {
+    for (const prop of ['left', 'top', 'right', 'bottom']) {
+      assert.ok(Math.abs(actual[prop] - expected[prop]) <= 1.5,
+        `${label}.${prop} should be ${expected[prop]}, got ${actual[prop]}`);
     }
   }
-  async function dragSeam(pane, edge, distances, { cancel = false } = {}) {
-    const origin = await center(`.panel-layout-box[data-pane="${pane}"] [data-edge="${edge}"]`);
+  function samePanes(boxes, expected) {
+    for (const selector of selectors) sameBox(boxes[selector], expected[selector], selector);
+  }
+  const areaHandle = (side, kind) => `[data-side="${side}"][data-area-handle="${kind}"]`;
+  function checkDock(boxes, base, { left = false, right = false } = {}) {
+    const materials = boxes['#materials-pane'], player = boxes['.editor-player'];
+    const inspector = boxes['#montage-inspector'], timeline = boxes['#montage-pane'];
+    const gap = base['.editor-player'].left - base['#materials-pane'].right;
+    sameBox(player, base['.editor-player'], 'central player');
+    near(materials.bottom, left ? timeline.bottom : player.bottom);
+    near(inspector.bottom, right ? timeline.bottom : player.bottom);
+    near(timeline.left, left ? player.left : materials.left);
+    near(timeline.right, right ? player.right : inspector.right);
+    near(timeline.top, player.bottom + gap);
+    near(player.left - materials.right, gap);
+    near(inspector.left - player.right, gap);
+    near(timeline.bottom, base['#montage-pane'].bottom);
+  }
+  function checkRows(boxes, base, left, right) {
+    const player = base['.editor-player'], timeline = base['#montage-pane'];
+    const columns = [base['#materials-pane'], player, base['#montage-inspector']];
+    for (const [selector, col, state] of [['#materials-pane', columns[0], left], ['#montage-inspector', columns[2], right]]) {
+      sameBox(boxes[selector], { left: col.left, right: col.right, top: state === 'below' ? timeline.top : player.top,
+        bottom: state === 'above' ? player.bottom : timeline.bottom }, selector);
+    }
+    for (const [selector, row, extended] of [['.editor-player', player, 'below'], ['#montage-pane', timeline, 'above']]) {
+      sameBox(boxes[selector], { top: row.top, bottom: row.bottom,
+        left: left === extended ? columns[0].left : player.left,
+        right: right === extended ? columns[2].right : player.right }, selector);
+    }
+  }
+  async function checkSpanTargets() {
+    const issues = await evaluate(`(() => {
+      const errors = [];
+      const panes = [...document.querySelectorAll('.panel-layout-pane')].map(el => el.getBoundingClientRect());
+      for (const handle of document.querySelectorAll('.workspace-span-handle')) {
+        const r = handle.getBoundingClientRect();
+        const id = handle.dataset.areaHandle + '/' + handle.dataset.side;
+        if (!r.width || r.height < 12 || r.left < 0 || r.right > innerWidth) errors.push(id + ' outside window');
+        for (const pane of panes) {
+          const overlapX = Math.min(r.right, pane.right) - Math.max(r.left, pane.left);
+          const overlapY = Math.min(r.bottom, pane.bottom) - Math.max(r.top, pane.top);
+          if (overlapX > .5 && overlapY > .5) errors.push(id + ' covers editor content');
+        }
+        if (document.elementFromPoint(r.left + r.width / 2, r.top + r.height / 2) !== handle) errors.push(id + ' misses input');
+      }
+      return errors;
+    })()`);
+    assert.deepEqual(issues, [], 'span handles occupy only gutters or desktop margins');
+  }
+  async function pull(point, dx, dy, release = true) {
+    await mouse('mouseMoved', point, {});
+    await mouse('mousePressed', point, { button: 'left', buttons: 1, clickCount: 1 });
+    const end = { x: point.x + dx, y: point.y + dy };
+    await mouse('mouseMoved', end, { buttons: 1 });
+    if (release) await mouse('mouseReleased', end, { button: 'left', clickCount: 1 });
+    await settle();
+    return end;
+  }
+  function betweenBoxes(actual, from, to, label) {
+    for (const prop of ['left', 'top', 'width', 'height']) {
+      if (Math.abs(from[prop] - to[prop]) < 10) continue;
+      assert.ok(actual[prop] > Math.min(from[prop], to[prop]) && actual[prop] < Math.max(from[prop], to[prop]),
+        `${label}.${prop} should be between ${from[prop]} and ${to[prop]}, got ${actual[prop]}`);
+    }
+  }
+  function exchanged(boxes, first, second) {
+    const a = paneSelectors[first], b = paneSelectors[second];
+    return { ...boxes, [a]: boxes[b], [b]: boxes[a] };
+  }
+  const moveGrip = pane => `.panel-layout-box[data-pane="${pane}"] [data-edge="move"]`;
+  const targetPane = () => evaluate("document.querySelector('.panel-layout-box[data-drop-target]')?.dataset.pane ?? null");
+  const slotSnapshot = () => evaluate(`Object.fromEntries(Object.entries(${JSON.stringify(paneSelectors)}).map(([pane, selector]) =>
+    [selector, document.querySelector('.panel-layout-box[data-pane="' + pane + '"]').getBoundingClientRect().toJSON()]))`);
+  const paneVisual = pane => evaluate(`(() => {
+    const el = document.querySelector(${JSON.stringify(paneSelectors[pane])});
+    const content = [...el.children].find(child => child.checkVisibility() && child.getBoundingClientRect().width > 0);
+    const style = getComputedStyle(el);
+    return { box: el.getBoundingClientRect().toJSON(), content: content.getBoundingClientRect().toJSON(),
+      shadow: style.boxShadow, reduced: matchMedia('(prefers-reduced-motion: reduce)').matches,
+      lifted: el.hasAttribute('data-lifted'), transform: style.transform };
+  })()`);
+  async function finishPaneMotion() {
+    await evaluate(`Promise.allSettled([...document.querySelectorAll('.panel-layout-pane')].flatMap(pane => {
+      getComputedStyle(pane).transform;
+      return pane.getAnimations().filter(animation => Number.isFinite(animation.effect.getComputedTiming().endTime))
+        .map(animation => animation.finished);
+    }))`);
+  }
+  // Use the browser's animation clock to sample real panel positions even on a busy desktop.
+  // The check works with CSS and Web Animations and does not depend on an application animation ID.
+  async function sampleMotion(pane, fraction) {
+    return evaluate(`(() => {
+      const el = document.querySelector(${JSON.stringify(paneSelectors[pane])});
+      const properties = ['transform', 'translate', 'scale', 'width', 'height', 'left', 'top'];
+      const animations = el.getAnimations().filter(a => a.effect.getKeyframes().some(frame =>
+        properties.some(prop => prop in frame)));
+      for (const animation of animations) {
+        animation.pause();
+        animation.currentTime = animation.effect.getComputedTiming().activeDuration * ${fraction};
+      }
+      return animations.length;
+    })()`);
+  }
+  const resumeMotion = () => evaluate(`document.getAnimations().filter(a => a.playState === 'paused').forEach(a => a.play())`);
+  async function checkReleased() {
+    assert.equal(await evaluate(`document.querySelectorAll('.panel-layout-pane[data-lifted], .panel-layout-box[data-drag-source], .panel-layout-box[data-drop-target]').length`), 0);
+    await finishPaneMotion();
+  }
+  async function paneCenter(pane) {
+    const rect = (await slotSnapshot())[paneSelectors[pane]];
+    return { x: rect.left + rect.width / 2, y: rect.top + rect.height / 2 };
+  }
+  const storedLayout = () => evaluate(`['sd-workbench-panel-layout-v1', 'sd-workbench-split-view-v1']
+    .map(key => localStorage.getItem(key))`);
+  let held;
+  async function preparePickup(pane, start) {
+    held = { pane, start, before: await paneVisual(pane), slots: await snapshot(), stored: await storedLayout() };
+  }
+  async function verifyFollow(point) {
+    const { pane, start, before, stored } = held;
+    const visual = await paneVisual(pane);
+    assert.ok(visual.lifted, 'the original pane is raised');
+    assert.notEqual(visual.shadow, before.shadow);
+    assert.notEqual(visual.shadow, 'none');
+    const scaleX = visual.box.width / before.box.width, scaleY = visual.box.height / before.box.height;
+    if (visual.reduced) {
+      near(visual.box.width, before.box.width);
+      near(visual.box.height, before.box.height);
+    } else {
+      assert.ok(scaleX > 1.001 && scaleY > 1.001, 'the held surface rises around the grab point');
+    }
+    // The exact content under the initial press must still be under the pointer.
+    near(visual.box.left + (start.x - before.box.left) * scaleX, point.x);
+    near(visual.box.top + (start.y - before.box.top) * scaleY, point.y);
+    near(visual.content.left, visual.box.left + (before.content.left - before.box.left) * scaleX);
+    near(visual.content.top, visual.box.top + (before.content.top - before.box.top) * scaleY);
+    near(visual.content.width, before.content.width * scaleX);
+    assert.deepEqual(await storedLayout(), stored, 'hover never writes a layout');
+    return visual;
+  }
+  async function beginSwap(pane) {
+    const box = (await slotSnapshot())[paneSelectors[pane]];
+    const start = { x: Math.round(box.left + box.width * .37), y: Math.round(box.top + 24) };
+    await preparePickup(pane, start);
+    await mouse('mouseMoved', start, {});
+    await mouse('mousePressed', start, { button: 'left', buttons: 1, clickCount: 1 });
+    const pressed = await paneVisual(pane);
+    assert.ok(pressed.lifted, 'no pointer movement or delay is needed to lift the panel: ' +
+      await evaluate(`document.elementFromPoint(${start.x},${start.y})?.outerHTML.slice(0,280)`));
+    if (pressed.reduced) {
+      assert.equal(await evaluate(`document.querySelector(${JSON.stringify(paneSelectors[pane])}).getAnimations().length`), 0,
+        'the reduced-motion shadow appears without a transition');
+    }
+    await finishPaneMotion();
+    await verifyFollow(start);
+    return start;
+  }
+  async function verifyNeighbors(target) {
+    const boxes = await snapshot();
+    const source = paneSelectors[held.pane];
+    for (const selector of selectors.filter(selector => selector !== source)) {
+      const expected = held.slots[selector === paneSelectors[target] ? source : selector];
+      sameBox(boxes[selector], expected, `while held over ${target}, ${selector}`);
+    }
+  }
+  async function hoverAt(point, expected) {
+    await mouse('mouseMoved', point, { buttons: 1 });
+    const visual = await verifyFollow(point);
+    assert.equal(await targetPane(), expected, 'only the fixed slot under the pointer offers to swap');
+    if (!visual.reduced) await finishPaneMotion();
+    else if (expected) assert.equal(await sampleMotion(expected, .5), 0, 'reduced motion makes room instantly');
+    await verifyNeighbors(expected);
+    return point;
+  }
+  async function paintedContent(box) {
+    // Compare the actual rendered material list, including the part crossing into the neighboring slot.
+    const rect = { x: Math.round(box.left) + 10, y: Math.round(box.top) + 32,
+      width: Math.floor(box.width) - 20, height: Math.min(118, Math.floor(box.height) - 40) };
+    const image = (await wc.capturePage(rect, { stayHidden: true })).resize({ width: rect.width, height: rect.height });
+    return { pixels: image.toBitmap(), rect };
+  }
+  function samePaint(original, moved, targetLeft) {
+    const before = original.pixels, after = moved.pixels;
+    const { x, width, height } = moved.rect;
+    const seam = Math.round(targetLeft - x);
+    assert.ok(seam > 2 && seam < width - 3, 'the target edge crosses the photographed controls');
+    assert.equal(after.length, before.length);
+    let details = 0, matched = 0, tinted = 0;
+    const seamChanges = [0, 0, 0, 0, 0];
+    for (let i = 4; i < before.length; i += 4) {
+      if (Math.abs(before[i] - after[i]) > 8 || Math.abs(before[i + 1] - after[i + 1]) > 8 ||
+          Math.abs(before[i + 2] - after[i + 2]) > 8) {
+        tinted++;
+        const column = (i / 4) % width - seam;
+        if (Math.abs(column) <= 2) seamChanges[column + 2]++;
+      }
+      const edge = before[i + 1] - before[i - 3];
+      if (Math.abs(edge) < 28) continue;
+      details++;
+      const now = after[i + 1] - after[i - 3];
+      if (Math.sign(now) === Math.sign(edge) && Math.abs(now) >= .50 * Math.abs(edge)) matched++;
+    }
+    assert.ok(seamChanges.every(count => count < height * .25), 'the drop border must stay behind the original controls');
+    assert.ok(tinted < before.length / 4 * .09,
+      `target decorations must paint behind the held panel (${tinted} visibly altered pixels)`);
+    assert.ok(details > 100 && matched / details > .80,
+      `the original text and controls must paint above the target (${matched}/${details} matching edges)`);
+  }
+  async function dropAt(point) {
+    await mouse('mouseReleased', point, { button: 'left', clickCount: 1 });
+    await settle();
+    await checkReleased();
+  }
+  async function verifyClipping() {
+    const spill = await evaluate(`(() => {
+      const panes = [...document.querySelectorAll('.panel-layout-pane')];
+      for (const pane of panes) {
+        const r = pane.getBoundingClientRect();
+        for (const x of [r.left + 5, r.left + r.width / 2, r.right - 5]) {
+          for (const y of [r.top + 5, r.top + r.height / 2, r.bottom - 5]) {
+            const foreign = document.elementsFromPoint(x, y).map(el => el.closest('.panel-layout-pane'))
+              .find(other => other && other !== pane);
+            if (foreign) return [pane.id, foreign.id, x, y];
+          }
+        }
+      }
+      return null;
+    })()`);
+    assert.equal(spill, null, 'a neighboring pane must clip its contents inside its own slot: ' + JSON.stringify(spill));
+  }
+  async function dragSeam(pane, edge, distances, { cancel = false, checkPaint = false } = {}) {
+    const selector = `.panel-layout-box[data-pane="${pane}"] [data-edge="${edge}"]`;
+    const origin = await center(selector);
     const before = await snapshot();
     const horizontal = edge !== 'n';
     const axis = horizontal ? 'x' : 'y';
     const preview = before['.editor-player'];
     let point;
+    if (checkPaint) {
+      await mouse('mouseMoved', origin, {});
+      await checkHandlePaint(selector);
+    }
     await mouse('mousePressed', origin, { button: 'left', buttons: 1, clickCount: 1 });
     for (const distance of distances) {
       point = { ...origin, [axis]: origin[axis] + distance };
       await mouse('mouseMoved', point, { buttons: 1 });
       await settle();
+      if (checkPaint && distance === distances[0]) await checkHandlePaint(selector);
       const boxes = await snapshot();
-      joined(boxes);
+      assert.equal(await evaluate("document.querySelectorAll('.panel-layout-pane[data-lifted]').length"), 0,
+        'resizing a shared edge never lifts a panel');
+      checkGutters(boxes);
       near(boxes['.editor-player'][horizontal ? 'right' : 'bottom'], preview[horizontal ? 'right' : 'bottom'] + distance);
       near(boxes['.editor-player'].left, preview.left);
       near(boxes['#montage-inspector'].right, before['#montage-inspector'].right);
@@ -187,14 +434,156 @@ async function run() {
   await settle();
   assert.equal(await visible(), 3, await evaluate(`[document.querySelector('.app-frame').dataset.mode, document.querySelector('#editor-workspace').outerHTML.slice(0, 150), document.querySelector('#notice').textContent].join(' ')`));
   const original = await snapshot();
+  checkGutters(original);
+  const leftDock = areaHandle('materials', 'dock');
+  const rightDock = areaHandle('inspector', 'dock');
+  const leftCorner = areaHandle('materials', 'junction');
+  const playerLeft = areaHandle('materials', 'player'), playerRight = areaHandle('inspector', 'player');
+  const timelineLeft = areaHandle('materials', 'timeline'), timelineRight = areaHandle('inspector', 'timeline');
+  await checkSpanTargets();
+  // Visit every two-row tiling from the real default panes. Check every
+  // rectangle against the original tracks, including the displaced editors.
+  await pull(await center(playerLeft), -30, 0);
+  checkRows(await snapshot(), original, 'below', 'above');
+  await pull(await center(timelineRight), -27, 0);
+  checkRows(await snapshot(), original, 'below', 'full');
+  await pull(await center(playerRight), 29, 0);
+  checkRows(await snapshot(), original, 'below', 'below');
+  await checkSpanTargets();
+  await reopen();
+  checkRows(await snapshot(), original, 'below', 'below');
+  await pull(await center(playerRight), -24, 0);
+  checkRows(await snapshot(), original, 'below', 'full');
+  await pull(await center(timelineRight), 28, 0);
+  checkRows(await snapshot(), original, 'below', 'above');
+  // A sidebar displaced to the lower row can expand upwards and return there.
+  await pull(await center(leftDock), 0, -25);
+  checkRows(await snapshot(), original, 'full', 'above');
+  await pull(await center(leftDock), 0, 26);
+  checkRows(await snapshot(), original, 'below', 'above');
+  const enlarged = await snapshot();
+  await adjust();
+  await pull(await center('.panel-layout-box[data-pane="player"] [data-edge="w"]'), 26, 0);
+  samePanes(await snapshot(), original);
+  await press('Escape');
+  samePanes(await snapshot(), enlarged);
+  await adjust();
+  // The visible handle works above the editing overlay, including a simple click.
+  await pull(await center(playerLeft), 0, 0);
+  samePanes(await snapshot(), original);
+  await pull(await center('.panel-layout-box[data-pane="timeline"] [data-edge="w"]'), 26, 0);
+  checkRows(await snapshot(), original, 'full', 'above');
+  await pull(await center(playerRight), 26, 0);
+  checkRows(await snapshot(), original, 'full', 'below');
+  await adjust();
+  await pull(await center(timelineLeft), -27, 0);
+  checkRows(await snapshot(), original, 'above', 'below');
+  const compactBaseSize = win.getSize();
+  win.setSize(850, 600);
+  await settle();
+  const compactRows = await snapshot();
+  near(compactRows['.editor-player'].right, compactRows['#montage-inspector'].right);
+  near(compactRows['#montage-inspector'].top, compactRows['#montage-pane'].top);
+  await checkSpanTargets();
+  await verifyClipping();
+  await reopen();
+  samePanes(await snapshot(), compactRows);
+  await adjust();
+  await beginSwap('inspector');
+  await dropAt(await hoverAt(await paneCenter('player'), 'player'));
+  const exchangedRows = exchanged(compactRows, 'inspector', 'player');
+  samePanes(await snapshot(), exchangedRows);
+  await adjust();
+  await reopen();
+  samePanes(await snapshot(), exchangedRows);
+  assert.equal(await evaluate(`document.querySelector('${playerRight}').getAttribute('aria-controls')`), 'player-pane montage-inspector');
+  await adjust();
+  await beginSwap('player');
+  await dropAt(await hoverAt(await paneCenter('inspector'), 'inspector'));
+  await adjust();
+  samePanes(await snapshot(), compactRows);
+  await evaluate(`document.querySelector('${playerRight}').focus()`);
+  await press('ArrowLeft');
+  win.setSize(...compactBaseSize);
+  await settle();
+  samePanes(await snapshot(), original);
+  await pull(await center(timelineRight), -24, 0);
+  checkRows(await snapshot(), original, 'above', 'full');
+  await pull(await center(timelineLeft), 25, 0);
+  checkRows(await snapshot(), original, 'full', 'full');
+  await checkSpanTargets();
+  await click('#panel-layout-reset');
+  await settle();
+  samePanes(await snapshot(), original);
+  // Test the visible gutter itself, including an early reversal and an
+  // immediate release. Only the side and the lower editor change shape.
+  const startDock = await center(leftDock);
+  await pull(startDock, 0, 8, false);
+  assert.ok(await evaluate("!!document.querySelector('.workspace-dock-guide[data-preview]')"));
+  samePanes(await snapshot(), original);
+  const dockPoint = { x: startDock.x, y: startDock.y + 27 };
+  await mouse('mouseMoved', dockPoint, { buttons: 1 });
+  checkDock(await snapshot(), original, { left: true });
+  await mouse('mouseMoved', { x: dockPoint.x, y: dockPoint.y - 7 }, { buttons: 1 });
+  checkDock(await snapshot(), original, { left: true });
+  await mouse('mouseMoved', startDock, { buttons: 1 });
+  samePanes(await snapshot(), original);
+  await mouse('mouseMoved', dockPoint, { buttons: 1 });
+  await mouse('mouseReleased', dockPoint, { button: 'left', clickCount: 1 });
+  await reopen();
+  checkDock(await snapshot(), original, { left: true });
+  near(await evaluate("document.getElementById('montage-pane').clientWidth"),
+    (await snapshot())['#montage-pane'].width - 2);
+  await verifyClipping();
+  await pull(await center(rightDock), 0, 32);
+  checkDock(await snapshot(), original, { left: true, right: true });
+  await pull(await center(leftDock), 0, -23, false);
+  checkDock(await snapshot(), original, { right: true });
+  await press('Escape');
+  await mouse('mouseReleased', startDock, { button: 'left', clickCount: 1 });
+  checkDock(await snapshot(), original, { left: true, right: true });
+  await pull(await center(leftDock), 0, -23);
+  await pull(await center(rightDock), 0, -23);
+  samePanes(await snapshot(), original);
+  const cornerEnd = await pull(await center(leftCorner), 38, -35, false);
+  const cornerLayout = await snapshot();
+  near(cornerLayout['#materials-pane'].width, original['#materials-pane'].width + 38);
+  near(cornerLayout['#montage-pane'].height, original['#montage-pane'].height + 35);
+  near(cornerLayout['#montage-inspector'].width, original['#montage-inspector'].width);
+  checkGutters(cornerLayout);
+  await press('Escape');
+  await mouse('mouseReleased', cornerEnd, { button: 'left', clickCount: 1 });
+  samePanes(await snapshot(), original);
+  await adjust();
+  await pull(await center('.panel-layout-box[data-pane="materials"] [data-edge="s"]'), 0, 29);
+  checkDock(await snapshot(), original, { left: true });
+  await press('Escape');
+  samePanes(await snapshot(), original);
+  assert.ok(await evaluate(`Object.values(document.querySelectorAll('.panel-layout-pane')).every(el => {
+    const style = getComputedStyle(el);
+    return ['borderTopLeftRadius','borderTopRightRadius','borderBottomLeftRadius','borderBottomRightRadius']
+      .every(prop => parseFloat(style[prop]) >= 8);
+  })`), 'All four corners should separate each panel from the desktop');
   assert.deepEqual(await evaluate(`[...document.querySelectorAll('.workspace-divider')].map(el => {
     const controlled = document.getElementById(el.getAttribute('aria-controls'));
     return [el.getAttribute('role'), el.getAttribute('aria-orientation'), controlled?.checkVisibility(), el.tabIndex];
   })`), [['separator', 'vertical', true, 0], ['separator', 'vertical', true, 0], ['separator', 'horizontal', true, 0]]);
+  for (const theme of ['light', 'dark']) {
+    await wc.debugger.sendCommand('Emulation.setEmulatedMedia', { features: [
+      { name: 'prefers-color-scheme', value: theme }, { name: 'prefers-reduced-motion', value: 'reduce' },
+    ] });
+    await settle();
+    assert.equal(await evaluate('document.documentElement.dataset.theme'), theme);
+    for (const id of ids) {
+      await mouse('mouseMoved', { x: 10, y: 10 }, {});
+      await checkHandlePaint(`[data-split="${id}"]`);
+      const capture = theme === 'dark' && id === 'timeline' && process.env.JIAJIAN_SPLIT_CAPTURE;
+      await move(id, 20, { cancel: true, checkPaint: true, capture });
+    }
+  }
   for (const id of ids) {
     const sign = id === 'materials' ? 1 : -1;
     const start = size(await snapshot(), id);
-    await checkDivider(id);
     await move(id, sign * 40, { offset: -5 });
     near(size(await snapshot(), id), start + 40);
     await move(id, -sign * 22, { offset: 5 });
@@ -202,12 +591,12 @@ async function run() {
     await move(id, sign * 30, { cancel: true });
     await key(id, id === 'materials' ? 'ArrowRight' : id === 'inspector' ? 'ArrowLeft' : 'ArrowUp');
     near(size(await snapshot(), id), start + 26);
-    await checkDivider(id, true);
+    await checkHandlePaint(`[data-split="${id}"]`, true);
     if (id === 'materials') {
       await press('Tab');
       await press('Tab', 8); // CDP Shift modifier.
       assert.equal(await evaluate('document.activeElement.dataset.split'), id);
-      await checkDivider(id, true);
+      await checkHandlePaint(`[data-split="${id}"]`, true);
     }
     await doubleClick(id);
     near(size(await snapshot(), id), size(original, id));
@@ -258,20 +647,43 @@ async function run() {
     }
     await doubleClick(id);
   }
+  // A user may deliberately park the player as a narrow strip and pull it back later.
+  await key('materials', 'End');
+  await key('inspector', 'End');
+  await key('timeline', 'End');
+  const compact = await snapshot();
+  near(compact['.editor-player'].width, 76);
+  near(compact['.editor-player'].height, 52);
+  await checkSpanTargets();
+  near(checkGutters(compact), 6);
+  const compactScroll = await evaluate(`(() => {
+    const player = document.querySelector('.editor-player');
+    player.scrollTo(40, 20);
+    return [player.scrollLeft, player.scrollTop];
+  })()`);
+  assert.ok(compactScroll.every(value => value > 0), 'a parked player still scrolls to its clipped controls');
+  for (const id of ids) await doubleClick(id);
   win.setSize(...originalWindow);
   await settle();
   await move('materials', 20);
   const beforeEditing = await snapshot();
   await adjust();
-  assert.equal(await visible(), 0);
+  assert.equal(await visible(), 3);
   assert.deepEqual(await evaluate(`(() => {
     const handle = (pane, edge) => document.querySelector('.panel-layout-box[data-pane="' + pane + '"] [data-edge="' + edge + '"]');
     return [handle('inspector', 'e').checkVisibility(), handle('timeline', 's').checkVisibility(),
       getComputedStyle(handle('player', 'ne')).cursor, getComputedStyle(handle('timeline', 'nw')).cursor];
   })()`), [false, false, 'ew-resize', 'ns-resize'], 'docked handles only offer the available resizing axes');
-  await dragSeam('player', 'e', [-16, -42, -67]);
+  await dragSeam('player', 'e', [-16, -42, -67], { checkPaint: true });
+  const playerEdge = '.panel-layout-box[data-pane="player"] [data-edge="e"]';
+  await checkHandlePaint(playerEdge);
+  await press('ArrowLeft');
+  await checkHandlePaint(playerEdge, true);
+  await press('Tab');
+  await press('Tab', 8);
+  await checkHandlePaint(playerEdge, true);
   await dragSeam('inspector', 'w', [14, 30]);
-  await dragSeam('timeline', 'n', [-12, -25]);
+  await dragSeam('timeline', 'n', [-12, -25], { checkPaint: true });
   await click('#nav-toggle');
   await press('Escape');
   assert.ok(await editing(), 'the first Escape dismisses the open navigation drawer');
@@ -300,7 +712,7 @@ async function run() {
     await settle();
     await contained();
     const limit = await snapshot();
-    assert.ok(limit['#montage-inspector'].width >= 209, 'the inspector remains usable at the right limit');
+    assert.ok(limit['#montage-inspector'].width >= 75, 'the inspector remains reachable at the right limit');
     assert.ok(Math.abs(limit['.editor-player'].right - x) > 60, 'a pane at its minimum stops the shared edge');
   }
   await mouse('mouseReleased', { x: 8, y: seam.y }, { button: 'left', clickCount: 1 });
@@ -314,46 +726,333 @@ async function run() {
     materials: { x: 0, y: 0, width: .22, height: .65 }, player: { x: .22, y: 0, width: .49, height: .65 },
     inspector: { x: .78, y: 0, width: .22, height: .65 }, timeline: { x: 0, y: .65, width: 1, height: .35 },
   } };
+  const oldTiling = structuredClone(gapped);
+  oldTiling.boxes.materials.height = 1;
+  Object.assign(oldTiling.boxes.timeline, { x: .22, width: .78 });
+  await evaluate(`localStorage.setItem('sd-workbench-panel-layout-v1', ${JSON.stringify(JSON.stringify(oldTiling))})`);
+  await reopen();
+  const recoveredTiling = await snapshot();
+  near(recoveredTiling['#montage-pane'].left, recoveredTiling['.editor-player'].left);
+  near(recoveredTiling['#materials-pane'].bottom, recoveredTiling['#montage-pane'].bottom);
+  await reopen();
+  samePanes(await snapshot(), recoveredTiling);
   await evaluate(`localStorage.setItem('sd-workbench-panel-layout-v1', ${JSON.stringify(JSON.stringify(gapped))})`);
   await reopen();
   const repaired = await snapshot();
-  joined(repaired);
-  near(repaired['.editor-player'].right, repaired['#montage-pane'].left + .71 * repaired['#montage-pane'].width);
+  const gutter = checkGutters(repaired);
+  near(repaired['.editor-player'].right + gutter, repaired['#montage-pane'].left + .71 * repaired['#montage-pane'].width);
   await adjust();
   await dragSeam('player', 'e', [-32]);
   await press('Escape');
   samePanes(await snapshot(), repaired);
 
+  // Old free layouts could stack these rectangles. Preserve their relative placement in a tiled layout.
   const legacy = { version: 1, order: ['player', 'materials', 'inspector', 'timeline'], boxes: {
-    player: { x: .22, y: .03, width: .48, height: .49 }, materials: { x: .01, y: .02, width: .21, height: .53 },
-    inspector: { x: .72, y: .04, width: .27, height: .47 }, timeline: { x: .01, y: .57, width: .97, height: .42 },
+    player: { x: .04, y: .02, width: .48, height: .60 }, materials: { x: .26, y: .02, width: .32, height: .59 },
+    inspector: { x: .72, y: .04, width: .27, height: .51 }, timeline: { x: .01, y: .56, width: .97, height: .43 },
   } };
   await evaluate(`localStorage.setItem('sd-workbench-panel-layout-v1', ${JSON.stringify(JSON.stringify(legacy))})`);
   await reopen();
-  assert.equal(await visible(), 0);
-  assert.equal(await evaluate('document.querySelector("#editor-workspace").dataset.panelLayout'), 'custom');
-  const floating = await snapshot();
-  await adjust();
-  assert.equal(await evaluate("[...document.querySelectorAll('.panel-layout-handle')].filter(el => el.checkVisibility()).length"), 36);
-  const freeHandle = '.panel-layout-box[data-pane="materials"] [data-edge="move"]';
-  await evaluate(`document.querySelector(${JSON.stringify(freeHandle)}).focus()`);
-  await press('ArrowRight');
-  near((await snapshot())['#materials-pane'].left, floating['#materials-pane'].left + 8);
-  await press('Escape');
-  samePanes(await snapshot(), floating);
+  assert.equal(await visible(), 3);
+  const migrated = await snapshot();
+  checkGutters(migrated);
+  assert.ok(migrated['.editor-player'].left < migrated['#materials-pane'].left);
   await reopen();
-  samePanes(await snapshot(), floating);
-  await click('#panel-layout-toggle');
-  await settle();
-  assert.equal(await visible(), 0);
+  samePanes(await snapshot(), migrated);
   await click('#panel-layout-reset');
   await settle();
+  samePanes(await snapshot(), original);
+
+  // Vary motion independently of the light/dark appearance tested above.
+  const motion = (value, theme = 'dark') => wc.debugger.sendCommand('Emulation.setEmulatedMedia', { features: [
+    { name: 'prefers-color-scheme', value: theme }, { name: 'prefers-reduced-motion', value },
+  ] });
+  await motion('no-preference');
+  await adjust();
+  const stage = await snapshot();
+  const slots = await slotSnapshot();
+  const left = slots['#materials-pane'], middle = slots['.editor-player'];
+  const seamPoint = { x: (left.right + middle.left) / 2, y: left.top + left.height / 2 };
+  const playerPoint = await paneCenter('player');
+  const inspectorPoint = await paneCenter('inspector');
+  const rest = await paneVisual('materials');
+  const stationary = await beginSwap('materials');
+  assert.equal(await targetPane(), null);
+  assert.ok(!await evaluate(`document.querySelector('.panel-layout-pickup')?.checkVisibility() || document.querySelector('#panel-layout-layer').innerText.includes('已抓起')`),
+    'holding the panel does not show a pickup label');
+  if (process.env.JIAJIAN_PICKUP_CAPTURE) {
+    writeFileSync(process.env.JIAJIAN_PICKUP_CAPTURE, (await wc.capturePage(undefined, { stayHidden: true })).toPNG());
+  }
+  await dropAt(stationary);
+  samePanes(await snapshot(), stage);
+  assert.equal((await paneVisual('materials')).shadow, rest.shadow);
+  const grab = await beginSwap('materials');
+  await settle();
+  const originalPaint = await paintedContent((await paneVisual('materials')).box);
+  const diagonal = { x: Math.round(middle.left + 52), y: Math.round(left.top + 75) };
+  await hoverAt({ x: grab.x + 3, y: grab.y }, null);
+  await hoverAt({ x: Math.ceil(middle.left) + 1, y: diagonal.y }, 'player');
+  await hoverAt(diagonal, 'player');
+  await evaluate("Promise.allSettled(document.querySelector('[data-drop-target]').getAnimations().map(a => a.finished))");
+  await settle();
+  samePaint(originalPaint, await paintedContent((await paneVisual('materials')).box), middle.left);
+  await hoverAt(inspectorPoint, 'inspector');
+  await hoverAt(playerPoint, 'player');
+  await hoverAt({ x: grab.x + 1, y: grab.y + 1 }, null);
+  await hoverAt(inspectorPoint, 'inspector');
+  await hoverAt(seamPoint, null);
+  await dropAt(seamPoint);
+  samePanes(await snapshot(), stage);
+  assert.deepEqual(await storedLayout(), held.stored);
+
+  // Reverse before the first displaced panel reaches the source. At each new target,
+  // the returning and incoming panels must continue from their currently visible rectangles.
+  const rapidStart = await beginSwap('materials');
+  await mouse('mouseMoved', playerPoint, { buttons: 1 });
+  assert.ok(await sampleMotion('player', .25), 'crossing into a slot starts the slide before release');
+  const midSlide = (await snapshot())['.editor-player'];
+  betweenBoxes(midSlide, middle, left, 'player entering the source slot');
+  await mouse('mouseMoved', inspectorPoint, { buttons: 1 });
+  assert.ok(await sampleMotion('player', 0));
+  assert.ok(await sampleMotion('inspector', 0));
+  let interrupted = await snapshot();
+  sameBox(interrupted['.editor-player'], midSlide, 'player begins its return');
+  sameBox(interrupted['#montage-inspector'], stage['#montage-inspector'], 'inspector starts from its physical slot');
+  await sampleMotion('player', .25);
+  await sampleMotion('inspector', .25);
+  interrupted = await snapshot();
+  betweenBoxes(interrupted['.editor-player'], midSlide, middle, 'player returning to its slot');
+  betweenBoxes(interrupted['#montage-inspector'], stage['#montage-inspector'], left, 'inspector entering the source slot');
+  await mouse('mouseMoved', playerPoint, { buttons: 1 });
+  assert.ok(await sampleMotion('player', 0));
+  assert.ok(await sampleMotion('inspector', 0));
+  const reversed = await snapshot();
+  sameBox(reversed['.editor-player'], interrupted['.editor-player'], 'player reverses from its visible location');
+  sameBox(reversed['#montage-inspector'], interrupted['#montage-inspector'], 'inspector reverses from its visible location');
+  await resumeMotion();
+  await finishPaneMotion();
+  await verifyFollow(playerPoint);
+  await verifyNeighbors('player');
+  await hoverAt(rapidStart, null);
+  await dropAt(rapidStart);
+  samePanes(await snapshot(), stage);
+  assert.deepEqual(await storedLayout(), held.stored);
+
+  await beginSwap('materials');
+  await hoverAt(playerPoint, 'player');
+  await hoverAt({ x: 2, y: 2 }, null);
+  await dropAt({ x: 2, y: 2 });
+  samePanes(await snapshot(), stage);
+  await beginSwap('materials');
+  await hoverAt(playerPoint, 'player');
+  await dropAt(seamPoint);
+  samePanes(await snapshot(), stage);
+
+  await beginSwap('materials');
+  const outside = { x: -36, y: left.top + 30 };
+  await hoverAt(outside, null);
+  await dropAt(outside);
+  samePanes(await snapshot(), stage);
+
+  const lostGrip = await beginSwap('materials');
+  await hoverAt(playerPoint, 'player');
+  await evaluate(`document.querySelector(${JSON.stringify(moveGrip('materials'))}).releasePointerCapture(1)`);
+  await mouse('mouseMoved', { ...playerPoint, x: playerPoint.x + 2 }, { buttons: 1 });
+  await checkReleased();
+  await dropAt(lostGrip);
+  samePanes(await snapshot(), stage);
+
+  await wc.debugger.sendCommand('Emulation.setTouchEmulationEnabled', { enabled: true });
+  try {
+    const touchStart = await center(moveGrip('materials'));
+    await preparePickup('materials', touchStart);
+    await touch('touchStart', [touchStart]);
+    assert.ok((await paneVisual('materials')).lifted, 'touch pickup needs no movement or long press');
+    await finishPaneMotion();
+    await verifyFollow(touchStart);
+    await touch('touchMove', [playerPoint]);
+    await settle();
+    assert.equal(await targetPane(), 'player');
+    await verifyFollow(playerPoint);
+    await finishPaneMotion();
+    await verifyNeighbors('player');
+    await touch('touchCancel', []);
+    await settle();
+    await checkReleased();
+    samePanes(await snapshot(), stage);
+    assert.deepEqual(await storedLayout(), held.stored, 'touch cancellation preserves the saved layout');
+    for (const expected of [exchanged(stage, 'materials', 'player'), stage]) {
+      const start = await paneCenter('materials'), end = await paneCenter('player');
+      await preparePickup('materials', start);
+      await touch('touchStart', [start]);
+      await touch('touchMove', [end]);
+      assert.equal(await targetPane(), 'player');
+      await finishPaneMotion();
+      await verifyFollow(end);
+      await verifyNeighbors('player');
+      await touch('touchEnd', []);
+      await checkReleased();
+      samePanes(await snapshot(), expected);
+      assert.notDeepEqual(await storedLayout(), held.stored, 'touch release commits the preview');
+    }
+  } finally {
+    await wc.debugger.sendCommand('Emulation.setTouchEmulationEnabled', { enabled: false });
+  }
+
+  // Drop a different-sized panel while its neighbor is still crossing the workspace.
+  const timelinePoint = await paneCenter('timeline');
+  await beginSwap('inspector');
+  await mouse('mouseMoved', timelinePoint, { buttons: 1 });
+  assert.ok(await sampleMotion('timeline', .25));
+  const crossing = await snapshot();
+  betweenBoxes(crossing['#montage-pane'], stage['#montage-pane'], stage['#montage-inspector'], 'timeline making room');
+  await verifyFollow(timelinePoint);
+  await mouse('mouseReleased', timelinePoint, { button: 'left', clickCount: 1 });
+  assert.ok(await sampleMotion('inspector', 0));
+  // The timeline was paused at a known frame. It must still be there while the released pane starts landing.
+  samePanes(await snapshot(), crossing);
+  await resumeMotion();
+  await checkReleased();
+  samePanes(await snapshot(), exchanged(stage, 'timeline', 'inspector'));
+  assert.notDeepEqual(await storedLayout(), held.stored, 'mouse release commits the preview');
+  await reopen();
+  samePanes(await snapshot(), exchanged(stage, 'timeline', 'inspector'));
+  await adjust();
+  await beginSwap('inspector');
+  await dropAt(await hoverAt(await paneCenter('timeline'), 'timeline'));
+  samePanes(await snapshot(), stage);
+  await adjust();
+  await adjust();
+
+  await beginSwap('materials');
+  await hoverAt(playerPoint, 'player');
+  assert.ok(await evaluate(`[...document.querySelectorAll('.panel-layout-box')].every(box =>
+    [box, ...box.querySelectorAll('button')].every(el => [null, '::before', '::after'].every(pseudo => {
+      const style = getComputedStyle(el, pseudo);
+      return ![style.outlineStyle, style.borderTopStyle, style.borderRightStyle, style.borderBottomStyle, style.borderLeftStyle].includes('dashed');
+    })))`), 'editing and targeting should use a continuous surface without a dashed outline');
+  const airborne = await snapshot();
+  const swapped = exchanged(stage, 'materials', 'player');
+  await mouse('mouseReleased', playerPoint, { button: 'left', clickCount: 1 });
+  assert.ok(await sampleMotion('materials', 0), 'the released panel lands from the pointer');
+  await sampleMotion('player', 0);
+  samePanes(await snapshot(), airborne);
+  await sampleMotion('materials', .50);
+  await sampleMotion('player', .50);
+  const landing = await snapshot();
+  betweenBoxes(landing['#materials-pane'], airborne['#materials-pane'], swapped['#materials-pane'], 'materials landing');
+  sameBox(landing['.editor-player'], left, 'the displaced player stays put throughout release');
+  await resumeMotion();
+  await checkReleased();
+  samePanes(await snapshot(), swapped);
+
+  // Re-grab the same panel while its return animation is still running.
+  const regrab = await beginSwap('materials');
+  const offset = { x: regrab.x + 34, y: regrab.y + 28 };
+  await hoverAt(offset, null);
+  await mouse('mouseReleased', offset, { button: 'left', clickCount: 1 });
+  assert.ok(await sampleMotion('materials', .25));
+  await mouse('mousePressed', offset, { button: 'left', buttons: 1, clickCount: 1 });
+  await finishPaneMotion();
+  const caught = await paneVisual('materials');
+  assert.ok(caught.lifted);
+  const next = { x: offset.x - 59, y: offset.y + 38 };
+  await mouse('mouseMoved', next, { buttons: 1 });
+  const pulled = await paneVisual('materials');
+  near(pulled.box.left - caught.box.left, next.x - offset.x);
+  near(pulled.box.top - caught.box.top, next.y - offset.y);
+  await dropAt(next);
+  samePanes(await snapshot(), swapped);
+  await beginSwap('inspector');
+  await hoverAt(await paneCenter('timeline'), 'timeline');
+  const cancelledTarget = await paneCenter('timeline');
+  await press('Escape');
+  await dropAt(cancelledTarget);
+  assert.equal(await editing(), false);
+  samePanes(await snapshot(), stage);
+  await reopen();
+  samePanes(await snapshot(), stage);
+
+  await motion('reduce', 'light');
+  await adjust();
+  const reducedGrip = await beginSwap('player');
+  assert.equal(await evaluate('document.documentElement.dataset.theme'), 'light');
+  await hoverAt(await paneCenter('materials'), 'materials');
+  await dropAt(reducedGrip);
+  samePanes(await snapshot(), stage);
+  await evaluate(`document.querySelector(${JSON.stringify(moveGrip('materials'))}).focus()`);
+  await press('ArrowRight');
+  samePanes(await snapshot(), exchanged(stage, 'materials', 'player'));
+  assert.equal(await evaluate(`document.activeElement.closest('.panel-layout-box')?.dataset.pane`), 'materials');
+  assert.equal(await sampleMotion('materials', 0), 0, 'reduced motion exchanges immediately');
+  await press('ArrowLeft');
+  samePanes(await snapshot(), stage);
+  await press('ArrowDown');
+  const vertical = exchanged(stage, 'materials', 'timeline');
+  samePanes(await snapshot(), vertical);
+  await adjust();
+  await reopen();
+  samePanes(await snapshot(), vertical);
   assert.equal(await visible(), 3);
-  for (const id of ids) near(size(await snapshot(), id), size(original, id));
+  await verifyClipping();
+  const beforeResize = (await snapshot())['#materials-pane'].height;
+  assert.equal(await evaluate(`document.querySelector('[data-split="timeline"]').getAttribute('aria-controls')`), 'materials-pane');
+  await move('timeline', -18);
+  near((await snapshot())['#materials-pane'].height, beforeResize + 18);
+  await doubleClick('timeline');
+  samePanes(await snapshot(), vertical);
+
+  // Dock the *physical* left column after exchanging its editor with the
+  // bottom one. Keyboard, window resize and reload use that same slot.
+  assert.equal(await evaluate(`document.querySelector('${leftDock}').getAttribute('aria-controls')`), 'montage-pane materials-pane');
+  await evaluate(`document.querySelector('${leftDock}').focus()`);
+  await press('ArrowDown');
+  const swappedDock = await snapshot();
+  near(swappedDock['#montage-pane'].bottom, vertical['#materials-pane'].bottom);
+  near(swappedDock['#materials-pane'].left, vertical['.editor-player'].left);
+  sameBox(swappedDock['#montage-inspector'], vertical['#montage-inspector'], 'unaffected inspector');
+  await reopen();
+  samePanes(await snapshot(), swappedDock);
+  win.setSize(850, 600);
+  await settle();
+  const compactDock = await snapshot();
+  near(compactDock['#montage-pane'].bottom, compactDock['#materials-pane'].bottom);
+  near(compactDock['#materials-pane'].left, compactDock['.editor-player'].left);
+  await verifyClipping();
+  await pull(await center(leftDock), 0, -27);
+  win.setSize(...originalWindow);
+  await settle();
+  samePanes(await snapshot(), vertical);
+
+  win.setSize(850, 600);
+  await settle();
+  const narrow = await snapshot();
+  checkGutters(narrow);
+  await verifyClipping();
+  await adjust();
+  await beginSwap('materials');
+  await dropAt(await hoverAt(await paneCenter('inspector'), 'inspector'));
+  const narrowSwapped = exchanged(narrow, 'materials', 'inspector');
+  samePanes(await snapshot(), narrowSwapped);
+  checkGutters(narrowSwapped);
+  await adjust();
+  await verifyClipping();
+  await reopen();
+  samePanes(await snapshot(), narrowSwapped);
+  win.setSize(...originalWindow);
+  await settle();
+  await click('#panel-layout-reset');
+  await settle();
+  samePanes(await snapshot(), original);
+  await adjust();
+  const timelineGrip = await beginSwap('timeline');
   await click('#title-home');
+  await settle();
+  await checkReleased();
+  await dropAt(timelineGrip);
   assert.equal(await visible(), 0);
   wc.debugger.detach();
-  console.log('Passed native splitters, paired pane resizing during layout edits, Escape rollback, persistence, and legacy layouts.');
+  console.log('Passed all nine pane tilings, gutter-only span handles, shared borders, two-axis junctions, compact scrolling, live panel swaps, cancellation, touch, reduced motion, keyboard, migration, clipping, and persistence.');
   win.close();
 }
 

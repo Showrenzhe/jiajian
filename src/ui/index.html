@@ -20,12 +20,17 @@
   <link rel="stylesheet" href="./inspector-controls.css">
   <link rel="stylesheet" href="./editor-surfaces.css">
   <link rel="stylesheet" href="./appearance.css">
+  <link rel="stylesheet" href="./color-wheel.css">
+  <link rel="stylesheet" href="./menu-motion.css">
+  <script src="./menu-motion.js" defer></script>
+  <script src="./color-wheel.js" defer></script>
   <script src="./dialog-focus.js" defer></script>
   <script src="./script-workspace.js" defer></script>
   <script src="./edit-history.js" defer></script>
   <script src="./track-tools.js" defer></script>
   <script src="./cloud-tts-dialog.js" defer></script>
   <script src="./cloud-tts-settings.js" defer></script>
+  <script src="./software-updates.js" defer></script>
   <script src="./split-view.js" defer></script>
   <script src="./panel-layout.js" defer></script>
   <script src="./draft-workspace.js" defer></script>
@@ -65,28 +70,34 @@
           <feGaussianBlur stdDeviation=".003 .019" edgeMode="duplicate" result="lens"/>
           <feDisplacementMap in="SourceGraphic" in2="lens" scale=".095" xChannelSelector="R" yChannelSelector="G"/>
         </filter>
-        <symbol id="icon-home" viewBox="0 0 24 24"><path d="m3 10 9-7 9 7v9a2 2 0 0 1-2 2h-4v-7H9v7H5a2 2 0 0 1-2-2z"/></symbol>
+        <symbol id="icon-home" viewBox="0 0 18 18"><path d="m1.5 8.2 7.5-6 7.5 6M3.5 7v7.4a1 1 0 0 0 1 1H7v-4.5h4v4.5h2.5a1 1 0 0 0 1-1V7"/></symbol>
         <symbol id="icon-sidebar" viewBox="0 0 24 24"><rect x="3" y="4.5" width="18" height="15" rx="3"/><path d="M9.5 5v14M6 9h.5m-.5 3h.5"/></symbol>
-        <symbol id="icon-folder" viewBox="0 0 24 24"><path d="M3 7a2 2 0 0 1 2-2h5l2 2h7a2 2 0 0 1 2 2v9a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"/></symbol>
+        <symbol id="icon-folder" viewBox="0 0 18 18"><path d="M1.6 5.2c0-1.1.8-1.9 1.9-1.9h3c.7 0 1.1.2 1.5.7l1.2 1.3h5.3c1.1 0 1.9.8 1.9 1.9v5.9c0 1-.8 1.8-1.9 1.8h-11c-1.1 0-1.9-.8-1.9-1.8zM1.9 6.9h5.7"/></symbol>
+        <symbol id="icon-library-folder" viewBox="0 0 48 38">
+          <path fill="currentColor" opacity=".65" d="M2 8a4 4 0 0 1 4-4h11c2 0 3 1 4 2l2 2h19a4 4 0 0 1 4 4v17H2z"/>
+          <rect fill="currentColor" x="2" y="12" width="44" height="23" rx="4"/>
+        </symbol>
         <symbol id="icon-folderOpen" viewBox="0 0 24 24"><path d="M3 16V7a2 2 0 0 1 2-2h5l2 2h7a2 2 0 0 1 2 2M4 19l2-8h16l-2 8z"/></symbol>
-        <symbol id="icon-clapper" viewBox="0 0 24 24"><rect x="3" y="7" width="18" height="14" rx="2"/><path d="M3 11h18M5 7l3 4m3-4 3 4m3-4 3 4"/></symbol>
-        <symbol id="icon-scene" viewBox="0 0 24 24"><rect x="3" y="4" width="18" height="16" rx="2"/><path d="M8 4v16M3 9h5m-5 6h5m6-11v16m0-11h7m-7 6h7"/></symbol>
-        <symbol id="icon-script" viewBox="0 0 24 24"><path d="M5 5h10m-10 4h7M5 13h5m3 6-4 1 1-4 8-8 3 3zM16 10l3 3"/></symbol>
-        <symbol id="icon-audio" viewBox="0 0 24 24"><path d="M3 10v4m4-8v12m5-16v20m5-16v12m4-8v4"/></symbol>
+        <symbol id="icon-clapper" viewBox="0 0 18 18"><rect x="1.9" y="3.2" width="14.2" height="11.8" rx="2"/><path d="M2.2 7.2h13.6M5.9 3.5 8 7m3-3.5L13.1 7"/></symbol>
+        <symbol id="icon-scene" viewBox="0 0 18 18"><rect x="1.7" y="3.2" width="14.6" height="11.6" rx="2.1"/><path d="M9 3.5v1.7m0 2.5v2.6m0 2.5v1.7"/></symbol>
+        <symbol id="icon-script" viewBox="0 0 18 18"><path d="M9 3.3H4.1a1.8 1.8 0 0 0-1.8 1.8v8.8a1.8 1.8 0 0 0 1.8 1.8h8.8a1.8 1.8 0 0 0 1.8-1.8V9.4m-7.4 1.3.6-2.6 5.5-5.5a1.4 1.4 0 0 1 2 2l-5.5 5.5z"/></symbol>
+        <symbol id="icon-audio" viewBox="0 0 18 18"><path d="M2 7.9v2.2m3.5-5.5v8.8M9 2v14m3.5-10.2v6.4M16 7.6v2.8"/></symbol>
         <symbol id="icon-plus" viewBox="0 0 24 24"><path d="M12 5v14M5 12h14"/></symbol>
-        <symbol id="icon-import" viewBox="0 0 24 24"><path d="M12 3v12m-5-5 5 5 5-5M4 15v4a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2v-4"/></symbol>
-        <symbol id="icon-layers" viewBox="0 0 24 24"><path d="m3 8 9-5 9 5-9 5zm0 5 9 5 9-5m-18 5 9 5 9-5"/></symbol>
-        <symbol id="icon-spark" viewBox="0 0 24 24"><path d="m13 3 1.8 5.2L20 10l-5.2 1.8L13 17l-1.8-5.2L6 10l5.2-1.8zM5 15l.9 2.1L8 18l-2.1.9L5 21l-.9-2.1L2 18l2.1-.9z"/></symbol>
+        <symbol id="icon-import" viewBox="0 0 18 18"><path d="M9 1.7v8.7m-3-3 3 3 3-3M5.2 6H4.1a1.8 1.8 0 0 0-1.8 1.8V14c0 1 .8 1.8 1.8 1.8h9.8c1 0 1.8-.8 1.8-1.8V7.8A1.8 1.8 0 0 0 13.9 6h-1.1"/></symbol>
+        <symbol id="icon-layers" viewBox="0 0 18 18"><path d="m1.8 6.6 7.2-4 7.2 4-7.2 4zM2.2 11.2 9 15l6.8-3.8"/></symbol>
+        <symbol id="icon-spark" viewBox="0 0 18 18"><path d="M10.8 1.9c.7 3.4 1.9 4.7 5.3 5.5-3.4.8-4.6 2.1-5.3 5.5-.8-3.4-2-4.7-5.4-5.5 3.4-.8 4.6-2.1 5.4-5.5zM4.7 10.5c.4 1.6 1 2.3 2.6 2.8-1.6.4-2.2 1.1-2.6 2.7-.4-1.6-1.1-2.3-2.7-2.7 1.6-.5 2.3-1.2 2.7-2.8z"/></symbol>
         <symbol id="icon-grid" viewBox="0 0 24 24"><rect x="3" y="3" width="7" height="7" rx="1.6"/><rect x="14" y="3" width="7" height="7" rx="1.6"/><rect x="3" y="14" width="7" height="7" rx="1.6"/><rect x="14" y="14" width="7" height="7" rx="1.6"/></symbol>
-        <symbol id="icon-rows" viewBox="0 0 24 24"><path d="M8 5h13M8 12h13M8 19h13M3 5h.1M3 12h.1M3 19h.1"/></symbol>
+        <symbol id="icon-rows" viewBox="0 0 18 18"><path d="M6.5 4.5h9m-9 4.5h9m-9 4.5h9M2.6 4.5h.1M2.6 9h.1m-.1 4.5h.1"/></symbol>
         <symbol id="icon-search" viewBox="0 0 24 24"><circle cx="10.5" cy="10.5" r="6.5"/><path d="m16 16 4.5 4.5"/></symbol>
         <symbol id="icon-more" viewBox="0 0 24 24"><circle cx="5" cy="12" r="1"/><circle cx="12" cy="12" r="1"/><circle cx="19" cy="12" r="1"/></symbol>
         <symbol id="icon-chevron" viewBox="0 0 24 24"><path d="m9 5 7 7-7 7"/></symbol>
         <symbol id="icon-settings" viewBox="0 0 24 24"><path d="M4 6h6m5 0h5M4 12h11m4 0h1M4 18h3m5 0h8"/><circle cx="12" cy="6" r="2"/><circle cx="17" cy="12" r="2"/><circle cx="9" cy="18" r="2"/></symbol>
-        <symbol id="icon-person" viewBox="0 0 24 24"><circle cx="12" cy="8" r="4"/><path d="M4 21v-2a7 7 0 0 1 7-6h2a7 7 0 0 1 7 6v2"/></symbol>
-        <symbol id="icon-share" viewBox="0 0 24 24"><path d="M12 15V3m-4 4 4-4 4 4M7 10H5v10h14V10h-2"/></symbol>
-        <symbol id="icon-chart" viewBox="0 0 24 24"><path d="M4 4v16h17M8 16v-4m5 4V7m5 9v-6"/></symbol>
-        <symbol id="icon-image" viewBox="0 0 24 24"><rect x="3" y="4" width="18" height="16" rx="2"/><circle cx="8" cy="9" r="1.5"/><path d="m4 17 4-4 3 3 5-6 5 5"/></symbol>
+        <symbol id="icon-person" viewBox="0 0 18 18"><circle cx="9" cy="5.4" r="2.8"/><path d="M3 15.2c.4-3 2.7-4.8 6-4.8s5.6 1.8 6 4.8z"/></symbol>
+        <symbol id="icon-team" viewBox="0 0 18 18"><circle cx="7" cy="5.6" r="2.5"/><path d="M1.8 14.8c.4-2.7 2.3-4.3 5.2-4.3s4.8 1.6 5.2 4.3zM12 3.8a2.5 2.5 0 0 1 .4 4.8m1 2.4a4.3 4.3 0 0 1 2.8 3.8"/></symbol>
+        <symbol id="icon-face" viewBox="0 0 18 18"><rect x="2.1" y="2.1" width="13.8" height="13.8" rx="4"/><path d="M6.2 6.9v.7m5.6-.7v.7m-5.5 3.3a3.3 3.3 0 0 0 5.4 0"/></symbol>
+        <symbol id="icon-share" viewBox="0 0 18 18"><path d="M9 10.6V1.9m-2.8 2.9L9 1.9l2.8 2.9M5.3 6.9H4.1c-.9 0-1.6.7-1.6 1.6v5.7c0 .9.7 1.6 1.6 1.6h9.8c.9 0 1.6-.7 1.6-1.6V8.5c0-.9-.7-1.6-1.6-1.6h-1.2"/></symbol>
+        <symbol id="icon-chart" viewBox="0 0 18 18"><path d="M2.3 15.1h13.4M4.2 11.9V8.5M9 11.9V3m4.8 8.9V6"/></symbol>
+        <symbol id="icon-image" viewBox="0 0 18 18"><rect x="1.8" y="3" width="14.4" height="12" rx="2"/><circle cx="6" cy="6.9" r="1" fill="currentColor" stroke="none"/><path d="m3.2 13.7 3.5-3.6 1.8 1.7 3.5-4 4 4.3"/></symbol>
         <symbol id="icon-film" viewBox="0 0 24 24"><rect x="3" y="4" width="18" height="16" rx="2"/><path d="M7 4v16M17 4v16M3 9h4m-4 6h4M17 9h4m-4 6h4"/></symbol>
               <symbol id="icon-save-project" viewBox="0 0 24 24"><path d="M5 3h11l4 4v13H4V3zM7 3v6h9V3M8 20v-7h8v7"/></symbol>
         <symbol id="icon-undo-edit" viewBox="0 0 24 24"><path d="m8 5-5 5 5 5m-5-5h10a7 7 0 0 1 7 7"/></symbol>
@@ -95,10 +106,17 @@
         <symbol id="icon-tracks" viewBox="0 0 24 24"><rect x="3" y="5" width="7" height="6" rx="1.5"/><rect x="12.5" y="5" width="8.5" height="6" rx="1.5"/><rect x="3" y="14" width="13" height="5" rx="1.5"/></symbol>
       </defs>
     </svg>
-    <span class="brand" title="佳剪 v0.6.2"><img class="brand-logo" src="./assets/jiajian-logo.png" alt="">佳剪 <small>0.6.2</small></span>
+    <span class="brand"><img class="brand-logo" src="./assets/jiajian-logo.png" alt="">佳剪 <small id="app-version"></small></span>
     <button type="button" id="nav-toggle" aria-controls="workspace-navigation" aria-expanded="true" aria-label="收起侧栏" title="收起侧栏（Ctrl+\）"><svg class="ui-icon" aria-hidden="true"><use href="#icon-sidebar"></use></svg></button>
     <button type="button" id="title-home" aria-label="返回首页" title="返回首页"><svg class="ui-icon" aria-hidden="true"><use href="#icon-home"></use></svg></button>
     <span id="title-tab">工作台</span>
+    <span id="titlebar-update">
+      <button type="button" id="software-update-entry" title="打开软件更新" aria-haspopup="dialog" aria-controls="update-dialog">
+        <svg class="ui-icon" aria-hidden="true"><use href="#icon-import"></use></svg>软件更新
+        <span id="update-notice" hidden></span>
+      </button>
+      <button type="button" id="update-notice-dismiss" title="收起本次更新提醒" aria-label="收起本次更新提醒" hidden>×</button>
+    </span>
     <button type="button" id="app-settings" title="打开设置" aria-haspopup="dialog"><svg class="ui-icon" aria-hidden="true"><use href="#icon-settings"></use></svg>设置</button>
   </header>
   <div class="app-frame" data-mode="home">
@@ -106,14 +124,7 @@
       <p>资料库</p>
       <button type="button" id="tab-home" aria-current="page"><svg class="ui-icon" aria-hidden="true"><use href="#icon-home"></use></svg>工作台</button>
       <button type="button" id="tab-drafts"><svg class="ui-icon" aria-hidden="true"><use href="#icon-folder"></use></svg>本地草稿</button>
-      <p>本地创作</p>
-      <button type="button" id="home-import"><svg class="ui-icon" aria-hidden="true"><use href="#icon-import"></use></svg>导入素材</button>
-      <button type="button" id="tab-montage"><svg class="ui-icon" aria-hidden="true"><use href="#icon-clapper"></use></svg>视频混剪</button>
-      <button type="button" id="tab-scene-split"><svg class="ui-icon" aria-hidden="true"><use href="#icon-scene"></use></svg>视频场景 AI 分割</button>
-      <button type="button" id="tab-script"><svg class="ui-icon" aria-hidden="true"><use href="#icon-script"></use></svg>脚本编辑</button>
-      <button type="button" id="tab-audio"><svg class="ui-icon" aria-hidden="true"><use href="#icon-audio"></use></svg>音频提取</button>
-      <details class="nav-more">
-        <summary><svg class="ui-icon" aria-hidden="true"><use href="#icon-more"></use></svg>更多工具<svg class="ui-icon disclosure" aria-hidden="true"><use href="#icon-chevron"></use></svg></summary>
+      <section class="nav-more" aria-label="更多工具">
         <p>视频制作</p>
         <button type="button" data-workflow="replicate"><svg class="ui-icon" aria-hidden="true"><use href="#icon-layers"></use></svg>爆款复刻</button>
         <button type="button" data-workflow="ai-video"><svg class="ui-icon" aria-hidden="true"><use href="#icon-spark"></use></svg>AI 成片</button>
@@ -122,20 +133,20 @@
         <button type="button" data-workflow="assets"><svg class="ui-icon" aria-hidden="true"><use href="#icon-image"></use></svg>AIGC 素材生产</button>
         <button type="button" data-workflow="digital-avatar"><svg class="ui-icon" aria-hidden="true"><use href="#icon-person"></use></svg>数字分身</button>
         <button type="button" data-workflow="voice-clone"><svg class="ui-icon" aria-hidden="true"><use href="#icon-audio"></use></svg>声音克隆</button>
-        <button type="button" data-workflow="face-fusion"><svg class="ui-icon" aria-hidden="true"><use href="#icon-layers"></use></svg>人脸融合</button>
+        <button type="button" data-workflow="face-fusion"><svg class="ui-icon" aria-hidden="true"><use href="#icon-face"></use></svg>人脸融合</button>
         <p>矩阵分发</p>
         <button type="button" data-workflow="distribution"><svg class="ui-icon" aria-hidden="true"><use href="#icon-share"></use></svg>矩阵分发</button>
         <button type="button" data-workflow="analytics"><svg class="ui-icon" aria-hidden="true"><use href="#icon-chart"></use></svg>数据看板</button>
         <p>管理</p>
         <button type="button" data-workflow="tasks"><svg class="ui-icon" aria-hidden="true"><use href="#icon-rows"></use></svg>任务中心</button>
-        <button type="button" data-workflow="teams"><svg class="ui-icon" aria-hidden="true"><use href="#icon-person"></use></svg>团队/门店设置</button>
-      </details>
+        <button type="button" data-workflow="teams"><svg class="ui-icon" aria-hidden="true"><use href="#icon-team"></use></svg>团队/门店设置</button>
+      </section>
       <span class="nav-selection-travel" aria-hidden="true" hidden></span>
     </nav>
     <div class="work-area">
       <main id="home" class="home home-dashboard" aria-label="首页工作台">
         <header class="home-hero">
-          <h1 id="home-heading">剪辑工作台</h1>
+          <h1 id="home-heading" tabindex="-1">剪辑工作台</h1>
           <div class="home-hero-actions">
             <button type="button" id="home-create"><svg class="ui-icon" aria-hidden="true"><use href="#icon-plus"></use></svg>新建剪辑</button>
             <button type="button" id="home-open-project" class="glass-clear" title="打开已保存的 .sdworkbench 工程"><svg class="ui-icon" aria-hidden="true"><use href="#icon-folderOpen"></use></svg>打开工程</button>
@@ -154,15 +165,25 @@
                 </div>
               </div>
             </div>
-            <p id="home-project-status" role="status" hidden></p>
-            <div id="draft-list-status" class="draft-status">
-              <svg class="ui-icon" aria-hidden="true"><use href="#icon-film"></use></svg><div role="status"><strong id="draft-status-title">正在读取本地草稿…</strong><p id="draft-status-detail" hidden></p></div>
-              <button type="button" id="draft-status-action" class="home-link" hidden></button>
+            <div class="draft-content">
+              <p id="home-project-status" role="status" hidden></p>
+              <div id="draft-list-status" class="draft-status">
+                <svg class="ui-icon" aria-hidden="true"><use href="#icon-film"></use></svg><div role="status"><strong id="draft-status-title">正在读取本地草稿…</strong><p id="draft-status-detail" hidden></p></div>
+                <button type="button" id="draft-status-action" class="home-link" hidden></button>
+              </div>
+              <ul id="draft-list" class="draft-list" data-view="grid" aria-label="本地草稿"></ul>
             </div>
-            <ul id="draft-list" class="draft-list" data-view="grid" aria-label="本地草稿"></ul>
+            <section id="home-local-tools" class="home-local-tools" aria-labelledby="local-tools-heading">
+              <h2 id="local-tools-heading">本地创作</h2>
+              <button type="button" id="home-import"><svg class="ui-icon" aria-hidden="true"><use href="#icon-import"></use></svg>导入素材</button>
+              <button type="button" id="tab-montage"><svg class="ui-icon" aria-hidden="true"><use href="#icon-clapper"></use></svg>视频混剪</button>
+              <button type="button" id="tab-scene-split"><svg class="ui-icon" aria-hidden="true"><use href="#icon-scene"></use></svg>视频场景 AI 分割</button>
+              <button type="button" id="tab-script"><svg class="ui-icon" aria-hidden="true"><use href="#icon-script"></use></svg>脚本编辑</button>
+              <button type="button" id="tab-audio"><svg class="ui-icon" aria-hidden="true"><use href="#icon-audio"></use></svg>音频提取</button>
+            </section>
           </section>
           <section id="recent-work" class="recent-work" aria-labelledby="recent-heading">
-            <h2 id="recent-heading">最近导出</h2>
+            <h2 id="recent-heading" tabindex="-1">最近导出</h2>
             <button type="button" class="home-outline" id="rename-outputs" disabled>重命名所选作品</button>
             <p id="history-status" role="status"></p>
             <ul id="history-list"></ul>
@@ -171,14 +192,14 @@
       </main>
 
       <main id="project-workspace" class="home project-workspace" hidden>
-        <div class="workspace-heading"><h1>视频混剪</h1><button type="button" id="project-new" class="blue-button"><svg class="ui-icon" aria-hidden="true"><use href="#icon-plus"></use></svg>新建剪辑</button></div>
+        <div class="workspace-heading"><h1 tabindex="-1">视频混剪</h1><button type="button" id="project-new" class="blue-button"><svg class="ui-icon" aria-hidden="true"><use href="#icon-plus"></use></svg>新建剪辑</button></div>
         <div class="page-tabs"><span>我的项目</span><button type="button" id="project-open-file" class="home-outline">打开本地工程</button><button type="button" id="project-continue" class="home-outline" hidden>返回当前编辑</button></div>
         <p id="project-list-status" role="status"></p>
         <ul id="project-list" class="project-list"></ul>
       </main>
       <main id="scene-split-workspace" class="home scene-split-workspace" hidden aria-labelledby="scene-split-title">
         <div class="workspace-heading">
-          <div><h1 id="scene-split-title">视频场景 AI 分割</h1></div>
+          <div><h1 id="scene-split-title" tabindex="-1">视频场景 AI 分割</h1></div>
           <button type="button" id="scene-split-submit" class="blue-button">提交分割任务</button>
         </div>
         <p class="service-summary">按画面内容变化识别场景切点，将每个场景输出为独立视频。支持单个视频、多选视频和视频文件夹。</p>
@@ -217,7 +238,7 @@
         </section>
       </main>
       <main id="workflow-workspace" class="home" hidden>
-        <div class="workspace-heading"><h1 id="service-title"></h1><span id="service-status" class="service-status"></span></div>
+        <div class="workspace-heading"><h1 id="service-title" tabindex="-1"></h1><span id="service-status" class="service-status"></span></div>
         <p id="service-summary" class="service-summary"></p>
         <div class="service-layout">
           <section><h2>操作流程</h2><ol id="service-steps"></ol></section>
@@ -236,7 +257,7 @@
       <div class="editor-heading">
         <div class="workbench-project">
           <p id="workflow-eyebrow" class="eyebrow">素材编排</p>
-          <h1 id="workflow-title">分镜混剪</h1>
+          <h1 id="workflow-title" tabindex="-1">分镜混剪</h1>
           <p id="workflow-description" class="muted">每组分镜随机抽取一条候选，再拼接成片。</p>
           <div id="workbench-project-label" hidden>
             <span class="project-label">工程</span>
@@ -393,9 +414,11 @@
         <button type="button" class="secondary" id="subproject-variables" hidden>口播变量</button>
       </div>
       <div class="materials-toolbar">
-        <button type="button" id="material-import" class="secondary" title="选择视频或图片，每个文件直接生成一个分镜"><svg class="ui-icon" aria-hidden="true"><use href="#icon-import"></use></svg>导入文件</button>
-        <button type="button" id="material-folder-import" class="secondary"><svg class="ui-icon" aria-hidden="true"><use href="#icon-folder"></use></svg>添加文件夹</button>
-        <button type="button" id="material-audio-open" class="secondary" title="提取原声、分离人声与伴奏、去气口">音频处理</button>
+        <div class="material-entry-actions" role="group" aria-label="素材操作">
+          <button type="button" id="material-import" title="选择视频或图片，每个文件直接生成一个分镜"><svg class="ui-icon" aria-hidden="true"><use href="#icon-import"></use></svg>导入文件</button>
+          <button type="button" id="material-folder-import"><svg class="ui-icon" aria-hidden="true"><use href="#icon-folder"></use></svg>添加文件夹</button>
+          <button type="button" id="material-audio-open" title="提取原声、分离人声与伴奏、去气口"><svg class="ui-icon" aria-hidden="true"><use href="#icon-audio"></use></svg>音频处理</button>
+        </div>
         <label class="material-search-box"><svg class="ui-icon" aria-hidden="true"><use href="#icon-search"></use></svg><input type="search" id="material-search" placeholder="搜索素材" aria-label="搜索当前素材目录"></label>
       </div>
       <div id="material-selection-actions" hidden>
@@ -415,10 +438,14 @@
         <p id="material-empty-hint" class="muted compact">添加文件夹后，可以打开并拖入需要的素材。</p>
       </div>
       <ul id="material-list" class="material-list"></ul>
+      <div popover="auto" id="material-context-menu" role="menu" aria-label="素材操作">
+        <button type="button" role="menuitem" id="material-context-remove"><span>从素材库移除</span><kbd>Delete</kbd></button>
+        <button type="button" role="menuitem" id="material-context-audio">音频处理</button>
+      </div>
       <section id="processed-materials" hidden><h3>已处理素材</h3><ul id="processed-material-list"></ul></section>
     </section>
     <aside class="sidebar" aria-label="预览与导出">
-      <section class="panel editor-player" aria-labelledby="preview-heading">
+      <section id="player-pane" class="panel editor-player" aria-labelledby="preview-heading">
         <div class="panel-heading"><h2 id="preview-heading">素材预览</h2><span id="preview-meta" class="muted"></span></div>
         <div class="viewer preview-stage">
           <svg class="ui-icon preview-placeholder-icon" aria-hidden="true"><use href="#icon-monitor"></use></svg>
@@ -562,37 +589,56 @@
               </details>
             </div>
             <div id="inspector-panel-subtitles" data-inspector-panel role="tabpanel" aria-labelledby="inspector-tab-subtitles" tabindex="0" hidden>
-              <div class="caption-master"><h3 class="inspector-section-title">成片字幕</h3><label class="check"><input id="caption-enabled" type="checkbox" role="switch" checked>导出时显示字幕</label></div>
+              <div class="caption-master"><h3 class="inspector-section-title">成片字幕</h3><label class="p-switch">导出时显示<input id="caption-enabled" type="checkbox" role="switch" aria-label="导出时显示字幕" checked><span aria-hidden="true"></span></label></div>
               <div id="subtitle-style-settings">
-                <div class="caption-section-head"><h4>预设样式</h4><button type="button" class="quiet" id="caption-save-preset">保存当前预设</button></div>
-                <div id="caption-presets" aria-label="字幕样式预设"></div>
+                <div class="caption-section-head"><h4>预设样式</h4><span id="caption-preset-label"></span><button type="button" class="quiet" id="caption-save-preset" title="保存当前预设" aria-label="保存当前预设" aria-controls="caption-save-row" aria-expanded="false"><svg class="ui-icon" aria-hidden="true"><use href="#icon-plus"></use></svg></button></div>
+                <div id="caption-presets" class="caption-swatches" role="group" aria-label="字幕样式预设"></div>
+                <div id="caption-personal-group" hidden>
+                  <h4>我的预设</h4>
+                  <div id="caption-personal-presets" class="caption-swatches" role="group" aria-label="我的字幕预设"></div>
+                </div>
                 <div class="caption-save-row" id="caption-save-row" hidden>
                   <input id="caption-preset-name" maxlength="36" aria-label="新预设名称" placeholder="预设名称">
                   <button type="button" class="secondary" id="caption-confirm-preset">保存</button>
                   <button type="button" class="quiet" id="caption-cancel-preset">取消</button>
                 </div>
-                <div class="caption-section-head"><h4>基础样式</h4></div>
+                <div class="caption-section-head"><h4>文字样式</h4></div>
                 <div class="caption-fields">
-                  <label>字体<select id="caption-font"><option value="yahei">微软雅黑</option><option value="heiti">黑体</option><option value="song">宋体</option><option value="kai">楷体</option><option value="fang">仿宋</option><option value="arial">Arial</option></select></label>
-                  <label>字号<input type="number" id="caption-size" min="8" max="72" step="1" value="18"></label>
-                  <div class="caption-type-options" aria-label="字体样式">
-                    <label title="粗体"><input id="caption-bold" type="checkbox" aria-label="粗体"><b>B</b></label>
-                    <label title="斜体"><input id="caption-italic" type="checkbox" aria-label="斜体"><i>I</i></label>
-                    <label title="下划线"><input id="caption-underline" type="checkbox" aria-label="下划线"><u>U</u></label>
+                  <label class="caption-field">字体<select id="caption-font"><option value="yahei">微软雅黑</option><option value="heiti">黑体</option><option value="song">宋体</option><option value="kai">楷体</option><option value="fang">仿宋</option><option value="arial">Arial</option></select></label>
+                  <div class="caption-field"><span id="caption-emphasis-label">字形</span><div class="caption-segments" role="group" aria-labelledby="caption-emphasis-label">
+                    <label title="粗体"><input id="caption-bold" type="checkbox" aria-label="粗体"><b aria-hidden="true">B</b></label>
+                    <label title="下划线"><input id="caption-underline" type="checkbox" aria-label="下划线"><u aria-hidden="true">U</u></label>
+                    <label title="斜体"><input id="caption-italic" type="checkbox" aria-label="斜体"><i aria-hidden="true">I</i></label>
+                  </div></div>
+                  <div class="caption-field"><span>颜色</span>
+                    <div class="caption-colors">
+                      <label>文字<input type="color" id="caption-color" aria-label="文字颜色" value="#ffffff"></label>
+                      <label>描边<input type="color" id="caption-outline" aria-label="描边颜色" value="#000000"></label>
+                    </div>
                   </div>
-                  <label>字间距<input type="number" id="caption-spacing" min="0" max="12" step="1" value="0"></label>
-                  <label>文字颜色<input type="color" id="caption-color" value="#ffffff"></label>
-                  <label>描边颜色<input type="color" id="caption-outline" value="#000000"></label>
-                  <label>描边宽度<input type="number" id="caption-outline-width" min="0" max="8" step="1" value="2"></label>
+                  <div class="caption-field-pair">
+                    <label class="caption-field">字间距<input type="number" id="caption-spacing" min="0" max="12" step="1" value="0"></label>
+                    <label class="caption-field">描边宽度<input type="number" id="caption-outline-width" min="0" max="8" step="1" value="2"></label>
+                  </div>
+                  <div class="caption-field"><span id="caption-align-label">对齐</span><fieldset id="caption-align" class="caption-segments" aria-labelledby="caption-align-label">
+                    <label title="靠左"><input type="radio" name="caption-align" id="caption-align-left" value="left" aria-label="靠左对齐"><span class="caption-align-symbol" aria-hidden="true"></span></label>
+                    <label title="居中"><input type="radio" name="caption-align" id="caption-align-center" value="center" aria-label="居中对齐" checked><span class="caption-align-symbol" aria-hidden="true"></span></label>
+                    <label title="靠右"><input type="radio" name="caption-align" id="caption-align-right" value="right" aria-label="靠右对齐"><span class="caption-align-symbol" aria-hidden="true"></span></label>
+                  </fieldset></div>
                 </div>
-                <div class="caption-section-head"><h4>画面位置</h4></div>
-                <div class="caption-fields">
-                  <label>垂直<select id="caption-position"><option value="bottom">底部</option><option value="middle">居中</option><option value="top">顶部</option><option value="custom">自由定位</option></select></label>
-                  <label>水平<select id="caption-align"><option value="left">靠左</option><option value="center" selected>居中</option><option value="right">靠右</option></select></label>
-                  <label>安全边距<input id="caption-margin" type="number" min="0" max="64" value="16"></label>
-                  <label id="caption-x-field" hidden>水平 X (%)<input id="caption-x" type="number" min="0" max="100" value="50"></label>
-                  <label id="caption-y-field" hidden>垂直 Y (%)<input id="caption-y" type="number" min="0" max="100" value="85"></label>
-                </div>
+                <details class="caption-section" open>
+                  <summary>位置与大小</summary>
+                  <div class="caption-fields">
+                    <div class="caption-field"><label for="caption-size">字号</label><div class="caption-size-controls">
+                      <input type="range" id="caption-size-slider" aria-label="调整字幕字号" min="8" max="72" step="1" value="18">
+                      <input type="number" id="caption-size" min="8" max="72" step="1" value="18">
+                    </div></div>
+                    <label class="caption-field">位置<select id="caption-position"><option value="bottom">底部</option><option value="middle">居中</option><option value="top">顶部</option><option value="custom">自由定位</option></select></label>
+                    <label class="caption-field">安全边距<input id="caption-margin" type="number" min="0" max="64" value="16"></label>
+                    <label class="caption-field" id="caption-x-field" hidden>水平 X (%)<input id="caption-x" type="number" min="0" max="100" value="50"></label>
+                    <label class="caption-field" id="caption-y-field" hidden>垂直 Y (%)<input id="caption-y" type="number" min="0" max="100" value="85"></label>
+                  </div>
+                </details>
                 <details id="caption-preview-pane" open>
                   <summary>样式预览</summary>
                   <div id="caption-sample-stage" data-ratio="16:9"><canvas id="caption-preview-canvas" aria-label="当前画幅下的字幕位置和样式"></canvas></div>
@@ -663,6 +709,21 @@
 
   <div id="cloud-tts-workspace"></div>
   <div id="cloud-tts-settings-workspace"></div>
+  <dialog id="update-dialog" class="cloud-settings-dialog" aria-labelledby="update-title">
+    <header class="cloud-settings-heading"><h2 id="update-title" tabindex="-1" autofocus>软件更新</h2></header>
+    <div class="cloud-settings-body">
+      <p id="update-version" class="cloud-settings-muted"></p>
+      <p id="update-status" role="status"></p>
+      <progress id="update-progress" aria-label="更新下载进度" max="100" hidden></progress>
+      <section id="update-details" hidden><h3>更新说明</h3><p id="update-notes"></p></section>
+      <p id="update-error" role="alert" hidden></p>
+    </div>
+    <footer class="cloud-settings-actions">
+      <button type="button" id="update-manage-installation" title="打开 Windows 的已安装应用列表，搜索佳剪后可卸载" hidden>在 Windows 中卸载…</button>
+      <button type="button" id="update-close">关闭</button>
+      <button type="button" id="update-action"></button>
+    </footer>
+  </dialog>
   <dialog id="subproject-batch-dialog" class="narration-review" aria-labelledby="subproject-batch-title">
     <h2 id="subproject-batch-title">子工程预览范围</h2>
     <p class="muted compact">勾选参与混剪的子工程，设置各自的成片数量。每批最多 1000 条。</p>

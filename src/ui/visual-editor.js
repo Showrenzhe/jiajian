@@ -34,7 +34,7 @@ window.editVisualStyle = function (options) {
     }catch(error){report.textContent=error.message;}
   }));
   dialog.append(head,nav,body,foot);document.body.append(dialog);dialog.showModal();
-  dialog.onclose=()=>{live=false;version++;clearTimeout(timer);dialog.remove();};
+  dialog.onclose=()=>{live=false;version++;clearTimeout(timer);window.afterDialogExit(dialog);};
   function preview(){
     const token=++version;clearTimeout(timer);
     timer=setTimeout(async()=>{

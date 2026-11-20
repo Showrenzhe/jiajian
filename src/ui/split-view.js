@@ -4,17 +4,49 @@
   const key = 'sd-workbench-split-view-v1';
   const clamp = (value, min, max) => Math.min(max, Math.max(min, value));
   const ids = ['materials', 'inspector', 'timeline'];
+  const sides = ['materials', 'inspector'];
+  const dockKey = side => 'dock-' + side;
+  const belowKey = side => 'below-' + side;
+  const returnKey = side => 'return-' + side;
+  const spanPosition = { player: 'below', timeline: 'above', dock: 'full' };
+  const collapsedPosition = { player: 'above', timeline: 'full', dock: 'above' };
 
   function read() {
     try {
       const saved = JSON.parse(localStorage.getItem(key));
-      return Object.fromEntries(ids.filter((id) => Number.isFinite(saved?.[id]) && saved[id] > 0 && saved[id] < 1)
+      const preferred = Object.fromEntries(ids.filter((id) => Number.isFinite(saved?.[id]) && saved[id] > 0 && saved[id] <= 1)
         .map((id) => [id, saved[id]]));
+      for (const side of sides) {
+        if (saved?.[dockKey(side)] === true) preferred[dockKey(side)] = true;
+        else if (saved?.[belowKey(side)] === true) preferred[belowKey(side)] = true;
+        if (['above', 'below', 'full'].includes(saved?.[returnKey(side)])) preferred[returnKey(side)] = saved[returnKey(side)];
+      }
+      return preferred;
     } catch { return {}; }
   }
 
-  window.mountSplitView = (workspace, bounds) => {
-    const handles = [...workspace.querySelectorAll('.workspace-divider')];
+  window.mountSplitView = (workspace, bounds, topologyChanged) => {
+    const dividers = [...workspace.querySelectorAll('.workspace-divider')];
+    const handles = [...dividers];
+    const guides = new Map();
+    for (const side of sides) {
+      const guide = document.createElement('div');
+      guide.className = 'workspace-dock-guide';
+      guide.dataset.side = side;
+      guide.setAttribute('aria-hidden', 'true');
+      workspace.append(guide);
+      guides.set(side, guide);
+      for (const kind of ['dock', 'junction', 'player', 'timeline']) {
+        const handle = document.createElement('button');
+        handle.type = 'button';
+        handle.className = 'workspace-area-handle';
+        handle.dataset.areaHandle = kind;
+        handle.dataset.side = side;
+        if (kind === 'player' || kind === 'timeline') handle.classList.add('workspace-span-handle');
+        workspace.append(handle);
+        handles.push(handle);
+      }
+    }
     let preferred = read();
     let drag;
 
@@ -26,11 +58,15 @@
       } catch { /* Resizing remains available without persistent storage. */ }
     }
 
-    function measure({ width, height } = bounds()) {
+    function measure({ width, height, gutter } = bounds()) {
       // At small window sizes reserve usable space for each pane first.
-      const scale = Math.min(1, width / (158 + 210 + 202));
-      const min = { materials: 158 * scale, inspector: 210 * scale, timeline: Math.min(160, height * .46) };
-      const sideBudget = width - 202 * scale;
+      const panelWidth = width - 2 * gutter;
+      const panelHeight = height - gutter;
+      // Compact panes remain visible and their boundaries remain reachable.
+      const minColumn = Math.min(76, panelWidth / 3);
+      const minRow = Math.min(52, panelHeight / 2);
+      const min = { materials: minColumn, inspector: minColumn, timeline: minRow };
+      const sideBudget = panelWidth - minColumn;
       const materials = preferred.materials ? width * preferred.materials : clamp(width * .19, 176, 295);
       const inspector = preferred.inspector ? width * preferred.inspector : clamp(width * .215, 216, 336);
       const extraLeft = Math.max(0, materials - min.materials);
@@ -38,14 +74,42 @@
       const extraScale = Math.min(1, Math.max(0, sideBudget - min.materials - min.inspector) / (extraLeft + extraRight || 1));
       const left = min.materials + extraLeft * extraScale;
       const right = min.inspector + extraRight * extraScale;
-      const max = { materials: sideBudget - right, inspector: sideBudget - left, timeline: height - Math.min(165, height * .5) };
+      const max = { materials: sideBudget - right, inspector: sideBudget - left, timeline: panelHeight - minRow };
       const defaultTimeline = Math.max(205, height * (matchMedia('(max-width: 940px)').matches ? .47 : .405));
       const timeline = clamp(preferred.timeline ? height * preferred.timeline : defaultTimeline, min.timeline, max.timeline);
-      return { width, height, min, max, wanted: { materials, inspector }, size: { materials: left, inspector: right, timeline } };
+      return { width, height, gutter, min, max, wanted: { materials, inspector }, size: { materials: left, inspector: right, timeline } };
     }
 
+    function position(side) {
+      return preferred[dockKey(side)] ? 'full' : preferred[belowKey(side)] ? 'below' : 'above';
+    }
+
+    function lowerSide(side) {
+      return position(side) === 'below' || (position(side) === 'full' && preferred[returnKey(side)] === 'below');
+    }
+
+    let lastTopology;
     function render(layout = measure()) {
-      for (const handle of handles) {
+      const topology = sides.map(side => position(side) + (lowerSide(side) ? '-lower' : '')).join('/');
+      if (topology !== lastTopology) {
+        lastTopology = topology;
+        const rows = [['materials', 'player', 'properties'], ['.', '.', '.'], ['timeline', 'timeline', 'timeline']];
+        for (const [index, side] of sides.entries()) {
+          const column = index * 2, name = rows[0][column], state = position(side);
+          if (state === 'full') rows[1][column] = rows[2][column] = name;
+          if (state === 'below') { rows[0][column] = 'player'; rows[2][column] = name; }
+          workspace.toggleAttribute('data-' + dockKey(side), state === 'full');
+          workspace.toggleAttribute('data-' + belowKey(side), state === 'below');
+          workspace.toggleAttribute('data-lower-' + side, lowerSide(side));
+        }
+        workspace.style.setProperty('--split-areas', rows.map(row => '"' + row.join(' ') + '"').join(' '));
+        for (const handle of handles) {
+          const { areaHandle: kind, side } = handle.dataset;
+          if (spanPosition[kind]) handle.setAttribute('aria-pressed', String(position(side) === spanPosition[kind]));
+        }
+        topologyChanged();
+      }
+      for (const handle of dividers) {
         const id = handle.dataset.split;
         const value = layout.size[id];
         workspace.style.setProperty(`--split-${id}`, `${value}px`);
@@ -69,9 +133,74 @@
       render(measure(layout));
     }
 
+    function setSpan(kind, side, expand) {
+      const previous = position(side), target = spanPosition[kind], fallback = collapsedPosition[kind];
+      if ((previous === target) === expand) return;
+      const next = expand ? target : preferred[returnKey(side)] || fallback;
+      delete preferred[returnKey(side)];
+      if (expand && previous !== fallback) preferred[returnKey(side)] = previous;
+      delete preferred[dockKey(side)];
+      delete preferred[belowKey(side)];
+      if (next === 'full') preferred[dockKey(side)] = true;
+      if (next === 'below') preferred[belowKey(side)] = true;
+      render();
+      const guide = guides.get(side);
+      delete guide.dataset.preview;
+      guide.getAnimations().forEach(animation => animation.cancel());
+      if (!matchMedia('(prefers-reduced-motion: reduce)').matches) {
+        // Only the guide moves. Editor controls, hit targets and scroll ranges
+        // already belong to the new rectangles, even on a rapid reversal.
+        guide.animate([
+          { opacity: .85, clipPath: 'inset(0 0 0 0)' },
+          { opacity: 0 },
+        ], { duration: 145, easing: 'ease-out' });
+      }
+    }
+
+    // Use the furthest point as the anchor so reversing the same gesture
+    // restores the previous tiling without crossing a relocated handle.
+    function spanGesture(kind, side, event) {
+      const isVertical = kind === 'dock';
+      const sign = isVertical ? (lowerSide(side) ? -1 : 1) : (side === 'materials' ? -1 : 1);
+      let anchor = sign * (isVertical ? event.clientY : event.clientX);
+      return (x, y) => {
+        const coord = sign * (isVertical ? y : x), expanded = position(side) === spanPosition[kind];
+        anchor = expanded ? Math.max(anchor, coord) : Math.min(anchor, coord);
+        const distance = (coord - anchor) * (expanded ? -1 : 1);
+        guides.get(side).toggleAttribute('data-preview', distance > 3 && distance < 18);
+        if (distance >= 18) {
+          setSpan(kind, side, !expanded);
+          anchor = coord;
+        }
+      };
+    }
+
+    function gesture(horizontal, vertical, event) {
+      const { size } = measure();
+      const startX = event.clientX, startY = event.clientY;
+      const moveDock = sides.includes(vertical) ? spanGesture('dock', vertical, event) : undefined;
+      return (x, y) => {
+        if (horizontal) update(horizontal, size[horizontal] + (x - startX) * (horizontal === 'materials' ? 1 : -1));
+        if (vertical === 'timeline') update('timeline', size.timeline - (y - startY));
+        else moveDock?.(x, y);
+      };
+    }
+
+    function clearGuides() {
+      for (const guide of guides.values()) guide.removeAttribute('data-preview');
+    }
+
     function finish(event) {
       if (!drag || (event?.pointerId != null && event.pointerId !== drag.pointerId)) return;
       const { handle, pointerId, before } = drag;
+      if (event?.type === 'pointerup') {
+        drag.move(event.clientX, event.clientY);
+        if (drag.tapped) {
+          const { areaHandle: kind, side } = handle.dataset;
+          setSpan(kind, side, position(side) !== spanPosition[kind]);
+        }
+      }
+      clearGuides();
       drag = null;
       handle.removeAttribute('data-dragging');
       if (handle.hasPointerCapture(pointerId)) handle.releasePointerCapture(pointerId);
@@ -80,19 +209,23 @@
     }
 
     for (const handle of handles) {
-      const id = handle.dataset.split;
-      const axis = id === 'timeline' ? 'clientY' : 'clientX';
-      // Framework7 handleTouchMove uses initial width + signed displacement, clamped to the available space:
-      // https://github.com/framework7io/framework7/blob/master/src/core/components/panel/resizable-panel.js#L73-L84
-      const sign = id === 'materials' ? 1 : -1;
+      const { split: id, areaHandle, side } = handle.dataset;
+      const horizontal = areaHandle === 'junction' ? side : sides.includes(id) ? id : undefined;
+      const vertical = areaHandle === 'dock' ? side : (id === 'timeline' || areaHandle === 'junction') ? 'timeline' : undefined;
       handle.addEventListener('pointerdown', (event) => {
-        if (!event.isPrimary || event.button !== 0 || drag) return;
+        if (!event.isPrimary || event.button !== 0 || drag || workspace.classList.contains('panel-layout-dragging')) return;
         // Keep an editor's caret while resizing. Otherwise let Chromium choose the focus modality.
         const focused = document.activeElement;
         if (focused?.matches('input, select, textarea') || focused?.isContentEditable) event.preventDefault();
         try { handle.setPointerCapture(event.pointerId); } catch { return; }
         handle.dataset.pointerFocus = '';
-        drag = { handle, id, axis, sign, pointerId: event.pointerId, start: event[axis], size: measure().size[id], before: { ...preferred } };
+        const move = spanPosition[areaHandle] ? spanGesture(areaHandle, side, event) : gesture(horizontal, vertical, event);
+        drag = { handle, pointerId: event.pointerId, before: { ...preferred },
+          tapped: handle.classList.contains('workspace-span-handle'),
+          move(x, y) {
+            if (Math.hypot(x - event.clientX, y - event.clientY) > 3) this.tapped = false;
+            move(x, y);
+          } };
         handle.dataset.dragging = '';
       });
       handle.addEventListener('focus', () => {
@@ -103,28 +236,52 @@
         if (drag?.handle === handle) finish();
       });
       handle.addEventListener('lostpointercapture', (event) => { if (drag?.handle === handle) finish(event); });
+      if (spanPosition[areaHandle]) handle.addEventListener('click', event => {
+        if (event.detail) return;
+        setSpan(areaHandle, side, position(side) !== spanPosition[areaHandle]);
+        save();
+      });
       handle.addEventListener('dblclick', () => {
-        delete preferred[id];
+        if (spanPosition[areaHandle]) {
+          delete preferred[dockKey(side)];
+          delete preferred[belowKey(side)];
+          delete preferred[returnKey(side)];
+        }
+        else {
+          if (horizontal) delete preferred[horizontal];
+          if (vertical) delete preferred[vertical];
+        }
         render();
         save();
       });
       handle.addEventListener('keydown', (event) => {
         if (drag || event.altKey || event.ctrlKey || event.metaKey) return;
         const layout = measure();
-        const decrease = id === 'timeline' ? 'ArrowUp' : 'ArrowLeft';
-        const increase = id === 'timeline' ? 'ArrowDown' : 'ArrowRight';
-        const step = (event.shiftKey ? 32 : 8) * sign;
-        const values = { [decrease]: layout.size[id] - step, [increase]: layout.size[id] + step, Home: layout.min[id], End: layout.max[id] };
-        if (!Object.hasOwn(values, event.key)) return;
+        if (spanPosition[areaHandle]) {
+          const arrows = areaHandle === 'dock' ? ['ArrowUp', 'ArrowDown'] : ['ArrowLeft', 'ArrowRight'];
+          if (![...arrows, 'Home', 'End', 'Enter', ' '].includes(event.key)) return;
+          const expanded = position(side) === spanPosition[areaHandle];
+          const outward = areaHandle === 'dock' ? (lowerSide(side) ? 'ArrowUp' : 'ArrowDown') : (side === 'materials' ? 'ArrowLeft' : 'ArrowRight');
+          setSpan(areaHandle, side, ['Enter', ' '].includes(event.key) ? !expanded : [outward, 'End'].includes(event.key));
+        } else {
+          const split = ['ArrowLeft', 'ArrowRight'].includes(event.key) ? horizontal
+            : ['ArrowUp', 'ArrowDown'].includes(event.key) ? vertical : id;
+          if (!split) return;
+          const step = (event.shiftKey ? 32 : 8) * (split === 'materials' ? 1 : -1);
+          const values = { ArrowLeft: -step, ArrowUp: -step, ArrowRight: step, ArrowDown: step };
+          if (Object.hasOwn(values, event.key)) update(split, layout.size[split] + values[event.key], layout);
+          else if (event.key === 'Home' || event.key === 'End') update(split, layout[event.key === 'Home' ? 'min' : 'max'][split], layout);
+          else return;
+        }
         event.preventDefault();
         event.stopPropagation();
         handle.removeAttribute('data-pointer-focus');
-        update(id, values[event.key], layout);
         save();
       });
     }
     window.addEventListener('keydown', (event) => {
       if (!drag || event.key !== 'Escape' || event.isComposing || event.altKey || event.ctrlKey || event.metaKey || event.shiftKey) return;
+      if (workspace.hasAttribute('data-layout-editing')) return;
       event.preventDefault();
       event.stopImmediatePropagation();
       finish();
@@ -132,17 +289,20 @@
     window.addEventListener('pointermove', (event) => {
       if (!drag || drag.pointerId !== event.pointerId) return;
       if (!(event.buttons & 1)) return finish();
-      update(drag.id, drag.size + (event[drag.axis] - drag.start) * drag.sign);
+      drag.move(event.clientX, event.clientY);
     });
     for (const name of ['pointerup', 'pointercancel']) window.addEventListener(name, finish);
     window.addEventListener('blur', () => finish());
+    window.addEventListener('resize', () => finish());
     return {
       sync(enabled) {
-        if (!enabled || workspace.hasAttribute('data-layout-editing')) finish();
+        if (!enabled) finish();
         if (enabled) render();
       },
       sizes() { return measure().size; },
       resize: update,
+      gesture, spanGesture, setSpan, lowerSide, position, clearGuides,
+      get dragging() { return Boolean(drag); },
       save,
       snapshot() { return { ...(drag?.before ?? preferred) }; },
       restore(saved) { finish(); preferred = { ...saved }; save(); },

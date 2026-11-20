@@ -8,12 +8,14 @@ const fs = require('node:fs/promises');
 const path = require('node:path');
 const { setTimeout: delay } = require('node:timers/promises');
 const { promisify } = require('node:util');
-const { app } = require('electron');
+const { app, nativeTheme } = require('electron');
 const { launchDesktop } = require('../src/desktop.cjs');
 const { inspectAsset } = require('../src/media.cjs');
 const { ffmpeg, fixtures } = require('./fixtures.cjs');
+const { clickVisible } = require('./desktop-input.cjs');
 
 app.disableHardwareAcceleration();
+app.setVersion(require('../package.json').version);
 
 const execFileAsync = promisify(execFile);
 
@@ -41,7 +43,7 @@ async function traceDockedNavigation() {
     }
     return widths;
   }
-  const current = navigation.querySelector('[aria-current="page"]');
+  const current = navigation.querySelector('[aria-current="page"]') ?? navigation.querySelector('#tab-home');
   current.focus();
   current.dispatchEvent(new KeyboardEvent('keydown', { bubbles: true, ctrlKey: true, code: 'Backslash' }));
   current.focus();
@@ -88,7 +90,7 @@ async function traceFloatingNavigation(mode) {
   const openRight = parseFloat(getComputedStyle(navigation).left) + navigation.getBoundingClientRect().width;
   const fullyOpen = x => x !== null && Math.abs(x - openRight) < 0.02;
   const opening = await until(fullyOpen);
-  const current = navigation.querySelector('[aria-current="page"]');
+  const current = navigation.querySelector('#tab-home');
   const focused = document.activeElement === current && !navigation.inert;
   const escape = () => document.activeElement.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }));
   escape();
@@ -125,7 +127,7 @@ async function checkNavigation(contents, mode) {
       }
       assert.ok(trace.before > 1 && Math.abs(trace.reversed[0] - trace.before) < 1, mode + ' 退出中重开应从原位开始');
       assert.ok(trace.reversed.every(x => x !== null && x >= trace.before - 1), mode + ' 反向时应保持可见并直接展开');
-      assert.ok(trace.focused && trace.focusReturned, mode + ' 浮层应聚焦当前页，Esc 应立即把焦点和操作权还给开关');
+      assert.ok(trace.focused && trace.focusReturned, mode + ' 浮层应聚焦工作台入口，Esc 应立即把焦点和操作权还给开关');
       const { x, y } = await evaluate(`(() => {
         const {x, y, width, height} = document.querySelector('#title-tab').getBoundingClientRect();
         return { x: x + width / 2, y: y + height / 2 };
@@ -141,17 +143,16 @@ async function checkNavigation(contents, mode) {
           const toggle = document.querySelector('#nav-toggle');
           const nav = document.querySelector('#workspace-navigation');
           toggle.click();
-          const current = nav.querySelector('[aria-current="page"]');
+          const current = nav.querySelector('#tab-home');
           const open = nav.checkVisibility() && !nav.inert && document.activeElement === current
             && Math.abs(nav.getBoundingClientRect().right - ${trace.openRight}) < 0.02;
-          nav.querySelector('#tab-home').focus();
-          const marked = getComputedStyle(current).outlineStyle !== 'none';
+          const noFalseSelection = !nav.querySelector('[aria-current="page"]');
           const emulated = matchMedia('(prefers-reduced-motion: ${motion}) and (forced-colors: ${colors})').matches;
           toggle.click();
-          return {emulated, open, marked, closed: !nav.checkVisibility() && nav.inert && document.activeElement === toggle};
+          return {emulated, open, noFalseSelection, closed: !nav.checkVisibility() && nav.inert && document.activeElement === toggle};
         })()`);
         assert.ok(states.emulated && states.open && states.closed, mode + ' 使用减少动态效果或高对比时应即时开合并保持焦点可用');
-        if (colors === 'active') assert.ok(states.marked, mode + ' 高对比下应看得见当前页标记');
+        assert.ok(states.noFalseSelection, mode + ' 侧栏应只标记与当前页对应的入口');
       }
       return;
     }
@@ -176,6 +177,11 @@ async function checkNavigation(contents, mode) {
       return [closed, width()];
     })()`);
     assert.deepEqual(widths, [full, docked], '减少动态效果时应在切换当下抵达目标宽度');
+    if (mode === 'home') {
+      await emulate('reduce', 'active');
+      assert.ok(await evaluate(`getComputedStyle(document.querySelector('#workspace-navigation [aria-current="page"]')).outlineStyle !== 'none'`),
+        '高对比度下应保留当前页的可见标记');
+    }
   } finally {
     await debuggerClient.sendCommand('Emulation.setEmulatedMedia', { features: [] });
     await debuggerClient.sendCommand('Animation.setPlaybackRate', { playbackRate: 1 });
@@ -318,7 +324,10 @@ async function run() {
       const element = document.querySelector(${JSON.stringify(selector)});
       if (!element?.checkVisibility()) return null;
       const { left, right, top, bottom } = element.getBoundingClientRect();
-      const rgb = getComputedStyle(element).color.match(/[0-9.]+/g).slice(0, 3).map(Number);
+      const paint = document.createElement('canvas').getContext('2d', { willReadFrequently: true });
+      paint.fillStyle = getComputedStyle(element).color;
+      paint.fillRect(0, 0, 1, 1);
+      const rgb = Array.from(paint.getImageData(0, 0, 1, 1).data);
       return { left: left / innerWidth, right: right / innerWidth, top: top / innerHeight, bottom: bottom / innerHeight, rgb };
     })()`);
     assert.ok(label, `${file} 应显示 ${selector}`);
@@ -390,19 +399,106 @@ async function run() {
   assert.equal(await runInWindow('document.title'), '佳剪');
   assert.equal(await runInWindow('typeof window.require'), 'undefined');
   assert.equal(await runInWindow('typeof window.workbench.pick'), 'function');
-  assert.ok(await runInWindow(`!document.querySelector('#home .home-shortcuts') &&
-    ['home-import', 'tab-script', 'tab-audio', 'tab-scene-split'].every(id =>
-      document.querySelector('#workspace-navigation').contains(document.getElementById(id)))`), '创作工具应集中在侧栏');
+  const navigate = selector => clickVisible(win.webContents, selector);
+  async function goHome() {
+    await navigate('#title-home');
+    await waitFor('!document.querySelector("#home").hidden', '首页应可见');
+  }
+  async function checkButtonIcons(selector) {
+    const broken = await runInWindow(`[...document.querySelectorAll(${JSON.stringify(selector)})].filter(button => {
+      const icon = button.querySelector('svg use');
+      const symbol = icon && document.getElementById(icon.getAttribute('href').slice(1));
+      const bounds = icon?.getBBox();
+      return symbol?.localName !== 'symbol' || !icon.checkVisibility() || !(bounds.width > 0 && bounds.height > 0);
+    }).map(button => button.id || button.textContent.trim())`);
+    assert.deepEqual(broken, [], '可见按钮应引用有实际绘制范围的图标');
+  }
+  const toolIds = ['home-import', 'tab-montage', 'tab-scene-split', 'tab-script', 'tab-audio'];
+  const workflowIds = ['replicate', 'ai-video', 'smart-slice', 'assets', 'digital-avatar', 'voice-clone',
+    'face-fusion', 'distribution', 'analytics', 'tasks', 'teams'];
+  await waitFor('document.querySelector("#draft-status-title").textContent === "还没有本地草稿"', '空草稿首页应载入');
+  assert.deepEqual(await runInWindow('[...document.querySelectorAll("#home-local-tools button")].map(b => b.id)'), toolIds);
+  assert.deepEqual(await runInWindow('[...document.querySelectorAll("#workspace-navigation [data-workflow]")].map(b => b.dataset.workflow)'), workflowIds);
+  assert.ok(await runInWindow(`!document.querySelector('#workspace-navigation details, #workspace-navigation summary') &&
+    [...document.querySelectorAll('#workspace-navigation [data-workflow]')].every(b => b.checkVisibility()) &&
+    [...document.querySelectorAll('#home-local-tools button')].every(b =>
+      [...document.querySelectorAll('#workspace-navigation button, #home button')].filter(other =>
+        other.checkVisibility() && other.textContent.trim() === b.textContent.trim()).length === 1)`),
+  '侧栏应直接展示全部业务入口，首页五项本地创作各出现一次');
+  const homeSize = win.getSize();
+  for (const [width, height] of [[850, 600], homeSize]) {
+    win.setSize(width, height);
+    await waitFor(`Math.abs(innerWidth - ${width}) <= 1`, '首页应更新窗口宽度');
+    assert.ok(await runInWindow(`(() => {
+      const rail = document.querySelector('#home-local-tools').getBoundingClientRect();
+      const drafts = document.querySelector('.draft-content').getBoundingClientRect();
+      const buttons = [...document.querySelectorAll('#home-local-tools button')];
+      return drafts.width > 0 && rail.left >= drafts.right && rail.right <= innerWidth &&
+        Math.abs(rail.top - drafts.top) <= 1 && document.documentElement.scrollWidth <= innerWidth &&
+        buttons.every(button => button.checkVisibility() && button.scrollWidth <= button.clientWidth + 1);
+    })()`), width + 'px 首页应在草稿右侧显示五个完整入口');
+    await navigate('#tab-audio');
+    await waitFor('document.querySelector(".app-frame").dataset.mode === "audio"', '应从右侧工具打开音频提取');
+    await goHome();
+  }
+  for (const theme of ['light', 'dark']) {
+    nativeTheme.themeSource = theme;
+    await waitFor(`document.documentElement.dataset.theme === '${theme}' && !document.documentElement.hasAttribute('data-theme-changing')`,
+      '首页应完成明暗切换');
+    await checkButtonIcons('#workspace-navigation button, #home-local-tools button');
+    await screenshot('home-' + theme + '.png', '#local-tools-heading');
+  }
+  nativeTheme.themeSource = 'system';
+  // Tab through the complete group and activate the last entry using a native Enter event.
+  const client = win.webContents.debugger;
+  client.attach();
+  try {
+    await client.sendCommand('Emulation.setFocusEmulationEnabled', { enabled: true });
+    async function key(name, keyCode) {
+      for (const type of ['keyDown', 'keyUp']) {
+        const text = type === 'keyDown' && name === 'Enter' ? '\r' : '';
+        await client.sendCommand('Input.dispatchKeyEvent', { type, key: name, code: name, windowsVirtualKeyCode: keyCode, text });
+      }
+    }
+    await runInWindow('document.querySelector("#draft-rows").focus()');
+    for (const id of toolIds) {
+      await key('Tab', 9);
+      assert.equal(await runInWindow('document.activeElement.id'), id, 'Tab 应依次访问本地创作入口');
+    }
+    await key('Enter', 13);
+    await waitFor('document.querySelector(".app-frame").dataset.mode === "audio"', 'Enter 应打开音频提取');
+  } finally {
+    client.detach();
+  }
+  await goHome();
+  await navigate('#tab-drafts');
+  await waitFor(`!document.querySelector('#home-local-tools').checkVisibility() &&
+    document.querySelector('#draft-heading-label').textContent === '全部草稿' &&
+    document.querySelector('#draft-status-action').checkVisibility() &&
+    document.querySelector('#draft-status-action').textContent === '导入素材'`, '空草稿专页应保留自己的导入入口');
+  await navigate('#tab-home');
+  await navigate('#tab-scene-split');
+  await waitFor('document.querySelector("#scene-split-workspace").checkVisibility()', '场景分割入口应可点击');
+  await goHome();
+  for (const id of workflowIds) {
+    const selector = '#workspace-navigation [data-workflow="' + id + '"]';
+    const label = await runInWindow(`document.querySelector(${JSON.stringify(selector)}).textContent.trim()`);
+    await navigate(selector);
+    await waitFor(`document.querySelector('#service-title').textContent === ${JSON.stringify(label)} &&
+      document.querySelector(${JSON.stringify(selector)}).getAttribute('aria-current') === 'page'`, label + ' 应直接打开并标记选中');
+  }
+  await goHome();
   await checkNavigation(win.webContents, 'home');
   const files = await fixtures(root);
   const output = path.join(root, 'output');
   await fs.mkdir(output);
 
-  await runInWindow('document.querySelector("#tab-montage").click()');
+  await navigate('#tab-montage');
   await waitFor('!document.querySelector("#project-workspace").hidden && document.querySelector("#project-list-status").textContent.includes("还没有本地项目")', '批量混剪应先进入项目工作区');
   await checkNavigation(win.webContents, 'project');
   await runInWindow('document.querySelector("#project-new").click()');
-  assert.equal(await runInWindow('document.querySelector("#editor-workspace").hidden'), false);
+  await waitFor('!document.querySelector("#editor-workspace").hidden', '新工程应进入剪辑台');
+  await checkButtonIcons('#material-import, #material-folder-import, #material-audio-open');
   await waitForInspector('visual');
   const tabHighlight = () => runInWindow("parseFloat(getComputedStyle(document.querySelector('#inspector-tabs'), '::before').left)");
   const initialHighlight = await tabHighlight();
@@ -447,40 +543,35 @@ async function run() {
     const { x, y, width, height } = document.querySelector('.editor-materials').getBoundingClientRect();
     return { x, y, width, height };
   })()`;
+  // The viewport can report its restored size a frame before the pane ResizeObserver lays out the grid.
+  await runInWindow('new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve)))');
   const defaultMaterial = await runInWindow(materialBox);
-  await runInWindow('document.querySelector("#panel-layout-toggle").click()');
-  await waitFor('!document.querySelector("#panel-layout-layer").hidden && document.querySelectorAll(".panel-layout-box .panel-layout-handle").length === 36', '布局编辑应提供四个移动手柄和各面板的八个缩放边');
-  async function dragPanel(edge, dx, dy) {
-    await runInWindow(`(() => {
-      const handle = document.querySelector('.panel-layout-box[data-pane="materials"] [data-edge="${edge}"]');
-      const rect = handle.getBoundingClientRect();
-      const x = rect.x + rect.width / 2, y = rect.y + rect.height / 2;
-      const event = (type, clientX, clientY) => new PointerEvent(type, {
-        bubbles: true, cancelable: true, pointerId: 41, pointerType: 'mouse', button: 0,
-        buttons: type === 'pointerup' ? 0 : 1, clientX, clientY,
-      });
-      handle.dispatchEvent(event('pointerdown', x, y));
-      window.dispatchEvent(event('pointermove', x + ${dx}, y + ${dy}));
-      window.dispatchEvent(event('pointerup', x + ${dx}, y + ${dy}));
-    })()`);
+  const defaultPlayer = await runInWindow("document.querySelector('.editor-player').getBoundingClientRect().toJSON()");
+  await navigate('#panel-layout-toggle');
+  const grip = '.panel-layout-box[data-pane="materials"] [data-edge="move"]';
+  await waitFor(`document.querySelectorAll('.panel-layout-box [data-edge="move"]').length === 4
+    && document.querySelector(${JSON.stringify(grip)}).checkVisibility()`, '布局编辑时四个面板都应可拖动');
+  const start = await runInWindow(`document.querySelector(${JSON.stringify(grip)}).getBoundingClientRect().toJSON()`);
+  client.attach();
+  try {
+    const from = { x: start.x + start.width / 2, y: start.y + start.height / 2 };
+    const to = { x: defaultPlayer.x + defaultPlayer.width / 2, y: defaultPlayer.y + defaultPlayer.height / 2 };
+    await client.sendCommand('Input.dispatchMouseEvent', { type: 'mousePressed', ...from, button: 'left', buttons: 1, clickCount: 1 });
+    await client.sendCommand('Input.dispatchMouseEvent', { type: 'mouseMoved', ...to, button: 'left', buttons: 1 });
+    await client.sendCommand('Input.dispatchMouseEvent', { type: 'mouseReleased', ...to, button: 'left', clickCount: 1 });
+  } finally {
+    client.detach();
   }
-  await dragPanel('move', 36, 25);
-  await waitFor(`document.querySelector('#editor-workspace').dataset.panelLayout === 'custom' && (${materialBox}).x > ${defaultMaterial.x + 30}`, '向画布内部拖动手柄应移动素材库');
-  const movedMaterial = await runInWindow(materialBox);
-  assert.ok(movedMaterial.y > defaultMaterial.y + 18);
-  await dragPanel('se', 31, 19);
-  await waitFor(`(${materialBox}).width > ${movedMaterial.width + 25} && (${materialBox}).height > ${movedMaterial.height + 13}`, '拖动右下角应同时调整面板宽高');
-  const resizedMaterial = await runInWindow(materialBox);
-  await runInWindow(`document.querySelector('.panel-layout-box[data-pane="materials"] [data-edge="w"]').dispatchEvent(new KeyboardEvent('keydown', { key: 'ArrowLeft', bubbles: true, cancelable: true }))`);
-  await waitFor(`(${materialBox}).width > ${resizedMaterial.width + 6}`, '方向键应能调整面板边缘');
-  const customMaterial = await runInWindow(materialBox);
+  const materialInPlayerSlot = `Math.abs((${materialBox}).x - ${defaultPlayer.x}) < 2
+    && Math.abs((${materialBox}).width - ${defaultPlayer.width}) < 2`;
+  await waitFor(materialInPlayerSlot, '素材库应取得原播放器的位置和宽度');
+  await navigate('#panel-layout-toggle');
   const layoutReload = once(win.webContents, 'did-finish-load');
   win.webContents.reload();
   await layoutReload;
-  await runInWindow('document.querySelector("#tab-montage").click(); document.querySelector("#project-new").click();');
-  await waitFor(`document.querySelector('#editor-workspace').dataset.panelLayout === 'custom' && Math.abs((${materialBox}).x - ${customMaterial.x}) < 2 && Math.abs((${materialBox}).width - ${customMaterial.width}) < 2`, '重开工作台应保留自定义布局');
-  await runInWindow(`(() => { const picker = document.querySelector('#panel-layout-target'); picker.value = 'timeline'; picker.dispatchEvent(new Event('change')); })()`);
-  await waitFor(`Number(getComputedStyle(document.querySelector('#montage-pane')).zIndex) > Number(getComputedStyle(document.querySelector('.editor-materials')).zIndex)`, '置顶选择应能找回重叠的面板');
+  await navigate('#tab-montage');
+  await navigate('#project-new');
+  await waitFor(materialInPlayerSlot, '重开工作台应保留互换后的面板位置和宽度');
   try {
     win.setSize(850, 600);
     await waitFor(`(() => {
@@ -514,23 +605,24 @@ async function run() {
     await waitForInspector(panel);
     assert.ok(await runInWindow(target), '方向键应切换属性页并移动键盘焦点');
   }
-  await runInWindow('document.querySelector("#title-home").click()');
-  await click('.nav-more summary');
-  await waitFor("document.querySelector('[data-workflow=replicate]').checkVisibility()", '更多工具应从侧栏展开');
-  await click('[data-workflow=replicate]');
+  await goHome();
+  await navigate('[data-workflow=replicate]');
   await waitFor('document.querySelector("#service-title").textContent === "爆款复刻" && document.querySelector("#service-status").textContent === "待接入 API"', '待接入功能应说明真实状态');
   assert.equal(await runInWindow('document.querySelectorAll("#service-actions button").length'), 0);
   assert.ok(await runInWindow('document.querySelector("#creative-workflow-settings")?.checkVisibility()'), '未配置创作服务时应提供服务设置入口');
-  await runInWindow('document.querySelector("#title-home").click()');
-  await runInWindow('document.querySelector("#tab-script").click()');
+  await goHome();
+  await navigate('#tab-script');
   await waitFor('document.querySelectorAll("#script-rows .script-row").length === 3', '脚本页应显示三个初始脚本行');
   await checkNavigation(win.webContents, 'script');
-  await click('#nav-toggle');
-  await click('#tab-drafts');
+  await navigate('#nav-toggle');
+  await waitFor("document.querySelector('#workspace-navigation').getBoundingClientRect().left >= 0", '浮层展开后应能点击草稿');
+  await navigate('#tab-drafts');
   assert.ok(await runInWindow(`document.activeElement.id === 'draft-heading'
     && document.querySelector('.app-frame').dataset.navigation === 'docked'
     && !document.querySelector('#workspace-navigation').inert`), '从脚本浮层切到本地草稿应聚焦可见的草稿标题并恢复常驻侧栏');
-  await click('#tab-script');
+  assert.equal(await runInWindow('document.querySelector("#home-local-tools").checkVisibility()'), false);
+  await navigate('#tab-home');
+  await navigate('#tab-script');
   await runInWindow('document.querySelector("#script-import-dialogue").click()');
   await runInWindow('document.querySelector("#script-import-input").value = "1、开头台词\\t展示第一镜\\n2、第二条台词"; document.querySelector("#script-import-confirm").click();');
   await waitFor('document.querySelector(".script-dialogue").value === "开头台词" && document.querySelector(".script-note").value === "展示第一镜"', '应能批量粘贴台词和备注');
@@ -542,15 +634,15 @@ async function run() {
   const reloaded = once(win.webContents, 'did-finish-load');
   win.webContents.reload();
   await reloaded;
-  await runInWindow('document.querySelector("#tab-script").click()');
+  await navigate('#tab-script');
   await waitFor('document.querySelector(".script-dialogue")?.value === "开头台词"', '重新加载后应恢复本地脚本草稿');
   await runInWindow('document.querySelector("#script-go-montage").click()');
   await waitFor('!document.querySelector("#script-brief").hidden && document.querySelector("#script-brief-rows").textContent.includes("展示第一镜")', '脚本和备注应进入混剪工程');
-  await runInWindow('document.querySelector("#title-home").click()');
+  await goHome();
 
   selections.push({ title: '选择分镜素材', files: [files.red, files.green, files.still] });
   assert.equal(await runInWindow('document.querySelector("#home").hidden'), false);
-  await runInWindow('document.querySelector("#home-import").click()');
+  await navigate('#home-import');
   await waitFor('document.querySelectorAll("#shots .shot").length === 3', '导入后应有三个分镜');
   assert.equal(await runInWindow('document.querySelectorAll("#material-list .material-tile").length'), 3);
   const visibleThumbnail = `(() => {
@@ -679,7 +771,8 @@ async function run() {
   assert.ok((await fs.stat(project)).isFile());
   await runInWindow('(() => { const start = document.querySelector("#shots .start"); start.value = "0.75"; start.dispatchEvent(new Event("input")); })()');
   assert.equal(await runInWindow('document.querySelector("#shots .start").valueAsNumber'), 0.75);
-  await runInWindow('document.querySelector("#tab-montage").click()');
+  await goHome();
+  await navigate('#tab-montage');
   await waitFor('document.querySelector(".project-reopen")?.textContent.includes("混剪样片")', '保存后应列入本地项目');
   await runInWindow('document.querySelector(".project-reopen").click()');
   await waitFor('document.querySelector("#shots .start").valueAsNumber === 0.25 && document.querySelectorAll("#music-list li").length === 2', '应恢复保存的剪辑点和配乐');
@@ -750,12 +843,28 @@ async function run() {
   await openInspector('subtitles');
   await runInWindow('document.querySelector("#pick-subtitles").click()');
   await waitFor('document.querySelector("#subtitle-name").textContent.includes("样片字幕.srt")', '应加载 SRT 字幕');
-  await runInWindow('document.querySelector("#caption-presets button[title=醒目黄字]").click()');
+  await navigate('#caption-presets button[title="醒目黄字"]');
   await waitFor('document.querySelector("#caption-preview-canvas").dataset.rendered === "true" && document.querySelector("#caption-bold").checked', '实际字幕渲染预览应显示所选预设');
   await runInWindow('document.querySelector("#caption-enabled").click()');
   assert.match(await runInWindow('document.querySelector("#caption-feedback").textContent'), /关闭/);
   await runInWindow('document.querySelector("#caption-enabled").click()');
-  await runInWindow('(() => { const size = document.querySelector("#caption-size"); size.value = "26"; size.dispatchEvent(new Event("input", { bubbles: true })); document.querySelector("#caption-position").value = "top"; })()');
+  await runInWindow(`(() => {
+    const size = document.querySelector('#caption-size');
+    size.value = '26';
+    size.dispatchEvent(new Event('input', { bubbles: true }));
+    const position = document.querySelector('#caption-position');
+    position.value = 'top';
+    position.dispatchEvent(new Event('change', { bubbles: true }));
+  })()`);
+  await navigate('#caption-align label:has([value=left])');
+  await navigate('#caption-save-preset');
+  await runInWindow('document.querySelector("#caption-preset-name").value = "片头黄字"');
+  await navigate('#caption-confirm-preset');
+  const personalCaption = '#caption-personal-presets button[title="片头黄字"]';
+  await navigate('#caption-presets button[title="蓝色描边"]');
+  await navigate(personalCaption);
+  assert.equal(await runInWindow(`document.querySelector(${JSON.stringify(personalCaption)}).getAttribute('aria-pressed')`), 'true');
+  assert.equal(await runInWindow("document.querySelectorAll(':is(#caption-presets, #caption-personal-presets) button[aria-pressed=true]').length"), 1);
   const voiceProject = path.join(root, '带口播.sdworkbench');
   saves.push({ title: '保存工程', file: voiceProject });
   await runInWindow('document.querySelector("#save-project").click()');
@@ -772,6 +881,11 @@ async function run() {
   assert.equal(await runInWindow('document.querySelector("#caption-size").valueAsNumber'), 26);
   assert.equal(await runInWindow('document.querySelector("#caption-position").value'), 'top');
   assert.equal(await runInWindow('document.querySelector("#caption-color").value'), '#ffe25a');
+  assert.equal(await runInWindow('document.querySelector("#caption-align input:checked").value'), 'left');
+  assert.equal(await runInWindow('document.querySelector("#caption-size-slider").valueAsNumber'), 26);
+  assert.equal(await runInWindow('document.querySelector("#caption-preset-label").textContent'), '片头黄字');
+  assert.equal(await runInWindow(`document.querySelector(${JSON.stringify(personalCaption)}).getAttribute('aria-pressed')`), 'true');
+  assert.equal(await runInWindow("document.querySelectorAll(':is(#caption-presets, #caption-personal-presets) button[aria-pressed=true]').length"), 1);
   await openInspector('narration');
   await runInWindow('document.querySelector("#review-narration").click()');
   assert.equal(await runInWindow('document.querySelector("#narration-review-caption").value'), '保留的整段台词');
@@ -839,9 +953,9 @@ async function run() {
   assert.ok(Math.abs(segmentPreviewDuration - 2.4) < 0.05, '有口播的分镜应对齐口播长度，无口播的分镜应保留原长');
   await screenshot('segmented-preview.png');
 
-  await runInWindow('document.querySelector("#tab-home").click()');
+  await goHome();
   await waitFor('document.querySelectorAll("#history-list li").length === 3', '首页应列出三条真实成片');
-  await runInWindow('document.querySelector("#tab-audio").click()');
+  await navigate('#tab-audio');
   selections.push({ title: '选择视频素材', files: [files.red, files.blue] });
   await runInWindow('document.querySelector("#import-materials").click()');
   await waitFor('document.querySelectorAll("#audio-list .asset").length === 1', '音频提取应略过无音轨视频');
@@ -854,7 +968,7 @@ async function run() {
   assert.equal((await inspectAsset(path.join(output, audios[0]), 'audio')).codec, 'mp3');
   assert.deepEqual(selections, []);
   assert.deepEqual(saves, []);
-  await runInWindow('document.querySelector("#tab-home").click()');
+  await goHome();
   await waitFor('document.querySelectorAll("#history-list li").length === 4', '最近作品应包含三条视频和一条音频');
   const history = JSON.parse(await fs.readFile(path.join(root, 'profile', 'work-history.json'), 'utf8'));
   assert.deepEqual(history.map((item) => item.name).sort(), [...videos, ...selectedVideos, ...audios].sort());
@@ -873,7 +987,8 @@ async function run() {
   const folderReload = once(win.webContents, 'did-finish-load');
   win.webContents.reload();
   await folderReload;
-  await runInWindow('document.querySelector("#tab-montage").click(); document.querySelector("#project-new").click();');
+  await navigate('#tab-montage');
+  await navigate('#project-new');
   await waitFor('!document.querySelector("#editor-workspace").hidden && !document.querySelector("#material-folder-import").disabled', '应打开空工程的素材库');
   const folder = (name) => `[...document.querySelectorAll('#material-folders .material-folder')].find((item) => item.textContent.includes(${JSON.stringify(name)}) || item.title === ${JSON.stringify(name)})`;
   const material = (file) => `.material-tile[title="${path.basename(file)}"]`;
@@ -898,7 +1013,7 @@ async function run() {
   await waitFor(`Boolean(${folder(path.basename(library))})`, '选中的目录应出现在素材库根目录');
   assert.equal(await runInWindow('document.querySelectorAll("#shots .shot").length'), 0, '选择素材目录不会生成分镜');
   assert.equal(await runInWindow(`document.querySelectorAll(${JSON.stringify(tiles)}).length`), 0);
-  await runInWindow(`(${folder(path.basename(library))}).click()`);
+  await runInWindow(`(${folder(path.basename(library))}).dispatchEvent(new MouseEvent('dblclick', { bubbles: true }))`);
   await waitFor(`document.querySelectorAll(${JSON.stringify(tiles)}).length === 1 && Boolean(document.querySelector(${JSON.stringify(material(files.green))})) && Boolean(${folder(path.basename(nested))})`, '打开目录后应只显示支持的文件与子目录');
   await waitFor(`document.querySelector(${JSON.stringify(`${material(files.green)} img`)})?.naturalWidth > 0`, '打开视频前应看到已解码的文件夹视频缩略图');
   await click(material(files.green));
@@ -906,7 +1021,7 @@ async function run() {
   assert.equal(await runInWindow('document.querySelectorAll("#shots .shot").length'), 0, '浏览和预览素材也不生成分镜');
   await dragMaterial(files.green, '#new-shot-drop');
   await waitFor('document.querySelectorAll("#shots .shot").length === 1 && document.querySelectorAll("#shots .asset").length === 1', '拖到新分镜区应生成一个分镜');
-  await runInWindow(`(${folder(path.basename(nested))}).click()`);
+  await runInWindow(`(${folder(path.basename(nested))}).dispatchEvent(new MouseEvent('dblclick', { bubbles: true }))`);
   await waitFor(`document.querySelectorAll(${JSON.stringify(tiles)}).length === 2 && Boolean(document.querySelector(${JSON.stringify(material(files.blue))})) && Boolean(document.querySelector(${JSON.stringify(material(files.still))}))`, '子目录应列出视频和图片');
   await dragMaterial(files.still, '#shots .shot');
   await waitFor('document.querySelectorAll("#shots .shot").length === 1 && document.querySelectorAll("#shots .asset").length === 2', '拖到现有分镜应加入候选');
@@ -933,6 +1048,13 @@ async function run() {
     return { start, end, startsOnBlank: document.elementFromPoint(start.x, start.y)?.matches('.editor-materials') };
   })()`);
   assert.equal(marquee.startsOnBlank, true, '框选应从素材库空白处开始');
+  win.webContents.sendInputEvent({ type: 'mouseDown', button: 'left', clickCount: 1, ...marquee.start });
+  win.webContents.sendInputEvent({ type: 'mouseMove', modifiers: ['leftButtonDown'], ...marquee.end });
+  await waitFor('!document.querySelector(".material-marquee").hidden', '素材框选应显示范围');
+  for (const type of ['keyDown', 'keyUp']) win.webContents.sendInputEvent({ type, keyCode: 'Escape' });
+  await waitFor('document.querySelector(".material-marquee").hidden', 'Esc 应立即收起素材选框');
+  win.webContents.sendInputEvent({ type: 'mouseUp', button: 'left', clickCount: 1, ...marquee.end });
+  assert.equal(await runInWindow('document.querySelectorAll("#material-list .material-select:checked").length'), 0, '取消后松手仍应保留原选区');
   win.webContents.sendInputEvent({ type: 'mouseDown', button: 'left', clickCount: 1, ...marquee.start });
   win.webContents.sendInputEvent({ type: 'mouseMove', modifiers: ['leftButtonDown'], ...marquee.end });
   await waitFor('document.querySelector(".material-marquee")?.hidden === false', '拖动左键时应显示选框');
@@ -1135,7 +1257,7 @@ async function run() {
   await waitFor(`[innerWidth, innerHeight].join(',') === ${JSON.stringify(originalViewport)}`, '应恢复默认窗口尺寸');
   await runInWindow('for (let count = 8; count > 1; count -= 1) document.querySelector("#shots .shot:last-child .remove-shot").click();');
   await waitFor(`(() => { const value = ${timelineScroll}; return value.hidden && value.range === 0 && value.left === 0 && value.barLeft === 0; })()`, '删到无横向溢出时应隐藏滚动条并清除旧位置');
-  await click('#title-home');
+  await goHome();
   await click('#home-create');
   await waitFor('["#empty-import-visual", "#empty-split-narration"].every((id) => document.querySelector(id)?.checkVisibility() && !document.querySelector(id).disabled)', '新草稿应显示两个可用时间轴入口');
   const splitSrt = path.join(root, '双句口播.srt');
@@ -1161,7 +1283,7 @@ async function run() {
   assert.equal(await runInWindow(`document.querySelectorAll('${visualShot(0)} .asset').length`), 0, '第二句配画面应保留第一句为空');
   const wideVideo = path.join(root, '高清素材.mp4');
   await ffmpeg(['-i', files.red, '-vf', 'scale=960:720', '-c:v', 'libx264', '-threads', '2', '-c:a', 'copy', wideVideo]);
-  await click('#title-home');
+  await goHome();
   await click('#home-create');
   await waitFor("!document.querySelector('#editor-workspace').hidden && !document.querySelector('#material-import').disabled", '新草稿完成初始化后应启用素材导入');
   selections.push({ title: '选择分镜素材', files: [wideVideo] });

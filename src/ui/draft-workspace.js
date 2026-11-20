@@ -69,14 +69,14 @@
     return { stage, reset, flush };
   };
 
-  window.mountDraftLibrary = (container, { load, open, importMaterials }) => {
+  window.mountDraftLibrary = (container, { load, open, importMaterials, showEmptyImport }) => {
     const $ = (selector) => container.querySelector(selector);
     const list = $('#draft-list');
     const search = $('#draft-search');
     const sort = $('#draft-sort');
     const status = $('#draft-list-status');
     const statusAction = $('#draft-status-action');
-    const reduceMotion = matchMedia('(prefers-reduced-motion: reduce)');
+    const reduceMotion = matchMedia('(prefers-reduced-motion: reduce), (forced-colors: active)');
     let coverTransition;
     let drafts = [];
     let request = 0;
@@ -184,12 +184,13 @@
       list.replaceChildren(...visible.map(draftCard));
       if (visible.length) showStatus('');
       else if (query) showStatus('没有匹配的草稿', '可以换个名称再试。', '清空搜索');
-      else showStatus('还没有本地草稿', '开始剪辑后，草稿会自动保存到本机。', '导入素材');
+      else showStatus('还没有本地草稿', '开始剪辑后，草稿会自动保存到本机。', showEmptyImport() ? '导入素材' : '');
     }
 
     async function refresh() {
       const current = ++request;
       if (!loaded) showStatus('正在读取本地草稿…');
+      else if (!drafts.length) render();
       try {
         const result = await load();
         if (current !== request) return;

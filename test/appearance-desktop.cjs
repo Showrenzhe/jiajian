@@ -1,5 +1,7 @@
 'use strict';
 
+const { clickVisible } = require('./desktop-input.cjs');
+
 const assert = require('node:assert/strict');
 const { spawn } = require('node:child_process');
 const { once } = require('node:events');
@@ -12,6 +14,7 @@ const { app, nativeImage, nativeTheme } = require('electron');
 const { launchDesktop } = require('../src/desktop.cjs');
 
 app.disableHardwareAcceleration();
+app.commandLine.appendSwitch('force-device-scale-factor', '1');
 
 async function until(check, message) {
   const timeout = Date.now() + 8000;
@@ -22,10 +25,10 @@ async function until(check, message) {
 }
 
 // Runs in the renderer. Composite translucent surfaces before measuring text contrast.
-function sampleSurface(selector) {
+function sampleSurface(selector, paint = document.createElement('canvas').getContext('2d', { willReadFrequently: true })) {
   const el = document.querySelector(selector);
   if (!el?.checkVisibility()) throw new Error('Expected a visible ' + selector);
-  const paint = document.createElement('canvas').getContext('2d', { willReadFrequently: true });
+  paint.clearRect(0, 0, 1, 1);
   const ancestors = [];
   for (let node = el; node; node = node.parentElement) ancestors.unshift(node);
   for (const node of ancestors) {
@@ -33,14 +36,69 @@ function sampleSurface(selector) {
     paint.fillRect(0, 0, 1, 1);
   }
   const background = Array.from(paint.getImageData(0, 0, 1, 1).data);
-  paint.fillStyle = getComputedStyle(el).color;
+  const ink = getComputedStyle(el).color;
+  paint.fillStyle = ink;
   paint.fillRect(0, 0, 1, 1);
-  return { background, foreground: Array.from(paint.getImageData(0, 0, 1, 1).data) };
+  return { ink, background, foreground: Array.from(paint.getImageData(0, 0, 1, 1).data) };
 }
 
 function luminance(channels) {
   const [r, g, b] = channels.map(v => v / 255).map(v => v <= .04045 ? v / 12.92 : ((v + .055) / 1.055) ** 2.4);
   return .2126 * r + .7152 * g + .0722 * b;
+}
+
+// Sample the actual painted rows in the Chromium picker, including its dark
+// background and the unselected label. The popup may flip above the trigger.
+async function checkDarkRatioMenu(wc, read, key) {
+  await clickVisible(wc, '#ratio');
+  await until(() => read("document.querySelector('#ratio').matches(':open')"), 'Missing open ratio menu');
+  const rows = await read(`Array.from(document.querySelector('#ratio').options, option => {
+    const rect = option.getBoundingClientRect();
+    return { x: Math.ceil(rect.x), y: Math.ceil(rect.y), width: Math.floor(rect.width) - 1,
+      height: Math.floor(rect.height) - 1, scale: 1 };
+  })`);
+  async function readRow(clip) {
+    assert.ok(clip.width > 16 && clip.height > 10, 'Expected a visible ratio option');
+    const { data } = await wc.debugger.sendCommand('Page.captureScreenshot', { clip });
+    const pixels = nativeImage.createFromBuffer(Buffer.from(data, 'base64')).toBitmap();
+    return (x, y) => {
+      const i = 4 * (y * clip.width + x);
+      return luminance([pixels[i + 2], pixels[i + 1], pixels[i]]);
+    };
+  }
+  const selected = await readRow(rows[0]);
+  const normal = await readRow(rows[1]);
+  const trailing = box => [box.width - 6, Math.floor(box.height / 2)];
+  const background = normal(...trailing(rows[1]));
+  assert.ok(background < .25, 'Dark ratio menu painted a light background');
+  assert.notEqual(selected(...trailing(rows[0])), background, 'Selected ratio should have a visible highlight');
+  let legiblePixels = 0;
+  for (let y = 3; y < rows[1].height - 3; y++) {
+    for (let x = 4; x < rows[1].width - 6; x++) {
+      if ((normal(x, y) + .05) / (background + .05) >= 4.5) legiblePixels++;
+    }
+  }
+  assert.ok(legiblePixels >= 8, 'Expected legible 9:16 text on the open menu');
+  await key('Escape', 27);
+  await until(() => read("!document.querySelector('#ratio').matches(':open')"), 'Escape should dismiss the ratio menu');
+  assert.equal(await read("document.querySelector('#ratio').value"), '16:9');
+}
+
+function assertTextFrames(frames, selectors, checkSingleHandoff = false) {
+  let minimum = Infinity;
+  for (const [i, label] of selectors.entries()) {
+    const polarities = [];
+    for (const { samples } of frames) {
+      const { foreground, background } = samples[i];
+      const fg = luminance(foreground), bg = luminance(background);
+      const ratio = (Math.max(bg, fg) + .05) / (Math.min(bg, fg) + .05);
+      assert.ok(background[3] === 255 && ratio >= 4.5, label + ' contrast = ' + ratio.toFixed(2));
+      minimum = Math.min(minimum, ratio);
+      if (polarities.at(-1) !== (fg > bg)) polarities.push(fg > bg);
+    }
+    if (checkSingleHandoff) assert.deepEqual(polarities, [false, true], label + ' text should change polarity once');
+  }
+  return minimum;
 }
 
 async function worker(phase, root) {
@@ -161,41 +219,137 @@ async function worker(phase, root) {
   await close();
   await contrast('#draft-search', 'dark');
 
-  const ink = () => colorAt('#home-heading', 'color');
-  const darkInk = await ink();
+  await settings();
+  const labels = [
+    '#cloud-settings-title', '#cloud-settings-key-label', '.appearance-options input[value=system] ~ span:last-child',
+    '#app-settings', '#home-heading', '#draft-heading-label', '#draft-status-title', '#cloud-settings-base-url', '#cloud-settings-api-key',
+  ];
+  const surfaceIndex = labels.indexOf('#draft-heading-label');
+  const expectedInk = {};
+  for (const theme of ['dark', 'light']) {
+    await click(radio(theme));
+    await expectMode(theme, theme);
+    expectedInk[theme] = await Promise.all(labels.map(selector => colorAt(selector, 'color')));
+  }
+  for (const [i, selector] of labels.entries()) {
+    assert.notEqual(expectedInk.light[i], expectedInk.dark[i], selector + ' should have distinct endpoint colors');
+  }
+  await media('light');
+  // Step the actual root animation at equal time intervals. This distinguishes a
+  // single ease from two fades that decelerate and pause around middle gray.
+  const curve = await read(`(async () => {
+    document.querySelector('input[name=appearance][value=dark]').click();
+    const animation = document.documentElement.getAnimations().find(a => a.effect.getKeyframes().some(k => '--appearance-mix' in k));
+    animation.pause();
+    await animation.ready;
+    const paint = document.createElement('canvas').getContext('2d', { willReadFrequently: true });
+    const sample = ${sampleSurface};
+    const result = [];
+    for (let i = 0; i <= 120; i++) {
+      animation.currentTime = animation.effect.getTiming().duration * i / 120;
+      result.push({ samples: ${JSON.stringify(labels)}.map(s => sample(s, paint)) });
+    }
+    animation.play();
+    return result;
+  })()`);
+  const curveContrast = assertTextFrames(curve, labels, true);
+  const levels = curve.filter((_, i) => i % 10 === 0).map(frame => frame.samples[surfaceIndex].background[1]);
+  const deltas = levels.slice(1).map((n, i) => levels[i] - n);
+  console.log('25 ms surface samples:', levels.join(', '));
+  assert.ok(deltas.every(d => d >= 0) && Math.min(...deltas.slice(3, 8)) > 8,
+    'The surface must keep moving through the middle of the fade: ' + levels.join(', '));
+  await until(() => read('!document.documentElement.hasAttribute("data-theme-changing")'), 'Completing sampled transition');
   await media('light', 'reduce');
+  await click(radio('light'));
+  await expectMode('light', 'light');
+  await media('light');
+  await wc.debugger.sendCommand('Animation.enable');
+  await wc.debugger.sendCommand('Animation.setPlaybackRate', { playbackRate: .5 });
+  // Sample inherited Chinese labels, native controls and real surface colors through cleanup and a rapid reversal.
+  const { frames, reversalStart, reversedAt, firstEnd } = await read(`(async () => {
+    const sample = ${sampleSurface};
+    const selectors = ${JSON.stringify(labels)};
+    const paint = document.createElement('canvas').getContext('2d', { willReadFrequently: true });
+    const frames = [];
+    function record() {
+      frames.push({ theme: document.documentElement.dataset.theme, samples: selectors.map(s => sample(s, paint)) });
+    }
+    async function switchTo(theme, waitMs) {
+      document.querySelector('input[name=appearance][value=' + theme + ']').click();
+      record();
+      const start = performance.now();
+      while (performance.now() - start < waitMs) {
+        await new Promise(requestAnimationFrame);
+        record();
+      }
+    }
+    record();
+    await switchTo('dark', 850);
+    const firstEnd = frames.length - 1;
+    await switchTo('light', 850);
+    const reversalStart = frames.length;
+    const panelColor = () => frames.at(-1).samples[${surfaceIndex}].background.join(',');
+    const restingColor = panelColor();
+    await switchTo('dark', 0);
+    const timeout = performance.now() + 850;
+    while (panelColor() === restingColor && performance.now() < timeout) {
+      await new Promise(requestAnimationFrame);
+      record();
+    }
+    const reversedAt = frames.length;
+    await switchTo('light', 850);
+    return { frames, reversalStart, reversedAt, firstEnd };
+  })()`);
+  await wc.debugger.sendCommand('Animation.setPlaybackRate', { playbackRate: 1 });
+  const completeChanges = frames.slice(0, reversalStart);
+  const observed = completeChanges.map(f => f.theme);
+  assert.deepEqual(observed.filter((t, i) => !i || t !== observed[i - 1]), ['light', 'dark', 'light'],
+    'Each change should hand off once without reverting');
+  // The draft heading sits on the opaque content panel. Bound changes to its displayed sRGB
+  // levels so one large jump followed by several almost identical shades cannot pass.
+  const peakSteps = [];
+  for (const section of [completeChanges.slice(0, firstEnd + 1), completeChanges.slice(firstEnd)]) {
+    const levels = section.map(frame => {
+      const [r, g, b] = frame.samples[surfaceIndex].background;
+      return .2126 * r + .7152 * g + .0722 * b;
+    });
+    const span = Math.abs(levels.at(-1) - levels[0]);
+    assert.ok(span > 100, 'The content panel should complete the full theme change');
+    const largestStep = Math.max(...levels.slice(1).map((level, i) => Math.abs(level - levels[i])));
+    peakSteps.push(Math.round(100 * largestStep / span));
+    assert.ok(largestStep / span < .40, 'One frame covered ' + Math.round(100 * largestStep / span) + '% of the surface change');
+    const settled = section.at(-1);
+    assert.deepEqual(settled.samples.map(s => s.ink), expectedInk[settled.theme], 'Settled text should match the saved palette');
+  }
+  assert.ok(frames.slice(reversalStart).every(f => f.theme === 'light'),
+    'Reversing before the palette handoff should not flash the abandoned theme');
+  assert.notDeepEqual(frames[reversedAt - 1].samples[surfaceIndex].background, frames[reversalStart - 1].samples[surfaceIndex].background,
+    'The interrupted transition should already have begun changing the surface');
+  const minimumContrast = Math.min(curveContrast, assertTextFrames(frames, labels));
+  console.log(`文字最低对比度 ${minimumContrast.toFixed(2)}:1，浅→深 / 深→浅最大单帧亮度跨度 ${peakSteps.join('% / ')}%。`);
+  await click(radio('system'));
   await expectMode('system', 'light');
-  const lightInk = await ink();
-  assert.notEqual(lightInk, darkInk);
-  await media('dark', 'reduce');
-  await expectMode('system', 'dark');
-  assert.equal(await ink(), darkInk, 'Reduced motion should reach the endpoint immediately');
-
-  await media('dark');
-  // Collect every rendered frame across a change, then interrupt a second change mid-flight.
-  await recordFrames('#home-heading', 'color');
-  await media('light');
-  await until(async () => (await ink()) === lightInk, 'Appearance transition did not settle');
-  assertInterpolated(await stopRecording(), darkInk, lightInk, 'Home heading');
-  await recordFrames('#home-heading', 'color');
-  await media('dark');
-  await until(async () => { const color = await ink(); return color !== darkInk && color !== lightInk; }, 'Second transition did not start');
-  await media('light');
-  await until(async () => (await ink()) === lightInk, 'Reversing a transition should settle at the latest preference');
-  const reversed = await stopRecording();
-  assert.ok(!reversed.includes(darkInk), 'Reversal should not flash the discarded endpoint');
+  await close();
 
   await media('dark', 'reduce');
   await expectMode('system', 'dark');
-  await click('#tab-script');
+  assert.equal(await colorAt('#home-heading', 'color'), expectedInk.dark[labels.indexOf('#home-heading')],
+    'System changes with reduced motion should reach the endpoint immediately');
+  await clickVisible(wc, '#tab-script');
   await until(() => read('document.querySelector("#script-title")?.checkVisibility()'), 'Script editor should open');
   await contrast('#script-title', 'dark');
-  await click('#tab-home');
+  await clickVisible(wc, '#title-home');
+  if (process.platform === 'win32') {
+    await click('#home-create');
+    await until(() => read("document.querySelector('#ratio').checkVisibility()"), 'Expected the ratio selector');
+    await checkDarkRatioMenu(wc, read, key);
+    await click('#title-home');
+  }
   // A real opaque PNG should keep its pixel values in the editor throughout a theme change.
   const bitmap = Buffer.alloc(160 * 90 * 4);
   for (let i = 0; i < bitmap.length; i += 4) bitmap.set([180, 48, 180, 255], i);
   await fs.writeFile(picture, nativeImage.createFromBitmap(bitmap, { width: 160, height: 90 }).toPNG());
-  await click('#home-import');
+  await clickVisible(wc, '#home-import');
   await until(() => read('!!document.querySelector("#material-list .material-tile")'), 'The test image should import');
   await click('#material-list .material-tile');
   await until(() => read('document.querySelector("#still-preview").naturalWidth === 160 && document.querySelector("#still-preview").checkVisibility()'), 'Still preview should open');
@@ -225,10 +379,27 @@ async function worker(phase, root) {
     'Editor text and surfaces should finish changing');
   await contrast('#material-search', 'light');
   assert.deepEqual(await mediaPixel(), original, 'Preview pixels should remain stable after the transition');
+  await clickVisible(wc, '#inspector-tab-subtitles');
+  const swatch = '#caption-presets button[title="醒目黄字"]';
+  const surfaceLightness = async selector => luminance((await read('(' + sampleSurface + ')(' + JSON.stringify(selector) + ')')).background);
+  const tileLightness = await surfaceLightness(swatch);
+  const inspectorLightness = await surfaceLightness('#inspector-panel-subtitles');
+  assert.ok(tileLightness > .55 && Math.abs(tileLightness - inspectorLightness) < .25,
+    'Light caption swatches should share the inspector palette: ' + [tileLightness, inspectorLightness]);
+  const previewText = '#caption-preview-text';
+  await contrast(previewText, 'light');
+  assert.equal(await colorAt(previewText, 'borderTopWidth'), '0px', 'Preview input should have a flat idle surface');
+  await clickVisible(wc, '#caption-enlarge');
+  await key('Escape', 27);
+  await key('Tab', 9);
+  assert.equal(await read('document.activeElement.id'), 'caption-preview-text');
+  assert.equal(await colorAt(previewText, 'outlineStyle'), 'solid', 'Preview input should show keyboard focus');
   await settings();
   await click(radio('dark'));
   await expectMode('dark', 'dark');
   await close();
+  await until(() => read("!document.documentElement.hasAttribute('data-theme-changing')"), 'Dark palette did not settle');
+  await contrast(previewText, 'dark');
   await wc.session.flushStorageData();
 }
 
