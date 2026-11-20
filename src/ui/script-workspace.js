@@ -11,7 +11,7 @@
     <header class="script-workspace-header">
       <div class="script-title-area">
         <button id="script-back" type="button" aria-label="返回工作台" title="返回工作台" hidden><svg class="ui-icon" aria-hidden="true"><use href="#icon-chevron"></use></svg></button>
-        <h1>脚本编辑</h1>
+        <h1 tabindex="-1">脚本编辑</h1>
       </div>
       <div class="script-header-actions">
         <button id="script-share" type="button" disabled title="云端分享尚未接入">分享脚本</button>

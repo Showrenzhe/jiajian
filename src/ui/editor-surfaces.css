@@ -18,16 +18,48 @@
   border-radius: 12px;
 }
 .app-frame[data-mode="montage"] .materials-toolbar {
-  display: flex;
-  align-items: center;
-  flex-wrap: wrap;
+  display: grid;
+  gap: 8px;
 }
-.app-frame[data-mode="montage"] .material-search-box { flex: 1 0 100%; min-width: 0; }
-.app-frame[data-mode="montage"] #material-audio-open {
-  padding: 2px 4px;
-  border: 0;
-  background: transparent;
-  color: var(--system-blue);
+.material-entry-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+  padding: 4px;
+  border: 1px solid var(--hairline);
+  border-radius: 12px;
+  background: var(--glass-surface);
+  box-shadow: var(--glass-shadow);
+  backdrop-filter: var(--glass-filter);
+}
+.material-entry-actions button {
+  display: flex;
+  flex: 1 0 65px;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 3px;
+  min-width: 0;
+  max-width: 100%;
+  min-height: 45px;
+  padding: 5px 1px;
+  border: 1px solid var(--control-edge);
+  border-radius: 8px;
+  background: var(--surface);
+  color: var(--ink);
+  font-size: 12px;
+  line-height: 1.4;
+  white-space: normal;
+}
+.app-frame[data-mode="montage"] .material-entry-actions .ui-icon { width: 17px; height: 17px; color: var(--secondary-ink); }
+.material-entry-actions button:is(:hover:enabled, :focus-visible, :active:enabled) .ui-icon { color: currentColor; }
+.material-entry-actions button:hover:enabled { background: var(--control-hover); }
+.material-entry-actions button:active:enabled { background: var(--selected-fill); }
+@container (min-width: 282px) {
+  .material-entry-actions button { flex-direction: row; gap: 5px; min-height: 32px; }
+}
+@container (max-width: 212px) {
+  .material-entry-actions button { flex-direction: row; flex-basis: 87px; min-height: 31px; }
 }
 .app-frame[data-mode="montage"] #timeline-tracks-panel[data-view="time"]:has(#shots-empty:not([hidden])) {
   display: block;

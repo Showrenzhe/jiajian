@@ -1,5 +1,7 @@
 'use strict';
 
+const { clickVisible } = require('./desktop-input.cjs');
+
 const assert = require('node:assert/strict');
 const { once } = require('node:events');
 const { mkdirSync, mkdtempSync } = require('node:fs');
@@ -218,7 +220,7 @@ async function run() {
     await click('#app-settings');
     await checkSettings(breezeEndpoint.href, false);
     await click('#cloud-settings-cancel');
-    await click('#home-import');
+    await clickVisible(win.webContents, '#home-import');
     await waitFor('document.querySelectorAll("#shots .asset").length === 1 && document.querySelector("#inspector-panel-visual").getClientRects().length > 0', '应导入测试画面并默认显示画面属性');
     assert.equal(await js('document.querySelector("#cloud-narration").getClientRects().length'), 0, '口播配音应归在口播标签页');
     await click('#inspector-tab-narration');
@@ -399,7 +401,8 @@ async function run() {
     open.push({ title: '选择分镜素材', file: video });
     await click('#import-materials');
     await waitFor('document.querySelectorAll("#shots .asset").length === 2', '应为分段批次准备两个分镜');
-    await click('#tab-script');
+    await clickVisible(win.webContents, '#title-home');
+    await clickVisible(win.webContents, '#tab-script');
     await waitFor('document.querySelectorAll(".script-dialogue").length > 0', '应打开脚本创作工作区');
     await click('#script-mode-segmented');
     await click('#script-import-dialogue');

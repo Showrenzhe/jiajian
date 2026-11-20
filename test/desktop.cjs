@@ -8,12 +8,14 @@ const fs = require('node:fs/promises');
 const path = require('node:path');
 const { setTimeout: delay } = require('node:timers/promises');
 const { promisify } = require('node:util');
-const { app } = require('electron');
+const { app, nativeTheme } = require('electron');
 const { launchDesktop } = require('../src/desktop.cjs');
 const { inspectAsset } = require('../src/media.cjs');
 const { ffmpeg, fixtures } = require('./fixtures.cjs');
+const { clickVisible } = require('./desktop-input.cjs');
 
 app.disableHardwareAcceleration();
+app.setVersion(require('../package.json').version);
 
 const execFileAsync = promisify(execFile);
 
@@ -41,7 +43,7 @@ async function traceDockedNavigation() {
     }
     return widths;
   }
-  const current = navigation.querySelector('[aria-current="page"]');
+  const current = navigation.querySelector('[aria-current="page"]') ?? navigation.querySelector('#tab-home');
   current.focus();
   current.dispatchEvent(new KeyboardEvent('keydown', { bubbles: true, ctrlKey: true, code: 'Backslash' }));
   current.focus();
@@ -88,7 +90,7 @@ async function traceFloatingNavigation(mode) {
   const openRight = parseFloat(getComputedStyle(navigation).left) + navigation.getBoundingClientRect().width;
   const fullyOpen = x => x !== null && Math.abs(x - openRight) < 0.02;
   const opening = await until(fullyOpen);
-  const current = navigation.querySelector('[aria-current="page"]');
+  const current = navigation.querySelector('#tab-home');
   const focused = document.activeElement === current && !navigation.inert;
   const escape = () => document.activeElement.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }));
   escape();
@@ -125,7 +127,7 @@ async function checkNavigation(contents, mode) {
       }
       assert.ok(trace.before > 1 && Math.abs(trace.reversed[0] - trace.before) < 1, mode + ' 退出中重开应从原位开始');
       assert.ok(trace.reversed.every(x => x !== null && x >= trace.before - 1), mode + ' 反向时应保持可见并直接展开');
-      assert.ok(trace.focused && trace.focusReturned, mode + ' 浮层应聚焦当前页，Esc 应立即把焦点和操作权还给开关');
+      assert.ok(trace.focused && trace.focusReturned, mode + ' 浮层应聚焦工作台入口，Esc 应立即把焦点和操作权还给开关');
       const { x, y } = await evaluate(`(() => {
         const {x, y, width, height} = document.querySelector('#title-tab').getBoundingClientRect();
         return { x: x + width / 2, y: y + height / 2 };
@@ -141,17 +143,16 @@ async function checkNavigation(contents, mode) {
           const toggle = document.querySelector('#nav-toggle');
           const nav = document.querySelector('#workspace-navigation');
           toggle.click();
-          const current = nav.querySelector('[aria-current="page"]');
+          const current = nav.querySelector('#tab-home');
           const open = nav.checkVisibility() && !nav.inert && document.activeElement === current
             && Math.abs(nav.getBoundingClientRect().right - ${trace.openRight}) < 0.02;
-          nav.querySelector('#tab-home').focus();
-          const marked = getComputedStyle(current).outlineStyle !== 'none';
+          const noFalseSelection = !nav.querySelector('[aria-current="page"]');
           const emulated = matchMedia('(prefers-reduced-motion: ${motion}) and (forced-colors: ${colors})').matches;
           toggle.click();
-          return {emulated, open, marked, closed: !nav.checkVisibility() && nav.inert && document.activeElement === toggle};
+          return {emulated, open, noFalseSelection, closed: !nav.checkVisibility() && nav.inert && document.activeElement === toggle};
         })()`);
         assert.ok(states.emulated && states.open && states.closed, mode + ' 使用减少动态效果或高对比时应即时开合并保持焦点可用');
-        if (colors === 'active') assert.ok(states.marked, mode + ' 高对比下应看得见当前页标记');
+        assert.ok(states.noFalseSelection, mode + ' 侧栏应只标记与当前页对应的入口');
       }
       return;
     }
@@ -176,6 +177,11 @@ async function checkNavigation(contents, mode) {
       return [closed, width()];
     })()`);
     assert.deepEqual(widths, [full, docked], '减少动态效果时应在切换当下抵达目标宽度');
+    if (mode === 'home') {
+      await emulate('reduce', 'active');
+      assert.ok(await evaluate(`getComputedStyle(document.querySelector('#workspace-navigation [aria-current="page"]')).outlineStyle !== 'none'`),
+        '高对比度下应保留当前页的可见标记');
+    }
   } finally {
     await debuggerClient.sendCommand('Emulation.setEmulatedMedia', { features: [] });
     await debuggerClient.sendCommand('Animation.setPlaybackRate', { playbackRate: 1 });
@@ -393,19 +399,102 @@ async function run() {
   assert.equal(await runInWindow('document.title'), '佳剪');
   assert.equal(await runInWindow('typeof window.require'), 'undefined');
   assert.equal(await runInWindow('typeof window.workbench.pick'), 'function');
-  assert.ok(await runInWindow(`!document.querySelector('#home .home-shortcuts') &&
-    ['home-import', 'tab-script', 'tab-audio', 'tab-scene-split'].every(id =>
-      document.querySelector('#workspace-navigation').contains(document.getElementById(id)))`), '创作工具应集中在侧栏');
+  const navigate = selector => clickVisible(win.webContents, selector);
+  async function checkButtonIcons(selector) {
+    const broken = await runInWindow(`[...document.querySelectorAll(${JSON.stringify(selector)})].filter(button => {
+      const icon = button.querySelector('svg use');
+      const symbol = icon && document.getElementById(icon.getAttribute('href').slice(1));
+      const bounds = icon?.getBBox();
+      return symbol?.localName !== 'symbol' || !icon.checkVisibility() || !(bounds.width > 0 && bounds.height > 0);
+    }).map(button => button.id || button.textContent.trim())`);
+    assert.deepEqual(broken, [], '可见按钮应引用有实际绘制范围的图标');
+  }
+  const toolIds = ['home-import', 'tab-montage', 'tab-scene-split', 'tab-script', 'tab-audio'];
+  const workflowIds = ['replicate', 'ai-video', 'smart-slice', 'assets', 'digital-avatar', 'voice-clone',
+    'face-fusion', 'distribution', 'analytics', 'tasks', 'teams'];
+  await waitFor('document.querySelector("#draft-status-title").textContent === "还没有本地草稿"', '空草稿首页应载入');
+  assert.deepEqual(await runInWindow('[...document.querySelectorAll("#home-local-tools button")].map(b => b.id)'), toolIds);
+  assert.deepEqual(await runInWindow('[...document.querySelectorAll("#workspace-navigation [data-workflow]")].map(b => b.dataset.workflow)'), workflowIds);
+  assert.ok(await runInWindow(`!document.querySelector('#workspace-navigation details, #workspace-navigation summary') &&
+    [...document.querySelectorAll('#workspace-navigation [data-workflow]')].every(b => b.checkVisibility()) &&
+    [...document.querySelectorAll('#home-local-tools button')].every(b =>
+      [...document.querySelectorAll('#workspace-navigation button, #home button')].filter(other =>
+        other.checkVisibility() && other.textContent.trim() === b.textContent.trim()).length === 1)`),
+  '侧栏应直接展示全部业务入口，首页五项本地创作各出现一次');
+  const homeSize = win.getSize();
+  for (const [width, height] of [[850, 600], homeSize]) {
+    win.setSize(width, height);
+    await waitFor(`Math.abs(innerWidth - ${width}) <= 1`, '首页应更新窗口宽度');
+    assert.ok(await runInWindow(`(() => {
+      const rail = document.querySelector('#home-local-tools').getBoundingClientRect();
+      const drafts = document.querySelector('.draft-content').getBoundingClientRect();
+      const buttons = [...document.querySelectorAll('#home-local-tools button')];
+      return drafts.width > 0 && rail.left >= drafts.right && rail.right <= innerWidth &&
+        Math.abs(rail.top - drafts.top) <= 1 && document.documentElement.scrollWidth <= innerWidth &&
+        buttons.every(button => button.checkVisibility() && button.scrollWidth <= button.clientWidth + 1);
+    })()`), width + 'px 首页应在草稿右侧显示五个完整入口');
+    await navigate('#tab-audio');
+    await waitFor('document.querySelector(".app-frame").dataset.mode === "audio"', '应从右侧工具打开音频提取');
+    await navigate('#title-home');
+  }
+  for (const theme of ['light', 'dark']) {
+    nativeTheme.themeSource = theme;
+    await waitFor(`document.documentElement.dataset.theme === '${theme}' && !document.documentElement.hasAttribute('data-theme-changing')`,
+      '首页应完成明暗切换');
+    await checkButtonIcons('#workspace-navigation button, #home-local-tools button');
+    await screenshot('home-' + theme + '.png', '#local-tools-heading');
+  }
+  nativeTheme.themeSource = 'system';
+  // Tab through the complete group and activate the last entry using a native Enter event.
+  const client = win.webContents.debugger;
+  client.attach();
+  try {
+    await client.sendCommand('Emulation.setFocusEmulationEnabled', { enabled: true });
+    async function key(name, keyCode) {
+      for (const type of ['keyDown', 'keyUp']) {
+        const text = type === 'keyDown' && name === 'Enter' ? '\r' : '';
+        await client.sendCommand('Input.dispatchKeyEvent', { type, key: name, code: name, windowsVirtualKeyCode: keyCode, text });
+      }
+    }
+    await runInWindow('document.querySelector("#draft-rows").focus()');
+    for (const id of toolIds) {
+      await key('Tab', 9);
+      assert.equal(await runInWindow('document.activeElement.id'), id, 'Tab 应依次访问本地创作入口');
+    }
+    await key('Enter', 13);
+    await waitFor('document.querySelector(".app-frame").dataset.mode === "audio"', 'Enter 应打开音频提取');
+  } finally {
+    client.detach();
+  }
+  await navigate('#title-home');
+  await navigate('#tab-drafts');
+  await waitFor(`!document.querySelector('#home-local-tools').checkVisibility() &&
+    document.querySelector('#draft-heading-label').textContent === '全部草稿' &&
+    document.querySelector('#draft-status-action').checkVisibility() &&
+    document.querySelector('#draft-status-action').textContent === '导入素材'`, '空草稿专页应保留自己的导入入口');
+  await navigate('#tab-home');
+  await navigate('#tab-scene-split');
+  await waitFor('document.querySelector("#scene-split-workspace").checkVisibility()', '场景分割入口应可点击');
+  await navigate('#title-home');
+  for (const id of workflowIds) {
+    const selector = '#workspace-navigation [data-workflow="' + id + '"]';
+    const label = await runInWindow(`document.querySelector(${JSON.stringify(selector)}).textContent.trim()`);
+    await navigate(selector);
+    await waitFor(`document.querySelector('#service-title').textContent === ${JSON.stringify(label)} &&
+      document.querySelector(${JSON.stringify(selector)}).getAttribute('aria-current') === 'page'`, label + ' 应直接打开并标记选中');
+  }
+  await navigate('#title-home');
   await checkNavigation(win.webContents, 'home');
   const files = await fixtures(root);
   const output = path.join(root, 'output');
   await fs.mkdir(output);
 
-  await runInWindow('document.querySelector("#tab-montage").click()');
+  await navigate('#tab-montage');
   await waitFor('!document.querySelector("#project-workspace").hidden && document.querySelector("#project-list-status").textContent.includes("还没有本地项目")', '批量混剪应先进入项目工作区');
   await checkNavigation(win.webContents, 'project');
   await runInWindow('document.querySelector("#project-new").click()');
   assert.equal(await runInWindow('document.querySelector("#editor-workspace").hidden'), false);
+  await checkButtonIcons('#material-import, #material-folder-import, #material-audio-open');
   await waitForInspector('visual');
   const tabHighlight = () => runInWindow("parseFloat(getComputedStyle(document.querySelector('#inspector-tabs'), '::before').left)");
   const initialHighlight = await tabHighlight();
@@ -482,7 +571,8 @@ async function run() {
   const layoutReload = once(win.webContents, 'did-finish-load');
   win.webContents.reload();
   await layoutReload;
-  await runInWindow('document.querySelector("#tab-montage").click(); document.querySelector("#project-new").click();');
+  await navigate('#tab-montage');
+  await navigate('#project-new');
   await waitFor(`document.querySelector('#editor-workspace').dataset.panelLayout === 'custom' && Math.abs((${materialBox}).x - ${customMaterial.x}) < 2 && Math.abs((${materialBox}).width - ${customMaterial.width}) < 2`, '重开工作台应保留自定义布局');
   await runInWindow(`(() => { const picker = document.querySelector('#panel-layout-target'); picker.value = 'timeline'; picker.dispatchEvent(new Event('change')); })()`);
   await waitFor(`Number(getComputedStyle(document.querySelector('#montage-pane')).zIndex) > Number(getComputedStyle(document.querySelector('.editor-materials')).zIndex)`, '置顶选择应能找回重叠的面板');
@@ -520,22 +610,23 @@ async function run() {
     assert.ok(await runInWindow(target), '方向键应切换属性页并移动键盘焦点');
   }
   await runInWindow('document.querySelector("#title-home").click()');
-  await click('.nav-more summary');
-  await waitFor("document.querySelector('[data-workflow=replicate]').checkVisibility()", '更多工具应从侧栏展开');
-  await click('[data-workflow=replicate]');
+  await navigate('[data-workflow=replicate]');
   await waitFor('document.querySelector("#service-title").textContent === "爆款复刻" && document.querySelector("#service-status").textContent === "待接入 API"', '待接入功能应说明真实状态');
   assert.equal(await runInWindow('document.querySelectorAll("#service-actions button").length'), 0);
   assert.ok(await runInWindow('document.querySelector("#creative-workflow-settings")?.checkVisibility()'), '未配置创作服务时应提供服务设置入口');
   await runInWindow('document.querySelector("#title-home").click()');
-  await runInWindow('document.querySelector("#tab-script").click()');
+  await navigate('#tab-script');
   await waitFor('document.querySelectorAll("#script-rows .script-row").length === 3', '脚本页应显示三个初始脚本行');
   await checkNavigation(win.webContents, 'script');
-  await click('#nav-toggle');
-  await click('#tab-drafts');
+  await navigate('#nav-toggle');
+  await waitFor("document.querySelector('#workspace-navigation').getBoundingClientRect().left >= 0", '浮层展开后应能点击草稿');
+  await navigate('#tab-drafts');
   assert.ok(await runInWindow(`document.activeElement.id === 'draft-heading'
     && document.querySelector('.app-frame').dataset.navigation === 'docked'
     && !document.querySelector('#workspace-navigation').inert`), '从脚本浮层切到本地草稿应聚焦可见的草稿标题并恢复常驻侧栏');
-  await click('#tab-script');
+  assert.equal(await runInWindow('document.querySelector("#home-local-tools").checkVisibility()'), false);
+  await navigate('#tab-home');
+  await navigate('#tab-script');
   await runInWindow('document.querySelector("#script-import-dialogue").click()');
   await runInWindow('document.querySelector("#script-import-input").value = "1、开头台词\\t展示第一镜\\n2、第二条台词"; document.querySelector("#script-import-confirm").click();');
   await waitFor('document.querySelector(".script-dialogue").value === "开头台词" && document.querySelector(".script-note").value === "展示第一镜"', '应能批量粘贴台词和备注');
@@ -547,7 +638,7 @@ async function run() {
   const reloaded = once(win.webContents, 'did-finish-load');
   win.webContents.reload();
   await reloaded;
-  await runInWindow('document.querySelector("#tab-script").click()');
+  await navigate('#tab-script');
   await waitFor('document.querySelector(".script-dialogue")?.value === "开头台词"', '重新加载后应恢复本地脚本草稿');
   await runInWindow('document.querySelector("#script-go-montage").click()');
   await waitFor('!document.querySelector("#script-brief").hidden && document.querySelector("#script-brief-rows").textContent.includes("展示第一镜")', '脚本和备注应进入混剪工程');
@@ -555,7 +646,7 @@ async function run() {
 
   selections.push({ title: '选择分镜素材', files: [files.red, files.green, files.still] });
   assert.equal(await runInWindow('document.querySelector("#home").hidden'), false);
-  await runInWindow('document.querySelector("#home-import").click()');
+  await navigate('#home-import');
   await waitFor('document.querySelectorAll("#shots .shot").length === 3', '导入后应有三个分镜');
   assert.equal(await runInWindow('document.querySelectorAll("#material-list .material-tile").length'), 3);
   const visibleThumbnail = `(() => {
@@ -684,7 +775,8 @@ async function run() {
   assert.ok((await fs.stat(project)).isFile());
   await runInWindow('(() => { const start = document.querySelector("#shots .start"); start.value = "0.75"; start.dispatchEvent(new Event("input")); })()');
   assert.equal(await runInWindow('document.querySelector("#shots .start").valueAsNumber'), 0.75);
-  await runInWindow('document.querySelector("#tab-montage").click()');
+  await navigate('#title-home');
+  await navigate('#tab-montage');
   await waitFor('document.querySelector(".project-reopen")?.textContent.includes("混剪样片")', '保存后应列入本地项目');
   await runInWindow('document.querySelector(".project-reopen").click()');
   await waitFor('document.querySelector("#shots .start").valueAsNumber === 0.25 && document.querySelectorAll("#music-list li").length === 2', '应恢复保存的剪辑点和配乐');
@@ -844,9 +936,9 @@ async function run() {
   assert.ok(Math.abs(segmentPreviewDuration - 2.4) < 0.05, '有口播的分镜应对齐口播长度，无口播的分镜应保留原长');
   await screenshot('segmented-preview.png');
 
-  await runInWindow('document.querySelector("#tab-home").click()');
+  await navigate('#title-home');
   await waitFor('document.querySelectorAll("#history-list li").length === 3', '首页应列出三条真实成片');
-  await runInWindow('document.querySelector("#tab-audio").click()');
+  await navigate('#tab-audio');
   selections.push({ title: '选择视频素材', files: [files.red, files.blue] });
   await runInWindow('document.querySelector("#import-materials").click()');
   await waitFor('document.querySelectorAll("#audio-list .asset").length === 1', '音频提取应略过无音轨视频');
@@ -859,7 +951,7 @@ async function run() {
   assert.equal((await inspectAsset(path.join(output, audios[0]), 'audio')).codec, 'mp3');
   assert.deepEqual(selections, []);
   assert.deepEqual(saves, []);
-  await runInWindow('document.querySelector("#tab-home").click()');
+  await navigate('#title-home');
   await waitFor('document.querySelectorAll("#history-list li").length === 4', '最近作品应包含三条视频和一条音频');
   const history = JSON.parse(await fs.readFile(path.join(root, 'profile', 'work-history.json'), 'utf8'));
   assert.deepEqual(history.map((item) => item.name).sort(), [...videos, ...selectedVideos, ...audios].sort());
@@ -878,7 +970,8 @@ async function run() {
   const folderReload = once(win.webContents, 'did-finish-load');
   win.webContents.reload();
   await folderReload;
-  await runInWindow('document.querySelector("#tab-montage").click(); document.querySelector("#project-new").click();');
+  await navigate('#tab-montage');
+  await navigate('#project-new');
   await waitFor('!document.querySelector("#editor-workspace").hidden && !document.querySelector("#material-folder-import").disabled', '应打开空工程的素材库');
   const folder = (name) => `[...document.querySelectorAll('#material-folders .material-folder')].find((item) => item.textContent.includes(${JSON.stringify(name)}) || item.title === ${JSON.stringify(name)})`;
   const material = (file) => `.material-tile[title="${path.basename(file)}"]`;

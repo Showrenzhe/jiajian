@@ -163,7 +163,7 @@ body:has(.workspace-divider[data-dragging]) {
 }
 .app-frame[data-mode="montage"] .secondary { border-color: var(--control-edge); background: var(--control); }
 .app-frame[data-mode="montage"] .secondary:hover:enabled { background: var(--well); }
-.app-frame[data-mode="montage"] :is(#material-import, #add-shot) { border-color: var(--control-edge); color: var(--ink); }
+.app-frame[data-mode="montage"] #add-shot { border-color: var(--control-edge); color: var(--ink); }
 .app-frame[data-mode="montage"] .primary { background: var(--action-fill); color: #fff; }
 .app-frame[data-mode="montage"] .primary:hover:enabled { background: var(--accent-hover); }
 .app-frame[data-mode="montage"] #prepare-preview { border-color: transparent; background: transparent; color: var(--ink); }
@@ -309,10 +309,6 @@ body:has(.workspace-divider[data-dragging]) {
 #subproject-batch-list { max-height: 45vh; overflow: auto; }
 .batch-heading select { max-width: 176px; min-width: 0; font-size: 12px; }
 .batch-reuse { color: #adcbce; }
-.app-frame[data-mode="montage"] .materials-toolbar { display:flex; flex-wrap:wrap; align-items:center; gap:5px; }
-.app-frame[data-mode="montage"] .materials-toolbar input { flex:1 1 90px; min-width:60px; }
-.app-frame[data-mode="montage"] .materials-toolbar button { padding: 5px 7px; font-size: 12px; }
-.app-frame[data-mode="montage"] #material-folder-import { border-color: var(--control-edge); color: var(--ink); }
 .app-frame[data-mode="montage"] .material-count { font-size: 11px; }
 .app-frame[data-mode="montage"] #material-search {
   width: 100%;
@@ -323,11 +319,6 @@ body:has(.workspace-divider[data-dragging]) {
   background: var(--well);
   color: var(--text);
   font-size: 12px;
-}
-@container (max-width: 292px) {
-  .app-frame[data-mode="montage"] .materials-toolbar { grid-template-columns: repeat(2, minmax(0, 1fr)); }
-  .app-frame[data-mode="montage"] .materials-toolbar button { min-width: 0; padding-inline: 4px; white-space: normal; }
-  .app-frame[data-mode="montage"] .material-search-box { grid-column: 1 / -1; }
 }
 .app-frame[data-mode="montage"] #material-browse { display: grid; gap: 5px; min-width: 0; margin-top: 7px; }
 .app-frame[data-mode="montage"] #material-breadcrumb {
@@ -974,7 +965,7 @@ body:has(.workspace-divider[data-dragging]) {
 #editor-workspace:not([data-panel-layout="custom"]) .panel-layout-handle[data-split-axes="x"] { cursor: ew-resize; }
 #editor-workspace:not([data-panel-layout="custom"]) .panel-layout-handle[data-split-axes="y"] { cursor: ns-resize; }
 
-.app-frame[data-mode="montage"] :is(.workbench-actions, .materials-toolbar, .timeline-empty-actions, .timeline-header, .track-toolbar) button:has(.ui-icon) {
+.app-frame[data-mode="montage"] :is(.workbench-actions, .timeline-empty-actions, .timeline-header, .track-toolbar) button:has(.ui-icon) {
   display: inline-flex;
   justify-content: center;
   align-items: center;
@@ -1019,10 +1010,6 @@ body:has(.workspace-divider[data-dragging]) {
   .app-frame[data-mode="montage"] :where(.material-list, #material-folders) { --material-default-max-width: 64px; }
 }
 
-@container (max-width: 215px) {
-  .app-frame[data-mode="montage"] .materials-toolbar button { white-space: nowrap; }
-  .app-frame[data-mode="montage"] .materials-toolbar button .ui-icon { display: none; }
-}
 .app-frame[data-mode="montage"] :is(.editor-materials, .inspector-body, #timeline-tracks-panel, #preview-batch) { scrollbar-width: thin; }
 .app-frame[data-mode="montage"] .preview-placeholder-icon { pointer-events: none; }
 .app-frame:not([data-mode="montage"]) .preview-placeholder-icon { display: none; }
@@ -1037,16 +1024,6 @@ body:has(.workspace-divider[data-dragging]) {
   --pane-divider: color-mix(in srgb, var(--ink) 11%, transparent);
 
   .editor-player .viewer { margin: 0 10px 10px; border-radius: 8px; }
-  .materials-toolbar { grid-template-columns: auto minmax(0,1fr); gap: 4px 6px; }
-  .materials-toolbar .material-search-box { grid-column: 1 / -1; }
-  .materials-toolbar :is(#material-import, #material-folder-import) {
-    justify-self: start;
-    padding: 2px 4px;
-    border: 0;
-    border-radius: 5px;
-    background: transparent;
-    color: var(--system-blue);
-  }
   #material-search { border: 0; background: color-mix(in srgb, var(--ink) 6%, transparent); }
   .material-tile:hover:enabled, .material-tile[aria-pressed="true"] { background: transparent; }
   .material-tile[aria-pressed="true"] .material-thumbnail { outline: 2px solid var(--system-blue); outline-offset: 0; }

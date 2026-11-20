@@ -9,6 +9,7 @@ const { setTimeout: delay } = require('node:timers/promises');
 const { app } = require('electron');
 const { launchDesktop } = require('../src/desktop.cjs');
 const { fixtures } = require('./fixtures.cjs');
+const { clickVisible } = require('./desktop-input.cjs');
 
 app.disableHardwareAcceleration();
 
@@ -69,7 +70,7 @@ async function check() {
   const tile = (file) => '.material-tile[title=' + JSON.stringify(path.basename(file)) + ']';
   try {
     picks.push({ title: '选择分镜素材', files: [files.red, files.green, files.blue] });
-    await click('#home-import');
+    await clickVisible(win.webContents, '#home-import');
     await wait(count(video)+'===3 && '+count('.material-used')+'===3','三个素材均应标记已用');
     await actualClick(video);
     await pressDelete();

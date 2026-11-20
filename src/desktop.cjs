@@ -1296,7 +1296,7 @@ async function launchDesktop({
 
   handle('workbench:pick', async (value) => {
     const { kind, limit } = value || {};
-    if (!['visual', 'video', 'image', 'audio', 'narration'].includes(kind) || !Number.isInteger(limit)
+    if (!['visual', 'video', 'image', 'audio', 'narration', 'audio-tools'].includes(kind) || !Number.isInteger(limit)
       || limit < 1 || limit > maxCandidates || (kind === 'narration' && limit !== 1)) {
       throw new Error('素材选择参数无效。');
     }
@@ -1309,8 +1309,8 @@ async function launchDesktop({
         image: { name:'封面图片', extensions:imageExtensions },
         audio: { name: '音频', extensions: audioExtensions },
       };
-      const mediaKind = kind === 'narration' ? 'audio' : kind;
-      const titles = { visual: '选择分镜素材', video: '选择视频素材', image:'选择封面图片', audio: '选择配乐', narration: '选择口播音频' };
+      const mediaKind = kind === 'narration' || kind === 'audio-tools' ? 'audio' : kind;
+      const titles = { visual: '选择分镜素材', video: '选择视频素材', image:'选择封面图片', audio: '选择配乐', narration: '选择口播音频', 'audio-tools': '选择待处理音频' };
       const { canceled, filePaths } = await dialogs.showOpenDialog(win, {
         title: titles[kind],
         properties: limit === 1 ? ['openFile'] : ['openFile', 'multiSelections'],

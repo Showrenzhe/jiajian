@@ -67,7 +67,7 @@ async function run() {
   }
   async function pickFolder() {
     picks.push({ title: '选择素材文件夹', files: [library] });
-    await click('#material-folder-import');
+    await mouseClick('#material-folder-import');
   }
   const item = (type, file) => '.' + type + '[title=' + JSON.stringify(path.basename(file)) + ']';
   const folder = item('material-folder', library), child = item('material-folder', nested);
@@ -77,8 +77,14 @@ async function run() {
   const undo = () => key('z', 90, 2);
 
   try {
+    await click('#home-create');
+    await wait('!' + el('#materials-pane') + '.hidden && !' + el('#material-audio-open') + '.disabled', '新建草稿应打开素材库');
+    picks.push({ title: '选择待处理音频', files: [files.music, files.otherMusic] });
+    await mouseClick('#material-audio-open');
+    await wait(el('#audio-tools-dialog') + '.open && ' + count('#audio-tool-source option') + '===2', '空素材库也应能选择多个音频进入处理窗口');
+    await mouseClick('#audio-tool-close');
     picks.push({ title: '选择分镜素材', files: [files.red] });
-    await click('#home-import');
+    await mouseClick('#material-import');
     await wait(tracks + '===1 && !!' + el(red), '导入视频应同时显示素材和一个分镜');
     await pickFolder();
     await wait('!!' + el(folder), '应显示导入的文件夹');

@@ -1,5 +1,7 @@
 'use strict';
 
+const { clickVisible } = require('./desktop-input.cjs');
+
 const assert = require('node:assert/strict');
 const fs = require('node:fs/promises');
 const os = require('node:os');
@@ -164,7 +166,7 @@ async function run() {
   assert.ok(win.isEnabled());
   await click('cloud-settings-cancel');
 
-  await click('tab-script');
+  await clickVisible(win.webContents, '#tab-script');
   await until('document.getElementById("script-title")?.checkVisibility()');
   await read(`window.originalSetItem = Storage.prototype.setItem;
     Storage.prototype.setItem = () => { throw new Error('模拟存储空间不足'); };
@@ -177,7 +179,7 @@ async function run() {
   assert.equal(installs, 0);
   await read('Storage.prototype.setItem = window.originalSetItem; void 0');
   await click('update-close');
-  await click('tab-home');
+  await clickVisible(win.webContents, '#title-home');
 
   // A regular file at the directory path makes the real autosave fail deterministically.
   await fs.writeFile(drafts, 'fixture', { flag: 'wx' });

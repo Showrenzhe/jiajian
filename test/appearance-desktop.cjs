@@ -1,5 +1,7 @@
 'use strict';
 
+const { clickVisible } = require('./desktop-input.cjs');
+
 const assert = require('node:assert/strict');
 const { spawn } = require('node:child_process');
 const { once } = require('node:events');
@@ -345,10 +347,10 @@ async function worker(phase, root) {
   await expectMode('system', 'dark');
   assert.equal(await colorAt('#home-heading', 'color'), expectedInk.dark[labels.indexOf('#home-heading')],
     'System changes with reduced motion should reach the endpoint immediately');
-  await click('#tab-script');
+  await clickVisible(wc, '#tab-script');
   await until(() => read('document.querySelector("#script-title")?.checkVisibility()'), 'Script editor should open');
   await contrast('#script-title', 'dark');
-  await click('#tab-home');
+  await clickVisible(wc, '#title-home');
   if (process.platform === 'win32') {
     await click('#home-create');
     await until(() => read("document.querySelector('#ratio').checkVisibility()"), 'Expected the ratio selector');
@@ -359,7 +361,7 @@ async function worker(phase, root) {
   const bitmap = Buffer.alloc(160 * 90 * 4);
   for (let i = 0; i < bitmap.length; i += 4) bitmap.set([180, 48, 180, 255], i);
   await fs.writeFile(picture, nativeImage.createFromBitmap(bitmap, { width: 160, height: 90 }).toPNG());
-  await click('#home-import');
+  await clickVisible(wc, '#home-import');
   await until(() => read('!!document.querySelector("#material-list .material-tile")'), 'The test image should import');
   await click('#material-list .material-tile');
   await until(() => read('document.querySelector("#still-preview").naturalWidth === 160 && document.querySelector("#still-preview").checkVisibility()'), 'Still preview should open');

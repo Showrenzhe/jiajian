@@ -246,6 +246,7 @@ function importFromHome() {
 
 const draftLibrary = window.mountDraftLibrary($('#draft-library'), {
   load: api.listDrafts, open: openDraft, importMaterials: importFromHome,
+  showEmptyImport: () => mode === 'drafts',
 });
 const draftAutosave = window.createDraftAutosave({
   create: api.createDraft,
@@ -1893,6 +1894,7 @@ function updateControls(group) {
   $('#subproject-batch').disabled = busy;
   $('#subproject-materials').disabled = busy || !shots.length;
   $('#material-folder-import').disabled = busy;
+  $('#material-audio-open').disabled = busy;
   const newShotDrop = $('#new-shot-drop');
   newShotDrop.setAttribute('aria-disabled', String(busy || shots.length >= maxShots));
   newShotDrop.textContent = shots.length >= maxShots ? '分镜数已达上限，可拖到已有分镜添加候选'
@@ -1958,6 +1960,8 @@ function updateControls(group) {
 
 function setMode(value) {
   if (value === mode) return;
+  const localTools = $('#home-local-tools');
+  const leavingLocalTool = localTools.contains(document.activeElement);
   draftLibrary.cancelCoverTransition();
   timeline?.stopDraftPlayback();
   if(timelinePlaybackRequest) timelinePlaybackRequest.autoplay=false;
@@ -1974,19 +1978,19 @@ function setMode(value) {
   const scene = mode === 'scene-split';
   $('.app-frame').dataset.mode = mode;
   workspaceNavigation.changeMode();
-  const activeNav = scene ? $('#tab-scene-split') : mode === 'workflow' ? [...document.querySelectorAll('.tabs [data-workflow]')]
+  const entry = mode === 'workflow' ? [...document.querySelectorAll('.tabs [data-workflow]')]
     .find((button) => button.dataset.workflow === activeWorkflow) : $(`#tab-${project ? 'montage' : mode}`);
-  const moreTools = activeNav?.closest('.nav-more');
-  if (moreTools) moreTools.open = true;
+  const activeNav = entry?.closest('.tabs') ? entry : null;
   for (const button of document.querySelectorAll('.tabs button')) {
     if (button === activeNav) button.setAttribute('aria-current', 'page');
     else button.removeAttribute('aria-current');
   }
   workspaceNavigation.moveSelection(selectionOrigin, activeNav);
   const titleTab = $('#title-tab');
-  titleTab.textContent = activeNav?.textContent.trim() || '';
+  titleTab.textContent = entry?.textContent.trim() || '';
   titleTab.hidden = !titleTab.textContent;
   $('#home').hidden = !home;
+  localTools.hidden = mode !== 'home';
   if (home) {
     $('#home').setAttribute('aria-label', mode === 'drafts' ? '本地草稿' : '首页工作台');
     $('#home-heading').textContent = mode === 'drafts' ? '本地草稿' : '剪辑工作台';
@@ -1997,6 +2001,8 @@ function setMode(value) {
   $('#scene-split-workspace').hidden = !scene;
   $('#script-workspace').hidden = !script;
   $('#workflow-workspace').hidden = !service;
+  if (editor) $('#workflow-title').textContent = audio ? '音频提取' : '分镜混剪';
+  if (leavingLocalTool) $('.work-area > main:not([hidden]) h1')?.focus({ preventScroll: true });
   if (window.scrollY) window.scrollTo(0, 0);
   clearPreview();
   say('');
@@ -2018,7 +2024,6 @@ function setMode(value) {
     return;
   }
   if (!editor) return;
-  $('#workflow-title').textContent = audio ? '音频提取' : '分镜混剪';
   $('#workflow-description').textContent = audio ? '从一条或多条视频中提取原声音轨。' : '每组分镜随机抽取一条候选，再拼接成片。';
   $('#workflow-eyebrow').hidden = !audio;
   $('#workflow-description').hidden = !audio;
@@ -3527,7 +3532,9 @@ async function openMaterialAudio(items) {
       materialAudio.open(sources);
     } else if (selected?.asset && selected.asset.hasAudio && $('#preview-heading').textContent!=='成片预览') {
       materialAudio.open([selected.asset]);
-    } else await pick('narration',maxCandidates,(assets)=>{if(assets.length) materialAudio.open(assets);});
+    } else await pick('audio-tools', maxCandidates, (assets) => {
+      if (assets.length) materialAudio.open(assets);
+    });
   } catch (error) {materialMessage(error.message);}
 }
 $('#material-audio-open').onclick=()=>openMaterialAudio([...selectedMaterials.values()]);
