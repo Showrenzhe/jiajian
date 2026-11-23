@@ -423,9 +423,9 @@ async function loadProject(file,resolvePath,inspect=inspectAsset) {
   const {config,rows}=projectReferences(await readProject(file));
   const assets = new Map();
   const cancellation = new AbortController();
-  const signal = AbortSignal.any([cancellation.signal, AbortSignal.timeout(60_000)]);
   try {
     for (let index = 0; index < rows.length; index += 4) {
+      const signal = AbortSignal.any([cancellation.signal, AbortSignal.timeout(60_000)]);
       const batch = await Promise.all(rows.slice(index, index + 4).map(async (row) => {
         try {
           const source=resolvePath ? await resolvePath(row.path) : row.path;
