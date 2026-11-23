@@ -36,6 +36,7 @@
   <script src="./draft-workspace.js" defer></script>
   <script src="./player-tools.js" defer></script>
   <script src="./waveform.js" defer></script>
+  <script src="./voice-alignment.js" defer></script>
   <script src="./draft-transport.js" defer></script>
   <script src="./audio-tools.js" defer></script>
   <script src="./subprojects.js" defer></script>
@@ -289,6 +290,8 @@
               <select id="timeline-view" aria-label="轨道视图"><option value="time">时间线</option><option value="cards">分镜卡片</option></select>
               <button type="button" class="secondary" id="timeline-play" aria-keyshortcuts="Space" aria-pressed="false" title="时间线播放 / 暂停（空格）">▶ 时间线播放</button>
               <button type="button" class="secondary" id="add-shot" title="新增空分镜，再向其中添加一条或多条候选"><svg class="ui-icon" aria-hidden="true"><use href="#icon-plus"></use></svg>新增分镜</button>
+              <button type="button" class="secondary" id="insert-shot-left" title="在当前分镜左侧插入空分镜">左侧插入</button>
+              <button type="button" class="secondary" id="insert-shot-right" title="在当前分镜右侧插入空分镜">右侧插入</button>
               <button type="button" class="secondary" id="timeline-layer-add">＋ 包装轨道</button>
               <button type="button" class="secondary" id="track-undo" aria-label="撤销" title="撤销（Ctrl+Z）"><svg class="ui-icon" aria-hidden="true"><use href="#icon-undo-edit"></use></svg></button>
               <button type="button" class="secondary" id="track-redo" aria-label="恢复" title="恢复（Ctrl+Y）"><svg class="ui-icon" aria-hidden="true"><use href="#icon-redo-edit"></use></svg></button>
@@ -306,7 +309,10 @@
               <button type="button" class="secondary" id="organize-tracks">一键整理</button>
               <button type="button" class="secondary" id="timeline-text-tools">批量编辑文字</button>
             </div>
-            <button type="button" id="track-more" class="secondary" popovertarget="track-more-options"><svg class="ui-icon" aria-hidden="true"><use href="#icon-more"></use></svg>编辑工具</button>
+            <div class="track-match-actions">
+              <button type="button" id="track-more" class="secondary" popovertarget="track-more-options"><svg class="ui-icon" aria-hidden="true"><use href="#icon-more"></use></svg>编辑工具</button>
+              <button type="button" id="match-all-voice-duration" class="secondary" title="分段式口播中，按各分镜第一条有音频的口播轨匹配全部候选时长">一键匹配口播</button>
+            </div>
             <div id="track-more-options" popover="auto" role="group" aria-label="更多轨道工具">
               <div class="track-edit-actions" role="group" aria-label="切片与清理">
                 <label class="track-interval">每段 <input type="number" id="track-slice-interval" min="0.1" step="0.1" value="1" aria-label="原素材切片间隔秒数"> 秒</label>

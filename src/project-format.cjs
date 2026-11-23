@@ -109,8 +109,11 @@ function cleanConfig(config) {
       if (clip.volume !== undefined && (!Number.isFinite(clip.volume) || clip.volume < 0 || clip.volume > 100)) {
         throw new Error(`第 ${index + 1} 组分镜的原声音量无效。`);
       }
-      if (clip.speed !== undefined && (!Number.isFinite(clip.speed) || clip.speed < 0.5 || clip.speed > 3)) {
+      if (clip.speed !== undefined && (!Number.isFinite(clip.speed) || clip.speed < 0.5 || clip.speed > Number.MAX_SAFE_INTEGER)) {
         throw new Error(`第 ${index + 1} 组分镜的素材速度无效。`);
+      }
+      if (clip.matchedDuration !== undefined && (!Number.isFinite(clip.matchedDuration) || clip.matchedDuration < 0.000001 || clip.matchedDuration > 86400)) {
+        throw new Error(`第 ${index + 1} 组分镜的匹配时长无效。`);
       }
       if (clip.enabled !== undefined && typeof clip.enabled !== 'boolean') throw new Error('候选参与状态无效。');
       const ranges = clip.ranges === undefined ? undefined : normalizeRanges(clip.ranges, clip.start, clip.end);
@@ -127,6 +130,7 @@ function cleanConfig(config) {
         ...(ranges && { ranges }),
         ...(clip.volume !== undefined && { volume: clip.volume }),
         ...(clip.speed !== undefined && { speed: clip.speed }),
+        ...(clip.matchedDuration !== undefined && { matchedDuration: clip.matchedDuration }),
       };
     });
   }

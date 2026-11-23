@@ -32,6 +32,7 @@ window.createTimelinePackaging = function () {
 };
 
 window.candidatePlaybackSeconds = function (clip) {
+  if(clip.matchedDuration>0) return clip.matchedDuration;
   const retained = clip.ranges?.reduce((sum, range) => sum + range.end - range.start, 0) ?? (clip.end - clip.start);
   return Math.max(.1, retained - (clip.look?.head ?? 0) - (clip.look?.tail ?? 0)) / (clip.speed || 1);
 };
@@ -103,6 +104,7 @@ window.mountEditTimeline = function (host, ctx) {
   let playTime = 0, fit = null, refreshFrame, lastState, lastKey;
   let focusShot, focusClip, voiceTarget, shotDrag, refocusShot;
   let clipboard, pastePosition;
+  let draggedCandidate, candidateDropTarget;
   const copySources=new WeakMap();
   let timeScale = 60, totalTime = 0, shotTimes = [], widths = [];
   const standardScales = [16, 32, 60, 100, 180];
@@ -123,7 +125,7 @@ window.mountEditTimeline = function (host, ctx) {
   });
   function draftPlan() {
     const state=ctx.state();
-    const layout=window.draftTimeline.timing(state,clipSpan,ctx.asset);
+    const layout=window.draftTimeline.timing(state,clipSpan,ctx.asset,focusClip ?? state.selected);
     return window.draftTimeline.makePlan(state,layout,ctx.asset,window.waveformSource,focusClip ?? state.selected);
   }
   const folded = new Set();
@@ -308,9 +310,13 @@ window.mountEditTimeline = function (host, ctx) {
     try {
       if(clipboard.kind==='视频') {
         const clip=ctx.pasteClip(clipboard.data);
-        if(shot && !shot.length) {shot.push(clip);ctx.change();}
-        else if(!ctx.insertShot(shot ? position.index+1 : s.shots.length,[clip])) throw Error('已达到分镜上限或此处无法插入。');
+        if(shot) {
+          if(!ctx.placeCandidate(clip,shot)) return;
+        } else if(!ctx.insertShot(s.shots.length,[clip])) throw Error('已达到分镜上限或此处无法插入。');
         ctx.preview(clip);
+        selection.selectOnly(clip);
+        ctx.notify('已粘贴至分镜 '+(shot ? position.index+1 : s.shots.length)+'。');
+        return;
       } else if(clipboard.kind==='口播') {
         const row=ctx.pasteVoice(clipboard.data,shot,position.row);
         ctx.notify('已粘贴至'+(s.segmented ? '分镜 '+(position.index+1)+' · ' : '')+'口播轨 '+(row+1)+'。');
@@ -338,9 +344,32 @@ window.mountEditTimeline = function (host, ctx) {
     d.field('播放速度（倍）',field);
     d.save(()=>{const value=field.valueAsNumber;if(!(value>=.5 && value<=3)) throw Error('请输入 0.5 到 3 之间的倍速。');apply(value);});
   }
+  function matchDurationButton(d,state,index,clip) {
+    if (!state.segmented) return;
+    const shot=state.shots[index], target=ctx.segmentVoiceMatchTarget(state,index);
+    const action=btn(clip ? '匹配口播时长' : '匹配本分镜全部候选',()=>{
+      d.wrapper.close();
+      ctx.matchNarrationDuration(shot,clip);
+    });
+    action.disabled=ctx.busy() || !target || !shot?.length;
+    const hint=!target ? '本分镜还没有分段口播' : !shot?.length ? '本分镜还没有候选素材'
+      : `口播轨 ${target.row+1} · 目标 ${target.seconds.toFixed(2)} 秒`;
+    d.body.append(action,el('small','muted',hint));
+  }
+  function openCardMatchMenu(shot,clip) {
+    const state=ctx.state(), index=state.shots.indexOf(shot);
+    if (!state.segmented || index<0 || ctx.busy()) return;
+    const d=dialog(clip ? '候选 · '+clip.asset.name : '分镜 '+(index+1));
+    matchDurationButton(d,state,index,clip);
+    d.wrapper.showModal();
+  }
   function insertBeside(index,side) {
     const shot=ctx.insertShot(index+(side==='right' ? 1 : 0));
-    if(shot) {refocusShot=focusShot=shot;focusClip=voiceTarget=undefined;}
+    if(shot) {
+      refocusShot=focusShot=shot;focusClip=voiceTarget=undefined;
+      pastePosition=undefined;
+      ctx.notify('已在分镜 '+(index+1)+' '+(side==='right' ? '右侧' : '左侧')+'插入空分镜。');
+    }
   }
   function insertButtons(d,index) {
     for(const [side,label] of [['left','在左侧插入分镜'],['right','在右侧插入分镜']]) {
@@ -354,7 +383,12 @@ window.mountEditTimeline = function (host, ctx) {
     if(key!=='c' && key!=='v') return;
     if(key==='v' && !clipboard) return;
     event.preventDefault();event.stopPropagation();
-    if(key==='c') copyItem(selection.single());else pasteItem();
+    if(key==='c') copyItem(selection.single());
+    else {
+      const target=event.target.closest('[data-drop-shot]');
+      if(clipboard?.kind==='视频' && target) pasteItem({index:Number(target.dataset.dropShot)});
+      else pasteItem();
+    }
   });
 
   function editShot(s,index) {
@@ -426,6 +460,11 @@ window.mountEditTimeline = function (host, ctx) {
       if (ctx.move(drag.shot,to)) refocusShot=drag.shot;
     }
   }
+  function suppressDragClick() {
+    const ignore=click=>{click.preventDefault();click.stopPropagation();};
+    window.addEventListener('click',ignore,true);
+    setTimeout(()=>window.removeEventListener('click',ignore,true),0);
+  }
   window.addEventListener('keydown',(event)=>{
     if (event.key==='Escape' && resizeDrag && !event.isComposing) {
       event.preventDefault();event.stopPropagation();
@@ -479,9 +518,7 @@ window.mountEditTimeline = function (host, ctx) {
     if (shotDrag?.id!==event.pointerId) return;
     shotDrag.x=event.clientX;shotDrag.y=event.clientY;updateShotDrop();
     if (shotDrag.active || shotDrag.cancelled) {
-      const ignoreClick=(click)=>{click.preventDefault();click.stopPropagation();};
-      window.addEventListener('click',ignoreClick,true);
-      setTimeout(()=>window.removeEventListener('click',ignoreClick,true),0);
+      suppressDragClick();
     }
     finishShotDrag(true);
   },true);
@@ -490,13 +527,14 @@ window.mountEditTimeline = function (host, ctx) {
     refreshFrame=undefined;
     if (!host.clientWidth) return;
     finishShotDrag();
+    finishCandidateDrag(false);
     endResize(false);
     const s=ctx.state();
     lastState=s;
     const index=s.shots.indexOf(focusShot);
     if (index<0) {focusShot=undefined;focusClip=undefined;}
     const columns=s.shots.length || 3;
-    ({widths,starts:shotTimes,total:totalTime}=window.draftTimeline.timing(s,clipSpan,ctx.asset));
+    ({widths,starts:shotTimes,total:totalTime}=window.draftTimeline.timing(s,clipSpan,ctx.asset,focusClip ?? s.selected));
     const fitted=Math.max(.002,(host.clientWidth-102)/totalTime);
     timeScale=fit===false ? manualScale : fit===true ? fitted : Math.max(60,Math.min(180,fitted));
     if (fit!==false) zoomScales=scalesAround(timeScale);
@@ -596,27 +634,34 @@ window.mountEditTimeline = function (host, ctx) {
         const clip=s.shots[i]?.[j];
         const b=block(lane,shotTimes[i],widths[i],clip ? clip.asset.name : '＋ 候选',(event)=>{
           if (!clip) {ctx.importShot(s.shots[i],i);return;}
-          focusShot=s.shots[i];focusClip=clip;voiceTarget=undefined;ctx.preview(clip);
+          focusShot=s.shots[i];focusClip=clip;voiceTarget=undefined;
+          playTime=shotTimes[i];syncCursor();ctx.preview(clip);
           host.querySelector('.sequence-selected')?.classList.remove('sequence-selected');
           event.currentTarget.classList.add('sequence-selected');
         });
         b.dataset.dropShot=String(i);
         b.dataset.candidateIndex=String(j);
         if (!clip) {b.classList.add('sequence-empty');continue;}
-        b.dataset.clipSource = clip.asset.sourceKey ?? clip.asset.id;
-        b.classList.toggle('material-instance', b.dataset.clipSource === locatedMaterial);
+        bindMaterialSource(b, clip.asset);
         const owner=s.shots[i];
         selection.bind(b,clip,()=>ctx.removeClip(owner,clip));
         bindCopy(b,'视频',()=>ctx.copyClip(clip));
+        b.dataset.moveCandidate='';
+        b.onpointerdown=event=>{
+          if(ctx.busy() || !event.isPrimary || event.button!==0 || event.ctrlKey || event.metaKey || event.shiftKey || event.altKey) return;
+          draggedCandidate={button:b,clip,owner,id:event.pointerId,x:event.clientX,y:event.clientY};
+          b.setPointerCapture(event.pointerId);
+        };
         if (clip.enabled===false) b.classList.add('sequence-disabled');
         if (clip===s.selected) b.classList.add('sequence-selected');
         const seconds=clipSpan(clip);
         const duration=Number.isFinite(seconds) ? seconds.toFixed(2)+' 秒' : '—';
         const name=el('span','sequence-clip-name',clip.asset.name);
         const label=el('span','sequence-clip-label');
-        label.append(name,el('span','sequence-clip-duration',duration));
+        const match=Number.isFinite(clip.matchedDuration) ? clip.matchedDuration.toFixed(2)+' 秒 · 已匹配' : '';
+        label.append(name,el('span','sequence-clip-duration',match || duration));
         b.replaceChildren(label);
-        b.title=clip.asset.name+' · 候选时长 '+duration+(clip.asset.kind==='video' ? ' · 原片 '+clip.asset.duration.toFixed(2)+' 秒' : '');
+        b.title=clip.asset.name+' · '+(match || '候选时长 '+duration)+(clip.asset.kind==='video' ? ' · 原片 '+clip.asset.duration.toFixed(2)+' 秒' : '');
         const frames=el('span','sequence-frames');
         const count=Math.max(1,Math.min(6,Math.ceil(widths[i]*timeScale/76)));
         const ranges=clip.ranges ?? [{start:clip.start,end:clip.end}];
@@ -640,6 +685,7 @@ window.mountEditTimeline = function (host, ctx) {
         b.oncontextmenu=(e)=>{
           e.preventDefault();focusShot=s.shots[i];focusClip=clip;voiceTarget=undefined;
           const d=dialog('候选 · '+clip.asset.name);
+          matchDurationButton(d,s,i,clip);
           clipboardButtons(d,b,eventPosition(e));
           d.body.append(btn(clip.enabled===false ? '参与混剪' : '排除此候选',()=>{ctx.toggleClip(clip); d.wrapper.close();}),
             btn('候选包装',()=>{d.wrapper.close();editLayer({key:'local'});}));
@@ -669,6 +715,7 @@ window.mountEditTimeline = function (host, ctx) {
       b.dataset.dropShot=String(i);
       if(shot) b.oncontextmenu=(event)=>{
         event.preventDefault();const d=dialog('分镜 '+(i+1));
+        matchDurationButton(d,s,i);
         insertButtons(d,i);clipboardButtons(d,b,eventPosition(event));
         if(i===0) d.body.append(btn('首分镜封面',()=>{d.wrapper.close();ctx.firstCover();}));
         d.wrapper.showModal();
@@ -690,6 +737,7 @@ window.mountEditTimeline = function (host, ctx) {
       if(si>=0) b.dataset.voiceShot=String(si);
       if (!asset) b.classList.add('sequence-empty');
       else {
+        bindMaterialSource(b, asset);
         waveforms.add(b,asset,{ranges:voice.shot && s.voiceRanges(voice.shot,voice.row),span:displayed*speed,volume:s.voiceVolume(asset,voice.shot,voice.row)});
         selection.bind(b,'voice:'+si+'/'+voice.row+'/'+asset.id,()=>ctx.removeVoice(voice));
         b.ondblclick=()=>ctx.editVoice(voice);
@@ -717,6 +765,7 @@ window.mountEditTimeline = function (host, ctx) {
     for(const [i,asset] of s.music.entries()) {
       const start=shotTimes[s.musicAt] ?? 0;
       const cell=block(row('音乐 '+(i+1),'sequence-music','music'+i),start,totalTime-start,asset.name,()=>ctx.music(asset));
+      bindMaterialSource(cell, asset);
       cell.title=asset.name+' · '+s.musicSpeed(asset)+' 倍 · 右键调整倍速';
       waveforms.add(cell,asset,{span:(totalTime-start)*s.musicSpeed(asset),loop:true,volume:s.musicVolume(asset)});
       selection.bind(cell,asset,()=>removeItem(s.music,asset));
@@ -779,19 +828,20 @@ window.mountEditTimeline = function (host, ctx) {
     function layerRow(target,items,start,span) {
       const lanes=new Map();
       for(const [i,layer] of (items ?? []).entries()) {
-        const limit=ctx.asset(layer.id)?.duration;
+        const asset=ctx.asset(layer.id), limit=asset?.duration;
         const speed=layer.speed ?? 1;
         const sourceSpan=limit>0 ? (limit-(layer.mediaOffset ?? 0))/speed : Infinity;
         const length=Math.min(layer.end ?? Infinity,span,layer.start+sourceSpan)-layer.start;
         const id=layer.kind+'-'+(layer.laneId ?? i);
         if(!lanes.has(id)) lanes.set(id,row(target.label+' · '+kinds[layer.kind],'sequence-layer kind-'+layer.kind,target.label+'/'+(target.column ?? 0)+'/'+id));
         const lane=lanes.get(id);
-        const title=layer.kind==='text' ? layer.text : ctx.asset(layer.id)?.name ?? kinds[layer.kind];
+        const title=layer.kind==='text' ? layer.text : asset?.name ?? kinds[layer.kind];
         let dragged=false;
         const cell=block(lane,start+layer.start,Math.max(.1,length),title,()=>{},title+' · 双击编辑');
+        if (asset) bindMaterialSource(cell, asset);
         if (length>0 && (layer.kind==='sound' || layer.kind==='pip')) {
           const offset=layer.mediaOffset ?? 0;
-          waveforms.add(cell,ctx.asset(layer.id),{ranges:[{start:offset,end:offset+length*speed}],volume:layer.volume ?? (layer.kind==='pip'?0:100)});
+          waveforms.add(cell,asset,{ranges:[{start:offset,end:offset+length*speed}],volume:layer.volume ?? (layer.kind==='pip'?0:100)});
         }
         selection.bind(cell,layer,()=>removeItem(items,layer));
         cell.ondblclick=()=>{
@@ -1024,6 +1074,85 @@ window.mountEditTimeline = function (host, ctx) {
     if (key!==undefined) lastKey=key;
     if(refreshFrame===undefined) refreshFrame=requestAnimationFrame(draw);
   }
+  function markCandidateDrop(node) {
+    if (node===candidateDropTarget) return;
+    if (candidateDropTarget) delete candidateDropTarget.dataset.materialDrop;
+    candidateDropTarget=node;
+    if (node) node.dataset.materialDrop='active';
+  }
+  function candidateUnderPointer(x,y) {
+    const node=document.elementFromPoint(x,y)?.closest('[data-drop-shot]');
+    const shot=node && lastState?.shots[Number(node.dataset.dropShot)];
+    return shot && host.contains(node) && shot!==draggedCandidate.owner ? node : undefined;
+  }
+  function scrollCandidateDrag(now) {
+    const drag=draggedCandidate;
+    if(!drag?.active) return;
+    const area=host.getBoundingClientRect(), view=host.closest('#timeline-tracks-panel');
+    const bounds=view.getBoundingClientRect(), elapsed=Math.min(.25,(now-drag.lastScroll)/1000);
+    drag.lastScroll=now;
+    if(drag.x>=area.left && drag.x<=area.right && drag.y>=bounds.top && drag.y<=bounds.bottom) {
+      const step=(p,low,high)=>p<low+16 ? Math.max(-20,p-low-16) : Math.max(0,Math.min(20,p-high+16));
+      host.scrollLeft+=step(drag.x,area.left+96,area.right)*90*elapsed;
+      view.scrollTop+=step(drag.y,bounds.top,bounds.bottom)*45*elapsed;
+      markCandidateDrop(candidateUnderPointer(drag.x,drag.y));
+    }
+    drag.frame=requestAnimationFrame(scrollCandidateDrag);
+  }
+  function finishCandidateDrag(commit) {
+    const drag=draggedCandidate;
+    if(!drag) return;
+    const target=candidateDropTarget;
+    draggedCandidate=undefined;
+    cancelAnimationFrame(drag.frame);
+    drag.button.classList.remove('candidate-moving');
+    markCandidateDrop(undefined);
+    if(drag.button.hasPointerCapture(drag.id)) drag.button.releasePointerCapture(drag.id);
+    if(!drag.active) return;
+    if(commit && target) {
+      const index=Number(target.dataset.dropShot);
+      try {
+        if(ctx.placeCandidate(drag.clip,ctx.state().shots[index],drag.owner)) {
+          ctx.preview(drag.clip);
+          selection.selectOnly(drag.clip);
+          pastePosition={index,time:shotTimes[index]};
+          host.focus({preventScroll:true});
+          ctx.notify('已移动至分镜 '+(index+1)+'。');
+        }
+      } catch(error) {ctx.notify(error.message);}
+    }
+  }
+  window.addEventListener('pointermove',event=>{
+    const drag=draggedCandidate;
+    if(!drag || event.pointerId!==drag.id || drag.cancelled) return;
+    if(!(event.buttons&1)) {finishCandidateDrag(false);return;}
+    if(!drag.active) {
+      if(Math.hypot(event.clientX-drag.x,event.clientY-drag.y)<5) return;
+      drag.active=true;drag.lastScroll=performance.now();
+      drag.button.classList.add('candidate-moving');
+      drag.frame=requestAnimationFrame(scrollCandidateDrag);
+    }
+    drag.x=event.clientX;drag.y=event.clientY;
+    markCandidateDrop(candidateUnderPointer(drag.x,drag.y));
+  },true);
+  window.addEventListener('pointerup',event=>{
+    const drag=draggedCandidate;
+    if(!drag || event.pointerId!==drag.id) return;
+    if(drag.active || drag.cancelled) {
+      suppressDragClick();
+      markCandidateDrop(drag.cancelled ? undefined : candidateUnderPointer(event.clientX,event.clientY));
+    }
+    finishCandidateDrag(!drag.cancelled);
+  },true);
+  window.addEventListener('keydown',event=>{
+    if(event.key!=='Escape' || !draggedCandidate?.active) return;
+    event.preventDefault();event.stopPropagation();
+    draggedCandidate.active=false;draggedCandidate.cancelled=true;
+    draggedCandidate.button.classList.remove('candidate-moving');
+    cancelAnimationFrame(draggedCandidate.frame);markCandidateDrop(undefined);
+  },true);
+  window.addEventListener('pointercancel',event=>{if(draggedCandidate?.id===event.pointerId) finishCandidateDrag(false);},true);
+  window.addEventListener('blur',()=>finishCandidateDrag(false));
   host.ondragover=(e)=>{
     const b=e.target.closest('[data-drop-shot]');
     if (b && e.dataTransfer.types.includes('application/x-jiajian-scene-cut')) {
@@ -1121,6 +1250,10 @@ window.mountEditTimeline = function (host, ctx) {
     const closed=new Promise((resolve)=>d.wrapper.addEventListener('close',()=>{media.pause();media.removeAttribute('src');if(processing) ctx.cancelRecognition();resolve(outcome);},{once:true}));
     display();d.wrapper.showModal();return closed;
   }
+  function bindMaterialSource(block, asset) {
+    block.dataset.clipSource = asset.sourceKey ?? asset.id;
+    block.classList.toggle('material-instance', block.dataset.clipSource === locatedMaterial);
+  }
   function locateMaterial(source, reveal = false) {
     locatedMaterial = source;
     let first;
@@ -1129,12 +1262,19 @@ window.mountEditTimeline = function (host, ctx) {
       block.classList.toggle('material-instance', match);
       if (match && (!first || Number(block.dataset.dropShot) < Number(first.dataset.dropShot))) first = block;
     }
-    if (reveal && first) {
+    if (reveal && first && host.clientWidth) {
+      const panel = host.closest('#timeline-tracks-panel');
       const area = host.getBoundingClientRect(), rect = first.getBoundingClientRect();
       const left = area.left + (first.closest('.sequence-row')?.firstElementChild.offsetWidth ?? 0);
+      const viewport = panel.getBoundingClientRect();
+      const visible = Array.from(host.querySelectorAll('.material-instance')).some(block => {
+        const bounds = block.getBoundingClientRect();
+        return bounds.left >= left && bounds.left < area.right && bounds.top >= viewport.top && bounds.bottom <= viewport.bottom;
+      });
+      if (visible) return;
       if (rect.left < left || rect.left >= area.right) host.scrollLeft += rect.left - left;
-      if (rect.top < area.top) host.scrollTop += rect.top - area.top;
-      else if (rect.bottom > area.bottom) host.scrollTop += rect.bottom - area.bottom;
+      if (rect.top < viewport.top) panel.scrollTop += rect.top - viewport.top;
+      else if (rect.bottom > viewport.bottom) panel.scrollTop += rect.bottom - viewport.bottom;
     }
   }
   function selectClip(clip) {
@@ -1147,10 +1287,22 @@ window.mountEditTimeline = function (host, ctx) {
       focusShot=lastState.shots[i];focusClip=clip;voiceTarget=undefined;
       host.querySelector('[data-drop-shot="'+i+'"][data-candidate-index="'+focusShot.indexOf(clip)+'"]')?.classList.add('sequence-selected');
     }
+    if(i>=0 && lastState.selected!==clip && lastState.shots[i].length>1) {
+      const layout=window.draftTimeline.timing(lastState,clipSpan,ctx.asset,clip);
+      if(layout.widths.some((width,index)=>Math.abs(width-widths[index])>.001)) {
+        if(scrubPointer==null) playTime=layout.starts[i];
+        refresh();
+      }
+    }
     if(lastState.selected!==clip && (clip?.videoSubtitles || lastState.selected?.videoSubtitles)) refresh();
   }
-  return {refresh,syncPlayer,selectClip,locateMaterial,editCaptions,removeSelected:selection.removeSelection,clearSelection:selection.clear,get selectionCount(){return selection.size;},editLayer:()=>editLayer(),textSettings:()=>textSettings(ctx.state()),
+  return {refresh,syncPlayer,selectClip,locateMaterial,editCaptions,openCardMatchMenu,removeSelected:selection.removeSelection,clearSelection:selection.clear,get selectionCount(){return selection.size;},editLayer:()=>editLayer(),textSettings:()=>textSettings(ctx.state()),
     toggleDraftPlayback:()=>draftTransport.toggle(draftTransport.playing()?[]:draftPlan(),playTime),
+    insertAtSelection(side) {
+      const item = selection.single();
+      const index = Number(item?.dataset.dropShot ?? item?.dataset.voiceShot ?? pastePosition?.index ?? positionAt(playTime).index);
+      if (ctx.state().shots[index]) insertBeside(index,side);
+    },
     stopDraftPlayback:draftTransport.stop,isDraftPlaying:draftTransport.playing,
     canPlayDraft:()=>draftPlan().length>0,get playheadTime(){return playTime;},
     zoom,zoomFromCards(level) {
@@ -1169,6 +1321,7 @@ window.mountEditTimeline = function (host, ctx) {
     },
     fold(expanded){folded.clear();for(const node of host.querySelectorAll('[data-lane-key]')) setFold(node,node.dataset.laneKey,!expanded);ctx.scroll();},
     reset(newProject=false) {
+      finishCandidateDrag(false);
       pastePosition=undefined;
       if(newProject) clipboard=undefined;
       draftTransport.stop();selection.clear();focusShot=focusClip=voiceTarget=activeSeek=undefined;

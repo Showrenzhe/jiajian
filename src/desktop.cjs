@@ -37,7 +37,7 @@ const { createAppUpdates } = require('./app-updates.cjs');
 const scheme = 'sd-workbench';
 const page = `${scheme}://app/index.html`;
 const uiFiles = new Set(['/index.html', '/app.js', '/styles.css', '/dialog-focus.js', '/creative-service.js', '/script-workspace.js', '/script-workspace.css',
-  '/editor-text.js', '/text-presets.js', '/caption-inspector.js', '/caption-inspector.css', '/audio-tools.js', '/waveform.js', '/draft-transport.js',
+  '/editor-text.js', '/text-presets.js', '/caption-inspector.js', '/caption-inspector.css', '/audio-tools.js', '/waveform.js', '/voice-alignment.js', '/draft-transport.js',
   '/track-organizer.js', '/cover-editor.js', '/visual-editor.js', '/batch-edit.js',
   '/timeline.js', '/timeline-selection.js', '/timeline.css', '/cut-track.js', '/cut-track.css', '/layer-motion.js', '/layer-motion.css', '/subprojects.js',
   '/track-workspace.css', '/edit-history.js', '/track-tools.js', '/track-tools.css', '/cloud-tts-dialog.js', '/cloud-tts-dialog.css',
@@ -436,7 +436,7 @@ async function launchDesktop({
           const draftSource = draftThumbnailSource(task.id);
           const file = record ? await checkedMaterialPath(record) : draftSource ? await checkedDraftCover(draftSource) : null;
           const asset = task.asset.root || draftSource ? await inspectFolderFile(file, task.asset.kind, task.signal) : task.asset;
-          if (task.asset.root) task.asset.duration = asset.duration;
+          if (task.asset.root) Object.assign(task.asset, { duration: asset.duration, width: asset.width, height: asset.height });
           const bytes = await performanceCache.poster(asset, { signal: task.signal, time:task.time ?? draftSource?.time });
           if (bytes && !task.signal.aborted && thumbnailSource(task.id) === task.asset) {
             thumbnails.set(task.key, bytes);
@@ -791,7 +791,7 @@ async function launchDesktop({
       return {};
     }
     const source = catalog.get(id) ?? materialFiles.get(id);
-    return source ? { url: await videoThumbnail(id), duration: source.duration } : {};
+    return source ? { url: await videoThumbnail(id), duration: source.duration, width: source.width, height: source.height } : {};
   }
 
   handle('workbench:material-tile-preview', materialTilePreview);
