@@ -209,6 +209,7 @@
     const label=document.createElement('span');
     overlay.append(label);stage.append(overlay);
     let playing=false, media=new Map(), entries=[], active=[], next=0, time=0, end=0, stamp, frame;
+    let visual=false, canProxy=false;
     const failed=new Set();
     function release(node) {
       if(node.tagName!=='IMG') {node.pause();node.removeAttribute('src');node.load();}
@@ -216,12 +217,14 @@
     }
     function halt(keepFrame=false) {
       cancelAnimationFrame(frame);
-      if(playing) {playing=false;changed(false);}
+      const visible=!overlay.hidden;
+      playing=false;
       for(const item of media.values()) {
         if(keepFrame && item.node.tagName!=='IMG') item.node.pause();
         else if(!keepFrame) release(item.node);
       }
       if(!keepFrame) {media.clear();overlay.hidden=true;}
+      if(visible) changed(false);
     }
     function show(entry) {
       const node=document.createElement(entry.asset.kind==='image'?'img':entry.visual?'video':'audio');
@@ -254,9 +257,10 @@
       return true;
     }
     function render() {
-      active=active.filter((entry)=>entry.end>time);
-      while(next<entries.length && entries[next].start<=time) {
-        const entry=entries[next++];if(entry.end>time)active.push(entry);
+      const at=Math.max(0,Math.min(time,end-1e-6));
+      active=active.filter((entry)=>entry.end>at);
+      while(next<entries.length && entries[next].start<=at) {
+        const entry=entries[next++];if(entry.end>at)active.push(entry);
       }
       const live=new Set();let ready=true;
       for(const entry of active) {
@@ -278,7 +282,7 @@
         if(node.tagName==='IMG') continue;
         if(item.entry!==entry) {item.entry=entry;item.targetSet=false;item.cycleIndex=undefined;node.volume=Math.max(0,Math.min(1,entry.volume/100));node.muted=!node.volume;}
         if(node.readyState<1) {ready=false;continue;}
-        let source=entry.source+(time-entry.start)*entry.rate;
+        let source=entry.source+(at-entry.start)*entry.rate;
         if(entry.loop)source%=entry.asset.duration;
         if(entry.cycle) {
           const cycleIndex=Math.floor((source-entry.source)/entry.cycle);
@@ -301,7 +305,7 @@
       for(const item of media.values()) {
         const {node,asset}=item;
         if(node.tagName==='IMG')continue;
-        if(!ready) {if(!node.paused)node.pause();continue;}
+        if(!playing || !ready) {if(!node.paused)node.pause();continue;}
         if(node.paused && !node.ended) {
           const src=node.src;
           node.play().catch(error=>{
@@ -323,12 +327,43 @@
       if(!plan.length){halt();return false;}
       halt();entries=plan;failed.clear();active=[];next=0;
       end=entries.reduce((max,entry)=>Math.max(max,entry.end),0);
+      visual=entries.some(entry=>entry.visual);
+      canProxy=entries.some(({asset})=>asset.kind==='video' && !asset.alpha && Math.max(asset.width,asset.height)>480);
       time=from>=end-.001 ? 0 : Math.max(0,from);
       document.getElementById('preview')?.pause();
       overlay.hidden=false;playing=true;changed(true);tick(time);
       stamp=performance.now();frame=requestAnimationFrame(step);return true;
     }
-    return {toggle,stop:()=>halt(),playing:()=>playing};
+    function seek(seconds,reloadSources=false) {
+      if(overlay.hidden) return;
+      cancelAnimationFrame(frame);
+      if(reloadSources) {
+        for(const item of media.values()) release(item.node);
+        media.clear();failed.clear();
+      }
+      active=[];next=0;time=Math.max(0,Math.min(end,seconds));
+      for(const item of media.values()) item.targetSet=false;
+      stamp=performance.now();
+      function paint() {
+        const ready=render();
+        tick(time);
+        if(playing) frame=requestAnimationFrame(step);
+        else if(!ready) frame=requestAnimationFrame(paint);
+      }
+      paint();
+    }
+    function state() {
+      if(overlay.hidden) return null;
+      let proxy=false;
+      for(const item of media.values()) {
+        if(item.mayUseProxy && item.node.tagName==='VIDEO' && item.node.readyState>=1 && item.node.currentSrc!==item.asset.url) {
+          proxy=true;
+          break;
+        }
+      }
+      return {time,end,playing,visual,canProxy,proxy};
+    }
+    return {toggle,seek,state,stop:()=>halt(),playing:()=>playing};
   }
   const api={timing,makePlan,transport};
   if(typeof module==='object' && module.exports) module.exports=api;

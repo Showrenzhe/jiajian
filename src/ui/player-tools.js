@@ -1,16 +1,34 @@
 'use strict';
 
-window.mountPlayerTools = ({ panel, getClip, isEditor, isTrack, validClip, notify, onImageTime }) => {
+window.mountPlayerTools = ({ panel, getClip, isEditor, isTrack, validClip, notify, onImageTime,
+  getDraft, getIdleDraft, toggleDraft, seekDraft, canProxy, changeQuality }) => {
   const find = (selector) => panel.querySelector(selector);
   const video = find('#preview');
   const image = find('#still-preview');
   const frame = find('.player-picture');
+  const stage = find('.preview-stage');
   const transport = find('#player-transport');
   const play = find('#player-play');
   const position = find('#player-position');
   const ratio = document.querySelector('#ratio');
   const float = find('#player-float');
   const full = find('#player-fullscreen');
+  const more = find('#player-more');
+  const menu = find('#player-more-menu');
+  const quality = find('#player-quality');
+  const qualityLabel = find('.player-quality-label');
+  const zoom = find('#player-zoom');
+  const clock = find('#player-time');
+  const duration = find('#player-duration');
+  const seekClock = find('#player-seek-time');
+  const row = find('.player-control-row');
+  const display = find('.player-display');
+  new ResizeObserver(([entry]) => {
+    const width = entry.contentRect.width;
+    if (!width) return;
+    const parent = width < 270 ? menu : row;
+    if (display.parentElement !== parent) parent.append(display);
+  }).observe(transport);
   let imageTime = 0;
   let imageStart = null;
   let animation = 0;
@@ -31,18 +49,35 @@ window.mountPlayerTools = ({ panel, getClip, isEditor, isTrack, validClip, notif
     return [Math.floor(total / 3600), Math.floor(total / 60) % 60, total % 60, frames]
       .map((part) => String(part).padStart(2, '0')).join(':');
   }
-  function updatePosition() {
+  function updatePosition(draft = getDraft(), idle = draft ? null : getIdleDraft()) {
     const clip = getClip();
-    const seconds = ready(clip) ? Math.max(clip.start, Math.min(clip.end,
-      clip.asset.kind === 'image' ? imagePosition() : video.currentTime)) : 0;
-    find('#player-time').textContent = timecode(seconds, fps(clip));
+    const active = ready(clip);
+    const timeline = draft || (idle?.end ? idle : null);
+    const clipTime = clip?.asset.kind === 'image' ? imagePosition() : video.currentTime;
+    const seconds = timeline ? Math.min(timeline.time,timeline.end) : active ? Math.max(clip.start,Math.min(clip.end,clipTime)) : 0;
+    const rate = fps(draft ? null : clip);
+    const timedClip = clip && validClip(clip) && (clip.asset.kind !== 'image' || isTrack());
+    const length = draft?.end ?? idle?.end ?? (timedClip ? clip.end - clip.start : 0);
+    const elapsed = draft ? seconds : Math.max(0, seconds - (clip?.start ?? 0));
+    const currentText = timecode(elapsed, rate), endText = timecode(length, rate);
+    if (clock.textContent !== currentText) {
+      clock.textContent = currentText;
+      seekClock.textContent = currentText;
+    }
+    if (duration.textContent !== endText) {
+      duration.textContent = endText;
+      find('#player-seek-end').textContent = endText;
+    }
+    const proxy = draft ? draft.proxy : !video.hidden && video.dataset.proxyFor && video.currentSrc === video.getAttribute('src') && video.readyState >= 1;
+    const label = proxy ? '流畅' : '原画';
+    if (qualityLabel.textContent !== label) qualityLabel.textContent = label;
     position.value = seconds;
-    if (clip?.asset.kind === 'image' && ready(clip)) onImageTime?.(clip, seconds);
+    if (!draft && clip?.asset.kind === 'image' && active) onImageTime?.(clip, seconds);
   }
   function tick() {
     cancelAnimationFrame(animation);
     const clip = getClip();
-    if (imagePlaying() && imagePosition() >= clip.end) {
+    if (imagePlaying() && clip && imagePosition() >= clip.end) {
       imageStart = null;
       imageTime = clip.end;
       sync();
@@ -53,25 +88,41 @@ window.mountPlayerTools = ({ panel, getClip, isEditor, isTrack, validClip, notif
   }
   function sync() {
     const clip = getClip();
+    const draft = getDraft();
+    const idle = draft ? null : getIdleDraft();
+    const timelineView = Boolean(draft || idle?.end);
+    find('#preview-heading').hidden = timelineView;
+    find('#draft-preview-heading').hidden = !timelineView;
+    find('#preview-meta').hidden = timelineView;
+    panel.setAttribute('aria-labelledby', timelineView ? 'draft-preview-heading' : 'preview-heading');
+    if (!clip && !draft && isEditor()) {
+      find('#preview-hint').textContent = idle?.end ? '播放时间线，或选择素材单独预览' : '在素材库或轨道选择一个素材';
+    }
     transport.hidden = !isEditor();
     video.controls = !isEditor();
-    const active = ready(clip);
+    const active = Boolean(draft) || ready(clip);
+    play.disabled = !active && !idle?.end;
     for (const button of panel.querySelectorAll('.player-buttons button')) button.disabled = !active;
     position.disabled = !active;
-    position.min = active ? clip.start : 0;
-    position.max = active ? clip.end : 1;
-    const playing = active && (clip.asset.kind === 'image' ? imagePlaying() : !video.paused);
-    play.textContent = playing ? '❚❚' : '▶';
+    position.min = active && !draft ? clip.start : 0;
+    position.max = draft?.end ?? (active ? clip.end : 1);
+    const playing = draft?.playing ?? (active && (clip.asset.kind === 'image' ? imagePlaying() : !video.paused));
+    play.setAttribute('aria-pressed', String(playing));
     play.setAttribute('aria-label', playing ? '暂停' : '播放');
-    play.title = `${play.getAttribute('aria-label')}（空格）`;
+    play.title = `${play.getAttribute('aria-label')}${timelineView ? '时间线' : ''}（空格）`;
     find('#player-ratio').value = ratio.value;
+    find('.player-ratio-label').textContent = ratio.value;
     find('#player-ratio').disabled = ratio.matches(':disabled');
     frame.toggleAttribute('data-project-frame', Boolean(clip && isTrack()));
     const [width, height] = ratio.value.split(':').map(Number);
-    frame.style.setProperty('--picture-ratio', width / height);
-    frame.style.setProperty('--picture-background', document.querySelector('#background-color').value);
-    frame.style.setProperty('--picture-fit', document.querySelector('#fit').value === 'fill' ? 'cover' : 'contain');
-    updatePosition();
+    stage.style.setProperty('--picture-ratio', width / height);
+    stage.style.setProperty('--picture-background', document.querySelector('#background-color').value);
+    stage.style.setProperty('--picture-fit', document.querySelector('#fit').value === 'fill' ? 'cover' : 'contain');
+    quality.disabled = !(draft ? draft.canProxy : canProxy(clip?.asset));
+    zoom.disabled = !(draft ? draft.visual : clip && !frame.hidden && clip.asset.kind !== 'audio');
+    float.disabled = !draft && (!clip || frame.hidden);
+    stage.toggleAttribute('data-audio', !draft && clip?.asset.kind === 'audio' && !frame.hidden);
+    updatePosition(draft,idle);
   }
   function reset() {
     imageStart = null;
@@ -99,12 +150,19 @@ window.mountPlayerTools = ({ panel, getClip, isEditor, isTrack, validClip, notif
     sync();
   }
   function step(direction) {
+    const draft = getDraft();
+    if (draft) {
+      if (draft.playing) toggleDraft();
+      seekDraft(draft.time + direction / fps(null));
+      return;
+    }
     const clip = getClip();
     if (!ready(clip)) return;
     pause();
     seek((clip.asset.kind === 'image' ? imageTime : video.currentTime) + direction / fps(clip));
   }
   async function togglePlay() {
+    if (getDraft() || getIdleDraft()?.end) return toggleDraft();
     const clip = getClip();
     if (!ready(clip)) return;
     if (clip.asset.kind === 'image') {
@@ -134,9 +192,10 @@ window.mountPlayerTools = ({ panel, getClip, isEditor, isTrack, validClip, notif
     if (document.pictureInPictureElement === video) document.exitPictureInPicture().catch(() => {});
   }
   float.addEventListener('click', async () => {
+    if (menu.matches(':popover-open')) menu.hidePopover();
     if (panel.matches(':popover-open') || document.pictureInPictureElement === video) return closeFloating();
     if (document.fullscreenElement === panel) await document.exitFullscreen();
-    if (getClip()?.asset.kind === 'video' && video.readyState >= 2 && document.pictureInPictureEnabled) {
+    if (!getDraft() && zoom.value === '1' && getClip()?.asset.kind === 'video' && video.readyState >= 2 && document.pictureInPictureEnabled) {
       try { await video.requestPictureInPicture(); return; } catch { /* Use the floating editor panel when system PiP is unavailable. */ }
     }
     panel.setAttribute('popover', 'manual');
@@ -178,7 +237,7 @@ window.mountPlayerTools = ({ panel, getClip, isEditor, isTrack, validClip, notif
     event.preventDefault();
     event.stopPropagation();
     if (drag) endMove();
-    else { dock(); float.focus({preventScroll:true}); }
+    else { dock(); more.focus({preventScroll:true}); }
   },true);
   async function toggleFullscreen() {
     try {
@@ -190,12 +249,28 @@ window.mountPlayerTools = ({ panel, getClip, isEditor, isTrack, validClip, notif
     } catch { notify('当前窗口无法切换全屏。'); }
   }
   full.addEventListener('click', toggleFullscreen);
-  document.addEventListener('fullscreenchange', () => full.setAttribute('aria-pressed', String(document.fullscreenElement === panel)));
+  document.addEventListener('fullscreenchange', () => {
+    const active = document.fullscreenElement === panel;
+    full.setAttribute('aria-pressed', String(active));
+    full.setAttribute('aria-label', active ? '退出全屏' : '全屏');
+    full.title = full.getAttribute('aria-label') + '（.）';
+  });
   play.addEventListener('click', togglePlay);
   find('#player-previous').addEventListener('click', () => step(-1));
   find('#player-next').addEventListener('click', () => step(1));
-  find('#player-stop').addEventListener('click', () => { pause(); seek(getClip().start); });
-  position.addEventListener('input', () => seek(position.valueAsNumber));
+  find('#player-stop').addEventListener('click', () => {
+    const draft = getDraft();
+    if (draft) {
+      if (draft.playing) toggleDraft();
+      seekDraft(0);
+    } else if (getClip()) { pause(); seek(getClip().start); }
+  });
+  position.addEventListener('input', () => getDraft() ? seekDraft(position.valueAsNumber) : seek(position.valueAsNumber));
+  quality.addEventListener('change', changeQuality);
+  zoom.addEventListener('change', () => {
+    stage.style.setProperty('--player-zoom', zoom.value);
+    zoom.parentElement.title = '预览缩放 · ' + zoom.selectedOptions[0].textContent;
+  });
   find('#player-ratio').addEventListener('change', (event) => {
     ratio.value = event.target.value;
     ratio.dispatchEvent(new Event('change', { bubbles: true }));
@@ -209,15 +284,15 @@ window.mountPlayerTools = ({ panel, getClip, isEditor, isTrack, validClip, notif
       || event.shiftKey || document.querySelector('dialog[open], :popover-open:not(#player-pane), .app-frame[data-navigation="floating"]')
       || !(target instanceof Element) || target.isContentEditable
       || target.closest('input, textarea, select, [role="textbox"], [role="tab"], [role="separator"]')) return;
-    const onPlayer = panel.contains(target) && (!target.closest('button, a') || target.closest('.player-buttons'));
+    const onPlayer = panel.contains(target) && (!target.closest('button, a') || target === play || target.closest('.player-buttons'));
     const onTimeline = target.matches('#timeline-clock, #timeline-tracks-panel, #timeline-clock .sequence-block:not(.sequence-empty)');
     if (target !== document.body && !onPlayer && !onTimeline) return;
     if (key === '.' && !event.repeat) toggleFullscreen();
-    else if (!ready(getClip())) return;
+    else if (!getDraft() && !getIdleDraft()?.end && !ready(getClip())) return;
     else if (key === 'ArrowLeft' || key === 'ArrowRight') step(key === 'ArrowRight' ? 1 : -1);
     else if (key === ' ' && !event.repeat && !event.target.closest?.('button, a')) togglePlay();
     else return;
     event.preventDefault();
   });
-  return { sync, reset, closeFloating, pause, seek, step, togglePlay };
+  return { sync, updatePosition, reset, closeFloating, pause, seek, step, togglePlay };
 };

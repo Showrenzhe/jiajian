@@ -52,6 +52,29 @@ async function check() {
     win.setContentSize(1120,810);
     await click('#home-import');
     await wait(q('#still-preview')+'.naturalWidth===160','应载入静态素材');
+    const picture = q('.player-picture');
+    const scaledWidth = factor => picture+'.offsetWidth>0 && Math.abs('+picture+'.getBoundingClientRect().width-'+picture+'.offsetWidth*'+factor+')<2';
+    const zoom = q('#player-zoom');
+    await click('#player-zoom');
+    await wait(zoom+'.matches(":open")','应打开预览缩放选项');
+    await key('End',35);
+    await key('Enter',13);
+    await wait(zoom+'.value==="2" && '+scaledWidth(2),'缩放应把实际显示画面放大两倍');
+    assert.ok(await read(zoom+'.matches(":focus-visible") && getComputedStyle('+zoom+'.parentElement).outlineStyle==="solid"'),'键盘调整缩放时放大镜按钮应显示焦点');
+    await click('#player-zoom');
+    await wait(zoom+'.matches(":open")','应能再次打开预览缩放选项');
+    await key('Home',36);
+    await key('ArrowDown',40);
+    await key('Enter',13);
+    await wait(zoom+'.value==="1" && '+scaledWidth(1),'恢复适应后应还原画面大小');
+    await click('#player-fullscreen');
+    await wait('document.fullscreenElement==='+panel,'全屏按钮应放大播放器面板');
+    await click('#player-fullscreen');
+    await wait('!document.fullscreenElement','再次点击应退出全屏');
+    await click('#player-more');
+    await key('Escape',27);
+    await wait('!'+q('#player-more-menu')+'.matches(":popover-open") && document.activeElement.id==="player-more"','关闭播放控制菜单后应回焦到更多');
+    await click('#player-more');
     await click('#player-float');
     await wait(panel+'.matches(":popover-open")','静态画面应打开悬浮面板');
     const origin = await coordinates();
@@ -69,7 +92,7 @@ async function check() {
     await mouse('mouseReleased',moved);
     assert.ok((await coordinates())[0]<origin[0]-70,'重新拖动并松手应保留位置');
     await key('Escape',27);
-    assert.ok(await read('!'+panel+'.matches(":popover-open") && document.activeElement.id==="player-float"'),'Esc 应归位并聚焦悬浮开关');
+    assert.ok(await read('!'+panel+'.matches(":popover-open") && document.activeElement.id==="player-more"'),'Esc 应归位并聚焦可见的更多按钮');
 
     await click('#inspector-tab-subtitles');
     await click('#caption-save-preset');

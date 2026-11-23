@@ -92,7 +92,7 @@ window.mountTimelineSelection = function (host, {busy, changed, removed}) {
     if (busy() || event.button!==0 || !event.isPrimary || !frame.parentElement
       || target.closest('.sequence-ruler,.sequence-cursor,.sequence-height-handle,.sequence-head,.sequence-edge')
       || !target.closest('.sequence-canvas')) return;
-    const node=target.closest('.sequence-block');
+    const node=target.closest('button.sequence-block');
     const additive=event.ctrlKey || event.metaKey || event.shiftKey;
     if (node && (node.draggable || node.matches('[data-reorder-shot],[data-move-candidate]') || node.closest('.sequence-layer')) && !additive) return;
     gesture={id:event.pointerId,start:point(event.clientX,event.clientY),initialX:event.clientX,initialY:event.clientY,
@@ -127,7 +127,7 @@ window.mountTimelineSelection = function (host, {busy, changed, removed}) {
     if (suppressClick) {event.preventDefault();event.stopPropagation();return;}
     const node=event.target.closest('[data-selectable]');
     if (!node) {
-      if (event.target.closest('.sequence-content:not(.sequence-ruler .sequence-content)') && !event.target.closest('.sequence-block')) {selected.clear();paint();}
+      if (event.target.closest('.sequence-content:not(.sequence-ruler .sequence-content)') && !event.target.closest('button.sequence-block')) {selected.clear();paint();}
       return;
     }
     const key=entries.get(node).key;

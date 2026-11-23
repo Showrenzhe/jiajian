@@ -18,8 +18,10 @@ async function check() {
   const library = path.join(root, '素材目录');
   const project = path.join(root, '素材移除.sdworkbench');
   const picks = [];
+  const openedPickers = [];
   const win = await launchDesktop({ show: false, dataDirectory: path.join(root, 'profile'), dialogs: {
     async showOpenDialog(_win, options) {
+      openedPickers.push(options.title);
       const next = picks.shift();
       assert.equal(options.title, next?.title);
       return { canceled: false, filePaths: next.files };
@@ -56,10 +58,14 @@ async function check() {
     await send('dispatchKeyEvent', { ...event, type:'keyUp' });
   }
   const pressDelete = () => pressKey('Delete', 46);
-  async function actualClick(selector) {
+  async function pointerPoint(selector) {
     const point = await read('(() => {const el=' + query(selector) + ';el.scrollIntoView({block:"nearest",inline:"nearest"});'
       + 'const r=el.getBoundingClientRect();for (const n of [.5,.25,.65,.85,.12]) {const x=r.left+r.width*n,y=r.top+r.height/2;if(el.contains(document.elementFromPoint(x,y)))return {x,y};}return null;})()');
     assert.ok(point, selector + ' 应可用鼠标点击');
+    return point;
+  }
+  async function actualClick(selector) {
+    const point=await pointerPoint(selector);
     await mouse('mousePressed', point.x, point.y);
     await mouse('mouseReleased', point.x, point.y);
   }
@@ -69,13 +75,30 @@ async function check() {
   const voice = '.sequence-voice .sequence-block[data-selectable]';
   const layer = '.sequence-layer .sequence-block[data-selectable]';
   const tile = (file) => '.material-tile[title=' + JSON.stringify(path.basename(file)) + ']';
+  const slot='.sequence-video .sequence-empty[data-drop-shot="0"]';
   try {
+    await clickVisible(win.webContents,'#home-create');
+    await wait('!!'+query(slot),'空工程的视频轨道应有素材落点');
+    await actualClick(slot);
+    await pressKey('Enter',13);
+    await pressKey(' ',32);
+    assert.ok(await read(query(slot)+'.tabIndex<0 && !'+query(slot)+'.matches("button,[role=button]") && document.activeElement.id==="timeline-clock"'),'空位是静态落点，键盘焦点留在时间线');
+    assert.deepEqual(openedPickers,[],'点击空工程落点及按回车、空格均不应打开文件框');
     picks.push({ title: '选择分镜素材', files: [files.red, files.green, files.blue] });
-    await clickVisible(win.webContents, '#home-import');
+    await actualClick('#material-import');
     await wait(count(video)+'===3 && '+count('.material-used')+'===3','三个素材均应标记已用');
     await actualClick(video);
     await pressDelete();
     await wait(count(video)+'===2 && !'+query(tile(files.red))+'.dataset.used','删除一个候选应移除它的使用标志并保留源素材');
+    await actualClick(video);
+    await wait(count(video+'.sequence-marked')+'===1','点选已有候选');
+    await actualClick(slot);
+    await wait(count(video+'.sequence-marked')+'===0','点击已建分镜空位应像轨道空白一样清除选区');
+    const emptyPoint=await pointerPoint(slot), nextPoint=await pointerPoint(video);
+    await mouse('mousePressed',emptyPoint.x,emptyPoint.y);await mouse('mouseMoved',nextPoint.x,nextPoint.y);
+    await mouse('mouseReleased',nextPoint.x,nextPoint.y);
+    await wait(count(video+'.sequence-marked')+'===1','可从空候选格开始框选相邻素材');
+    assert.deepEqual(openedPickers,['选择分镜素材'],'只有素材库显式导入打开了文件框');
     await undo();
     await wait(count(video)+'===3 && '+query(tile(files.red))+'.dataset.used==="true"','撤销应恢复视频及使用标志');
 
@@ -128,10 +151,27 @@ async function check() {
     await wait('!!'+query('#material-folders .material-folder'),'添加素材目录');
     await read(query('#material-folders .material-folder') + '.dispatchEvent(new MouseEvent("dblclick", {bubbles:true}))');
     await wait(query(tile(files.red))+'?.dataset.used==="true" && !!'+query(tile(files.still))+' && !'+query(tile(files.still))+'.dataset.used','文件夹应区分已用与未用素材');
-    const duplicateDrop = '(() => {const source='+query(tile(files.red))+',target=document.querySelectorAll("#shots .shot")[1],dt=new DataTransfer();'
+    await click('#add-shot');
+    const emptyShot='.sequence-video .sequence-empty[data-drop-shot="3"]';
+    await wait('!!'+query(emptyShot),'新建空分镜保留候选落点');
+    const libraryDrop = selector=>'(() => {const source='+query(tile(files.red))+',target='+query(selector)+',dt=new DataTransfer();'
       +'for(const [el,type] of [[source,"dragstart"],[target,"dragover"],[target,"drop"],[source,"dragend"]])el.dispatchEvent(new DragEvent(type,{bubbles:true,cancelable:true,dataTransfer:dt}));})()';
-    await read(duplicateDrop);
+    await read(libraryDrop(emptyShot));
+    await wait(count(video)+'===4 && '+query(video+'[data-drop-shot="3"]')+'?.title.includes("红色")','从素材库拖入空分镜应落在该格');
+    await undo();await wait('!!'+query(emptyShot),'撤销拖入应恢复空位');
+    await undo();await wait('!'+query(emptyShot),'撤销新增分镜');
+    await read(libraryDrop('.sequence-video [data-drop-shot="1"]'));
     await wait(count(video)+'===4 && '+query(tile(files.red)+' .material-used')+'.title.includes("1、2")','重复源文件用于两个分镜时应标出两个分镜号');
+    const pickCount=openedPickers.length;
+    const secondRow=slot+'[data-candidate-index="1"]';
+    await actualClick(secondRow);
+    const coords=await pointerPoint(secondRow);
+    for(const type of ['mousePressed','mouseReleased']) {
+      await send('dispatchMouseEvent',{type,...coords,button:'right',buttons:type==='mousePressed'?2:0,clickCount:1});
+    }
+    await wait('!!document.querySelector(".sequence-dialog[open]")','第二条视频轨空位仍可右键打开时间轴菜单');
+    await pressKey('Escape',27);
+    assert.equal(openedPickers.length,pickCount,'点选部分填充的候选行应保留系统文件框的关闭状态');
     await actualClick(tile(files.red));
     await pressDelete();
     await wait(count(video)+'===4 && !'+query(tile(files.red)), '从素材库移除后应保留两个分镜中的同源候选');

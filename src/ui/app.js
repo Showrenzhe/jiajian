@@ -86,6 +86,12 @@ const playerTools = window.mountPlayerTools({
   panel: $('.editor-player'), getClip: () => selected, isEditor: () => mode === 'montage',
   isTrack: () => $('#preview-heading').textContent === '轨道预览', validClip, notify: say,
   onImageTime:(clip,time)=>timeline?.syncPlayer(clip,time),
+  getDraft:()=>timeline?.draftState(),
+  getIdleDraft:()=>!operation && mode==='montage' && !selected && timeline
+    ? {time:timeline.playheadTime,end:timeline.draftDuration()} : null,
+  toggleDraft:()=>toggleTimelinePlayback(),
+  seekDraft:time=>timeline?.seekDraft(time),
+  canProxy:canProxyPreview, changeQuality:changePreviewQuality,
 });
 const notice = $('#notice');
 const countField = $('#count');
@@ -414,6 +420,47 @@ function seekTimelineVideo(clip, time) {
   } else pendingTimelineSeek={clip,time:target};
 }
 
+function canProxyPreview(asset) {
+  return asset?.kind === 'video' && !asset.alpha && Math.max(asset.width,asset.height) > 480;
+}
+
+function usePreviewProxy(asset, track) {
+  if (mode !== 'montage' || !canProxyPreview(asset)) return false;
+  const quality = $('#player-quality').value;
+  return quality === 'proxy' || (quality === 'auto' && projectProxyEnabled && track);
+}
+
+function switchPreviewSource(clip, url, proxy) {
+  if (player.getAttribute('src') === url) return;
+  const time = pendingTimelineSeek?.time ?? proxyResume?.time ?? (player.readyState ? player.currentTime : clip.start);
+  proxyResume = {clip, url, time, playing:proxyResume?.playing ?? !player.paused};
+  pendingTimelineSeek = undefined;
+  if (proxy) player.dataset.proxyFor = clip.asset.id;
+  else delete player.dataset.proxyFor;
+  player.src = url;
+  player.hidden = false;
+  $('.player-picture').hidden = false;
+  $('#preview-hint').hidden = true;
+  $('#preview-meta').textContent = (proxy ? '流畅预览' : '原片') + ' · ' + clip.asset.duration.toFixed(2) + ' 秒';
+}
+
+async function loadPreviewProxy(clip, request) {
+  const url = await api.trackProxy(clip.asset.id).catch(()=>null);
+  if (selected !== clip || materialPreviewRequest !== request) return;
+  if (url) switchPreviewSource(clip,url,true);
+  else if ($('#player-quality').value === 'proxy') say('此素材当前使用原画预览。');
+}
+
+function changePreviewQuality() {
+  const draft = timeline?.draftState();
+  if (draft) timeline.seekDraft(draft.time,true);
+  const clip = selected;
+  if (!canProxyPreview(clip?.asset)) return;
+  const request = ++materialPreviewRequest;
+  if (usePreviewProxy(clip.asset,$('#preview-heading').textContent === '轨道预览')) void loadPreviewProxy(clip,request);
+  else switchPreviewSource(clip,clip.asset.url,false);
+}
+
 function preview(clip, heading, materialId) {
   const request = ++materialPreviewRequest;
   proxyResume = undefined;
@@ -425,7 +472,8 @@ function preview(clip, heading, materialId) {
   const isImage = clip.asset.kind === 'image';
   if (isImage && document.pictureInPictureElement === player) playerTools.closeFloating();
   player.playbackRate = Number.isFinite(clip.speed) && clip.speed >= 0.5 ? Math.min(16,clip.speed) : 1;
-  const usingProxy = heading === '轨道预览' && player.dataset.proxyFor === clip.asset.id && !player.error;
+  const wantProxy = usePreviewProxy(clip.asset, heading === '轨道预览');
+  const usingProxy = wantProxy && player.dataset.proxyFor === clip.asset.id && !player.error;
   if (!usingProxy) delete player.dataset.proxyFor;
   if (isImage) {
     still.src = clip.asset.url;
@@ -443,18 +491,7 @@ function preview(clip, heading, materialId) {
   $('#preview-heading').textContent = heading;
   const mediaLabel = clip.asset.kind === 'audio' ? '音频' : usingProxy ? '流畅预览' : heading === '素材预览' ? '原片' : '视频';
   $('#preview-meta').textContent = isImage ? '图片' : `${mediaLabel} · ${clip.asset.duration.toFixed(2)} 秒`;
-  if (projectProxyEnabled && !isImage && !clip.asset.alpha && heading === '轨道预览' && !usingProxy && Math.max(clip.asset.width, clip.asset.height) > 480) {
-    api.trackProxy(clip.asset.id).then((url) => {
-      if (!url || selected !== clip || materialPreviewRequest !== request) return;
-      proxyResume = { clip, url, time: pendingTimelineSeek?.time ?? (player.readyState ? player.currentTime : clip.start), playing: !player.paused };
-      player.dataset.proxyFor = clip.asset.id;
-      player.src = url;
-      player.hidden = false;
-      $('.player-picture').hidden = false;
-      $('#preview-hint').hidden = true;
-      $('#preview-meta').textContent = `流畅预览 · ${clip.asset.duration.toFixed(2)} 秒`;
-    }).catch(() => {});
-  }
+  if (wantProxy && !usingProxy) void loadPreviewProxy(clip,request);
   $('#preview-name').textContent = clip.asset.name;
   $('#preview-name').hidden = false;
   $('.preview-readout-name').textContent = clip.asset.name;
@@ -568,6 +605,7 @@ function previewError(kind, element) {
   $('.player-picture').hidden = true;
   $('#preview-hint').textContent = '播放器暂不支持此编码，可继续尝试导出。';
   $('#preview-hint').hidden = false;
+  playerTools.sync();
 }
 
 player.addEventListener('error', () => previewError(selected?.asset.kind === 'audio' ? 'audio' : 'video', player));
@@ -2060,7 +2098,7 @@ async function flushCurrentDraft() {
   return false;
 }
 
-function updateControls(group) {
+function updateControls(group, keepDraftPlayback = false) {
   if (applyingEdit) return;
   const variants = Number($('#use-original').checked) + Number($('#use-mirrors').checked);
   const segmented = $('#narration-mode').value === 'segmented';
@@ -2103,7 +2141,7 @@ function updateControls(group) {
   const config = mode === 'montage' || previewBatch || projectName ? montageConfig() : null;
   if(busy) timeline?.stopDraftPlayback();
   const configKey = config ? JSON.stringify(config) : '';
-  if (mode === 'montage') timeline?.refresh(configKey);
+  if (mode === 'montage') timeline?.refresh(configKey,keepDraftPlayback);
   if (mode === 'montage' && !busy) {
     editHistory?.record(config, group ? { group } : undefined);
     draftAutosave.stage(draftTitle(), configKey);
@@ -3163,6 +3201,13 @@ function renderResults({ results, failures }, complete) {
 function serializeClip({ asset, start, end, volume, speed, matchedDuration, enabled, ranges, layers, transform, videoSubtitles, look }) {
   return { id: asset.id, start, end, volume, speed, ...(matchedDuration!==undefined && {matchedDuration}), ...(enabled === false && { enabled: false }),
     ...(ranges && { ranges }), ...(layers?.length && { layers }), ...(transform && { transform }), ...(videoSubtitles && {videoSubtitles}), ...(look && {look}) };
+}
+
+function candidatePlacementError(clip, target) {
+  if (target.length >= maxCandidates) return `每个分镜最多可添加 ${maxCandidates} 条候选。`;
+  const key = window.candidateKey(serializeClip(clip));
+  if (target.some(item => window.candidateKey(serializeClip(item)) === key)) return '目标分镜已包含这段素材。';
+  return '';
 }
 
 function reviveClip({ id, start, end, volume, speed, matchedDuration, enabled, ranges, layers, transform, videoSubtitles, look }, assets) {
@@ -4285,10 +4330,10 @@ for (const id of ['cancel-export', 'cancel-preview']) {
   });
 }
 $('#montage-settings').addEventListener('input', (event) => {
-  if(!event.target.closest('#voice-follow-settings')) updateControls(event.target.type === 'number' ? event.target : undefined);
+  if(!event.target.closest('#voice-follow-settings')) updateControls(event.target.type === 'number' ? event.target : undefined, event.target.id === 'ratio');
 }, true);
 $('#montage-settings').addEventListener('change', (event) => {
-  if(!event.target.closest('#voice-follow-settings')) updateControls();
+  if(!event.target.closest('#voice-follow-settings')) updateControls(undefined, event.target.id === 'ratio');
 }, true);
 $('#montage-settings').addEventListener('focusout', () => updateControls());
 function copyTimelineVoice({asset,shot,row,subtitles:imported}) {
@@ -4601,8 +4646,10 @@ cutEditor = window.createCutTrackEditor({
   },
 });
 timeline = window.mountEditTimeline($('#timeline-clock'), {
-  previewSource:asset=>projectProxyEnabled && asset.kind==='video' && !asset.alpha && Math.max(asset.width,asset.height)>480 ? api.playbackProxy(asset.id) : null,
-  draftPlaybackChanged:syncTimelinePlayButton,
+  previewSource:asset=>usePreviewProxy(asset,true)
+    ? ($('#player-quality').value === 'proxy' ? api.trackProxy(asset.id) : api.playbackProxy(asset.id)) : null,
+  draftPlaybackChanged:()=>{syncTimelinePlayButton(); playerTools.sync();},
+  draftTick:()=>playerTools.updatePosition(),
   removeClip:subprojects.removeCandidate,
   selectionChanged:(count)=>{
     const summary=$('#timeline-selection-count');
@@ -4642,12 +4689,12 @@ timeline = window.mountEditTimeline($('#timeline-clock'), {
   createAt:(i)=>{if(!operation && i>=0 && i<maxShots){while(shots.length<=i) shots.push([]);renderLists();}},
   move:moveShot, insertShot, notify:say, segmentVoiceMatchTarget, matchNarrationDuration,
   copyClip:(clip)=>structuredClone(serializeClip(clip)), pasteClip:(data)=>reviveClip(data,editAssets),
+  candidatePlacementError,
   placeCandidate(clip, target, source) {
     if (operation || !shots.includes(target) || (source && (!shots.includes(source) || !source.includes(clip)))) return false;
     if (source===target) return false;
-    if (target.length>=maxCandidates) throw Error(`每个分镜最多可添加 ${maxCandidates} 条候选。`);
-    const key=window.candidateKey(serializeClip(clip));
-    if (target.some(item=>window.candidateKey(serializeClip(item))===key)) throw Error('目标分镜已包含这段素材。');
+    const error=candidatePlacementError(clip,target);
+    if (error) throw Error(error);
     if (source) subprojects.removeCandidate(source,clip);
     target.push(clip);
     trackExpansion.get(target)?.delete('body');

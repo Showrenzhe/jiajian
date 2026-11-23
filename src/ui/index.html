@@ -22,6 +22,7 @@
   <link rel="stylesheet" href="./appearance.css">
   <link rel="stylesheet" href="./color-wheel.css">
   <link rel="stylesheet" href="./menu-motion.css">
+  <link rel="stylesheet" href="./player-controls.css">
   <script src="./menu-motion.js" defer></script>
   <script src="./color-wheel.js" defer></script>
   <script src="./dialog-focus.js" defer></script>
@@ -452,9 +453,10 @@
     </section>
     <aside class="sidebar" aria-label="预览与导出">
       <section id="player-pane" class="panel editor-player" aria-labelledby="preview-heading">
-        <div class="panel-heading"><h2 id="preview-heading">素材预览</h2><span id="preview-meta" class="muted"></span></div>
+        <div class="panel-heading"><h2 id="preview-heading">素材预览</h2><h2 id="draft-preview-heading" hidden>时间线预览</h2><span id="preview-meta" class="muted"></span></div>
         <div class="viewer preview-stage">
           <svg class="ui-icon preview-placeholder-icon" aria-hidden="true"><use href="#icon-monitor"></use></svg>
+          <svg class="ui-icon player-audio-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M3 10v4m4-8v12m5-15v18m5-14v10m4-7v4"/></svg>
           <p id="preview-hint">在素材库或轨道选择一个素材</p>
           <div class="player-picture" hidden>
             <video id="preview" controls playsinline preload="metadata" hidden aria-label="素材预览播放器"></video>
@@ -468,20 +470,40 @@
         </div>
         <p id="preview-name" class="muted preview-name preview-footer" hidden></p>
         <div id="player-transport" hidden>
-          <input id="player-position" type="range" min="0" max="1" step="any" value="0" disabled aria-label="播放器进度">
           <div class="player-control-row">
-            <span id="player-time" class="compact" title="时:分:秒:帧">00:00:00:00</span>
-            <div class="player-buttons">
-              <button type="button" id="player-previous" title="上一帧（←）" aria-label="上一帧">❮</button>
-              <button type="button" id="player-play" title="播放（空格）" aria-label="播放">▶</button>
-              <button type="button" id="player-stop" title="停止并回到入点" aria-label="停止并回到入点">■</button>
-              <button type="button" id="player-next" title="下一帧（→）" aria-label="下一帧">❯</button>
+            <div class="player-clocks">
+              <span class="player-times">
+              <span id="player-time" title="当前时间（时:分:秒:帧）">00:00:00:00</span>
+              <span id="player-duration" title="总时长（时:分:秒:帧）">00:00:00:00</span>
+              </span>
+              <button type="button" id="player-more" popovertarget="player-more-menu" title="更多播放控制" aria-label="更多播放控制"><svg class="ui-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M3 5h7m4 0h7M3 10h7m4 0h7M3 15h7m4 0h7M3 20h7m4 0h7"/></svg></button>
             </div>
+            <button type="button" id="player-play" title="播放（空格）" aria-label="播放" aria-pressed="false"><svg viewBox="0 0 24 24" aria-hidden="true"><path class="play-glyph" d="M7 3.5a1 1 0 0 1 1.5-.8l13 8.5a1 1 0 0 1 0 1.6l-13 8.5a1 1 0 0 1-1.5-.8z"/><path class="pause-glyph" d="M5 4h5v16H5zm9 0h5v16h-5z"/></svg></button>
             <div class="player-display">
-              <select id="player-ratio" aria-label="成片画幅" title="成片画幅"><option>16:9</option><option>9:16</option><option>1:1</option></select>
-              <button type="button" id="player-float" title="悬浮播放器" aria-label="悬浮播放器" aria-pressed="false">▣</button>
-              <button type="button" id="player-fullscreen" title="全屏（.）" aria-label="全屏" aria-pressed="false">⛶</button>
+              <label class="player-picker" title="预览画质">
+                <span class="player-quality-label" aria-hidden="true">原画</span>
+                <select id="player-quality" aria-label="预览画质"><option value="auto">自动（跟随工程）</option><option value="original">原画</option><option value="proxy">流畅（低分辨率代理）</option></select>
+              </label>
+              <label class="player-picker" title="预览缩放">
+                <svg class="ui-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M8 2H3v5m13-5h5v5M3 17v5h5m13-5v5h-5"/><circle cx="11" cy="11" r="4"/><path d="m14.2 14.2 3.5 3.5"/></svg>
+                <select id="player-zoom" aria-label="预览缩放"><option value="0.5">50%</option><option value="1" selected>适应窗口</option><option value="1.5">150%</option><option value="2">200%</option></select>
+              </label>
+              <label class="player-picker" title="成片画幅">
+                <span class="player-ratio-label" aria-hidden="true">16:9</span>
+                <select id="player-ratio" aria-label="成片画幅"><option>16:9</option><option>9:16</option><option>1:1</option></select>
+              </label>
+              <button type="button" id="player-fullscreen" title="全屏（.）" aria-label="全屏" aria-pressed="false"><svg class="ui-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M14 3h7v7M10 21H3v-7M21 3l-7.5 7.5M3 21l7.5-7.5"/></svg></button>
             </div>
+          </div>
+          <div id="player-more-menu" popover="auto" role="group" aria-label="更多播放控制">
+            <label class="player-seek-label" for="player-position">播放进度<span><span id="player-seek-time">00:00:00:00</span> / <span id="player-seek-end">00:00:00:00</span></span></label>
+            <input id="player-position" type="range" min="0" max="1" step="any" value="0" disabled aria-label="播放器进度">
+            <div class="player-buttons">
+              <button type="button" id="player-previous" title="上一帧（←）">上一帧</button>
+              <button type="button" id="player-next" title="下一帧（→）">下一帧</button>
+              <button type="button" id="player-stop" title="停止并回到入点">停止并回到入点</button>
+            </div>
+            <button type="button" id="player-float" aria-pressed="false">悬浮播放器</button>
           </div>
         </div>
       </section>

@@ -42,7 +42,7 @@ const uiFiles = new Set(['/index.html', '/app.js', '/styles.css', '/dialog-focus
   '/timeline.js', '/timeline-selection.js', '/timeline.css', '/cut-track.js', '/cut-track.css', '/layer-motion.js', '/layer-motion.css', '/subprojects.js',
   '/track-workspace.css', '/edit-history.js', '/track-tools.js', '/track-tools.css', '/cloud-tts-dialog.js', '/cloud-tts-dialog.css',
   '/cloud-tts-settings.js', '/cloud-tts-settings.css', '/split-view.js', '/panel-layout.js', '/draft-workspace.js', '/player-tools.js', '/assets/jiajian-logo.png', '/assets/project-cover.jpg',
-  '/glass-material.css', '/inspector-controls.css', '/editor-surfaces.css', '/appearance.js', '/appearance.css', '/software-updates.js',
+  '/glass-material.css', '/inspector-controls.css', '/editor-surfaces.css', '/player-controls.css', '/appearance.js', '/appearance.css', '/software-updates.js',
   '/color-wheel.js', '/color-wheel.css', '/menu-motion.js', '/menu-motion.css']);
 const maxCatalog = (maxShots + 1) * (maxCandidates + maxWholeTracks);
 const maxSubtitleBatchBytes = 1024 * 1024;
@@ -517,8 +517,6 @@ async function launchDesktop({
     } catch { return new Response(null, { status: 404 }); }
   }
 
-  session.defaultSession.setPermissionRequestHandler((_contents, _permission, reply) => reply(false));
-  session.defaultSession.setPermissionCheckHandler(() => false);
   protocol.handle(scheme, (request) => {
     const url = new URL(request.url);
     if (request.method !== 'GET' || url.search || url.port || url.username || url.password) {
@@ -587,6 +585,13 @@ async function launchDesktop({
     },
   });
   const firstPaint = show && new Promise((resolve) => win.once('ready-to-show', resolve));
+  const allowPlayerFullscreen = (contents, permission, details) =>
+    permission === 'fullscreen' && !win.isDestroyed() && contents === win.webContents
+    && details.isMainFrame && details.requestingUrl === page && contents.getURL() === page;
+  session.defaultSession.setPermissionRequestHandler((contents, permission, reply, details) =>
+    reply(allowPlayerFullscreen(contents, permission, details)));
+  session.defaultSession.setPermissionCheckHandler((contents, permission, _origin, details) =>
+    allowPlayerFullscreen(contents, permission, details));
   function unlockUpdate() {
     updateLocked = false;
     draftCloseAllowed = false;

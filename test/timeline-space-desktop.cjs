@@ -91,6 +91,26 @@ async function check() {
     await wait('Math.abs(' + time + '-' + seconds + ')<.04', '点击时间标尺应设置播放头');
   }
   const videoCell = '.sequence-video [data-drop-shot="0"]';
+  async function checkPlayerLayout(width, height) {
+    win.setContentSize(width, height);
+    await read('new Promise(resolve=>requestAnimationFrame(()=>requestAnimationFrame(()=>resolve(true))))');
+    const layout = await read(`(() => {
+      const rect = node => {
+        const {left,right,top,bottom} = node.getBoundingClientRect();
+        return {left,right,x:(left+right)/2,y:(top+bottom)/2};
+      };
+      const ids = ['time','duration','more','play','quality','zoom','ratio','fullscreen'];
+      return {row:rect(document.querySelector('.player-control-row')),
+        controls:ids.map(id=>rect(document.getElementById('player-'+id)))};
+    })()`);
+    const {row,controls} = layout, play = controls[3];
+    assert.ok(Math.abs(play.x-row.x)<2, '播放图标应位于控制栏正中央');
+    for (const [i,control] of controls.entries()) {
+      assert.ok(control.right>control.left && control.left>=row.left-1 && control.right<=row.right+1, '播放器控件应完整可见');
+      assert.ok(Math.abs(control.y-play.y)<2, '时间码、播放键与右侧控件应位于同一行');
+      if (i) assert.ok(control.left>=controls[i-1].right-1, '相邻控件不能重叠');
+    }
+  }
   async function ensurePaused(input, beforeValue) {
     const before = await read(time);
     await space();
@@ -103,8 +123,18 @@ async function check() {
     await read(q('#home-open-project') + '.click()');
     await wait('!!' + q(videoCell), '打开双分镜工程');
     await click(videoCell);
+    const duration = q('#player-duration') + '.textContent';
+    await wait(duration + '==="00:00:01:15"', '单条 1.5 秒素材应按 30 fps 显示总帧码');
+    await click('#player-play');
+    await wait('!' + preview + '.paused && ' + preview + '.currentTime>.12', '中央播放按钮应播放当前素材');
+    await click('#player-play');
+    await wait(preview + '.paused', '中央播放按钮应暂停当前素材');
+    await checkPlayerLayout(1080,780);
+    await checkPlayerLayout(1420,1000);
+    await click(videoCell);
     await space(true);
     await wait('!!' + live + ' && !' + live + '.paused && ' + time + '>.2', '点击分镜后按住空格应连续播放工程');
+    await wait(duration + '==="00:00:03:00" && '+q('#player-play')+'.getAttribute("aria-label")==="暂停"', '全线播放应展示工程总时长并切为暂停按钮');
     assert.equal(await read(q('#preview-batch-list') + '.childElementCount'), 0, '普通分镜不需要生成批量预览');
     assert.ok(await read(focus), '点击素材后空格保留时间线焦点');
     const firstSource = await read(live + '.currentSrc');
@@ -113,6 +143,9 @@ async function check() {
     await space();
     const paused = await read(time);
     const shownFrame = await read('[' + live + '.currentSrc,' + live + '.currentTime]');
+    const clockParts = (await read(q('#player-time')+'.textContent')).split(':').map(Number);
+    const clockSeconds = clockParts[0]*3600 + clockParts[1]*60 + clockParts[2] + clockParts[3]/24;
+    assert.ok(Math.abs(clockSeconds-paused)<1/24+.01, '暂停时当前帧码应与工程播放头对应');
     await delay(200);
     assert.ok(Math.abs(await read(time) - paused) < .03, '再按空格暂停并停在同一帧');
     assert.ok(await read(live + '.paused && ' + live + '.readyState>=2 && ' + live + '.getBoundingClientRect().width>0'), '暂停后第二个分镜的画面仍然可见');
@@ -132,8 +165,8 @@ async function check() {
     await click('#timeline-play');
     await wait('!!' + live + ' && !' + live + '.paused', '工具栏播放按钮可从暂停位置续播');
     assert.equal(await read('getComputedStyle(' + clock + ').outlineStyle'), 'none', '点击播放按钮不会描边整个时间线');
-    await click('#timeline-play');
-    await wait(live + '.paused', '再次点击工具栏播放按钮暂停');
+    await click('#player-play');
+    await wait(live + '.paused', '播放器中央按钮应暂停时间线正在播出的画面');
     await click('#material-search');
     await ensurePaused('#material-search', '');
     await read(q('#timeline-layer-add') + '.click()');

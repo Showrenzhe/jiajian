@@ -231,13 +231,36 @@ async function check() {
     await context(shotCell(3));await action('粘贴视频');
     await wait(query('#notice')+'.textContent.includes("已包含")','重复粘贴应提示且不修改工程');
     await fitTimeline();
-    const geometry=await read('(()=>{const src='+query(cell(3,1))+',dst='+query(cell(4,0))+';src.scrollIntoView({block:"center",inline:"center"});'
-      +'return [src,dst].map(n=>{const r=n.getBoundingClientRect(),x=r.x+r.width/2,y=r.y+r.height/2;return {x,y,hit:n.contains(document.elementFromPoint(x,y))};});})()');
-    const [sourcePoint,dropPoint]=geometry;
-    assert.ok(sourcePoint.hit && dropPoint.hit,'候选及目标均应可见');
-    await mouse('mousePressed',sourcePoint);await mouse('mouseMoved',dropPoint);
+    async function candidatePoints(...selectors) {
+      const points=await read('(()=>{const nodes=['+selectors.map(query).join(',')+'];nodes[0].scrollIntoView({block:"center",inline:"center"});'
+        +'return nodes.map(n=>{const r=n.getBoundingClientRect(),x=r.x+r.width/2,y=r.y+r.height/2;return {x,y,hit:n.contains(document.elementFromPoint(x,y))};});})()');
+      assert.ok(points.every(point=>point.hit),'候选及目标均应可见');
+      return points;
+    }
+    const [sourcePoint,duplicatePoint,dropPoint]=await candidatePoints(cell(3,1),cell(2,0),cell(4,0));
+    const hint=query('.candidate-drop-hint'), noHint=hint+'.textContent==="" && !document.querySelector("[data-candidate-rejected],[data-drag-rejected]")';
+    async function expectRejected(selector,message) {
+      const node=query(selector);
+      await wait(node+'.hasAttribute("data-candidate-rejected") && !'+node+'.hasAttribute("data-material-drop") && '+hint+'.textContent==='+JSON.stringify(message),'禁放反馈应显示具体原因');
+      assert.equal(await read('getComputedStyle('+node+').cursor'),'not-allowed');
+      assert.ok(await read('(()=>{const r='+hint+'.getBoundingClientRect(),pane=document.querySelector("#timeline-tracks-panel").getBoundingClientRect();'
+        +'return r.width>0 && r.left>=pane.left && r.right<=pane.right && r.top>=pane.top && r.bottom<=pane.bottom})()'),'禁放说明应显示在时间线可见区域');
+    }
+    const duplicateMessage='目标分镜已包含这段素材。';
+    await mouse('mousePressed',sourcePoint);await mouse('mouseMoved',duplicatePoint);
+    await expectRejected(cell(2,0),duplicateMessage);
+    await mouse('mouseReleased',duplicatePoint);
+    await wait(noHint+' && '+query('#notice')+'.textContent==='+JSON.stringify(duplicateMessage),'拒绝放置后保留操作结果并清除拖动反馈');
+    assert.ok(await read('!!'+filled(3,1)+' && !'+filled(2,1)),'拒绝重复候选应保留原有分镜');
+    await mouse('mousePressed',sourcePoint);await mouse('mouseMoved',duplicatePoint);
+    await expectRejected(cell(2,0),duplicateMessage);
+    await mouse('mouseMoved',dropPoint);
     await wait(query(cell(4,0))+'.dataset.materialDrop==="active"','拖动应标记目标分镜');
-    await key('Escape',27);await mouse('mouseReleased',dropPoint);
+    await wait(noHint,'进入可放置分镜后清除禁放反馈');
+    await mouse('mouseMoved',duplicatePoint);
+    await expectRejected(cell(2,0),duplicateMessage);
+    await key('Escape',27);await wait(noHint,'Esc 应立即清除禁放反馈');
+    await mouse('mouseReleased',duplicatePoint);
     assert.ok(await read('!!'+filled(3,1)+' && !'+filled(4,1)),'Esc 应保留原候选');
     await mouse('mousePressed',sourcePoint);await mouse('mouseMoved',dropPoint);
     await wait(query(cell(4,0))+'.dataset.materialDrop==="active"','再次拖动应恢复目标反馈');
@@ -253,6 +276,17 @@ async function check() {
     assert.deepEqual(movedConfig.shots[4][1],movedConfig.shots[2][0],'移动复制的候选应保留裁剪、字幕和包装');
     assert.deepEqual(movedConfig.shots[3].map(clip=>movedAssets.get(clip.id).path),[files.red],'移走候选应保留原有分镜内容');
     await click('#open-project');await wait(query('#notice')+'.textContent.includes("已打开工程") && !!'+filled(4,1),'重开后保留候选位置');
+    const fullFile=path.join(root,'候选已满.sdworkbench');
+    const fullShot=Array.from({length:100},(_,i)=>({id:'green',start:0,end:.5+i/200}));
+    await saveProject(fullFile,{...config,shots:[config.shots[0],fullShot,config.shots[2]]},catalog);
+    opens.push(fullFile);await click('#open-project');await wait('!!'+filled(1,99),'打开含 100 条候选的分镜');
+    await fitTimeline();
+    const [fullSource,fullTarget]=await candidatePoints(cell(0,0),cell(1,0));
+    const fullMessage='每个分镜最多可添加 100 条候选。';
+    await mouse('mousePressed',fullSource);await mouse('mouseMoved',fullTarget);
+    await expectRejected(cell(1,0),fullMessage);await mouse('mouseReleased',fullTarget);
+    await wait(noHint+' && '+query('#notice')+'.textContent==='+JSON.stringify(fullMessage),'满额分镜保持禁放并提示上限');
+    assert.ok(await read('!!'+filled(0,0)+' && !!'+filled(1,99)+' && !'+filled(1,100)),'禁止移动到满额分镜应保留原有候选');
     assert.deepEqual(opens,[]);assert.deepEqual(saves,[]);
     console.log('分镜拖动、左右插入、倍速、音频字幕视频复制粘贴、撤销重做、保存重开与成片排序通过。');
   } finally {

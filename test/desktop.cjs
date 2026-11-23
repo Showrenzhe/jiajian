@@ -717,10 +717,16 @@ async function run() {
   assert.equal(await runInWindow('document.querySelector("#preview").volume'), 0);
   await runInWindow('document.querySelector("#clip-track-muted").click()');
   assert.equal(await runInWindow('document.querySelector("#preview").volume'), 1);
-  await runInWindow('document.querySelector("#player-next").click()');
+  const openPlayerTools = async () => {
+    if (!await runInWindow('document.querySelector("#player-next").checkVisibility()')) await navigate('#player-more');
+  };
+  await openPlayerTools();
+  await navigate('#player-next');
   await waitFor('Math.abs(document.querySelector("#preview").currentTime - 1 / selected.asset.fps) < 0.008', '下一帧应按素材帧率前进');
-  await runInWindow('document.querySelector("#player-stop").click()');
+  await openPlayerTools();
+  await navigate('#player-stop');
   await waitFor('document.querySelector("#preview").paused && document.querySelector("#preview").currentTime < 0.001', '停止应回到片段入点');
+  if (await runInWindow('document.querySelector("#player-next").checkVisibility()')) await navigate('#player-more');
   await runInWindow('document.querySelector("#player-ratio").value = "9:16"; document.querySelector("#player-ratio").dispatchEvent(new Event("change"))');
   assert.equal(await runInWindow('document.querySelector("#ratio").value'), '9:16');
   await runInWindow('document.querySelector("#player-ratio").value = "16:9"; document.querySelector("#player-ratio").dispatchEvent(new Event("change"))');
@@ -1289,8 +1295,23 @@ async function run() {
   selections.push({ title: '选择分镜素材', files: [wideVideo] });
   await click('#material-import');
   await waitFor('document.querySelector("#preview").videoWidth === 640 && document.querySelector("#preview").currentSrc.includes("/track-proxy/")', '高清轨道索引应实际解码本地低分辨率代理');
+  const setPlayerQuality = value => runInWindow(`(() => {
+    const select = document.getElementById('player-quality');
+    select.value = ${JSON.stringify(value)};
+    select.dispatchEvent(new Event('change', {bubbles:true}));
+  })()`);
+  await setPlayerQuality('original');
+  await waitFor('document.querySelector("#preview").videoWidth === 960 && !document.querySelector("#preview").currentSrc.includes("/track-proxy/")', '切到原画应解码 960 像素原片');
+  assert.equal(await runInWindow('document.querySelector(".player-quality-label").textContent'), '原画');
+  await setPlayerQuality('proxy');
+  await waitFor('document.querySelector("#preview").videoWidth === 640 && document.querySelector("#preview").currentSrc.includes("/track-proxy/")', '手动切回流畅应实际恢复 640 像素代理');
+  await waitFor('document.querySelector(".player-quality-label").textContent==="流畅"', '画质标签应显示实际解码的代理');
+  await setPlayerQuality('auto');
+  await navigate('#timeline-play');
+  await waitFor('document.querySelector(".draft-transport-preview:not([hidden]) video")?.paused===false', '时间线应开始试播');
   await click('#material-list .material-tile');
   await waitFor('document.querySelector("#preview").videoWidth === 960 && !document.querySelector("#preview").currentSrc.includes("/track-proxy/")', '回到素材库应恢复原片画质');
+  await waitFor('!document.querySelector(".draft-transport-preview:not([hidden])") && !document.querySelector("#preview").paused && document.querySelector("#preview").currentTime>0', '点击素材库视频应结束时间线试播并点播原片');
   await click('#subproject-new');
   await runInWindow('document.querySelector("#subproject-name").value = "杭州门店"; document.querySelector("#subproject-new-form").requestSubmit()');
   await waitFor('document.querySelector("#subproject-select").selectedOptions[0].textContent === "杭州门店"', '应在刚创建的子工程中编辑');
