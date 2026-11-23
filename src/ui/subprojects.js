@@ -8,7 +8,7 @@ function createSubprojects({ shots, serialize, revive,voiceIO }) {
   let mainVoice;
   const keyVoice=(state={})=>({whole:state.whole,segments:new WeakMap((state.segments??[]).map(({index,items})=>[shots[index],items]))});
   const packVoice=(state)=>state && ({...(state.whole && {whole:state.whole}),segments:shots.flatMap((s,index)=>state.segments.has(s)?[{index,items:state.segments.get(s)}]:[])});
-  const same=(a,b)=>JSON.stringify(a)===JSON.stringify(b);
+  const same = typeof module === 'object' && module.exports ? require('./edit-history.js').sameEditSnapshot : window.sameEditSnapshot;
   const hasVoice=(items)=>items?.some((item)=>item?.id || item?.srt);
   function ownRows(current,base,trimWhole) {
     if(same(current,base)||(!hasVoice(current)&&hasVoice(base)))return;
@@ -57,7 +57,7 @@ function createSubprojects({ shots, serialize, revive,voiceIO }) {
       const base = main.get(shot) ?? [];
       const clips = snapshot(shot);
       if (clips.length) active.emptyShots?.delete(shot);
-      if ((clips.length && JSON.stringify(clips) !== JSON.stringify(base)) || active.emptyShots?.has(shot)) active.shots.set(shot, clips);
+      if ((clips.length && !same(clips, base)) || active.emptyShots?.has(shot)) active.shots.set(shot, clips);
       else active.shots.delete(shot);
     }
   }

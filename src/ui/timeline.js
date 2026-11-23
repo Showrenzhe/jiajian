@@ -105,7 +105,9 @@ window.mountEditTimeline = function (host, ctx) {
   let cachedDraftDuration;
   let focusShot, focusClip, voiceTarget, shotDrag, refocusShot;
   let clipboard, pastePosition;
-  let draggedCandidate, candidateDropTarget;
+  let draggedCandidate, candidateLandings;
+  const candidateSlots=new WeakMap();
+  const candidateMotion=matchMedia('(prefers-reduced-motion: no-preference) and (forced-colors: none)');
   const dropHint=el('div','candidate-drop-hint');
   dropHint.setAttribute('role','status');
   document.body.append(dropHint);
@@ -634,6 +636,7 @@ window.mountEditTimeline = function (host, ctx) {
         } : undefined);
         b.dataset.dropShot=String(i);
         b.dataset.candidateIndex=String(j);
+        candidateSlots.set(b,{shot:s.shots[i],clip});
         if (!clip) {
           b.classList.add('sequence-empty');
           b.title='从素材库拖入画面，添加到分镜 '+(i+1);
@@ -645,10 +648,10 @@ window.mountEditTimeline = function (host, ctx) {
         bindCopy(b,'视频',()=>ctx.copyClip(clip));
         b.dataset.moveCandidate='';
         b.onpointerdown=event=>{
-          if(ctx.busy() || !event.isPrimary || event.button!==0 || event.ctrlKey || event.metaKey || event.shiftKey || event.altKey) return;
-          draggedCandidate={button:b,clip,owner,id:event.pointerId,x:event.clientX,y:event.clientY};
-          b.setPointerCapture(event.pointerId);
+          if(draggedCandidate || ctx.busy() || !event.isPrimary || event.button!==0 || event.ctrlKey || event.metaKey || event.shiftKey || event.altKey) return;
+          liftCandidate(b,clip,owner,event);
         };
+        b.onkeydown=event=>nudgeCandidate(event,b,clip,owner);
         if (clip.enabled===false) b.classList.add('sequence-disabled');
         if (clip===s.selected) b.classList.add('sequence-selected');
         const seconds=clipSpan(clip);
@@ -658,7 +661,8 @@ window.mountEditTimeline = function (host, ctx) {
         const match=Number.isFinite(clip.matchedDuration) ? clip.matchedDuration.toFixed(2)+' 秒 · 已匹配' : '';
         label.append(name,el('span','sequence-clip-duration',match || duration));
         b.replaceChildren(label);
-        b.title=clip.asset.name+' · '+(match || '候选时长 '+duration)+(clip.asset.kind==='video' ? ' · 原片 '+clip.asset.duration.toFixed(2)+' 秒' : '');
+        b.title=clip.asset.name+' · '+(match || '候选时长 '+duration)+(clip.asset.kind==='video' ? ' · 原片 '+clip.asset.duration.toFixed(2)+' 秒' : '')+' · 拖动交换，或按 Alt＋左右方向键移至相邻分镜';
+        b.setAttribute('aria-keyshortcuts','Control+C Control+V Alt+ArrowLeft Alt+ArrowRight');
         const frames=el('span','sequence-frames');
         const count=Math.max(1,Math.min(6,Math.ceil(widths[i]*timeScale/76)));
         const ranges=clip.ranges ?? [{start:clip.start,end:clip.end}];
@@ -710,6 +714,7 @@ window.mountEditTimeline = function (host, ctx) {
         b.setAttribute('aria-keyshortcuts','Alt+ArrowLeft Alt+ArrowRight');
       }
       b.dataset.dropShot=String(i);
+      candidateSlots.set(b,{shot});
       if(shot) b.oncontextmenu=(event)=>{
         event.preventDefault();const d=dialog('分镜 '+(i+1));
         matchDurationButton(d,s,i);
@@ -902,7 +907,7 @@ window.mountEditTimeline = function (host, ctx) {
     const cursor=el('i','sequence-cursor');canvas.append(cursor);
     const hover=el('i','sequence-hover');hover.hidden=true;canvas.append(hover);
     function eventTime(e) {return Math.max(0,Math.min(totalTime,(e.clientX-ruler.getBoundingClientRect().left)/timeScale));}
-    canvas.onpointermove=(e)=>{hover.hidden=shotDrag?.active || scrubPointer!=null || resizeDrag!=null || !ctx.showAxis();hover.style.left=(96+eventTime(e)*timeScale)+'px';};
+    canvas.onpointermove=(e)=>{hover.hidden=Boolean(draggedCandidate) || shotDrag?.active || scrubPointer!=null || resizeDrag!=null || !ctx.showAxis();hover.style.left=(96+eventTime(e)*timeScale)+'px';};
     canvas.onpointerleave=()=>{hover.hidden=true;};
     canvas.onpointerdown=(e)=>{
       if(e.button!==0 || scrubPointer!=null || resizeDrag || (!ruler.contains(e.target) && e.target!==cursor)) return;
@@ -934,6 +939,13 @@ window.mountEditTimeline = function (host, ctx) {
       zoomAnchor=undefined;
     }
     syncCursor();ctx.scroll();
+    if(candidateLandings) {
+      for(const [clip,from] of candidateLandings) {
+        const node=candidateButton(s.shots,clip);
+        if(node) animateCandidateFrom(node,from);
+      }
+      candidateLandings=undefined;
+    }
   }
   function zoom(level, clientX) {
     const next=zoomScales[level-1];
@@ -1075,91 +1087,223 @@ window.mountEditTimeline = function (host, ctx) {
     if (key!==undefined) lastKey=key;
     if(refreshFrame===undefined) refreshFrame=requestAnimationFrame(draw);
   }
-  function markCandidateDrop(node) {
-    if (node===candidateDropTarget) return;
-    if (candidateDropTarget) {
-      delete candidateDropTarget.dataset.materialDrop;
-      delete candidateDropTarget.dataset.candidateRejected;
-    }
-    candidateDropTarget=node;
-    const reason=node ? ctx.candidatePlacementError(draggedCandidate.clip,lastState.shots[Number(node.dataset.dropShot)]) : '';
-    if (dropHint.textContent!==reason) dropHint.textContent=reason;
-    host.toggleAttribute('data-drag-rejected',Boolean(reason));
-    if (!node) return;
-    if (reason) node.dataset.candidateRejected='';
-    else node.dataset.materialDrop='active';
+  function stopCandidateMotion(node) {
+    for(const motion of node.getAnimations()) if(motion.id==='candidate-arrival') motion.cancel();
   }
-  function candidateUnderPointer(x,y) {
-    const node=document.elementFromPoint(x,y)?.closest('[data-drop-shot]');
-    const shot=node && lastState?.shots[Number(node.dataset.dropShot)];
-    return shot && host.contains(node) && shot!==draggedCandidate.owner && !ctx.busy() ? node : undefined;
+  function candidateButton(shots,clip) {
+    const i=shots.findIndex(shot=>shot.includes(clip));
+    if(i<0) return;
+    return host.querySelector('[data-drop-shot="'+i+'"][data-candidate-index="'+shots[i].indexOf(clip)+'"]');
+  }
+  function animateCandidateFrom(node,from) {
+    if(!from || !candidateMotion.matches) return;
+    const to=node.getBoundingClientRect();
+    if(!to.width || !to.height) return;
+    const start='translate('+(from.left-to.left)+'px,'+(from.top-to.top)+'px) scale('+from.width/to.width+','+from.height/to.height+')';
+    node.animate([{transform:start},{transform:'none'}],{
+      id:'candidate-arrival',duration:200,easing:'cubic-bezier(.2,.75,.25,1)',
+    });
+  }
+  function slotMarker(button) {
+    const marker=el('i','candidate-slot candidate-vacancy');
+    marker.setAttribute('aria-hidden','true');
+    marker.style.left=button.style.left;marker.style.width=button.style.width;
+    button.parentElement.append(marker);
+    return marker;
+  }
+  function liftCandidate(button,clip,owner,event) {
+    const from=button.getBoundingClientRect();
+    stopCandidateMotion(button);
+    const home=slotMarker(button), x=event.clientX, y=event.clientY;
+    draggedCandidate={button,clip,owner,home,id:event.pointerId,startX:x,startY:y,x,y};
+    // A manual popover puts the actual frames and waveform above the scrolling pane.
+    // Keep the normal slot and its inline timeline coordinates intact for hit testing.
+    button.style.setProperty('--lift-left',from.left+'px');
+    button.style.setProperty('--lift-top',from.top+'px');
+    button.style.setProperty('--lift-width',from.width+'px');
+    button.style.setProperty('--lift-height',from.height+'px');
+    button.style.transformOrigin=(x-from.left)+'px '+(y-from.top)+'px';
+    button.classList.add('candidate-moving');
+    host.dataset.candidateDrag='pressed';
+  }
+  function setDisplaced(button,home) {
+    const from=button.getBoundingClientRect();
+    stopCandidateMotion(button);
+    button.classList.remove('candidate-displaced');
+    button.style.removeProperty('--slot-offset');
+    button.style.removeProperty('--slot-width');
+    button.style.removeProperty('--slot-height');
+    if(home) {
+      const here=button.getBoundingClientRect(), to=home.getBoundingClientRect();
+      button.style.setProperty('--slot-offset',(to.left-here.left)+'px '+(to.top-here.top)+'px');
+      button.style.setProperty('--slot-width',to.width+'px');
+      button.style.setProperty('--slot-height',to.height+'px');
+      button.classList.add('candidate-displaced');
+    }
+    animateCandidateFrom(button,from);
+  }
+  function markCandidateDrop(drag,node) {
+    if(node===drag.target) return;
+    if(drag.target) {
+      delete drag.target.dataset.materialDrop;
+      delete drag.target.dataset.candidateRejected;
+      if(drag.target.classList.contains('candidate-displaced')) setDisplaced(drag.target);
+      drag.vacancy?.remove();
+      drag.vacancy=undefined;
+    }
+    drag.target=node;
+    const slot=candidateSlots.get(node);
+    const reason=slot ? ctx.candidatePlacementError(drag.clip,slot.shot,drag.owner,slot.clip) : '';
+    dropHint.textContent=reason;
+    host.toggleAttribute('data-drag-rejected',Boolean(reason));
+    drag.home.classList.toggle('candidate-vacancy',!slot || Boolean(reason) || !slot.clip);
+    if(!slot) return;
+    if(reason) node.dataset.candidateRejected='';
+    else {
+      node.dataset.materialDrop='active';
+      if(slot.clip) {
+        drag.vacancy=slotMarker(node);
+        setDisplaced(node,drag.home);
+      }
+    }
+  }
+  function candidateUnderPointer(drag,x,y) {
+    if(ctx.busy()) return;
+    const hit=document.elementFromPoint(x,y);
+    if(!hit || !host.contains(hit)) return;
+    const track=hit.closest('.sequence-video .sequence-content');
+    let node;
+    if(track) {
+      // Only track geometry participates. A clip sliding across another slot must
+      // never become the destination simply because its animation crosses the mouse.
+      const time=(x-track.getBoundingClientRect().left)/timeScale;
+      if(time<0 || time>=totalTime) return;
+      node=track.children[positionAt(time).index];
+    } else node=hit.closest('.sequence-shots [data-drop-shot]');
+    const shot=candidateSlots.get(node)?.shot;
+    return shot && shot!==drag.owner ? node : undefined;
   }
   function scrollCandidateDrag(now) {
     const drag=draggedCandidate;
-    if(!drag?.active) return;
-    const area=host.getBoundingClientRect(), view=host.closest('#timeline-tracks-panel');
-    const bounds=view.getBoundingClientRect(), elapsed=Math.min(.25,(now-drag.lastScroll)/1000);
+    if(!drag?.active || drag.cancelled) return;
+    drag.frame=undefined;
+    const view=host.closest('#timeline-tracks-panel');
+    const area=host.getBoundingClientRect(), bounds=view.getBoundingClientRect();
+    const elapsed=Math.max(.001,Math.min(.05,(now-drag.lastScroll)/1000));
     drag.lastScroll=now;
     if(drag.x>=area.left && drag.x<=area.right && drag.y>=bounds.top && drag.y<=bounds.bottom) {
       const step=(p,low,high)=>p<low+16 ? Math.max(-20,p-low-16) : Math.max(0,Math.min(20,p-high+16));
-      host.scrollLeft+=step(drag.x,area.left+96,area.right)*90*elapsed;
-      view.scrollTop+=step(drag.y,bounds.top,bounds.bottom)*45*elapsed;
-      markCandidateDrop(candidateUnderPointer(drag.x,drag.y));
+      const dx=step(drag.x,area.left+96,area.right), dy=step(drag.y,bounds.top,bounds.bottom);
+      const left=host.scrollLeft,top=view.scrollTop;
+      if(dx) host.scrollLeft+=Math.sign(dx)*Math.max(1,Math.abs(dx)*90*elapsed);
+      if(dy) view.scrollTop+=Math.sign(dy)*Math.max(1,Math.abs(dy)*45*elapsed);
+      if(left!==host.scrollLeft || top!==view.scrollTop) drag.frame=requestAnimationFrame(scrollCandidateDrag);
     }
-    drag.frame=requestAnimationFrame(scrollCandidateDrag);
+  }
+  window.addEventListener('scroll',()=>{
+    const drag=draggedCandidate;
+    if(drag?.active && !drag.cancelled) markCandidateDrop(drag,candidateUnderPointer(drag,drag.x,drag.y));
+  },{capture:true,passive:true});
+  function updateCandidate(drag,x,y) {
+    const dx=x-drag.startX,dy=y-drag.startY;
+    drag.button.style.translate=dx+'px '+dy+'px';
+    drag.x=x;drag.y=y;
+    if(!drag.active) {
+      if(Math.hypot(dx,dy)<5) return;
+      drag.active=true;
+      drag.button.popover='manual';drag.button.showPopover();
+      host.dataset.candidateDrag='active';
+      host.setPointerCapture(drag.id);
+    }
+    if(drag.frame===undefined) {
+      drag.lastScroll=performance.now()-16;
+      drag.frame=requestAnimationFrame(scrollCandidateDrag);
+    }
+    markCandidateDrop(drag,candidateUnderPointer(drag,x,y));
+  }
+  function dockCandidate(drag) {
+    cancelAnimationFrame(drag.frame);
+    markCandidateDrop(drag,undefined);
+    drag.home.remove();
+    const b=drag.button;
+    b.removeAttribute('popover');
+    b.classList.remove('candidate-moving');
+    for(const property of ['translate','transform-origin','--lift-left','--lift-top','--lift-width','--lift-height']) b.style.removeProperty(property);
+    delete host.dataset.candidateDrag;
+  }
+  function placeAtSlot(clip,owner,target) {
+    const slot=candidateSlots.get(target);
+    if(!slot || ctx.busy()) return false;
+    const i=Number(target.dataset.dropShot);
+    if(!ctx.placeCandidate(clip,slot.shot,owner,slot.clip)) return false;
+    focusShot=slot.shot;focusClip=clip;voiceTarget=undefined;
+    ctx.preview(clip);
+    selection.selectOnly(clip);
+    pastePosition={index:i,time:shotTimes[i]};
+    ctx.notify(slot.clip ? '已与分镜 '+(i+1)+' 的候选交换。' : '已移动至分镜 '+(i+1)+'。');
+    return true;
+  }
+  function nudgeCandidate(event,button,clip,owner) {
+    if(draggedCandidate || !event.altKey || event.shiftKey || event.ctrlKey || event.metaKey ||
+      !['ArrowLeft','ArrowRight'].includes(event.key) || ctx.busy()) return;
+    event.preventDefault();event.stopPropagation();
+    const i=Number(button.dataset.dropShot)+(event.key==='ArrowLeft'?-1:1);
+    const target=button.parentElement.children[i];
+    if(!candidateSlots.get(target)?.shot) return;
+    try {
+      if(placeAtSlot(clip,owner,target)) {
+        requestAnimationFrame(()=>candidateButton(ctx.state().shots,clip)?.focus());
+      }
+    } catch(error) {ctx.notify(error.message);}
   }
   function finishCandidateDrag(commit) {
     const drag=draggedCandidate;
     if(!drag) return;
-    const target=candidateDropTarget;
+    const target=drag.target, displaced=candidateSlots.get(target)?.clip;
+    const from=drag.active && !drag.cancelled ? drag.button.getBoundingClientRect() : null;
+    const otherFrom=target?.classList.contains('candidate-displaced') && target.getBoundingClientRect();
     draggedCandidate=undefined;
-    cancelAnimationFrame(drag.frame);
-    drag.button.classList.remove('candidate-moving');
-    markCandidateDrop(undefined);
-    if(drag.button.hasPointerCapture(drag.id)) drag.button.releasePointerCapture(drag.id);
-    if(!drag.active) return;
-    if(commit && target) {
-      const index=Number(target.dataset.dropShot);
+    if(!drag.cancelled) dockCandidate(drag);
+    if(host.hasPointerCapture(drag.id)) host.releasePointerCapture(drag.id);
+    if(commit && from && target) {
       try {
-        if(ctx.placeCandidate(drag.clip,ctx.state().shots[index],drag.owner)) {
-          ctx.preview(drag.clip);
-          selection.selectOnly(drag.clip);
-          pastePosition={index,time:shotTimes[index]};
+        if(placeAtSlot(drag.clip,drag.owner,target)) {
+          candidateLandings=new Map([[drag.clip,from]]);
+          if(otherFrom) candidateLandings.set(displaced,otherFrom);
           host.focus({preventScroll:true});
-          ctx.notify('已移动至分镜 '+(index+1)+'。');
+          return;
         }
       } catch(error) {ctx.notify(error.message);}
     }
+    animateCandidateFrom(drag.button,from);
   }
   window.addEventListener('pointermove',event=>{
     const drag=draggedCandidate;
     if(!drag || event.pointerId!==drag.id || drag.cancelled) return;
     if(!(event.buttons&1)) {finishCandidateDrag(false);return;}
-    if(!drag.active) {
-      if(Math.hypot(event.clientX-drag.x,event.clientY-drag.y)<5) return;
-      drag.active=true;drag.lastScroll=performance.now();
-      drag.button.classList.add('candidate-moving');
-      drag.frame=requestAnimationFrame(scrollCandidateDrag);
-    }
-    drag.x=event.clientX;drag.y=event.clientY;
-    markCandidateDrop(candidateUnderPointer(drag.x,drag.y));
+    updateCandidate(drag,event.clientX,event.clientY);
   },true);
   window.addEventListener('pointerup',event=>{
     const drag=draggedCandidate;
     if(!drag || event.pointerId!==drag.id) return;
-    if(drag.active || drag.cancelled) {
-      suppressDragClick();
-      markCandidateDrop(drag.cancelled ? undefined : candidateUnderPointer(event.clientX,event.clientY));
-    }
+    if(drag.active && !drag.cancelled) updateCandidate(drag,event.clientX,event.clientY);
+    if(drag.active || drag.cancelled) suppressDragClick();
     finishCandidateDrag(!drag.cancelled);
   },true);
   window.addEventListener('keydown',event=>{
-    if(event.key!=='Escape' || !draggedCandidate?.active) return;
+    const drag=draggedCandidate;
+    if(event.key!=='Escape' || !drag || drag.cancelled) return;
     event.preventDefault();event.stopPropagation();
-    draggedCandidate.active=false;draggedCandidate.cancelled=true;
-    draggedCandidate.button.classList.remove('candidate-moving');
-    cancelAnimationFrame(draggedCandidate.frame);markCandidateDrop(undefined);
+    const from=drag.active && drag.button.getBoundingClientRect();
+    dockCandidate(drag);
+    animateCandidateFrom(drag.button,from);
+    drag.cancelled=true;
   },true);
+  host.addEventListener('lostpointercapture',event=>{
+    // Chromium can relinquish capture while the primary button is still down.
+    // The window listeners continue tracking that press through release or cancellation.
+    if(event.target===host && draggedCandidate?.id===event.pointerId && !(event.buttons&1)) finishCandidateDrag(false);
+  });
   window.addEventListener('pointercancel',event=>{if(draggedCandidate?.id===event.pointerId) finishCandidateDrag(false);},true);
   window.addEventListener('blur',()=>finishCandidateDrag(false));
   host.ondragover=(e)=>{

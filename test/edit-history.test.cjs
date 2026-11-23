@@ -3,6 +3,7 @@
 const assert = require('node:assert/strict');
 const { test } = require('node:test');
 const { createEditHistory } = require('../src/ui/edit-history.js');
+const { createSubprojects } = require('../src/ui/subprojects.js');
 
 test('structurally identical edits are ignored and snapshots do not share mutable references', () => {
   const initial = { clip: { end: 2, start: 0 }, ids: ['a'] };
@@ -53,4 +54,26 @@ test('returning a group to its initial value does not lose an older undo step', 
   history.reset({ shots: [] });
   assert.equal(history.canUndo(), false);
   assert.equal(history.canRedo(), false);
+});
+
+test('undoing a subproject clip swap preserves inherited captions and leaves the swap available to redo', () => {
+  const shots = [[{id:'red'}], [{id:'blue'}]];
+  const caption = {name:'台词', cues:[{start:0, end:200, text:'留在第二镜'}]};
+  const voiceIO = {
+    read: () => ({whole:[], segments:[{index:1, items:[{id:'voice', caption}]}]}),
+    write() {},
+  };
+  const state = createSubprojects({shots, serialize:clip => clip, revive:structuredClone, voiceIO});
+  state.create('门店');
+  const snapshot = () => ({shots, subprojects:state.pack()});
+  const history = createEditHistory(snapshot());
+  [shots[0][0], shots[1][0]] = [shots[1][0], shots[0][0]];
+  history.record(snapshot());
+
+  const restored = history.undo();
+  shots.splice(0, shots.length, ...restored.shots);
+  state.restore(restored.subprojects);
+  assert.equal(history.record(snapshot()), false);
+  assert.deepEqual(state.pack().projects[0].voice.segments, []);
+  assert.deepEqual(history.redo().shots, [[{id:'blue'}], [{id:'red'}]]);
 });

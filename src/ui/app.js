@@ -3191,10 +3191,18 @@ function serializeClip({ asset, start, end, volume, speed, matchedDuration, enab
     ...(ranges && { ranges }), ...(layers?.length && { layers }), ...(transform && { transform }), ...(videoSubtitles && {videoSubtitles}), ...(look && {look}) };
 }
 
-function candidatePlacementError(clip, target) {
-  if (target.length >= maxCandidates) return `每个分镜最多可添加 ${maxCandidates} 条候选。`;
+function hasMatchingCandidate(shot, clip, outgoing) {
   const key = window.candidateKey(serializeClip(clip));
-  if (target.some(item => window.candidateKey(serializeClip(item)) === key)) return '目标分镜已包含这段素材。';
+  return shot.some(item => item !== outgoing && window.candidateKey(serializeClip(item)) === key);
+}
+
+function candidatePlacementError(clip, target, source, targetClip) {
+  if (!shots.includes(target) || (source && (!shots.includes(source) || !source.includes(clip)))
+      || (targetClip && (!source || !target.includes(targetClip)))) return '片段位置已变化，请重新拖动。';
+  if (source === target) return '请选择另一个分镜。';
+  if (!targetClip && target.length >= maxCandidates) return `每个分镜最多可添加 ${maxCandidates} 条候选。`;
+  if (hasMatchingCandidate(target, clip, targetClip)) return '目标分镜已包含这段素材。';
+  if (targetClip && hasMatchingCandidate(source, targetClip, clip)) return '原分镜已包含要换回的素材。';
   return '';
 }
 
@@ -4673,13 +4681,21 @@ timeline = window.mountEditTimeline($('#timeline-clock'), {
   move:moveShot, insertShot, notify:say, segmentVoiceMatchTarget, matchNarrationDuration,
   copyClip:(clip)=>structuredClone(serializeClip(clip)), pasteClip:(data)=>reviveClip(data,editAssets),
   candidatePlacementError,
-  placeCandidate(clip, target, source) {
-    if (operation || !shots.includes(target) || (source && (!shots.includes(source) || !source.includes(clip)))) return false;
-    if (source===target) return false;
-    const error=candidatePlacementError(clip,target);
+  placeCandidate(clip, target, source, targetClip) {
+    if (operation) return false;
+    const error = candidatePlacementError(clip, target, source, targetClip);
     if (error) throw Error(error);
-    if (source) subprojects.removeCandidate(source,clip);
-    target.push(clip);
+    if (targetClip) {
+      const from = source.indexOf(clip);
+      const to = target.indexOf(targetClip);
+      source[from] = targetClip;
+      target[to] = clip;
+      // Equal serialized candidates still exchange the objects bound to the timeline cells.
+      timeline.refresh();
+    } else {
+      if (source) subprojects.removeCandidate(source, clip);
+      target.push(clip);
+    }
     trackExpansion.get(target)?.delete('body');
     renderLists();
     return true;
