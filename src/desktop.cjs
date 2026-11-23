@@ -40,7 +40,7 @@ const uiFiles = new Set(['/index.html', '/app.js', '/styles.css', '/dialog-focus
   '/editor-text.js', '/text-presets.js', '/caption-inspector.js', '/caption-inspector.css', '/audio-tools.js', '/waveform.js', '/voice-alignment.js', '/draft-transport.js',
   '/track-organizer.js', '/cover-editor.js', '/visual-editor.js', '/batch-edit.js',
   '/timeline.js', '/timeline-selection.js', '/timeline.css', '/cut-track.js', '/cut-track.css', '/layer-motion.js', '/layer-motion.css', '/subprojects.js',
-  '/track-workspace.css', '/edit-history.js', '/track-tools.js', '/track-tools.css', '/cloud-tts-dialog.js', '/cloud-tts-dialog.css',
+  '/track-workspace.css', '/edit-history.js', '/track-tools.js', '/track-controls.js', '/track-tools.css', '/cloud-tts-dialog.js', '/cloud-tts-dialog.css',
   '/cloud-tts-settings.js', '/cloud-tts-settings.css', '/split-view.js', '/panel-layout.js', '/draft-workspace.js', '/player-tools.js', '/assets/jiajian-logo.png', '/assets/project-cover.jpg',
   '/glass-material.css', '/inspector-controls.css', '/editor-surfaces.css', '/player-controls.css', '/appearance.js', '/appearance.css', '/software-updates.js',
   '/color-wheel.js', '/color-wheel.css', '/menu-motion.js', '/menu-motion.css']);
@@ -68,7 +68,7 @@ const mediaTypes = new Map(Object.entries({
 }));
 let schemeRegistered = false;
 try {
-  protocol.registerSchemesAsPrivileged([{ scheme, privileges: { standard: true, secure: true, stream: true } }]);
+  protocol.registerSchemesAsPrivileged([{ scheme, privileges: { standard: true, secure: true, stream: true, corsEnabled: true } }]);
   schemeRegistered = true;
 } catch {
   // Electron may already be ready when a caller performs asynchronous setup before launchDesktop().
@@ -129,7 +129,7 @@ async function mediaResponse(file, range) {
 
     let start = 0;
     let end = size - 1;
-    const headers = new Headers({ 'Accept-Ranges': 'bytes' });
+    const headers = new Headers({ 'Accept-Ranges': 'bytes', 'Access-Control-Allow-Origin': `${scheme}://app` });
     if (range) {
       const match = /^bytes=(\d*)-(\d*)$/.exec(range);
       const first = match?.[1];
@@ -185,7 +185,7 @@ async function launchDesktop({
   app.commandLine.appendSwitch('disable-background-networking');
   app.commandLine.appendSwitch('disable-component-update');
   if (!schemeRegistered) {
-    protocol.registerSchemesAsPrivileged([{ scheme, privileges: { standard: true, secure: true, stream: true } }]);
+    protocol.registerSchemesAsPrivileged([{ scheme, privileges: { standard: true, secure: true, stream: true, corsEnabled: true } }]);
     schemeRegistered = true;
   }
   await app.whenReady();

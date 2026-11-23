@@ -4,20 +4,35 @@
   const alignment = typeof module === 'object' && module.exports ? require('./voice-alignment.js') : window.voiceAlignment;
   const waveformSource = typeof module === 'object' && module.exports ? require('./waveform.js').waveformSource : window.waveformSource;
   const { candidateVideoLanes } = typeof module === 'object' && module.exports ? require('./track-tools.js') : window;
+  const controls = typeof module === 'object' && module.exports ? require('./track-controls.js') : window.trackControls;
 
-  function chosen(shot,focus) {
+  function chosen(shot,focus,state) {
+    if (shot?.length && state?.trackControls) {
+      const lanes = candidateVideoLanes(shot);
+      const solo = shot.filter((clip,i)=>clip.enabled!==false && state.trackControls['vis'+lanes[i]]?.solo);
+      if (solo.length) return solo.includes(focus) ? focus : solo[0];
+    }
     return shot?.includes(focus) && focus.enabled!==false ? focus : shot?.find(clip=>clip.enabled!==false);
+  }
+  function audioRow(items, prefix, state) {
+    if (!items) return -1;
+    const present = (item) => prefix==='whole' ? Boolean(item?.asset) : Boolean(item);
+    const solo = items.findIndex((item,i)=>present(item) && state.trackControls?.[prefix+i]?.solo);
+    return solo >= 0 ? solo : items.findIndex(present);
   }
 
   // Supply the same retained source intervals and candidate order used by the export planner.
   function voicePictures(state,widths,focus,wholeDuration) {
     const pools=state.shots.map((shot,index)=>{
-      const first=chosen(shot,focus);
+      const first=chosen(shot,focus,state);
       const fixed=state.settings[index]?.duration;
       const hasVoice=state.segmented ? state.segments[index]?.some(Boolean) : wholeDuration>0;
       const useFullSource=state.priority==='voice' && state.voiceAlignment!=='reference' && hasVoice;
       if(!first) return [{duration:widths[index],start:0}];
-      return [first,...shot.filter(clip=>clip!==first && clip.enabled!==false)].map(clip=>{
+      const lanes=candidateVideoLanes(shot);
+      const eligible=controls.preferSolo(shot.filter(clip=>clip.enabled!==false),
+        clip=>state.trackControls?.['vis'+lanes[shot.indexOf(clip)]]?.solo);
+      return [first,...eligible.filter(clip=>clip!==first)].map(clip=>{
         const shotDuration=clip.matchedDuration ?? fixed;
         if(clip.asset.kind==='image') return {clip,start:0,duration:shotDuration ?? clip.end,shotDuration};
         const retained=waveformSource(clip.ranges ?? [{start:clip.start,end:clip.end}],clip.look?.head,clip.look?.tail);
@@ -30,7 +45,7 @@
       });
     });
     const clips=pools.map(([picture],i)=>{
-      const row=state.segmented ? state.segments[i]?.findIndex(Boolean) ?? -1 : -1;
+      const row=state.segmented ? audioRow(state.segments[i],'voice',state) : -1;
       if(row<0) return picture;
       const narration=state.segments[i][row], shot=state.shots[i];
       return {...picture,narration,narrationRanges:state.voiceRanges(shot,row),
@@ -49,12 +64,12 @@
   function timing(state,clipSpan,assetFor,focus) {
     const {shots,segments,settings,whole,segmented,priority}=state;
     let widths=Array.from({length:shots.length || 3},(_,i)=>{
-      const clip=chosen(shots[i],focus);
-      const row=segments[i]?.findIndex(Boolean) ?? -1;
+      const clip=chosen(shots[i],focus,state);
+      const row=audioRow(segments[i],'voice',state);
       const speech=row<0 || !segmented ? 0 : state.voiceDuration(i,row)+state.voiceOffset(i,row);
       return Math.max(.1,(priority==='voice' && speech) || clip?.matchedDuration || settings[i]?.duration || (clip && clipSpan(clip)) || speech || 3);
     });
-    const wholeVoice=whole.find((entry)=>entry.asset);
+    const wholeVoice=whole[audioRow(whole,'whole',state)];
     const wholeDuration=wholeVoice ? wholeVoice.asset.duration/(state.voiceSpeed?.(wholeVoice.asset,null,whole.indexOf(wholeVoice)) ?? 1) : 0;
     let target=!segmented && priority==='voice' ? wholeDuration : 0;
     let preserve=0;
@@ -69,12 +84,13 @@
         preserve=Math.max(preserve,follow);
         return widths.slice(0,follow).reduce((sum,width)=>sum+width,0)+duration;
       }
+      const music=state.music[audioRow(state.music,'music',state)];
       target=Math.max(target || 0,segmented ? 0 : audioEnd(priority==='picture'?wholeVoice?.follow:0,wholeDuration),
-        audioEnd(state.musicAt,state.music[0]?.duration/(state.musicSpeed?.(state.music[0]) ?? 1)),...lengths);
+        audioEnd(state.musicAt,music?.duration/(state.musicSpeed?.(music) ?? 1)),...lengths);
     }
     let aligned;
-    if((priority==='voice' && (segmented || wholeDuration) && shots.some(shot=>chosen(shot,focus))) ||
-        shots.some(shot=>chosen(shot,focus)?.matchedDuration)) {
+    if((priority==='voice' && (segmented || wholeDuration) && shots.some(shot=>chosen(shot,focus,state))) ||
+        shots.some(shot=>chosen(shot,focus,state)?.matchedDuration)) {
       aligned=voicePictures(state,widths,focus,wholeDuration);
       widths=widths.map((width,i)=>aligned[i]?.timelineDuration ?? aligned[i]?.outputDuration ?? width);
     } else if (target>0) {
@@ -84,22 +100,33 @@
     }
     let total=0;
     const starts=widths.map((width)=>{const from=total;total+=width;return from;});
+    shots.forEach((shot,i)=>{
+      for(const clip of shot) if(clip.videoStart!==undefined) total=Math.max(total,clip.videoStart+widths[i]);
+    });
     return aligned ? {widths,starts,total,aligned} : {widths,starts,total};
   }
 
   function makePlan(s,{starts,widths,total,aligned},assetFor,sourceRanges,focus) {
     const entries=[];
-    if(aligned && !s.segmented && s.priority==='voice') {
-      const whole=s.whole.find(track=>track.asset);
+    const freePictures=s.shots.some(shot=>shot.some(clip=>clip.videoStart!==undefined));
+    if(!freePictures && aligned && !s.segmented && s.priority==='voice') {
+      const whole=s.whole[audioRow(s.whole,'whole',s)];
       if(whole) total=Math.min(total,whole.asset.duration/(s.voiceSpeed?.(whole.asset,null,s.whole.indexOf(whole)) ?? 1));
     }
-    function add(lane,asset,start,span,{ranges,head,tail,volume=100,visual=false,fit=false,loop=false,layer,speed=1,cycle}={}) {
+    function addText(text,start,end,appearance,key,highlights) {
+      if(!text || end<=start || start>=total || !controls.allows(s.trackControls,key,'visual')) return;
+      entries.push({text,start,end:Math.min(end,total),appearance,highlights,visual:true});
+    }
+    function add(lane,asset,start,span,{ranges,head,tail,volume=100,visual=false,fit=false,loop=false,layer,speed=1,cycle,trackKey}={}) {
       if(!asset?.url || !(span>0) || start>=total || (!visual && !(volume>0))) return;
+      const key=trackKey ?? controls.layerKey(layer);
+      if (!controls.allows(s.trackControls,key,'visual')) visual=false;
+      if (!controls.allows(s.trackControls,key,'audio')) volume=0;
       const stop=Math.min(total,start+span);
       const base={lane,asset,volume,visual,layer};
       if(cycle) { entries.push({...base,start,end:stop,source:ranges[0].start,rate:speed,cycle}); return; }
       if(asset.kind==='image') {
-        if(visual && stop>start) entries.push({...base,start,end:stop,source:0,rate:1});
+        if(stop>start) entries.push({...base,start,end:stop,source:0,rate:1});
         return;
       }
       const source=sourceRanges(ranges ?? [{start:0,end:asset.duration}],head,tail);
@@ -115,60 +142,83 @@
     }
     function layers(items,start,span,seek=0,ownerSpeed=1) {
       for(const layer of items ?? []) {
-        if(layer.kind!=='sound' && layer.kind!=='pip') continue;
-        const asset=assetFor(layer.id);
+        const asset=layer.id && assetFor(layer.id);
         const speed=layer.speed ?? 1;
         const begin=Math.max(seek,layer.start);
         const source=(layer.mediaOffset ?? 0)+(begin-layer.start)*speed;
         const available=asset?.duration>0 ? (asset.duration-source)/speed : Infinity;
         const length=Math.min(seek+span*ownerSpeed-begin,(layer.end ?? Infinity)-begin,available);
-        add(layer,asset,start+(begin-seek)/ownerSpeed,length/ownerSpeed,{ranges:[{start:source,end:source+length*speed}],speed:speed*ownerSpeed,
-          volume:layer.volume ?? (layer.kind==='sound'?100:0),visual:layer.kind==='pip',layer});
+        const at=start+(begin-seek)/ownerSpeed;
+        if(layer.kind==='text') addText(layer.text,at,at+length/ownerSpeed,layer,controls.layerKey(layer));
+        else add(layer,asset,at,length/ownerSpeed,{ranges:[{start:source,end:source+length*speed}],speed:speed*ownerSpeed,
+          volume:layer.volume ?? (layer.kind==='sound'?100:0),visual:layer.kind==='pip' || layer.kind==='sticker',layer});
       }
     }
+    const style=s.subtitleStyle ?? {};
+    function pictureCaptions(clip,at,span,begin,speed) {
+      if(style.enabled===false || !clip.videoSubtitles) return;
+      for(const cue of clip.videoSubtitles.cues) {
+        const start=at+Math.max(0,(cue.start/1000-begin)/speed);
+        const end=at+Math.min(span,(cue.end/1000-begin)/speed);
+        addText(cue.text,start,end,style,'local-subtitles',cue.highlights);
+      }
+    }
+    const textGroups=s.pack.textGroups ?? [];
+    const firstTextGroup=textGroups.find(row=>row.some(items=>items?.length));
     s.shots.forEach((shot,i)=>{
       const at=starts[i],span=widths[i];
-      const clip=chosen(shot,focus);
+      if(s.pack.textMode==='segmented') {
+        const group=s.pack.textSelection==='random' ? textGroups.find(row=>row[i]?.length) : firstTextGroup;
+        layers(group?.[i],at,span);
+      }
+      const clip=chosen(shot,focus,s);
       const lanes=candidateVideoLanes(shot);
+      const pictureAt=clip?.videoStart ?? at;
+      // Independently placed pictures can overlap. Keep a separate media element per physical row.
+      const pictureLane=freePictures ? 'picture:'+lanes[shot.indexOf(clip)]+':'+i : 'picture';
       const timed=aligned?.[i];
       if(aligned && !timed && s.priority==='voice' && !s.segmented && s.whole.some(track=>track.asset)) return;
       if(timed && clip) {
         const parts=timed.visuals ?? [timed];
-        let offset=at;
+        let offset=pictureAt;
         for(const part of parts) {
           const owner=part.clip;
-          const length=Math.min(at+span-offset,part.outputDuration);
+          const length=Math.min(pictureAt+span-offset,part.outputDuration);
           if(!owner || !(length>0)) continue;
           const speed=part.speed || 1, repeats=part.repeat || 1;
           const source=part.sourceDuration ?? part.duration*speed;
           const volume=s.keepAudio && !s.muted.has(lanes[shot.indexOf(owner)]) ? (owner.volume ?? 100) : 0;
-          add('picture',owner.asset,offset,length,{ranges:[{start:part.start,end:part.start+source}],
-            speed,visual:true,volume,cycle:repeats>1 ? source : 0});
-          if(owner.layers?.length) {
+          add(pictureLane,owner.asset,offset,length,{ranges:[{start:part.start,end:part.start+source}],
+            speed,visual:true,volume,trackKey:'vis'+lanes[shot.indexOf(owner)],cycle:repeats>1 ? source : 0});
+          if(owner.layers?.length || owner.videoSubtitles) {
             for(let n=0;n<repeats;n++) {
               const elapsed=n*source/speed;
               const segment=Math.min(source/speed,length-elapsed);
-              if(segment>0) layers(owner.layers,offset+elapsed,segment,part.start-owner.start,speed);
+              if(segment>0) {
+                layers(owner.layers,offset+elapsed,segment,part.start-owner.start,speed);
+                pictureCaptions(owner,offset+elapsed,segment,part.start,speed);
+              }
             }
           }
           offset+=length;
         }
       } else if(clip) {
         const volume=s.keepAudio && !s.muted.has(lanes[shot.indexOf(clip)]) ? (clip.volume ?? 100) : 0;
-        add('picture',clip.asset,at,span,{ranges:clip.ranges ?? [{start:clip.start,end:clip.end}],
-          head:clip.look?.head,tail:clip.look?.tail,visual:true,volume,fit:true});
+        add(pictureLane,clip.asset,pictureAt,span,{ranges:clip.ranges ?? [{start:clip.start,end:clip.end}],
+          head:clip.look?.head,tail:clip.look?.tail,visual:true,volume,trackKey:'vis'+lanes[shot.indexOf(clip)],fit:true});
         const ranges=clip.ranges ?? [{start:clip.start,end:clip.end}];
         const source=sourceRanges(ranges,clip.look?.head,clip.look?.tail);
         const speed=source.duration/span;
-        let offset=at;
+        let offset=pictureAt;
         source.visit(0,source.duration,false,(begin,end)=>{
           const length=(end-begin)/speed;
           layers(clip.layers,offset,length,begin-(clip.start ?? 0),speed);
+          pictureCaptions(clip,offset,length,begin,speed);
           offset+=length;
         });
       }
       if(s.segmented) {
-        const row=s.segments[i]?.findIndex(Boolean) ?? -1;
+        const row=audioRow(s.segments[i],'voice',s);
         if(row<0) return;
         const asset=s.segments[i][row], delay=s.voiceOffset(i,row);
         const speed=s.voiceSpeed?.(asset,shot,row) ?? 1;
@@ -177,7 +227,7 @@
         const speech=sourceRanges(ranges,trim);
         const playbackRanges=[];
         speech.visit(0,Math.min(speech.duration,(span-delay)*speed),false,(start,end)=>playbackRanges.push({start,end}));
-        add('voice',asset,at+delay,span-delay,{ranges:playbackRanges,speed,volume:s.voiceVolume(asset,shot,row)});
+        add('voice',asset,at+delay,span-delay,{ranges:playbackRanges,speed,volume:s.voiceVolume(asset,shot,row),trackKey:'voice'+row});
         let offset=at+delay;
         for(const {start,end} of playbackRanges) {
           const length=Math.min((end-start)/speed,at+span-offset);
@@ -188,20 +238,33 @@
       }
     });
     if(!s.segmented) {
-      const row=s.whole.findIndex((track)=>track.asset);
+      const row=audioRow(s.whole,'whole',s);
       if(row>=0) {
         const {asset,follow}=s.whole[row], at=s.priority==='picture' ? starts[follow] ?? 0 : 0;
         const speed=s.voiceSpeed?.(asset,null,row) ?? 1;
-        add('voice',asset,at,total-at,{volume:s.voiceVolume(asset,null,row),speed});
+        add('voice',asset,at,total-at,{volume:s.voiceVolume(asset,null,row),speed,trackKey:'whole'+row});
         layers(s.pack.wholeNarration[row],at,Math.min(total-at,asset.duration/speed),0,speed);
       }
     }
     if(s.music.length) {
-      const at=starts[s.musicAt] ?? 0, asset=s.music[0];
-      add('music',asset,at,total-at,{volume:s.musicVolume(asset),loop:true,speed:s.musicSpeed?.(asset) ?? 1});
+      const row=audioRow(s.music,'music',s), at=starts[s.musicAt] ?? 0, asset=s.music[row];
+      add('music',asset,at,total-at,{volume:s.musicVolume(asset),loop:true,speed:s.musicSpeed?.(asset) ?? 1,trackKey:'music'+row});
     }
     layers(s.pack.global,0,total);
     layers(s.pack.composites.find((items)=>items.length),0,total);
+    if(s.pack.textMode==='whole') layers(textGroups.find(row=>row[0]?.length)?.[0],0,total);
+    if(style.enabled!==false) {
+      for(const caption of s.captions ?? []) {
+        const chosen=caption.shot==null ? audioRow(s.whole,'whole',s) : audioRow(s.segments[caption.shot],'voice',s);
+        if(chosen>=0 && chosen!==caption.row) continue;
+        const offset=starts[caption.shot] ?? starts[caption.follow] ?? 0;
+        const trim=aligned?.[caption.shot]?.narrationStart ?? 0;
+        const at=offset+caption.start-trim;
+        const limit=caption.shot==null ? total : offset+widths[caption.shot];
+        addText(caption.name,Math.max(offset,at),Math.min(limit,at+caption.duration),style,'caption'+caption.row,caption.highlights);
+      }
+      for(const cue of s.timelineCaptions ?? []) addText(cue.text,cue.start/1000,cue.end/1000,style,'pasted-captions',cue.highlights);
+    }
     return entries.sort((a,b)=>a.start-b.start);
   }
 
@@ -212,6 +275,7 @@
     overlay.append(label);stage.append(overlay);
     let playing=false, media=new Map(), entries=[], active=[], next=0, time=0, end=0, stamp, frame;
     let visual=false, canProxy=false;
+    const textNodes=new Map();
     const failed=new Set();
     function release(node) {
       if(node.tagName!=='IMG') {node.pause();node.removeAttribute('src');node.load();}
@@ -225,18 +289,27 @@
         if(keepFrame && item.node.tagName!=='IMG') item.node.pause();
         else if(!keepFrame) release(item.node);
       }
-      if(!keepFrame) {media.clear();overlay.hidden=true;}
+      if(!keepFrame) {
+        for(const node of textNodes.values()) node.remove();
+        textNodes.clear();media.clear();overlay.hidden=true;
+      }
       if(visible) changed(false);
     }
     function show(entry) {
       const node=document.createElement(entry.asset.kind==='image'?'img':entry.visual?'video':'audio');
+      node.hidden=!entry.visual;
       node.className=entry.layer?'draft-layer':'draft-main';
+      if(typeof entry.lane==='string' && entry.lane.startsWith('picture:')) {
+        const [,row,shot]=entry.lane.split(':');
+        node.style.zIndex=String((100-Number(row))*1000+Number(shot));
+      }
       if(entry.layer) {
+        node.style.zIndex='101000';
         node.style.left=(entry.layer.x ?? .5)*100+'%';node.style.top=(entry.layer.y ?? .5)*100+'%';
         node.style.width=(entry.layer.scale ?? .35)*100+'%';node.style.opacity=String(entry.layer.opacity ?? 1);
       }
       if(node.tagName!=='IMG'){
-        node.preload='auto';node.playsInline=true;node.loop=!!entry.loop;
+        node.crossOrigin='anonymous';node.preload='auto';node.playsInline=true;node.loop=!!entry.loop;
         node.volume=Math.max(0,Math.min(1,entry.volume/100));node.muted=!node.volume;
       }
       overlay.append(node);
@@ -266,10 +339,18 @@
       }
       const live=new Set();let ready=true;
       for(const entry of active) {
+        if(entry.text) {
+          live.add(entry);
+          if(!textNodes.has(entry)) {
+            const node=window.draftTextPreview(entry,overlay);
+            overlay.append(node);textNodes.set(entry,node);
+          }
+          continue;
+        }
         if(failed.has(entry.asset)) continue;
         live.add(entry.lane);
         let item=media.get(entry.lane);
-        if(item?.asset!==entry.asset) {
+        if(item?.asset!==entry.asset || (item && item.node.hidden===entry.visual)) {
           if(item) release(item.node);item=show(entry);media.set(entry.lane,item);
         }
         const node=item.node;
@@ -301,6 +382,7 @@
         if(node.readyState<2 || node.seeking) {ready=false;continue;}
       }
       for(const [lane,item] of media) if(!live.has(lane) || failed.has(item.asset)) {release(item.node);media.delete(lane);}
+      for(const [entry,node] of textNodes) if(!live.has(entry)) {node.remove();textNodes.delete(entry);}
       const visuals=active.some((e)=>e.visual && !failed.has(e.asset));
       label.hidden=visuals;
       if(!visuals) label.textContent=active.filter((e)=>!failed.has(e.asset)).map((e)=>e.asset.name).join(' · ') || '轨道试听';
@@ -324,13 +406,20 @@
       if(time>=end || (failed.size && entries.every((e)=>failed.has(e.asset)))) {halt(true);return;}
       frame=requestAnimationFrame(step);
     }
+    function setPlan(plan) {
+      entries=plan;active=[];next=0;
+      end=entries.reduce((max,entry)=>Math.max(max,entry.end),0);
+      visual=entries.some(entry=>entry.visual);
+      canProxy=entries.some(({asset})=>asset?.kind==='video' && !asset.alpha && Math.max(asset.width,asset.height)>480);
+    }
+    function updatePlan(plan) {
+      if(!plan.length){halt();return;}
+      setPlan(plan);seek(time);
+    }
     function toggle(plan,from) {
       if(playing){halt(true);return true;}
       if(!plan.length){halt();return false;}
-      halt();entries=plan;failed.clear();active=[];next=0;
-      end=entries.reduce((max,entry)=>Math.max(max,entry.end),0);
-      visual=entries.some(entry=>entry.visual);
-      canProxy=entries.some(({asset})=>asset.kind==='video' && !asset.alpha && Math.max(asset.width,asset.height)>480);
+      halt();failed.clear();setPlan(plan);
       time=from>=end-.001 ? 0 : Math.max(0,from);
       document.getElementById('preview')?.pause();
       overlay.hidden=false;playing=true;changed(true);tick(time);
@@ -365,9 +454,9 @@
       }
       return {time,end,playing,visual,canProxy,proxy};
     }
-    return {toggle,seek,state,stop:()=>halt(),playing:()=>playing};
+    return {toggle,updatePlan,seek,state,stop:()=>halt(),playing:()=>playing};
   }
-  const api={timing,makePlan,transport};
+  const api={chosen,timing,makePlan,transport};
   if(typeof module==='object' && module.exports) module.exports=api;
   else window.draftTimeline=api;
 })();

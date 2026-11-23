@@ -242,8 +242,8 @@ async function check() {
     }
     async function center(selector) {
       const p=await read('(()=>{const e='+query(selector)+';e.scrollIntoView({block:"nearest",inline:"nearest"});'
-        +'const r=e.getBoundingClientRect(),x=r.x+r.width/2,y=r.y+r.height/2;return {x,y,hit:e.contains(document.elementFromPoint(x,y))}})()');
-      assert.ok(p.hit,selector+' 应能直接响应指针');return p;
+        +'const r=e.getBoundingClientRect(),x=r.x+r.width/2,y=r.y+r.height/2,hit=document.elementFromPoint(x,y);return {x,y,hit:e.contains(hit),target:hit?.className}})()');
+      assert.ok(p.hit,selector+' 应能直接响应指针 '+JSON.stringify(p));return p;
     }
     const atSlot=(selector,r)=>'(()=>{const e='+query(selector)+';if(!e)return false;const r=e.getBoundingClientRect();'
       +'return '+['x','y','width','height'].map(k=>'Math.abs(r.'+k+'-'+r[k]+')<3').join(' && ')+'})()';
@@ -306,7 +306,7 @@ async function check() {
     assert.deepEqual(await read(clips),originalClips,'Esc 取消互换');
 
     await mouse('mousePressed',sourcePoint);await mouse('mouseMoved',emptyPoint);await mouse('mouseReleased',emptyPoint);
-    await wait(clipNamed(empty,files.blue)+' && !'+filled(0,1),'空格应接收视频且保留原分镜');
+    await wait(clipNamed(cell(0,0)+'[title*="'+path.basename(files.blue)+'"]',files.blue)+' && !'+filled(0,1),'空白处按鼠标时间接收视频，源分镜可以在同轨分时放置候选');
     await click('#track-undo');await wait(clipNamed(source,files.blue)+' && !'+filled(3,0),'撤销空分镜移动');
     await restored();
     await previewSwap();await mouse('mouseReleased',targetPoint);await restored();
@@ -335,10 +335,11 @@ async function check() {
     const expectedClips=await read(clips);
     const rows='document.querySelectorAll(".sequence-video[data-lane-key]").length';
     const zone='.candidate-new-lane .sequence-content', placement='.candidate-new-placement';
+    const ruler='.sequence-ruler .sequence-content';
     async function hoverNewLane(row) {
       await wait('!document.getAnimations().some(a=>a.id==="candidate-arrival")','等待上一操作的片段归位');
       const start=await center(cell(0,row));
-      const column=await bounds(shotCell(0)), otherColumn=await bounds(shotCell(1));
+      const column=await bounds(cell(0,row)),otherColumn=await bounds(shotCell(1));
       await mouse('mousePressed',start);
       await mouse('mouseMoved',{x:start.x+9,y:start.y});
       await wait('!!'+query(zone),'提起已放置的片段后可拖入视频轨下方');
@@ -347,7 +348,10 @@ async function check() {
       await mouse('mouseMoved',end);
       await wait(query(zone)+'.dataset.materialDrop==="active"','指针在另一分镜下方也应可新增原分镜的视频轨');
       const preview=await bounds(placement);
-      assert.ok(Math.abs(column.x-preview.x)<4 && Math.abs(column.width-preview.width)<4,'预览应对齐原分镜的起点和时长');
+      assert.ok(Math.abs(preview.x-(end.x-column.width/2))<3 && Math.abs(column.width-preview.width)<3,'预览应按抓取偏移跟随指针，保持片段时长');
+      await mouse('mouseMoved',{x:end.x+17,y:end.y});
+      assert.ok(Math.abs((await bounds(placement)).x-preview.x-17)<2,'同一行内移动时落点持续更新');
+      await mouse('mouseMoved',end);
       return end;
     }
     let hover=await hoverNewLane(0);
@@ -356,19 +360,28 @@ async function check() {
     await wait('!'+query(zone)+'.hasAttribute("data-material-drop")','离开新增区域取消新轨预览');
     await key('Escape',27);await mouse('mouseReleased',hover);await restored();
     assert.deepEqual(await read(clips),expectedClips);
+    const cursorBefore=await bounds('.sequence-cursor');
+    await send('dispatchMouseEvent',{type:'mouseMoved',x:neighbour.x+10,y:neighbour.y+8,buttons:0});
+    assert.equal(await read(query('.sequence-hover')),null,'指针经过轨道时只有真实播放头');
+    assert.equal((await bounds('.sequence-cursor')).x,cursorBefore.x);
     assert.equal(await read(rows),1);
     hover=await hoverNewLane(0);
     await key('Escape',27);await mouse('mouseReleased',hover);await restored();
     assert.equal(await read(rows),1,'直接取消新增轨道后仍只有原轨');
     assert.equal(await read(query('#track-undo')+'.disabled'),true,'取消操作不应产生可撤销的编辑');
 
+    let expectedTime;
     async function commitNewLane(from,bottom=false) {
       let end=await hoverNewLane(from);
       if(bottom) {
-        end=await center('#new-shot-drop');
+        const foot=await center('#new-shot-drop');
+        end={x:(await bounds(ruler)).x+(await bounds(shotCell(0))).width*.82,y:foot.y};
         await mouse('mouseMoved',end);
         await wait(query(zone)+'.dataset.materialDrop==="active"','轨道底部也接收已放置的片段');
       }
+      const ghost=await bounds(placement),axis=await bounds(ruler);
+      const scale=((await bounds(shotCell(0))).width+2)/1.2;
+      expectedTime=(ghost.x-axis.x)/scale;
       await mouse('mouseReleased',end);await restored();
       await wait(clipNamed(cell(0,from+1),files.red)+' && !'+filled(0,from),'只移动当前分镜的红色视频');
       if(bottom) {
@@ -384,12 +397,33 @@ async function check() {
     await click('#track-undo');await wait(rows+'===1','一次撤销还原轨数及片段');
     assert.deepEqual(await read(clips),expectedClips);
     await click('#track-redo');await wait(clipNamed(cell(0,1),files.red),'重做恢复新视频轨');
+    await wait('!document.getAnimations().some(a=>a.id==="candidate-arrival")','重做后轨道就绪');
+    const placed=await bounds(cell(0,1)),axis=await bounds(ruler);
+    const scale=((await bounds(shotCell(0))).width+2)/1.2;
+    const grip=24,held={x:placed.x+grip,y:placed.y+placed.height/2};
+    const reposition={x:axis.x+.413*scale+grip,y:held.y};
+    await mouse('mousePressed',held);await mouse('mouseMoved',reposition);
+    assert.ok(Math.abs((await bounds(placement)).x-(reposition.x-grip))<2,'从片段左侧抓取后原抓点仍对准鼠标');
+    await mouse('mouseReleased',reposition);await restored();
+    const retimed=await loadProject(await saveAs('同轨自由放置'));
+    assert.ok(Math.abs(retimed.config.shots[0][0].videoStart-.413)<.006,'已在新轨上的片段可再次落在同轨非整秒处');
+    await wait('!document.getAnimations().some(a=>a.id==="candidate-arrival")','横向移动归位');
+    const edge={x:(await bounds('#timeline-clock')).right-7,y:reposition.y};
+    await mouse('mousePressed',reposition);await mouse('mouseMoved',edge);
+    await wait(host+'.scrollLeft>210','向右边缘持续拖动可以越过原有工程结尾');
+    await mouse('mouseReleased',edge);await restored();
+    const beyond=await loadProject(await saveAs('拖过时间线末端'));
+    assert.ok(beyond.config.shots[0][0].videoStart>3.95,'末端之外可放置片段，工程自动延长');
+    await click('#track-undo');await wait(clipNamed(cell(0,1),files.red),'撤销末端移动');
+    await read(host+'.scrollLeft=0');await fitTimeline();
     await commitNewLane(1,true);
     const savedLanes=await saveAs('两次新增视频轨');
     const reopened=await loadProject(savedLanes);
     assert.equal(reopened.config.shots[0][0].videoLane,2);
+    assert.ok(Math.abs(reopened.config.shots[0][0].videoStart-expectedTime)<.012 && expectedTime>.1 && expectedTime<1,'工程保存的绝对秒与鼠标预览位置一致');
     const comparison=structuredClone(reopened.config);
     delete comparison.shots[0][0].videoLane;
+    delete comparison.shots[0][0].videoStart;
     assert.deepEqual(comparison,singleBaseline,'只应改变原分镜下当前候选的视频轨号');
     opens.push(savedLanes);await click('#open-project');
     await wait(query('#notice')+'.textContent.includes("已打开工程") && '+clipNamed(cell(0,2),files.red),'重开后显示两个空位和第三行的原片段');
@@ -420,20 +454,15 @@ async function check() {
     await click('#track-undo');await wait(clipNamed(cell(0,2),files.red),'撤销回移应恢复稀疏行');
     const fromSecond=await center(cell(1,0)), sparse=await center(cell(0,1));
     await mouse('mousePressed',fromSecond);await mouse('mouseMoved',sparse);await mouse('mouseReleased',sparse);
-    await wait(clipNamed(cell(0,1),files.green)+' && '+clipNamed(cell(0,2),files.red)+' && !'+filled(1,0),
-      '跨分镜移入中间空行保留既有视频的位置');
-    const fourth=await hoverNewLane(1);
-    await mouse('mouseReleased',fourth);await restored();
-    await wait(clipNamed(cell(0,3),files.green)+' && '+clipNamed(cell(0,2),files.red)+' && !'+filled(0,1),
-      '同分镜有其他候选时，只把当前候选移到末轨');
+    await wait(clipNamed(cell(1,1),files.green)+' && '+clipNamed(cell(0,2),files.red)+' && !'+filled(1,0),
+      '跨分镜移入中间空行保留两段素材各自的分镜绑定');
     await wait('!document.getAnimations().some(a=>a.id==="candidate-arrival")','新轨上的片段应落位');
-    const greenSource=await center(cell(0,3)), redTarget=await center(cell(0,2));
+    const greenSource=await center(cell(1,1)), redTarget=await center(cell(0,2));
     await mouse('mousePressed',greenSource);await mouse('mouseMoved',redTarget);await mouse('mouseReleased',redTarget);
-    await wait(clipNamed(cell(0,2),files.green)+' && '+clipNamed(cell(0,3),files.red),'稀疏视频轨之间仍可交换完整片段');
+    await wait(clipNamed(cell(0,2),files.green)+' && '+clipNamed(cell(1,1),files.red),'已移位的视频按实际覆盖的位置互换');
     await wait('!document.getAnimations().some(a=>a.id==="candidate-arrival")','交换的片段应归位');
-    const swapped=await loadProject(await saveAs('同镜换轨'));
-    assert.deepEqual(swapped.config.shots[0].map(c=>[path.basename(swapped.assets.get(c.id).path),c.videoLane]),
-      [[path.basename(files.red),3],[path.basename(files.green),2]],'交换物理行应保留同镜候选在混剪池中的选择顺序');
+    const swapped=await loadProject(await saveAs('错时换轨'));
+    assert.ok(Math.abs(swapped.config.shots[0][0].videoStart-expectedTime)<.012,'互换已移动片段时，新片段应接管目标的绝对时间');
 
     opens.push(singleFile);await click('#open-project');await wait(rows+'===1 && '+clipNamed(cell(1,0),files.green),'重开单轨原稿');
     const switchProject=id=>read(`(()=>{const e=${query('#subproject-select')};e.value=${JSON.stringify(id)};e.dispatchEvent(new Event("change"))})()`);
@@ -465,6 +494,31 @@ async function check() {
     const fullHeader=await center(shotCell(1));
     await mouse('mouseMoved',fullHeader);
     await expectRejected(shotCell(1),'每个分镜最多可添加 100 条候选。');await mouse('mouseReleased',fullHeader);await restored();
+
+    const rulerElement=query(ruler);
+    async function openLongTimeline(name,videoStart) {
+      const file=path.join(root,name+'.sdworkbench');
+      const shots=[...config.shots.slice(0,2),[{...config.shots[2][0],videoLane:1,videoStart}]];
+      await saveProject(file,{...config,shots},catalog);
+      opens.push(file);await click('#open-project');
+      await wait(query('#notice')+'.textContent.includes("已打开工程") && '+clipNamed(cell(2,1),files.blue),'打开超长时间轴');
+    }
+    await openLongTimeline('超过一天',90000);
+    await read(query('#track-zoom')+'.value='+query('#track-zoom')+'.max;'+query('#track-zoom')+'.dispatchEvent(new Event("input"))');
+    await wait('Number('+rulerElement+'.dataset.width)>1000000','放大查看 25 小时工程');
+    const dayWidth=await read('Number('+rulerElement+'.dataset.width)');
+    await read(host+'.scrollLeft=0;'+query('#timeline-tracks-panel')+'.scrollTop=0');
+    const daySource=await center(cell(0,0));
+    await mouse('mousePressed',daySource);await mouse('mouseMoved',{x:daySource.x+8,y:daySource.y});
+    await read(host+'.scrollLeft='+host+'.scrollWidth');
+    await wait('parseFloat('+rulerElement+'.firstElementChild.style.left)>100000','滚到片尾后只绘制视窗附近的刻度');
+    const dayEdge={x:await read(host+'.getBoundingClientRect().right-2'),y:daySource.y};
+    await mouse('mouseMoved',dayEdge);
+    await wait('Number('+rulerElement+'.dataset.width)>'+dayWidth,'超过一天的时间尺仍可向右延伸');
+    await key('Escape',27);await mouse('mouseReleased',dayEdge);
+    await wait('Number('+rulerElement+'.dataset.width)==='+dayWidth,'取消后恢复超长工程的原始宽度');
+    await openLongTimeline('极远落点',Number.MAX_SAFE_INTEGER);
+    await wait('Number('+rulerElement+'.dataset.width)>1e13 && '+rulerElement+'.childElementCount<200','极远落点的时间尺仅绘制有界数量的刻度');
     assert.deepEqual(opens,[]);assert.deepEqual(saves,[]);
     console.log('分镜排序、视频换轨与新建轨道、取消与撤销重做、复制粘贴、子工程重开及成片画面与原声验证通过。');
   } finally {

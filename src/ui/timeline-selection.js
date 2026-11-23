@@ -22,7 +22,7 @@ window.mountTimelineSelection = function (host, {busy, changed, removed}) {
     changed(selected.size);
   }
   function attach(canvas) {
-    visible = [...canvas.querySelectorAll('[data-selectable]')];
+    visible = [...canvas.querySelectorAll('[data-selectable]')].filter(node=>!node.closest('[data-track-locked]'));
     const current = new Set(visible.map((node) => entries.get(node).key));
     selected = new Set([...selected].filter((key) => current.has(key)));
     canvas.append(frame);

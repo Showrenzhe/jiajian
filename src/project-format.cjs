@@ -118,6 +118,9 @@ function cleanConfig(config) {
         throw new Error(`第 ${index + 1} 组分镜的匹配时长无效。`);
       }
       if (clip.enabled !== undefined && typeof clip.enabled !== 'boolean') throw new Error('候选参与状态无效。');
+      if (clip.videoStart !== undefined && (!Number.isFinite(clip.videoStart) || clip.videoStart < 0 || clip.videoStart > Number.MAX_SAFE_INTEGER)) {
+        throw new Error('视频片段的时间轴落点无效。');
+      }
       const ranges = clip.ranges === undefined ? undefined : normalizeRanges(clip.ranges, clip.start, clip.end);
       const key = candidateKey({ ...clip, ranges });
       if (seen.has(key)) throw new Error(`第 ${index + 1} 组分镜有重复素材。`);
@@ -125,6 +128,7 @@ function cleanConfig(config) {
       return {
         id, start: clip.start, end: clip.end,
         ...(clip.videoLane !== undefined && { videoLane: clip.videoLane }),
+        ...(clip.videoStart !== undefined && { videoStart: clip.videoStart }),
         ...(clip.enabled !== undefined && { enabled: clip.enabled }),
         ...(clip.layers !== undefined && { layers: normalizeLayers(clip.layers, recordLayer) }),
         ...(clip.transform !== undefined && { transform: normalizeTransform(clip.transform) }),
@@ -155,6 +159,7 @@ function cleanConfig(config) {
     });
   }
   if (config.mutedVideoTracks !== undefined) projectConfig.mutedVideoTracks = normalizeMutedVideoTracks(config.mutedVideoTracks);
+  if (config.trackControls !== undefined) projectConfig.trackControls = require('./ui/track-controls.js').normalize(config.trackControls);
   if (config.subprojects !== undefined) projectConfig.subprojects = normalizeSubprojects(config.subprojects, shots.length, cleanShot,(id)=>record(id,'audio'));
   if (config.materialFolderKeys !== undefined) {
     const keys = config.materialFolderKeys;

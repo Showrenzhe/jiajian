@@ -49,14 +49,16 @@
 
   // Candidate order drives montage choices. A physical lane may be empty above a candidate.
   function candidateVideoLanes(shot, limit = Infinity) {
-    const reserved = new Set();
+    const reserved = new Map();
     for (const clip of shot) {
       const lane = clip?.videoLane;
       if (lane === undefined) continue;
-      if (!Number.isInteger(lane) || lane < 0 || lane >= limit || reserved.has(lane)) {
+      const positions = reserved.get(lane) ?? new Set();
+      if (!Number.isInteger(lane) || lane < 0 || lane >= limit || positions.has(clip.videoStart)) {
         throw new Error('分镜中的视频轨编号无效或重复。');
       }
-      reserved.add(lane);
+      positions.add(clip.videoStart);
+      reserved.set(lane, positions);
     }
     let next = 0;
     return shot.map(clip => {

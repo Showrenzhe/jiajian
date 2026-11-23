@@ -9,7 +9,7 @@ const { app } = require('electron');
 const { launchDesktop } = require('../src/desktop.cjs');
 const { inspectAsset } = require('../src/media.cjs');
 const { saveProject } = require('../src/project-format.cjs');
-const { fixtures } = require('./fixtures.cjs');
+const { fixtures, ffmpeg } = require('./fixtures.cjs');
 
 app.disableHardwareAcceleration();
 
@@ -26,14 +26,19 @@ async function check() {
     unordered: false, useOriginal: true, useMirrors: false, count: 1, priority: 'picture', musicIds: [], musicVolume: 50,
   };
   await saveProject(simple, config, records);
-  await saveProject(complex, { ...config, packaging: { global: [
+  await saveProject(complex, { ...config, musicIds:['music'], packaging: { global: [
     { kind: 'text', start: 0, end: null, text: '成片试播', x: .5, y: .65, color: '#ffffff', fontSize: 40 },
   ] } }, records);
   const narrated = path.join(root, '分段口播优先.sdworkbench');
   await saveProject(narrated, { ...config, priority:'voice', narrationMode:'segmented', voiceAlignment:'fill',
     shots:[[{id:'red',start:0,end:.2},{id:'blue',start:0,end:1.2}],[{id:'red',start:0,end:1.5}]],
     segmentNarrationIds:[['music'],['music']],shotSettings:[{duration:.4},{duration:.4}] }, records);
-  const projects = [simple, complex, narrated];
+  const stereoFile = path.join(root,'左右声道.wav'), mixProject=path.join(root,'无声画面与配乐.sdworkbench');
+  await ffmpeg(['-f','lavfi','-i','aevalsrc=0.3*sin(2*PI*440*t)*lt(t\\,1)|0.3*sin(2*PI*660*t)*gt(t\\,1.8):s=48000:d=5',stereoFile]);
+  records.set('stereo',await inspectAsset(stereoFile,'audio'));
+  await saveProject(mixProject,{...config,shots:[[{id:'blue',start:0,end:1.5}],[{id:'blue',start:0,end:1.5}]],
+    shotSettings:[{duration:3},{duration:2}],musicIds:['stereo']},records);
+  const projects = [simple, complex, narrated, mixProject];
   const win = await launchDesktop({ show: false, dataDirectory: path.join(root, 'profile'), dialogs: {
     async showOpenDialog(_win, options) {
       assert.equal(options.title, '打开工程');
@@ -126,9 +131,10 @@ async function check() {
     const duration = q('#player-duration') + '.textContent';
     await wait(duration + '==="00:00:01:15"', '单条 1.5 秒素材应按 30 fps 显示总帧码');
     await click('#player-play');
-    await wait('!' + preview + '.paused && ' + preview + '.currentTime>.12', '中央播放按钮应播放当前素材');
+    const meter = 'Array.from(document.querySelectorAll(".stereo-meter i"),e=>Number(e.dataset.level))';
+    await wait('!!' + live + ' && !' + live + '.paused && ' + meter + '.every(v=>v>0)', '中央播放按钮应播放轨道混音，左右电平随红色素材原声点亮');
     await click('#player-play');
-    await wait(preview + '.paused', '中央播放按钮应暂停当前素材');
+    await wait(live + '.paused && '+meter+'.every(v=>v===0)', '暂停时电平归零');
     await checkPlayerLayout(1080,780);
     await checkPlayerLayout(1420,1000);
     await click(videoCell);
@@ -140,6 +146,7 @@ async function check() {
     const firstSource = await read(live + '.currentSrc');
     await wait('!!' + live + ' && !!' + live + '.currentSrc && ' + live + '.currentSrc!==' + JSON.stringify(firstSource)
       + ' && ' + time + '>1.65', '连续试播应切换到第二个分镜');
+    await wait(meter+'.every(v=>v===0)', '蓝色无声素材播放时电平应归零');
     await space();
     const paused = await read(time);
     const shownFrame = await read('[' + live + '.currentSrc,' + live + '.currentTime]');
@@ -182,6 +189,7 @@ async function check() {
     await seek(1.84);
     await space();
     await wait('!!' + live + ' && !' + live + '.paused && ' + time + '>1.84', '含包装且分镜已填满时空格播放时间线');
+    await wait(meter+'.every(v=>v>0)', '即使选中的画面没有原声，单独配乐轨也应驱动电平');
     assert.equal(await read(q('#preview-batch-list') + '.childElementCount'), 0, '空格播放不生成批量预览');
     assert.ok(await read(tracks + ' && ' + focus), '时间线试播保留轨道和键盘焦点');
     await space();
@@ -194,8 +202,20 @@ async function check() {
     await wait('!!'+live+' && !'+live+'.paused && '+live+'.currentSrc==='+preview+'.currentSrc && Math.abs('+live+'.playbackRate-3)<.01 && !!'+voice+' && !'+voice+'.paused && '+voice+'.playbackRate===1',
       '空格应使用选中的第二候选，三倍速画面对齐原速口播');
     assert.equal(await read(q('#preview-batch-list')+'.childElementCount'),0);
+    await read(q('#open-project')+'.click()');
+    await wait(q('#notice')+'.textContent.includes("无声画面与配乐")','载入双声道验证工程');
+    await click(videoCell);
+    await click('#player-play');
+    await wait(meter+'[0]>0 && '+meter+'[1]===0','配乐开头只有左声道');
+    await wait(meter+'.every(v=>v===0) && '+live+' && !'+live+'.paused','轨道继续播放时，素材的无声段归零');
+    await wait(meter+'[0]===0 && '+meter+'[1]>0','右声道信号应单独点亮');
+    const mute='[data-control-key="music0"] [data-track-action="muted"]';
+    await click(mute);
+    await wait(meter+'.every(v=>v===0) && '+live+' && !'+live+'.paused','配乐静音后，播放继续而电平归零');
+    await click(mute);
+    await wait(meter+'[1]>0','解除静音后电平随声恢复');
     assert.deepEqual(projects, []);
-    console.log('时间线空格验收通过。实时跨分镜、填满轨道、选中候选与口播变速、定位、暂停续播、长按和文本输入均已验证。');
+    console.log('时间线播放、左右声道电平、独立配乐轨静音与恢复、跨分镜、定位、暂停续播和文本输入均已通过。');
   } finally {
     win.webContents.debugger.detach();
     win.destroy();

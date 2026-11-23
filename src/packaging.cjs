@@ -157,7 +157,7 @@ function scheduleLayers({ pack, selection, catalog, clips, duration, wholeIndex,
   let pictureTime = 0;
   let speechTime = 0;
   for (const clip of clips) {
-    let visualTime = pictureTime;
+    let visualTime = clip.videoStart ?? pictureTime;
     const span = clip.outputDuration ?? clip.duration;
     for (const part of clip.visuals ?? [clip]) {
       const count = part.repeat ?? 1;

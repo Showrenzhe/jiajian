@@ -160,6 +160,19 @@ async function check() {
     await read('[...document.querySelectorAll(".sequence-dialog[open] button")].find(button=>button.textContent==="候选包装").click()');
     await read('(() => {const d=document.querySelector(".sequence-dialog[open]");d.querySelector("textarea").value="删除验收";d.querySelector("form").requestSubmit()})()');
     await wait(count(layer)+'===1','添加包装文字');
+    await actualClick(video);
+    await click('#timeline-play');
+    const monitor='.draft-transport-preview:not([hidden])', title=monitor+' .draft-text-overlay';
+    await wait(query(title)+'?.textContent==="删除验收"','时间线播放器显示当前片段的文字包装');
+    await click('#timeline-play');
+    await read('window.checkedTrackVideo='+query(monitor+' video'));
+    assert.ok(await read('!!window.checkedTrackVideo'));
+    const layerEye='.sequence-layer [data-track-action="hidden"]';
+    await actualClick(layerEye);
+    await wait('!'+query(title)+' && '+query(layerEye)+'.ariaPressed==="true"','关闭眼睛立即隐藏暂停帧上的文字');
+    await actualClick(layerEye);
+    await wait(query(title)+'?.textContent==="删除验收"','再次打开眼睛在原帧恢复文字');
+    assert.ok(await read('window.checkedTrackVideo==='+query(monitor+' video')+' && window.checkedTrackVideo.paused'),'切眼睛保留播放器节点和暂停状态');
     for (const [name, target] of [['配乐',music], ['包装',layer], ['口播',voice]]) {
       await actualClick(target);
       await pressDelete();
@@ -203,6 +216,24 @@ async function check() {
     await actualClick(tile(files.red));
     await pressDelete();
     await wait('!' + query(tile(files.red)), '再次移除在用素材');
+    const action=(lane,command)=>'[data-control-key="'+lane+'"] [data-track-action="'+command+'"]';
+    const lock=action('vis0','locked'), hide=action('vis0','hidden'), solo=action('music0','solo'), mute=action('vis0','muted');
+    assert.deepEqual(await read('[...document.querySelectorAll(\'[data-lane-key="vis0"] [data-track-action]\')].map(el=>el.dataset.trackAction)'),
+      ['locked','hidden','muted','solo']);
+    await actualClick(video);
+    await actualClick(lock);
+    await wait(query(lock)+'.ariaPressed==="true" && '+query('#clip-inspector')+'.disabled','锁定轨道后片段和检查器进入只读');
+    assert.equal(await read(query(video)+'.closest(".sequence-content").inert'),true);
+    await read(query('#timeline-clock')+'.focus()');await pressDelete();
+    assert.equal(await read(count(video)),4);
+    await undo();await wait(query(lock)+'.ariaPressed==="false"','轨道锁可撤销');
+    for(const key of [hide,solo,mute]) {
+      await actualClick(key);
+      await wait(query(key)+'.ariaPressed==="true"','轨头开关应立即反馈状态');
+    }
+    const layerHide='.sequence-layer [data-track-action="hidden"]';
+    await actualClick(layerHide);
+    await wait(query(layerHide)+'.ariaPressed==="true"','旧工程包装轨首次切换绑定持久轨号');
     await click('#save-project');
     await wait(query('#notice') + '.textContent.includes("工程已保存")', '保存素材库移除状态');
     picks.push({title: '打开工程', files: [project]});
@@ -210,6 +241,7 @@ async function check() {
     await wait(query('#notice') + '.textContent.includes("已打开工程")', '重新载入磁盘工程');
     assert.equal(await read(count(video) + '===4 && !' + query(tile(files.red)) + ' && !!' + query(tile(files.green))), true,
       '重开后素材仍已移除，同源轨道片段均可恢复');
+    await wait([hide,solo,mute,layerHide].map(selector=>query(selector)+'.ariaPressed==="true"').join(' && '),'重开保留视频、配乐和包装轨操作');
     assert.deepEqual(picks,[]);
     console.log('时间线删除、框选、文件夹同源标记和撤销通过。');
   } finally {

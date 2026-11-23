@@ -73,6 +73,19 @@
 }
 .player-ratio-label { min-width: 22px; text-align: center; }
 #player-more { anchor-name: --player-more; color: var(--secondary-ink); }
+.stereo-meter { display:flex; gap:2px; height:16px; }
+.stereo-meter i {
+  position:relative; width:6px; background:color-mix(in srgb, currentColor 26%, transparent);
+  mask:repeating-linear-gradient(to top,black 0 2px,transparent 2px 3px);
+}
+.stereo-meter i::after {
+  content:''; position:absolute; inset:0; background:linear-gradient(to top,#38ab85 0 65%,#b2be57 76%,#e49a4a 100%);
+  clip-path:inset(calc(100% - var(--level,0%)) 0 0);
+}
+@media (forced-colors:active) {
+  .stereo-meter i { forced-color-adjust:none; background:GrayText; }
+  .stereo-meter i::after { background:Highlight; }
+}
 #player-more-menu {
   position: fixed;
   position-anchor: --player-more;
@@ -119,6 +132,7 @@
   background: var(--picture-background);
 }
 .app-frame[data-mode="montage"] .draft-transport-preview .draft-main { object-fit: var(--picture-fit); }
+.player-picture[data-track-hidden] :is(img,video) { visibility:hidden; }
 @container player-controls (max-width: 330px) {
   .player-control-row { gap: 2px; }
   .player-display, .player-clocks, .player-times { gap: 3px; }

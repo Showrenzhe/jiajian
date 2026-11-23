@@ -107,6 +107,7 @@ window.mountEditTimeline = function (host, ctx) {
   let clipboard, pastePosition;
   let draggedCandidate, candidateLandings, resizeAfterCandidate=false;
   const candidateSlots=new WeakMap();
+  const candidateNodes=new WeakMap();
   const candidateMotion=matchMedia('(prefers-reduced-motion: no-preference) and (forced-colors: none)');
   const dropHint=el('div','candidate-drop-hint');
   dropHint.setAttribute('role','status');
@@ -186,7 +187,7 @@ window.mountEditTimeline = function (host, ctx) {
       p.textGroups.forEach((row,i)=>add('text'+i,groupLabel+' '+(i+1),row[col],()=>within(row,col),offset,span));
       if (p.textGroups.length < 250) add('textNew','＋ 新建'+groupLabel,[],()=>within(within(p.textGroups,p.textGroups.length),col),offset,span);
     }
-    if (clip && s.shots[shotIndex]?.includes(clip)) add('local','当前候选 · '+clip.asset.name,clip.layers,()=>clip.layers ??= [],shotTimes[shotIndex],clipSpan(clip));
+    if (clip && s.shots[shotIndex]?.includes(clip)) add('local','当前候选 · '+clip.asset.name,clip.layers,()=>clip.layers ??= [],clip.videoStart ?? shotTimes[shotIndex],clipSpan(clip));
     if (voice?.asset) {
       const seg = voice.shot != null;
       const vi = s.shots.indexOf(voice.shot), ri = voice.row;
@@ -318,6 +319,8 @@ window.mountEditTimeline = function (host, ctx) {
     if (!clipboard || ctx.busy()) return;
     const s=ctx.state(),shot=s.shots[position.index];
     try {
+      const destination=clipboard.kind==='字幕'?'pasted-captions':clipboard.kind==='视频' && position.videoLane!==undefined ? 'vis'+position.videoLane : undefined;
+      if(s.trackControls?.[destination]?.locked) throw Error('目标轨道已锁定，请先解锁。');
       if(clipboard.kind==='视频') {
         const clip=ctx.pasteClip(clipboard.data);
         if(shot) {
@@ -548,14 +551,51 @@ window.mountEditTimeline = function (host, ctx) {
     const canvas=el('div','sequence-canvas');
     waveforms.clear();
     canvas.style.setProperty('--sequence-width',timelineWidth+'px');
-    function row(label, cls, key, tools) {
+    function row(label, cls, key, layer) {
       const node=el('div','sequence-row '+cls), head=el('div','sequence-head');
       const track=el('div','sequence-content');
       if (key) {
         node.dataset.laneKey=key;
         const toggle=btn(label,()=>{setFold(node,key,!folded.has(key),true);ctx.scroll();});
         toggle.setAttribute('aria-expanded',String(!folded.has(key)));
+        toggle.setAttribute('aria-label',label+'，折叠或展开轨道');
+        toggle.title=label+' · 折叠或展开轨道';
+        const kind=layer?.kind;
+        const typeIcon=cls==='sequence-video'?'track-video':cls==='sequence-voice'?'audio':
+          cls==='sequence-music'||kind==='sound'?'track-music':cls==='sequence-caption'||kind==='text'?'track-type':
+          kind==='pip'||kind==='sticker'?'image':'tracks';
+        function icon(id) {
+          const svg=document.createElementNS('http://www.w3.org/2000/svg','svg');
+          const use=document.createElementNS(svg.namespaceURI,'use');
+          svg.setAttribute('class','ui-icon');svg.setAttribute('aria-hidden','true');
+          use.setAttribute('href','#icon-'+id);svg.append(use);return svg;
+        }
+        toggle.classList.add('track-kind');toggle.replaceChildren(icon(typeIcon));
         head.append(toggle);
+        const controlKey=layer ? window.trackControls.layerKey(layer) : key;
+        const flags=s.trackControls?.[controlKey] ?? {};
+        node.toggleAttribute('data-track-locked',Boolean(flags.locked));
+        node.toggleAttribute('data-track-hidden',Boolean(flags.hidden));
+        track.inert=Boolean(flags.locked);
+        const names={locked:'锁定轨道',hidden:'隐藏轨道',muted:'静音',solo:cls==='sequence-video'?'独显':'独听'};
+        for(const action of window.trackControls.actions(controlKey ?? 'layer-'+kind+'-unassigned')) {
+          const on=action==='muted' && cls==='sequence-video' ? s.muted.has(Number(key.slice(3))) : Boolean(flags[action]);
+          const button=btn('',()=>{
+            if(ctx.busy()) return;
+            if(layer && !layer.laneId) layer.laneId=crypto.randomUUID();
+            const id=layer ? window.trackControls.layerKey(layer) : key;
+            ctx.toggleTrackControl(id,action,!on);
+            requestAnimationFrame(()=>host.querySelector('[data-control-key="'+CSS.escape(id)+'"] [data-track-action="'+action+'"]')?.focus({preventScroll:true}));
+          },label+' · '+names[action]);
+          button.setAttribute('aria-label',label+' · '+names[action]);
+          button.setAttribute('aria-pressed',String(on));
+          button.dataset.trackAction=action;
+          if(action==='solo') button.textContent='S';
+          else button.append(icon(action==='locked' ? (on?'track-lock':'track-unlock')
+            : action==='hidden' ? (on?'track-eye-off':'track-eye') : (on?'track-mute':'track-sound')));
+          head.append(button);
+        }
+        if(controlKey) node.dataset.controlKey=controlKey;
         if (folded.has(key)) node.classList.add('sequence-folded');
         const handle=el('span','sequence-height-handle');
         handle.tabIndex=0;
@@ -583,7 +623,6 @@ window.mountEditTimeline = function (host, ctx) {
         head.append(handle);
         if(heights.has(key)) node.style.setProperty('--lane-height',heights.get(key)+'px');
       } else head.append(el('span','',label));
-      if (tools) head.append(tools);
       node.append(head,track);canvas.append(node);
       return track;
     }
@@ -622,36 +661,35 @@ window.mountEditTimeline = function (host, ctx) {
     }
     const ruler=row('时间','sequence-ruler');
     const step=[.25,.5,1,2,5,10,30,60,120,300,600,1800,3600].find((v)=>v*timeScale>=55) ?? 7200;
-    for(let t=0;t<=timelineWidth/timeScale;t+=step) {
-      const tick=el('span','sequence-tick',stamp(t)+(step<1 && t%1 ? '.'+String(Math.round((t%1)*100)).padStart(2,'0') : ''));
-      tick.style.left=(t*timeScale)+'px';ruler.append(tick);
-    }
+    ruler.dataset.step=step;
+    drawRuler(ruler,timelineWidth);
     const videoCells=s.shots.map(shot=>{
       const cells=[];
-      window.candidateVideoLanes(shot).forEach((lane,index)=>{cells[lane]=shot[index];});
+      window.candidateVideoLanes(shot).forEach((lane,index)=>(cells[lane] ??= []).push(shot[index]));
       return cells;
     });
     const depth=Math.max(1,...videoCells.map(cells=>cells.length));
     for(let j=0;j<depth;j++) {
-      const mute=btn(s.muted.has(j) ? '静' : '声',()=>ctx.mute(j,!s.muted.has(j)), '切换整行视频原声');
-      const lane=row('视频 '+(j+1),'sequence-video','vis'+j,mute);
-      for(let i=0;i<columns;i++) {
-        const clip=videoCells[i]?.[j];
-        const b=block(lane,shotTimes[i],widths[i],clip?.asset.name ?? '',clip ? (event)=>{
+      const lane=row('视频 '+(j+1),'sequence-video','vis'+j);
+      candidateSlots.set(lane,{lane:j,track:lane});
+      for(let i=0;i<columns;i++) for(const clip of videoCells[i]?.[j] ?? [undefined]) {
+        const start=clip?.videoStart ?? shotTimes[i];
+        const b=block(lane,start,widths[i],clip?.asset.name ?? '',clip ? (event)=>{
           focusShot=s.shots[i];focusClip=clip;voiceTarget=undefined;
-          playTime=shotTimes[i];syncCursor();ctx.preview(clip);
+          playTime=start;syncCursor();ctx.preview(clip);
           host.querySelector('.sequence-selected')?.classList.remove('sequence-selected');
           event.currentTarget.classList.add('sequence-selected');
         } : undefined);
         b.dataset.dropShot=String(i);
         b.dataset.candidateIndex=String(j);
-        candidateSlots.set(b,{shot:s.shots[i],clip,lane:j});
+        candidateSlots.set(b,{shot:s.shots[i],clip,lane:j,start,span:widths[i],track:lane});
         if (!clip) {
           b.classList.add('sequence-empty');
           b.title='从素材库拖入画面，添加到分镜 '+(i+1);
           continue;
         }
         bindMaterialSource(b, clip.asset);
+        candidateNodes.set(clip,b);
         const owner=s.shots[i];
         selection.bind(b,clip,()=>ctx.removeClip(owner,clip));
         bindCopy(b,'视频',()=>ctx.copyClip(clip));
@@ -690,7 +728,7 @@ window.mountEditTimeline = function (host, ctx) {
         }
         b.prepend(frames);
         waveforms.add(b,clip.asset,{ranges,head:clip.look?.head,tail:clip.look?.tail,
-          volume:clip.volume,muted:!s.keepAudio || s.muted.has(j)});
+          volume:clip.volume,muted:!s.keepAudio || s.muted.has(j) || !window.trackControls.allows(s.trackControls,'vis'+j,'audio')});
         b.ondblclick=()=>{if (clip.asset.kind==='video') ctx.cut(clip); else editShot(s,i);};
         b.oncontextmenu=(e)=>{
           e.preventDefault();focusShot=s.shots[i];focusClip=clip;voiceTarget=undefined;
@@ -748,7 +786,8 @@ window.mountEditTimeline = function (host, ctx) {
       if (!asset) b.classList.add('sequence-empty');
       else {
         bindMaterialSource(b, asset);
-        waveforms.add(b,asset,{ranges:voice.shot && s.voiceRanges(voice.shot,voice.row),span:displayed*speed,volume:s.voiceVolume(asset,voice.shot,voice.row)});
+        waveforms.add(b,asset,{ranges:voice.shot && s.voiceRanges(voice.shot,voice.row),span:displayed*speed,volume:s.voiceVolume(asset,voice.shot,voice.row),
+          muted:!window.trackControls.allows(s.trackControls,(si>=0?'voice':'whole')+voice.row,'audio')});
         selection.bind(b,'voice:'+si+'/'+voice.row+'/'+asset.id,()=>ctx.removeVoice(voice));
         b.ondblclick=()=>ctx.editVoice(voice);
         bindCopy(b,'口播',()=>ctx.copyVoice(voice));
@@ -777,8 +816,9 @@ window.mountEditTimeline = function (host, ctx) {
       const cell=block(row('音乐 '+(i+1),'sequence-music','music'+i),start,totalTime-start,asset.name,()=>ctx.music(asset));
       bindMaterialSource(cell, asset);
       cell.title=asset.name+' · '+s.musicSpeed(asset)+' 倍 · 右键调整倍速';
-      waveforms.add(cell,asset,{span:(totalTime-start)*s.musicSpeed(asset),loop:true,volume:s.musicVolume(asset)});
-      selection.bind(cell,asset,()=>removeItem(s.music,asset));
+      waveforms.add(cell,asset,{span:(totalTime-start)*s.musicSpeed(asset),loop:true,volume:s.musicVolume(asset),
+        muted:!window.trackControls.allows(s.trackControls,'music'+i,'audio')});
+      selection.bind(cell,asset,()=>ctx.removeMusic(asset));
       cell.oncontextmenu=(e)=>{e.preventDefault();const d=dialog('配乐 · '+asset.name);speedField(d,s.musicSpeed(asset),speed=>ctx.setMusicSpeed(asset,speed));d.wrapper.showModal();};
     }
     if(s.selected?.videoSubtitles && s.shots.some((shot)=>shot.includes(s.selected))) {
@@ -789,7 +829,7 @@ window.mountEditTimeline = function (host, ctx) {
         for(const cue of clip.videoSubtitles.cues) {
           const begin=Math.max(range.start,cue.start/1000),end=Math.min(range.end,cue.end/1000);
           if(end>begin) {
-            const cell=block(lane,shotTimes[i]+elapsed+(begin-range.start)/clip.speed,(end-begin)/clip.speed,cue.text,()=>{},'双击编辑字幕');
+            const cell=block(lane,(clip.videoStart ?? shotTimes[i])+elapsed+(begin-range.start)/clip.speed,(end-begin)/clip.speed,cue.text,()=>{},'双击编辑字幕');
             bindCopy(cell,'字幕',()=>({text:cue.text,highlights:structuredClone(cue.highlights),duration:Math.max(1,Math.round((end-begin)/clip.speed*1000))}));
             selection.bind(cell,cue,()=>{
               if(!clip.videoSubtitles) return;
@@ -843,7 +883,7 @@ window.mountEditTimeline = function (host, ctx) {
         const sourceSpan=limit>0 ? (limit-(layer.mediaOffset ?? 0))/speed : Infinity;
         const length=Math.min(layer.end ?? Infinity,span,layer.start+sourceSpan)-layer.start;
         const id=layer.kind+'-'+(layer.laneId ?? i);
-        if(!lanes.has(id)) lanes.set(id,row(target.label+' · '+kinds[layer.kind],'sequence-layer kind-'+layer.kind,target.label+'/'+(target.column ?? 0)+'/'+id));
+        if(!lanes.has(id)) lanes.set(id,row(target.label+' · '+kinds[layer.kind],'sequence-layer kind-'+layer.kind,target.label+'/'+(target.column ?? 0)+'/'+id,layer));
         const lane=lanes.get(id);
         const title=layer.kind==='text' ? layer.text : asset?.name ?? kinds[layer.kind];
         let dragged=false;
@@ -851,7 +891,8 @@ window.mountEditTimeline = function (host, ctx) {
         if (asset) bindMaterialSource(cell, asset);
         if (length>0 && (layer.kind==='sound' || layer.kind==='pip')) {
           const offset=layer.mediaOffset ?? 0;
-          waveforms.add(cell,asset,{ranges:[{start:offset,end:offset+length*speed}],volume:layer.volume ?? (layer.kind==='pip'?0:100)});
+          waveforms.add(cell,asset,{ranges:[{start:offset,end:offset+length*speed}],volume:layer.volume ?? (layer.kind==='pip'?0:100),
+            muted:!window.trackControls.allows(s.trackControls,window.trackControls.layerKey(layer),'audio')});
         }
         selection.bind(cell,layer,()=>removeItem(items,layer));
         cell.ondblclick=()=>{
@@ -910,18 +951,14 @@ window.mountEditTimeline = function (host, ctx) {
     p.composites.forEach((items,i)=>layerRow({key:'comp'+i,label:'复合 '+(i+1)},items,0,totalTime));
     p.textGroups.forEach((cols,i)=>cols.forEach((items,j)=>{if(p.textMode==='segmented' || j===0) layerRow({key:'text'+i,label:'文字组 '+(i+1),column:j},items,shotTimes[j] ?? 0,p.textMode==='segmented' ? widths[j] : totalTime);}));
     layerRow({key:'global',label:'全局'},p.global,0,totalTime);
-    s.shots.forEach((shot,i)=>shot.forEach((clip,j)=>layerRow({key:'local',label:'候选 '+(i+1)+'-'+(j+1)},clip.layers,shotTimes[i],widths[i])));
+    s.shots.forEach((shot,i)=>shot.forEach((clip,j)=>layerRow({key:'local',label:'候选 '+(i+1)+'-'+(j+1)},clip.layers,clip.videoStart ?? shotTimes[i],widths[i])));
     if(s.segmented) p.segmentNarration.forEach((tracks,i)=>tracks.forEach((items,j)=>layerRow({key:'voice',label:'口播 '+(i+1)+'-'+(j+1)},items,shotTimes[i] ?? 0,widths[i] ?? 0)));
     else p.wholeNarration.forEach((items,i)=>layerRow({key:'voice',label:'整段口播 '+(i+1)},items,0,totalTime));
     const cursor=el('i','sequence-cursor');canvas.append(cursor);
-    const hover=el('i','sequence-hover');hover.hidden=true;canvas.append(hover);
-    function eventTime(e) {return Math.max(0,Math.min(totalTime,(e.clientX-ruler.getBoundingClientRect().left)/timeScale));}
-    canvas.onpointermove=(e)=>{hover.hidden=Boolean(draggedCandidate) || shotDrag?.active || scrubPointer!=null || resizeDrag!=null || !ctx.showAxis();hover.style.left=(96+eventTime(e)*timeScale)+'px';};
-    canvas.onpointerleave=()=>{hover.hidden=true;};
     canvas.onpointerdown=(e)=>{
       if(e.button!==0 || scrubPointer!=null || resizeDrag || (!ruler.contains(e.target) && e.target!==cursor)) return;
       e.preventDefault();
-      scrubPointer=e.pointerId;scrubX=e.clientX;hover.hidden=true;
+      scrubPointer=e.pointerId;scrubX=e.clientX;
       host.setPointerCapture(e.pointerId);
       ctx.pause();
       scrubAt(scrubX);
@@ -949,10 +986,10 @@ window.mountEditTimeline = function (host, ctx) {
     }
     syncCursor();ctx.scroll();
     if(candidateLandings) {
-      for(const {clip,from,newLane} of candidateLandings) {
-        const node=candidateButton(s.shots,clip);
+      for(const {clip,from,reveal} of candidateLandings) {
+        const node=candidateNodes.get(clip);
         if(!node) continue;
-        if(newLane) revealCandidateLane(node);
+        if(reveal) revealCandidateLane(node);
         animateCandidateFrom(node,from);
       }
       candidateLandings=undefined;
@@ -979,7 +1016,11 @@ window.mountEditTimeline = function (host, ctx) {
     cursor.hidden=!ctx.showAxis() || time<host.scrollLeft/timeScale;
     cursor.style.left=(96+time*timeScale)+'px';
   }
-  host.addEventListener('scroll',syncCursor,{passive:true});
+  host.addEventListener('scroll',()=>{
+    syncCursor();
+    const ruler=host.querySelector('.sequence-ruler .sequence-content');
+    if(ruler) drawRuler(ruler,Number(ruler.dataset.width));
+  },{passive:true});
   function setFold(node,key,value,animate=false) {
     if(value) folded.add(key); else folded.delete(key);
     node.classList.toggle('animate-lane-fold',animate);
@@ -1021,16 +1062,23 @@ window.mountEditTimeline = function (host, ctx) {
     pastePosition=positionAt(playTime);
     syncCursor();
     if(ctx.seekComposition(playTime)) return;
-    const index=shotTimes.findLastIndex((t)=>t<=playTime);
-    const shot=lastState?.shots[index];
-    const clip=shot?.includes(focusClip) ? focusClip : shot?.find((c)=>c.enabled!==false);
+    let index,clip,bestLane=Infinity;
+    for(const [i,shot] of (lastState?.shots ?? []).entries()) {
+      const candidate=window.draftTimeline.chosen(shot,focusClip,lastState);
+      if(!candidate) continue;
+      const start=candidate.videoStart ?? shotTimes[i],end=start+widths[i];
+      if(playTime<start || (playTime>=end && !(playTime===totalTime && playTime===end))) continue;
+      const lane=window.candidateVideoLanes(shot)[shot.indexOf(candidate)];
+      if(lane>bestLane || !window.trackControls.allows(lastState.trackControls,'vis'+lane,'visual')) continue;
+      bestLane=lane;index=i;clip=candidate;
+    }
     if(!clip) {
       if(activeSeek!==null) ctx.clear();
       activeSeek=null;
       return;
     }
-    focusShot=shot;focusClip=clip;
-    const offset=(playTime-shotTimes[index])*clipSpan(clip)/widths[index];
+    focusShot=lastState.shots[index];focusClip=clip;
+    const offset=(playTime-(clip.videoStart ?? shotTimes[index]))*clipSpan(clip)/widths[index];
     ctx.seek(clip,offset);
     activeSeek=clip;
   }
@@ -1089,7 +1137,7 @@ window.mountEditTimeline = function (host, ctx) {
       }
     }
     const ratio=Math.min(1,Math.max(0,elapsed-(clip.look?.head??0))/(clip.speed||1)/clipSpan(clip));
-    playTime=shotTimes[index]+widths[index]*ratio; syncCursor();
+    playTime=(clip.videoStart ?? shotTimes[index])+widths[index]*ratio; syncCursor();
   }
   function refresh(key,keepDraftPlayback=false) {
     if(!keepDraftPlayback && key!==undefined && lastKey!==undefined && key!==lastKey) draftTransport.stop();
@@ -1100,12 +1148,6 @@ window.mountEditTimeline = function (host, ctx) {
   }
   function stopCandidateMotion(node) {
     for(const motion of node.getAnimations()) if(motion.id==='candidate-arrival') motion.cancel();
-  }
-  function candidateButton(shots,clip) {
-    const i=shots.findIndex(shot=>shot.includes(clip));
-    if(i<0) return;
-    const lane=window.candidateVideoLanes(shots[i])[shots[i].indexOf(clip)];
-    return host.querySelector('[data-drop-shot="'+i+'"][data-candidate-index="'+lane+'"]');
   }
   function revealCandidateLane(node) {
     const panel=host.closest('#timeline-tracks-panel');
@@ -1143,7 +1185,7 @@ window.mountEditTimeline = function (host, ctx) {
     const from=button.getBoundingClientRect();
     stopCandidateMotion(button);
     const home=slotMarker(button), x=event.clientX, y=event.clientY;
-    draggedCandidate={button,clip,owner,home,id:event.pointerId,startX:x,startY:y,x,y};
+    draggedCandidate={button,clip,owner,home,id:event.pointerId,startX:x,startY:y,grabOffset:x-from.left,x,y};
     // A manual popover puts the actual frames and waveform above the scrolling pane.
     // Keep the normal slot and its inline timeline coordinates intact for hit testing.
     button.style.setProperty('--lift-left',from.left+'px');
@@ -1160,14 +1202,15 @@ window.mountEditTimeline = function (host, ctx) {
     const row=el('div','sequence-row candidate-new-lane');
     const track=el('div','sequence-content');
     const placement=el('div','candidate-slot candidate-new-placement');
-    placement.style.left=drag.home.style.left;
     placement.style.width=drag.home.style.width;
     placement.append(drag.button.querySelector('.sequence-frames').cloneNode(true),
       drag.button.querySelector('.sequence-clip-label').cloneNode(true));
-    track.append(placement);
+    drag.placement=placement;
+    drag.canvas=drag.home.closest('.sequence-canvas');
+    drag.originalWidth=drag.canvas.style.getPropertyValue('--sequence-width');
     row.append(el('div','sequence-head',reason ? '视频轨已满' : '新建视频 '+(lane+1)),track);
     host.querySelector('.sequence-shots').before(row);
-    candidateSlots.set(track,{shot:drag.owner,lane,newLane:true});
+    candidateSlots.set(track,{shot:drag.owner,lane,newLane:true,track});
     drag.newLane=track;
     const bottom=host.parentElement.querySelector('#new-shot-drop');
     drag.bottom={node:bottom,text:bottom.textContent,label:bottom.ariaLabel,disabled:bottom.ariaDisabled};
@@ -1191,27 +1234,49 @@ window.mountEditTimeline = function (host, ctx) {
     }
     animateCandidateFrom(button,from);
   }
+  function overlapsVideo(track,clip,start,span) {
+    return Array.from(track.querySelectorAll('[data-move-candidate]')).some(button=>{
+      const other=candidateSlots.get(button);
+      return other.clip!==clip && other.start<start+span-.001 && other.start+other.span>start+.001;
+    });
+  }
+  const insufficientSpace='此处空间不足，请移到空白处或拖到片段上交换。';
   function markCandidateDrop(drag,node) {
-    if(node===drag.target) return;
-    if(drag.target) {
+    const target=candidateSlots.get(node);
+    const free=target?.lane!==undefined && !target.clip;
+    const start=free ? Math.max(0,Math.round((drag.x-target.track.getBoundingClientRect().left-drag.grabOffset)/timeScale*1000)/1000) : undefined;
+    if(node===drag.target && start===drag.slot?.videoStart) return;
+    const slot=free ? {...target,shot:drag.owner,videoStart:start} : target;
+    if(drag.target && node!==drag.target) {
       delete drag.target.dataset.materialDrop;
       delete drag.target.dataset.candidateRejected;
       if(drag.target.classList.contains('candidate-displaced')) setDisplaced(drag.target);
       drag.vacancy?.remove();
       drag.vacancy=undefined;
     }
+    if(node!==drag.target) drag.placement?.remove();
     drag.target=node;
-    const slot=candidateSlots.get(node);
-    const reason=slot ? ctx.candidatePlacementError(drag.clip,slot.shot,drag.owner,slot.clip,slot.lane) : '';
-    dropHint.toggleAttribute('data-new-lane',Boolean(slot?.newLane && !reason));
-    dropHint.textContent=reason || (slot?.newLane ? '松开以移至视频 '+(slot.lane+1)+' · 分镜 '+(Number(drag.button.dataset.dropShot)+1) : '');
+    drag.slot=slot;
+    let reason=slot ? ctx.candidatePlacementError(drag.clip,slot.shot,drag.owner,slot.clip,slot.lane,start) : '';
+    if(free && !reason && !slot.newLane && overlapsVideo(slot.track,drag.clip,start,candidateSlots.get(drag.button).span)) reason=insufficientSpace;
+    drag.rejection=reason;
+    dropHint.toggleAttribute('data-new-lane',Boolean(free && !reason));
+    dropHint.textContent=reason || (free ? '视频 '+(slot.lane+1)+' · '+summary(start) : '');
     host.toggleAttribute('data-drag-rejected',Boolean(reason));
     drag.home.classList.toggle('candidate-vacancy',!slot || Boolean(reason) || !slot.clip);
     if(!slot) return;
-    if(reason) node.dataset.candidateRejected='';
+    if(reason) {
+      delete node.dataset.materialDrop;
+      drag.placement?.remove();
+      node.dataset.candidateRejected='';
+    }
     else {
+      delete node.dataset.candidateRejected;
       node.dataset.materialDrop='active';
-      if(slot.clip) {
+      if(free) {
+        drag.placement.style.left=(start*timeScale)+'px';
+        if(drag.placement.parentElement!==slot.track) slot.track.append(drag.placement);
+      } else if(slot.clip) {
         drag.vacancy=slotMarker(node);
         setDisplaced(node,drag.home);
       }
@@ -1234,11 +1299,37 @@ window.mountEditTimeline = function (host, ctx) {
       // Only track geometry participates. A clip sliding across another slot must
       // never become the destination simply because its animation crosses the mouse.
       const time=(x-track.getBoundingClientRect().left)/timeScale;
-      if(time<0 || time>=totalTime) return;
-      node=track.children[positionAt(time).index];
+      if(time<0) return;
+      let empty=track;
+      for(const button of track.querySelectorAll('[data-drop-shot]')) {
+        const cell=candidateSlots.get(button);
+        if(time<cell.start || time>=cell.start+cell.span) continue;
+        if(cell.clip && cell.clip!==drag.clip) return button;
+        if(!cell.clip) empty=button;
+      }
+      return empty;
     } else node=hit.closest('.sequence-shots [data-drop-shot]');
     const slot=candidateSlots.get(node);
     if(slot?.shot && (slot.shot!==drag.owner || (slot.lane!==undefined && slot.clip!==drag.clip))) return node;
+  }
+  function drawRuler(ruler,width) {
+    const step=Number(ruler.dataset.step);
+    ruler.dataset.width=width;
+    // Keep one viewport on either side so scrolling usually reuses its ticks.
+    const pixels=step*timeScale, pageSize=Math.max(1,Math.ceil(host.clientWidth/pixels));
+    const page=Math.floor(host.scrollLeft/(pageSize*pixels));
+    const first=Math.max(0,(page-1)*pageSize);
+    const last=Math.min(Math.floor(width/pixels),(page+2)*pageSize);
+    const range=first+','+last;
+    if(ruler.dataset.tickRange===range) return;
+    ruler.dataset.tickRange=range;
+    const ticks=document.createDocumentFragment();
+    for(let index=first;index<=last;index++) {
+      const t=index*step;
+      const tick=el('span','sequence-tick',stamp(t)+(step<1 && t%1 ? '.'+String(Math.round((t%1)*100)).padStart(2,'0') : ''));
+      tick.style.left=(t*timeScale)+'px';ticks.append(tick);
+    }
+    ruler.replaceChildren(ticks);
   }
   function scrollCandidateDrag(now) {
     const drag=draggedCandidate;
@@ -1252,6 +1343,15 @@ window.mountEditTimeline = function (host, ctx) {
       const step=(p,low,high)=>p<low+16 ? Math.max(-20,p-low-16) : Math.max(0,Math.min(20,p-high+16));
       const dx=step(drag.x,area.left+96,area.right), dy=step(drag.y,bounds.top,bounds.bottom);
       const left=host.scrollLeft,top=view.scrollTop;
+      if(dx>0 && host.scrollLeft+host.clientWidth>=drag.canvas.offsetWidth-2) {
+        // Extend the editable tail only while the user is deliberately edge-scrolling.
+        const ruler=drag.canvas.querySelector('.sequence-ruler .sequence-content');
+        const width=Number(ruler.dataset.width)+Math.max(80,host.clientWidth/3);
+        drag.canvas.style.setProperty('--sequence-width',width+'px');
+        drag.extended=true;
+        drawRuler(ruler,width);
+        ctx.scroll();
+      }
       if(dx) host.scrollLeft+=Math.sign(dx)*Math.max(1,Math.abs(dx)*90*elapsed);
       if(dy) view.scrollTop+=Math.sign(dy)*Math.max(1,Math.abs(dy)*45*elapsed);
       if(left!==host.scrollLeft || top!==view.scrollTop) drag.frame=requestAnimationFrame(scrollCandidateDrag);
@@ -1283,6 +1383,12 @@ window.mountEditTimeline = function (host, ctx) {
     cancelAnimationFrame(drag.frame);
     markCandidateDrop(drag,undefined);
     drag.newLane?.parentElement.remove();
+    if(drag.canvas) drag.canvas.style.setProperty('--sequence-width',drag.originalWidth);
+    if(drag.extended) {
+      const ruler=drag.canvas.querySelector('.sequence-ruler .sequence-content');
+      drawRuler(ruler,parseFloat(drag.originalWidth));
+      ctx.scroll();
+    }
     if(drag.bottom) {
       const {node,text,label,disabled}=drag.bottom;
       node.textContent=text;
@@ -1299,12 +1405,13 @@ window.mountEditTimeline = function (host, ctx) {
   function placeAtSlot(clip,owner,slot) {
     if(!slot || ctx.busy()) return false;
     const i=ctx.state().shots.indexOf(slot.shot);
-    if(!ctx.placeCandidate(clip,slot.shot,owner,slot.clip,slot.lane)) return false;
+    if(!ctx.placeCandidate(clip,slot.shot,owner,slot.clip,slot.lane,slot.videoStart)) return false;
     focusShot=slot.shot;focusClip=clip;voiceTarget=undefined;
     ctx.preview(clip);
     selection.selectOnly(clip);
-    pastePosition={index:i,time:shotTimes[i]};
-    if(slot.newLane) ctx.notify('已新建视频 '+(slot.lane+1)+' 轨道，片段保留在分镜 '+(i+1)+'。');
+    pastePosition={index:i,time:clip.videoStart ?? shotTimes[i]};
+    if(slot.videoStart!==undefined) ctx.notify((slot.newLane ? '已新建视频 ' : '已移至视频 ')+(slot.lane+1)+' 轨道 · '+summary(slot.videoStart));
+    else if(slot.newLane) ctx.notify('已新建视频 '+(slot.lane+1)+' 轨道。');
     else if(slot.shot===owner) ctx.notify('候选已移至视频 '+(slot.lane+1)+' 轨道。');
     else ctx.notify(slot.clip ? '已与分镜 '+(i+1)+' 的候选交换。' : '已移动至分镜 '+(i+1)+'。');
     return true;
@@ -1317,21 +1424,31 @@ window.mountEditTimeline = function (host, ctx) {
     let slot;
     if(event.key==='ArrowUp' || event.key==='ArrowDown') {
       const rows=host.querySelectorAll('.sequence-video');
-      const lane=candidateSlots.get(button).lane+(event.key==='ArrowUp'?-1:1);
-      slot=lane===rows.length ? {shot:owner,lane,newLane:true}
-        : candidateSlots.get(rows[lane]?.querySelector('[data-drop-shot="'+i+'"]'));
-    } else slot=candidateSlots.get(button.parentElement.children[i+(event.key==='ArrowLeft'?-1:1)]);
+      const source=candidateSlots.get(button);
+      const lane=source.lane+(event.key==='ArrowUp'?-1:1);
+      if(lane<0) return;
+      const track=rows[lane]?.querySelector('.sequence-content');
+      const middle=source.start+source.span/2;
+      if(track) {
+        for(const other of track.querySelectorAll('[data-move-candidate]')) {
+          const candidate=candidateSlots.get(other);
+          if(candidate.start<=middle && middle<candidate.start+candidate.span) {slot=candidate;break;}
+        }
+        if(!slot && overlapsVideo(track,clip,source.start,source.span)) {ctx.notify(insufficientSpace);return;}
+      }
+      slot ??= {shot:owner,lane,videoStart:source.start,newLane:!track};
+    } else slot=candidateSlots.get(button.parentElement.querySelector('[data-drop-shot="'+(i+(event.key==='ArrowLeft'?-1:1))+'"]'));
     if(!slot?.shot) return;
     try {
       if(placeAtSlot(clip,owner,slot)) {
-        requestAnimationFrame(()=>candidateButton(ctx.state().shots,clip)?.focus());
+        requestAnimationFrame(()=>candidateNodes.get(clip)?.focus());
       }
     } catch(error) {ctx.notify(error.message);}
   }
   function finishCandidateDrag(commit) {
     const drag=draggedCandidate;
     if(!drag) return;
-    const target=drag.target, displaced=candidateSlots.get(target)?.clip;
+    const target=drag.target,slot=drag.slot,rejection=drag.rejection,displaced=slot?.clip;
     const from=drag.active && !drag.cancelled ? drag.button.getBoundingClientRect() : null;
     const otherFrom=target?.classList.contains('candidate-displaced') && target.getBoundingClientRect();
     draggedCandidate=undefined;
@@ -1340,9 +1457,10 @@ window.mountEditTimeline = function (host, ctx) {
     if(resizeAfterCandidate) {resizeAfterCandidate=false;refresh();}
     if(commit && from && target) {
       try {
-        const slot=candidateSlots.get(target);
-        if(placeAtSlot(drag.clip,drag.owner,slot)) {
-          candidateLandings=[{clip:drag.clip,from,newLane:slot.newLane}];
+        const origin=candidateSlots.get(drag.button);
+        if(rejection) ctx.notify(rejection);
+        else if(!(slot.lane===origin.lane && Math.abs(slot.videoStart-origin.start)<.001) && placeAtSlot(drag.clip,drag.owner,slot)) {
+          candidateLandings=[{clip:drag.clip,from,reveal:slot.newLane || slot.videoStart!==undefined}];
           if(otherFrom) candidateLandings.push({clip:displaced,from:otherFrom});
           host.focus({preventScroll:true});
           return;
@@ -1520,18 +1638,21 @@ window.mountEditTimeline = function (host, ctx) {
     host.querySelector('.sequence-selected')?.classList.remove('sequence-selected');
     if(i>=0) {
       focusShot=lastState.shots[i];focusClip=clip;voiceTarget=undefined;
-      candidateButton(lastState.shots,clip)?.classList.add('sequence-selected');
+      candidateNodes.get(clip)?.classList.add('sequence-selected');
     }
     if(i>=0 && lastState.selected!==clip && lastState.shots[i].length>1) {
       const layout=window.draftTimeline.timing(lastState,clipSpan,ctx.asset,clip);
       if(layout.widths.some((width,index)=>Math.abs(width-widths[index])>.001)) {
-        if(scrubPointer==null) playTime=layout.starts[i];
+        if(scrubPointer==null) playTime=clip.videoStart ?? layout.starts[i];
         refresh();
       }
     }
     if(lastState.selected!==clip && (clip?.videoSubtitles || lastState.selected?.videoSubtitles)) refresh();
   }
-  return {refresh,syncPlayer,selectClip,locateMaterial,editCaptions,openCardMatchMenu,removeSelected:selection.removeSelection,clearSelection:selection.clear,get selectionCount(){return selection.size;},textSettings:()=>textSettings(ctx.state()),
+  function refreshMonitoring() {
+    if(draftTransport.state()) draftTransport.updatePlan(draftPlan());
+  }
+  return {refresh,refreshMonitoring,syncPlayer,selectClip,locateMaterial,editCaptions,openCardMatchMenu,removeSelected:selection.removeSelection,clearSelection:selection.clear,get selectionCount(){return selection.size;},textSettings:()=>textSettings(ctx.state()),
     toggleDraftPlayback:()=>draftTransport.toggle(draftTransport.playing()?[]:draftPlan(),playTime),
     seekDraft:draftTransport.seek,draftState:draftTransport.state,
     stopDraftPlayback:draftTransport.stop,isDraftPlaying:draftTransport.playing,

@@ -1,5 +1,71 @@
 'use strict';
 
+function mountStereoMeter(stage, meter) {
+  const bars = [...meter.children];
+  const sources = new WeakMap();
+  const playing = new Set();
+  const samples = new Float32Array(1024);
+  let context, mix, channels, frame;
+
+  function render() {
+    frame = undefined;
+    for (const node of playing) if (node.paused || !node.isConnected) playing.delete(node);
+    bars.forEach((bar, i) => {
+      let peak = 0;
+      if (playing.size) {
+        channels[i].getFloatTimeDomainData(samples);
+        for (const sample of samples) peak = Math.max(peak, Math.abs(sample));
+      }
+      // Show the top 54 dB of the actual post-mix signal, with six LED steps.
+      const level = Math.min(6, Math.max(0, Math.ceil((54 + 20 * Math.log10(peak)) / 9)));
+      if (bar.dataset.level !== String(level)) {
+        bar.dataset.level = String(level);
+        bar.style.setProperty('--level', level * 100 / 6 + '%');
+      }
+    });
+    if (playing.size) frame = requestAnimationFrame(render);
+  }
+  stage.addEventListener('playing', async event => {
+    const node = event.target;
+    if (!(node instanceof HTMLMediaElement)) return;
+    if (!context) {
+      context = new AudioContext();
+      mix = context.createGain();
+      mix.channelCount = 2;
+      mix.channelCountMode = 'explicit';
+      mix.connect(context.destination);
+      const splitter = context.createChannelSplitter(2);
+      mix.connect(splitter);
+      channels = bars.map((_, i) => {
+        const analyser = context.createAnalyser();
+        analyser.fftSize = samples.length;
+        splitter.connect(analyser, i);
+        return analyser;
+      });
+    }
+    if (context.state !== 'running') await context.resume().catch(() => {});
+    if (context.state !== 'running' || node.paused || !node.isConnected) return;
+    let source = sources.get(node);
+    if (!source) {
+      source = context.createMediaElementSource(node);
+      sources.set(node, source);
+    }
+    // Reuses the same connection on resume, including after a panel reattach.
+    source.connect(mix);
+    playing.add(node);
+    if (frame === undefined) render();
+  }, true);
+  // The transport creates and releases media elements as it crosses edits.
+  new MutationObserver(records => {
+    for (const record of records) for (const node of record.removedNodes) {
+      if (node instanceof HTMLMediaElement && !node.isConnected) {
+        sources.get(node)?.disconnect();
+        playing.delete(node);
+      }
+    }
+  }).observe(stage, { childList:true, subtree:true });
+}
+
 window.mountPlayerTools = ({ panel, getClip, isEditor, isTrack, validClip, notify, onImageTime,
   getDraft, getIdleDraft, toggleDraft, seekDraft, canProxy, changeQuality }) => {
   const find = (selector) => panel.querySelector(selector);
@@ -7,6 +73,7 @@ window.mountPlayerTools = ({ panel, getClip, isEditor, isTrack, validClip, notif
   const image = find('#still-preview');
   const frame = find('.player-picture');
   const stage = find('.preview-stage');
+  mountStereoMeter(stage, find('.stereo-meter'));
   const transport = find('#player-transport');
   const play = find('#player-play');
   const position = find('#player-position');
@@ -162,7 +229,7 @@ window.mountPlayerTools = ({ panel, getClip, isEditor, isTrack, validClip, notif
     seek((clip.asset.kind === 'image' ? imageTime : video.currentTime) + direction / fps(clip));
   }
   async function togglePlay() {
-    if (getDraft() || getIdleDraft()?.end) return toggleDraft();
+    if (getDraft() || getIdleDraft()?.end || (isTrack() && isEditor())) return toggleDraft();
     const clip = getClip();
     if (!ready(clip)) return;
     if (clip.asset.kind === 'image') {

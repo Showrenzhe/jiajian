@@ -31,6 +31,38 @@ test('the five organizer operations keep occupied rows and move only out-of-boun
 });
 const { splitRanges } = require('../src/ui/track-tools.js');
 
+test('only current rows participate in visual and audio solo, and locking does not mute', () => {
+  const {normalize,forLayout,allows}=require('../src/ui/track-controls.js');
+  const state=normalize({vis1:{hidden:true},whole1:{solo:true},music2:{solo:true},voice1:{locked:true}});
+  const current=forLayout(state,[[{},{}]],[[{},{}]],2,1,true);
+  assert.equal(allows(current,'vis1','visual'),false);
+  assert.equal(allows(current,'vis1','audio'),true);
+  assert.equal(allows(current,'voice1','audio'),true);
+  assert.equal(current.voice1.locked,true);
+  const whole=forLayout(state,[[{},{}]],[[{},{}]],2,1,false);
+  assert.equal(allows(whole,'whole1','audio'),true);
+  assert.equal(allows(whole,'music0','audio'),false);
+  assert.equal(allows(whole,'vis0','visual'),true);
+  assert.equal(state.whole1.solo,true);
+});
+
+test('draft text uses actual clip positions, subtitle tracks, export switch and independent packaging visibility', () => {
+  const {makePlan,timing}=require('../src/ui/draft-transport.js');
+  const {waveformSource}=require('../src/ui/waveform.js');
+  const clip={asset:{kind:'video',id:'v',url:'test://v',duration:5},start:1,end:3,videoStart:1.5,
+    videoSubtitles:{cues:[{text:'画面字幕',start:1250,end:1500}]}};
+  const title={kind:'text',text:'片名',laneId:'title',start:.25,end:.75};
+  const state={shots:[[clip]],settings:[],whole:[],segments:[[]],segmented:true,priority:'picture',music:[],
+    keepAudio:true,muted:new Set(),pack:{global:[title],composites:[],wholeNarration:[],segmentNarration:[]},
+    timelineCaptions:[{text:'粘贴',start:500,end:900}],captions:[{row:0,shot:0,start:.25,duration:.4,name:'口播'}]};
+  const read=()=>makePlan(state,timing(state,()=>2,()=>null),()=>null,waveformSource).filter(entry=>entry.text).map(e=>[e.text,e.start,e.end]);
+  assert.deepEqual(read(),[['片名',.25,.75],['口播',.25,.65],['粘贴',.5,.9],['画面字幕',1.75,2]]);
+  state.trackControls={'caption0':{hidden:true},'layer-text-title':{hidden:true}};
+  assert.deepEqual(read().map(([text])=>text),['粘贴','画面字幕']);
+  state.subtitleStyle={enabled:false};state.trackControls={};
+  assert.deepEqual(read(),[['片名',.25,.75]]);
+});
+
 test('legacy candidates fill unreserved video rows without stealing explicitly placed rows', () => {
   const { candidateVideoLanes }=require('../src/ui/track-tools.js');
   const clips=[{id:'first'},{id:'moved',videoLane:3},{id:'second'},{id:'pinned',videoLane:0}];

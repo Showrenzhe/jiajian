@@ -4,6 +4,8 @@ const $ = (selector) => document.querySelector(selector);
 const api = window.workbench;
 const shots = [];
 const mutedVideoTracks = new Set();
+let laneControls = {};
+let monitoredLanes;
 const audioTargets = [];
 const maxShots = 1000;
 const maxCandidates = 100;
@@ -631,6 +633,7 @@ function syncClipInspector() {
   const shot = trackShot();
   inspector.hidden = !shot;
   if (!shot) return;
+  inspector.disabled = videoLocked(shot,selected);
   const { asset } = selected;
   const image = asset.kind === 'image';
   $('#clip-inspector-name').textContent = asset.name;
@@ -649,7 +652,8 @@ function syncClipInspector() {
 }
 
 function setCandidateEnabled(clip, enabled) {
-  if (operation || !shots.some((shot) => shot.includes(clip))) return;
+  const owner=shots.find(shot=>shot.includes(clip));
+  if (operation || !owner || videoLocked(owner,clip)) return;
   if (enabled) delete clip.enabled;
   else clip.enabled = false;
   syncClipInspector();
@@ -661,7 +665,42 @@ function setVisualTrackMuted(index, muted) {
   if (muted) mutedVideoTracks.add(index);
   else mutedVideoTracks.delete(index);
   syncClipInspector();
-  renderLists();
+  updateTrackMonitoring();
+}
+
+function videoLocked(shot,clip) {
+  if(!shot || !clip) return false;
+  const index=shot.indexOf(clip);
+  return index>=0 && laneControls['vis'+window.candidateVideoLanes(shot)[index]]?.locked===true;
+}
+
+function monitoredTrackControls() {
+  if(!monitoredLanes) {
+    const segmented=$('#narration-mode').value==='segmented';
+    monitoredLanes=window.trackControls.forLayout(laneControls,shots,shots.map(shot=>segmentNarrations.get(shot)),
+      1+extraWholeTracks.length,music.length,segmented);
+  }
+  return monitoredLanes;
+}
+
+function updateTrackMonitoring() {
+  updateControls(undefined,true);
+  timeline?.refreshMonitoring();
+}
+
+function toggleTrackControl(key, action, on) {
+  if(operation || !window.trackControls.actions(key).includes(action)) return;
+  if(action==='muted' && /^vis\d+$/.test(key)) {
+    setVisualTrackMuted(Number(key.slice(3)),on);
+    return;
+  }
+  const flags={...laneControls[key]};
+  if(on) flags[action]=true; else delete flags[action];
+  laneControls={...laneControls};
+  if(Object.keys(flags).length) laneControls[key]=flags; else delete laneControls[key];
+  syncClipInspector();
+  if(action==='locked') updateControls(undefined,true);
+  else updateTrackMonitoring();
 }
 
 $('#clip-enabled').addEventListener('change', (event) => setCandidateEnabled(selected, event.target.checked));
@@ -730,7 +769,7 @@ $('#clip-inspector').addEventListener('input', (event) => {
   input.dispatchEvent(new Event('input'));
 });
 
-function assetRow(clip, list, trim) {
+function assetRow(clip, list, trim, lane) {
   const row = template('#asset-template');
   row.tabIndex = 0;
   if (trim) {
@@ -753,13 +792,15 @@ function assetRow(clip, list, trim) {
     if (!event.target.closest('button, input, select, textarea, label')) preview(clip);
   });
   row.querySelector('.remove-asset').addEventListener('click', () => {
-    if (trim) subprojects.removeCandidate(list, clip);
+    if(trim && videoLocked(list,clip)) return;
+    if (trim) removeTrackCandidate(list, clip);
     else list.splice(list.indexOf(clip), 1);
     if (selected === clip) clearPreview();
     renderLists();
   });
   row.querySelector('.trim-fields').hidden = !trim;
   if (trim) {
+    row.dataset.videoLane=lane;
     const toggle = row.querySelector('.clip-toggle');
     toggle.hidden = false;
     bindTrackDisclosure(toggle, row.querySelector('.trim-fields'), clip, 'trim', `${clip.asset.name} 的参数`, !validClip(clip));
@@ -795,7 +836,7 @@ function assetRow(clip, list, trim) {
 }
 
 function insertShot(index,clips=[]) {
-  if (operation || shots.length>=maxShots || index<0 || index>shots.length) return;
+  if (operation || laneControls['shot-strip']?.locked || shots.length>=maxShots || index<0 || index>shots.length) return;
   const rows=attachedScript?.segmented;
   if (rows && index<rows.length && rows.length>=maxShots) {say('分段台词已达上限，无法在此插入分镜。');return;}
   const before=[...shots];
@@ -811,6 +852,7 @@ function insertShot(index,clips=[]) {
 
 function moveShot(shot, destination) {
   const from = shots.indexOf(shot);
+  if (laneControls['shot-strip']?.locked) return false;
   if (operation || from < 0 || destination === from || !Number.isInteger(destination) || !shots[destination]) return false;
   const before = [...shots];
   shots.splice(from, 1);
@@ -926,7 +968,8 @@ function shotRow(shot, index, previousPosters) {
     renderLists();
   });
   row.querySelector('.add-candidate').addEventListener('click', () => importCandidates(shot));
-  row.querySelector('.candidates').append(...shot.map((clip) => assetRow(clip, shot, true)));
+  const lanes=window.candidateVideoLanes(shot);
+  row.querySelector('.candidates').append(...shot.map((clip,i) => assetRow(clip,shot,true,lanes[i])));
   const transition = shotTransitions.get(shot);
   const kind = row.querySelector('.shot-transition-kind');
   const duration = row.querySelector('.shot-transition-duration');
@@ -1858,6 +1901,13 @@ function canPlaceMaterial() {
 }
 
 function appendVideoClips(shot, clips, targetLane) {
+  if (Object.keys(laneControls).some(key=>/^vis\d+$/.test(key) && laneControls[key].locked)) {
+    const lanes=availableVideoSlots(shot,clips.length,targetLane);
+    window.pinCandidateLanes(shot);
+    clips.forEach((clip,i)=>{clip.videoLane=lanes[i];});
+    shot.push(...clips);
+    return;
+  }
   if (targetLane !== undefined) {
     const occupied = new Set(window.candidateVideoLanes(shot));
     if (!Number.isInteger(targetLane) || targetLane < 0 || targetLane >= maxCandidates || occupied.has(targetLane)) {
@@ -1871,6 +1921,25 @@ function appendVideoClips(shot, clips, targetLane) {
     }
   }
   shot.push(...clips);
+}
+
+function removeTrackCandidate(shot,clip) {
+  if(videoLocked(shot,clip)) return;
+  if(mutedVideoTracks.size || Object.keys(laneControls).some(key=>/^vis\d+$/.test(key))) window.pinCandidateLanes(shot);
+  subprojects.removeCandidate(shot,clip);
+}
+
+function availableVideoSlots(shot,count,targetLane) {
+  const occupied=new Set(window.candidateVideoLanes(shot)), slots=[];
+  let next=0;
+  for(let i=0;i<count;i++) {
+    while(occupied.has(next) || laneControls['vis'+next]?.locked) next++;
+    const lane=i===0 && targetLane!==undefined ? targetLane : next;
+    if(lane>=maxCandidates || occupied.has(lane) || laneControls['vis'+lane]?.locked) throw Error('没有可用的视频轨道，请先解锁。');
+    occupied.add(lane);
+    slots.push(lane);
+  }
+  return slots;
 }
 
 async function addLibraryMaterials(items, shot, targetIndex, targetLane) {
@@ -1954,6 +2023,7 @@ function clearMaterialDrag() {
 }
 
 function materialDropAt(event) {
+  if(event.target.closest('[data-track-locked]')) return;
   const types = Array.from(event.dataTransfer?.types ?? []);
   if (mode !== 'montage' || operation || event.target.closest('.track-toolbar, #track-playhead-row, #script-brief, .timeline-lane-label, .sequence-head')) return;
   if (types.includes('Files') || types.includes(processedAudioDrag)) {
@@ -1989,7 +2059,8 @@ function updateTrackSelection() {
   const video = shot && selected.asset.kind === 'video' && validClip(selected);
   const ready = video && player.readyState >= 1 && !player.error;
   const busy = Boolean(operation);
-  const canSlice = video && shot.length === 1 && shots.length < maxShots;
+  const locked=videoLocked(shot,selected);
+  const canSlice = video && !locked && shot.length === 1 && shots.length < maxShots;
   const playhead = $('#track-playhead');
   const time = ready ? Math.max(selected.start, Math.min(selected.end, player.currentTime)) : 0;
   $('#track-selection-info').textContent = shot ? `分镜 ${shots.indexOf(shot) + 1} · ${selected.asset.name}${video && shot.length > 1 ? ' · 分割和定时切片适用于单候选分镜' : ''}` : '选择轨道上的素材进行编辑。';
@@ -2005,20 +2076,25 @@ function updateTrackSelection() {
     || selected.end - time < minClipSeconds - 1e-9;
   const interval = $('#track-slice-interval').valueAsNumber;
   $('#track-slice').disabled = busy || !canSlice || !(interval >= minClipSeconds && selected.end - selected.start > interval + 1e-9);
-  $('#track-delete').disabled = busy || (!shot && !timeline?.selectionCount);
+  $('#track-delete').disabled = busy || ((!shot || locked) && !timeline?.selectionCount);
   const keepAudio = $('#keep-audio').checked;
   $('#track-toggle-audio').setAttribute('aria-pressed', String(keepAudio));
   $('#track-toggle-audio').disabled = busy;
   const target = shot && selected.asset.kind === 'video' && selected.asset.hasAudio ? selected : null;
   const volume = $('#track-volume');
   $('#track-volume-panel').hidden = !target;
-  $('#track-volume-panel').disabled = busy;
+  $('#track-volume-panel').disabled = busy || locked;
   if (target !== volumeTarget) {
     volumeTarget = target;
     volume.value = target?.volume ?? 100;
     $('#track-volume-name').textContent = target?.asset.name ?? '';
   }
-  player.volume = target ? (keepAudio && !mutedVideoTracks.has(window.candidateVideoLanes(shot)[shot.indexOf(target)]) ? target.volume / 100 : 0) : 1;
+  const lane = shot && window.candidateVideoLanes(shot)[shot.indexOf(selected)];
+  const key = 'vis'+lane;
+  const trackPreview = shot && $('#preview-heading').textContent==='轨道预览';
+  const controls=trackPreview && monitoredTrackControls();
+  $('.player-picture').toggleAttribute('data-track-hidden', Boolean(trackPreview && !window.trackControls.allows(controls,key,'visual')));
+  player.volume = target && trackPreview ? (keepAudio && !mutedVideoTracks.has(lane) && window.trackControls.allows(controls,key,'audio') ? target.volume / 100 : 0) : 1;
   $('#track-volume-apply').disabled = busy || !target || !(volume.valueAsNumber >= 0 && volume.valueAsNumber <= 100);
 }
 
@@ -2027,13 +2103,19 @@ function applyTrackVolume() {
   const volume = $('#track-volume').valueAsNumber;
   if (operation || !shot || !selected.asset.hasAudio || !(volume >= 0 && volume <= 100)) return;
   const scope = $('#track-volume-scope').value;
-  const clips = scope === 'all' ? shots.flat() : scope === 'shot' ? shot : [selected];
-  for (const clip of clips) if (clip.asset.kind === 'video' && clip.asset.hasAudio) clip.volume = volume;
+  for(const owner of scope==='all'?shots:[shot]) {
+    const lanes=window.candidateVideoLanes(owner);
+    owner.forEach((clip,i)=>{
+      if(scope!=='all' && scope!=='shot' && clip!==selected) return;
+      if(clip.asset.kind==='video' && clip.asset.hasAudio && !laneControls['vis'+lanes[i]]?.locked) clip.volume=volume;
+    });
+  }
   updateControls();
 }
 
 function splitTrack(fixed) {
   const shot = trackShot();
+  if(videoLocked(shot,selected) || laneControls['shot-strip']?.locked) return;
   if (operation || !shot || shot.length !== 1 || selected.asset.kind !== 'video' || !validClip(selected)) return;
   try {
     const index = shots.indexOf(shot);
@@ -2049,7 +2131,8 @@ function splitTrack(fixed) {
     delete selected.matchedDuration;
     const original = { ...selected };
     Object.assign(selected, first);
-    const additions = rest.map((range) => [{ ...original, ...range }]);
+    const additions = rest.map((range) => [{ ...original, ...range,
+      ...(original.videoStart!==undefined && {videoStart:original.videoStart+(range.start-first.start)/(original.speed || 1)}) }]);
     if (outgoing) shotTransitions.set(additions.at(-1), outgoing);
     shots.splice(index + 1, 0, ...additions);
     preview(selected);
@@ -2063,8 +2146,8 @@ function splitTrack(fixed) {
 function removeSelectedTrack() {
   if (!operation && timeline?.removeSelected()) return;
   const shot = trackShot();
-  if (operation || !shot) return;
-  subprojects.removeCandidate(shot, selected);
+  if (operation || !shot || videoLocked(shot,selected)) return;
+  removeTrackCandidate(shot, selected);
   clearPreview();
   renderLists();
 }
@@ -2090,8 +2173,9 @@ function changeHistory(action) {
 
 function segmentVariants(rows, selection) {
   const active = rows.map((row) => row.flatMap((asset, index) => asset ? [index] : []));
-  if (selection === 'ordered') return BigInt(Math.max(1, new Set(active.flat()).size));
-  return active.reduce((count, row) => count * BigInt(Math.max(1, row.length)), 1n);
+  const choices = row=>window.trackControls.preferSolo(row,i=>laneControls['voice'+i]?.solo).length;
+  if (selection === 'ordered') return BigInt(Math.max(1, choices([...new Set(active.flat())])));
+  return active.reduce((count, row) => count * BigInt(Math.max(1, choices(row))), 1n);
 }
 
 function subtitleBatchCapacity() {
@@ -2110,6 +2194,7 @@ async function flushCurrentDraft() {
 }
 
 function updateControls(group, keepDraftPlayback = false) {
+  monitoredLanes=undefined;
   if (applyingEdit) return;
   const variants = Number($('#use-original').checked) + Number($('#use-mirrors').checked);
   const segmented = $('#narration-mode').value === 'segmented';
@@ -2118,11 +2203,14 @@ function updateControls(group, keepDraftPlayback = false) {
   if (processedMaterials.length) updateProcessedUsage(materialUsage());
   const hasNarration = segmented ? trackRows.some((tracks) => tracks.some(Boolean))
     : Boolean(narration || extraWholeTracks.some((track) => track.narration));
-  const narrationChoices = segmented ? segmentVariants(trackRows, segmentSelection) : BigInt(1 + extraWholeTracks.length);
+  const wholeChoices=window.trackControls.preferSolo([narration,...extraWholeTracks.map(t=>t.narration)],
+    (asset,i)=>asset && laneControls['whole'+i]?.solo);
+  const narrationChoices = segmented ? segmentVariants(trackRows, segmentSelection) : BigInt(wholeChoices.length);
   const noEnabled = shots.findIndex((shot) => shot.length && shot.every((clip) => clip.enabled === false));
   const combinations = shots.length
     ? shots.reduce((total, shot, i) => {
-      const size = shot.filter((clip) => clip.enabled !== false).length * variants;
+      const lanes=window.candidateVideoLanes(shot).filter((lane,index)=>shot[index].enabled!==false);
+      const size=window.trackControls.preferSolo(lanes,lane=>laneControls['vis'+lane]?.solo).length * variants;
       return total * BigInt(i === 0 && editCover?.mode === 'first-shot' ? Math.min(1,size) : size);
     }, narrationChoices * packaging.choices(shots)) : 0n;
   const invalidTrim = shots.some((shot) => shot.some((clip) => clip.enabled !== false && !validClip(clip)));
@@ -2162,7 +2250,8 @@ function updateControls(group, keepDraftPlayback = false) {
   projectStatus.textContent = draftTitle();
   projectStatus.title = projectStatus.textContent;
 
-  $('#add-shot').disabled = busy || shots.length >= maxShots;
+  const shotStripLocked=Boolean(laneControls['shot-strip']?.locked);
+  $('#add-shot').disabled = busy || shotStripLocked || shots.length >= maxShots;
   $('#match-all-voice-duration').disabled = busy || !segmented || !shots.length;
   $('#import-materials').disabled = busy || (audioMode ? audioTargets.length >= maxExports : shots.length >= maxShots);
   for (const [index, button] of [...document.querySelectorAll('.add-candidate')].entries()) {
@@ -2173,10 +2262,19 @@ function updateControls(group, keepDraftPlayback = false) {
     panel.querySelector('.add-segment-narration').disabled = busy || trackRows[index].length > maxExtraWholeTracks;
     panel.querySelector('.match-shot-visual').disabled = busy || shots[index].length >= maxCandidates;
   }
-  for (const control of document.querySelectorAll('.pick-segment-narration, .remove-segment-narration, .review-segment-narration')) control.disabled = busy;
+  for (const control of document.querySelectorAll('.pick-segment-narration, .remove-segment-narration, .review-segment-narration')) {
+    const index=Number(control.closest('[data-track]').dataset.track)-1;
+    control.disabled=busy || Boolean(laneControls['voice'+index]?.locked);
+  }
   for (const control of document.querySelectorAll('.remove-asset, .remove-shot, .trim-fields input')) control.disabled = busy;
-  for (const [index, button] of [...document.querySelectorAll('.move-up')].entries()) button.disabled = busy || index === 0;
-  for (const [index, button] of [...document.querySelectorAll('.move-down')].entries()) button.disabled = busy || index === shots.length - 1;
+  for (const row of visualTrackLane.querySelectorAll('[data-video-lane]')) {
+    if(laneControls['vis'+row.dataset.videoLane]?.locked) {
+      for(const control of row.querySelectorAll('.remove-asset,.trim-fields input')) control.disabled=true;
+    }
+  }
+  for(const button of document.querySelectorAll('.remove-shot')) button.disabled=busy || shotStripLocked;
+  for (const [index, button] of [...document.querySelectorAll('.move-up')].entries()) button.disabled = busy || shotStripLocked || index === 0;
+  for (const [index, button] of [...document.querySelectorAll('.move-down')].entries()) button.disabled = busy || shotStripLocked || index === shots.length - 1;
   for (const id of ['tab-montage', 'tab-scene-split', 'tab-audio', 'tab-home', 'tab-drafts', 'home-create', 'home-import', 'home-open-project', 'open-project', 'save-project']) {
     $(`#${id}`).disabled = busy;
   }
@@ -2203,6 +2301,16 @@ function updateControls(group, keepDraftPlayback = false) {
   for (const button of document.querySelectorAll('.material-quick-add')) button.disabled = !canPlace;
   updateMaterialBatchControls();
   $('#pick-music').disabled = music.length >= maxCandidates;
+  for(const [i,button] of [...$('#music-list').querySelectorAll('button')].entries()) button.disabled=busy || Boolean(laneControls['music'+i]?.locked);
+  for(const button of document.querySelectorAll('#pick-narration,#remove-narration')) button.disabled=busy || Boolean(laneControls.whole0?.locked);
+  for(const button of document.querySelectorAll('#pick-subtitles,#remove-subtitles')) button.disabled=busy || Boolean(laneControls.caption0?.locked);
+  for(const row of $('#whole-track-list').children) {
+    const i=Number(row.dataset.track)-1;
+    for(const button of row.querySelectorAll('button')) {
+      const audio=button.className.includes('narration'), caption=button.className.includes('subtitles');
+      button.disabled=busy || (!caption && Boolean(laneControls['whole'+i]?.locked)) || (!audio && Boolean(laneControls['caption'+i]?.locked));
+    }
+  }
   $('#whole-narration').hidden = segmented;
   $('#whole-subtitles').hidden = segmented;
   $('#segment-subtitles-help').hidden = !segmented;
@@ -2734,7 +2842,7 @@ function importCandidates(shot) {
       if (shot.some((clip) => clip.asset.id === asset.id)) warnings.push(`${asset.name} 已在本组。`);
       else {
         trackExpansion.get(shot)?.delete('body');
-        shot.push(candidate(asset));
+        appendVideoClips(shot,[candidate(asset)]);
       }
     }
     if (!selected && shot.length) preview(shot[0]);
@@ -2753,7 +2861,7 @@ function importMaterials() {
   }
   return pick('visual', Math.min(maxExports, maxShots - shots.length), (assets) => {
     for (const asset of assets) currentMaterialBin().hidden.delete(asset.sourceKey);
-    const imported = assets.map((asset) => [candidate(asset)]);
+    const imported = assets.map(asset=>{const shot=[]; appendVideoClips(shot,[candidate(asset)]); return shot;});
     shots.push(...imported);
     if (!selected && imported.length) preview(imported[0][0]);
   });
@@ -2771,11 +2879,28 @@ function renderMusic() {
     remove.type = 'button';
     remove.textContent = '移除';
     remove.className = 'quiet';
-    remove.addEventListener('click', () => { music.splice(index, 1); renderMusic(); });
+    remove.addEventListener('click', () => { removeMusicTrack(asset); renderMusic(); });
     row.append(asset.name, remove);
     return row;
   }));
   updateControls();
+}
+
+function removeMusicTrack(asset) {
+  const index=music.indexOf(asset);
+  if(index<0 || laneControls['music'+index]?.locked) return;
+  music.splice(index,1);
+  shiftTrackControls('music',index);
+}
+
+function shiftTrackControls(prefix, removed) {
+  const next={};
+  for(const [key,flags] of Object.entries(laneControls)) {
+    if(!key.startsWith(prefix)) {next[key]=flags;continue;}
+    const index=Number(key.slice(prefix.length));
+    if(index!==removed) next[index>removed ? prefix+(index-1) : key]=flags;
+  }
+  laneControls=next;
 }
 
 function renderMusicStart() {
@@ -3141,6 +3266,8 @@ function wholeTrackRow(track, index) {
   removeTrack.addEventListener('click', () => {
     if (operation) return;
     extraWholeTracks.splice(index, 1);
+    shiftTrackControls('whole',index+1);
+    shiftTrackControls('caption',index+1);
     renderWholeTracks();
     updateControls();
   });
@@ -3206,9 +3333,9 @@ function renderResults({ results, failures }, complete) {
   $('#results').replaceChildren(...items);
 }
 
-function serializeClip({ asset, start, end, volume, speed, matchedDuration, enabled, ranges, layers, transform, videoSubtitles, look, videoLane }) {
+function serializeClip({ asset, start, end, volume, speed, matchedDuration, enabled, ranges, layers, transform, videoSubtitles, look, videoLane, videoStart }) {
   return { id: asset.id, start, end, volume, speed, ...(matchedDuration!==undefined && {matchedDuration}), ...(enabled === false && { enabled: false }),
-    ...(videoLane !== undefined && {videoLane}),
+    ...(videoLane !== undefined && {videoLane}), ...(videoStart !== undefined && {videoStart}),
     ...(ranges && { ranges }), ...(layers?.length && { layers }), ...(transform && { transform }), ...(videoSubtitles && {videoSubtitles}), ...(look && {look}) };
 }
 
@@ -3217,26 +3344,35 @@ function hasMatchingCandidate(shot, clip, outgoing) {
   return shot.some(item => item !== outgoing && window.candidateKey(serializeClip(item)) === key);
 }
 
-function candidatePlacementError(clip, target, source, targetClip, targetLane) {
+function candidatePlacementError(clip, target, source, targetClip, targetLane, videoStart) {
+  if (videoLocked(source,clip) || laneControls['vis'+targetLane]?.locked || videoLocked(target,targetClip)) return '视频轨道已锁定，请先解锁。';
   if (!shots.includes(target) || (source && (!shots.includes(source) || !source.includes(clip)))
       || (targetClip && (!source || !target.includes(targetClip)))) return '片段位置已变化，请重新拖动。';
   if (targetLane !== undefined) {
     if (!Number.isInteger(targetLane) || targetLane < 0 || targetLane >= maxCandidates) return `最多可创建 ${maxCandidates} 条视频轨道。`;
-    const occupant = target[window.candidateVideoLanes(target).indexOf(targetLane)];
-    if (occupant !== targetClip) return '片段位置已变化，请重新拖动。';
+    const lanes = window.candidateVideoLanes(target);
+    const occupied=target.some((other,index)=>lanes[index]===targetLane && other!==clip &&
+      (videoStart===undefined || other.videoStart===videoStart));
+    if (targetClip ? lanes[target.indexOf(targetClip)] !== targetLane : occupied) {
+      return '片段位置已变化，请重新拖动。';
+    }
   }
+  if (videoStart !== undefined && (!Number.isFinite(videoStart) || videoStart < 0 || videoStart > Number.MAX_SAFE_INTEGER)) return '请在有效的时间轴范围内放置片段。';
   if (source === target) return clip === targetClip || (!targetClip && targetLane === undefined) ? '请选择另一个位置。' : '';
   if (!targetClip && target.length >= maxCandidates) return `每个分镜最多可添加 ${maxCandidates} 条候选。`;
+  if (!targetClip && videoStart===undefined && Object.keys(laneControls).some(key=>/^vis\d+$/.test(key) && laneControls[key].locked)) {
+    try { availableVideoSlots(target,1,targetLane); } catch(error) { return error.message; }
+  }
   if (hasMatchingCandidate(target, clip, targetClip)) return '目标分镜已包含这段素材。';
   if (targetClip && hasMatchingCandidate(source, targetClip, clip)) return '原分镜已包含要换回的素材。';
   return '';
 }
 
-function reviveClip({ id, start, end, volume, speed, matchedDuration, enabled, ranges, layers, transform, videoSubtitles, look, videoLane }, assets) {
+function reviveClip({ id, start, end, volume, speed, matchedDuration, enabled, ranges, layers, transform, videoSubtitles, look, videoLane, videoStart }, assets) {
   const asset = assets.get(id);
   if (!asset) throw new Error('打开的工程缺少画面素材。');
   return { asset, start: start ?? NaN, end: end ?? NaN, volume: volume ?? 100, ...(matchedDuration!==undefined && {matchedDuration}),
-    ...(videoLane !== undefined && {videoLane}),
+    ...(videoLane !== undefined && {videoLane}), ...(videoStart !== undefined && {videoStart}),
     ...(enabled === false && { enabled: false }), ...(ranges && { ranges: structuredClone(ranges) }),
     ...(layers?.length && { layers: structuredClone(layers) }), ...(transform && { transform: structuredClone(transform) }),
     ...(videoSubtitles && {videoSubtitles:structuredClone(videoSubtitles)}),
@@ -3274,6 +3410,7 @@ function montageConfig() {
       return packVoiceCut(asset,edit);
     })),
     ...(mutedVideoTracks.size && { mutedVideoTracks: [...mutedVideoTracks].sort((a, b) => a - b) }),
+    ...(Object.keys(laneControls).length && {trackControls:laneControls}),
     shotTransitions: shots.map((shot) => shotTransitions.get(shot) ?? null),
     ratio: $('#ratio').value,
     resolution: Number($('#resolution').value),
@@ -3566,6 +3703,7 @@ function restoreProject({ name, config, assets = [], folders = [] }, { retainHis
   cutEditor?.close();
   timeline?.reset(!retainHistory);
   mutedVideoTracks.clear();
+  laneControls=window.trackControls.normalize(config.trackControls);
   for (const index of config.mutedVideoTracks ?? []) mutedVideoTracks.add(index);
   for (const [index, shot] of shots.entries()) {
     if (!retainHistory && shot.length && shot.every(validClip)) trackExpansion.set(shot, new Map([['body', false]]));
@@ -4008,6 +4146,7 @@ function applyProcessedAudio(asset, role, shot, track) {
 }
 const processedAudioDrag = 'application/x-jiajian-processed-audio';
 function processedDropTarget(target) {
+  if(target.closest('[data-track-locked]')) return;
   return target.closest('[data-voice-row], .segment-narration-panel, #inspector-panel-narration, #inspector-tab-narration, .sequence-music, #inspector-panel-music, #inspector-tab-music');
 }
 function audioDropPlace(target) {
@@ -4378,6 +4517,7 @@ function pasteTimelineVoice(data,shot,preferredRow) {
     row=empty>=0 ? empty : tracks.length;
   }
   if(row>maxExtraWholeTracks) throw Error('目标口播轨已满。');
+  if(laneControls[(segmented?'voice':'whole')+row]?.locked) throw Error('目标口播轨已锁定。');
   let owner,layers;
   if(segmented) {
     while(tracks.length<=row) tracks.push(null);
@@ -4449,6 +4589,7 @@ function matchNarrationDuration(shot,clip) {
     if (!group.length) {empty++;continue;}
     if (!target) {withoutVoice++;continue;}
     for (const candidate of clip ? [clip] : group) {
+      if(videoLocked(group,candidate)) continue;
       try {
         if (window.voiceAlignment.matchCandidateDuration(candidate,target.seconds)) changed++;
         matched++;
@@ -4519,7 +4660,8 @@ function timelineState() {
   }
   if(segmented) segments.forEach((tracks,i)=>tracks.forEach((asset,j)=>appendCaptions(asset,null,j,i)));
   else whole.forEach((track,j)=>appendCaptions(track.asset,track.subtitles,j,null));
-  return {shots, segments, whole, timelineCaptions, music, musicAt:shots.indexOf(musicStartFrom), segmented, captions,
+  return {shots, segments, whole, timelineCaptions, music, musicAt:shots.indexOf(musicStartFrom), segmented, captions, subtitleStyle:captionInspector.read(),
+    trackControls:monitoredTrackControls(),
     keepAudio:$('#keep-audio').checked,
     voiceSpeed, musicSpeed:(asset)=>musicSpeeds.get(asset?.id) ?? 1,
     musicVolume:(asset)=>volumeOverrides.find((r)=>r.kind==='music' && r.id===asset.id)?.value ?? $('#music-volume').valueAsNumber,
@@ -4674,11 +4816,13 @@ timeline = window.mountEditTimeline($('#timeline-clock'), {
     ? ($('#player-quality').value === 'proxy' ? api.trackProxy(asset.id) : api.playbackProxy(asset.id)) : null,
   draftPlaybackChanged:()=>{syncTimelinePlayButton(); playerTools.sync();},
   draftTick:()=>playerTools.updatePosition(),
-  removeClip:subprojects.removeCandidate,
+  toggleTrackControl,
+  removeClip:removeTrackCandidate,removeMusic:removeMusicTrack,
   selectionChanged:(count)=>{
     const summary=$('#timeline-selection-count');
     summary.hidden=!count;summary.textContent=count ? `已选 ${count} 项` : '';
-    $('#track-delete').disabled=Boolean(operation) || (!count && !trackShot());
+    const shot=trackShot();
+    $('#track-delete').disabled=Boolean(operation) || (!count && (!shot || videoLocked(shot,selected)));
   },
   removeVoice:({asset,shot,row})=>{
     if(shot) {
@@ -4715,17 +4859,22 @@ timeline = window.mountEditTimeline($('#timeline-clock'), {
   copyClip:(clip)=>{
     const copy=structuredClone(serializeClip(clip));
     delete copy.videoLane;
+    delete copy.videoStart;
     return copy;
   }, pasteClip:(data)=>reviveClip(data,editAssets),
   candidatePlacementError,
-  placeCandidate(clip, target, source, targetClip, targetLane) {
+  placeCandidate(clip, target, source, targetClip, targetLane, videoStart) {
     if (operation) return false;
-    const error = candidatePlacementError(clip, target, source, targetClip, targetLane);
+    const error = candidatePlacementError(clip, target, source, targetClip, targetLane, videoStart);
     if (error) throw Error(error);
+    if (source === target) window.pinCandidateLanes(source);
+    if (targetClip) [clip.videoStart, targetClip.videoStart] = [targetClip.videoStart, clip.videoStart];
     if (source === target) {
-      window.pinCandidateLanes(source);
       if (targetClip) [clip.videoLane, targetClip.videoLane] = [targetClip.videoLane, clip.videoLane];
-      else clip.videoLane = targetLane;
+      else {
+        clip.videoLane = targetLane;
+        if (videoStart !== undefined) clip.videoStart = videoStart;
+      }
       if (source.every((item, index) => item.videoLane === index)) {
         for (const item of source) delete item.videoLane;
       }
@@ -4744,6 +4893,7 @@ timeline = window.mountEditTimeline($('#timeline-clock'), {
         subprojects.removeCandidate(source, clip);
       }
       delete clip.videoLane;
+      delete clip.videoStart;
       appendVideoClips(target, [clip], targetLane);
     }
     trackExpansion.get(target)?.delete('body');

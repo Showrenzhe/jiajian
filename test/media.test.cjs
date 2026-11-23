@@ -181,6 +181,84 @@ async function toneAt(media, position) {
   return peak < 100 ? 0 : crossings * 8000 / (pcm.length / 2);
 }
 
+test('free video placements keep narration anchored and extend the canvas beyond the last shot',async(t)=>{
+  const {catalog,output}=await fixtureDirectory(t);
+  const [plan]=planMontage({...montage,ratio:'16:9',keepAudio:true,count:1,musicIds:[],priority:'picture',
+    shots:[[{id:'red',start:0,end:.75,videoStart:.875,videoLane:1}],[{id:'green',start:0,end:.75}]],
+    narrationMode:'segmented',segmentNarrationIds:[['music'],[]]},catalog);
+  assert.equal(plan.duration,1.625);
+  const {results,failures}=await exportBatch([plan],output);
+  assert.deepEqual(failures,[]);
+  const file=results[0].path;
+  const blank=await frameColor(file,.16), overlap=await frameColor(file,1), tail=await frameColor(file,1.54);
+  assert.ok(Math.max(blank.red,blank.green,blank.blue)<8,'moving the first picture leaves the original slot empty');
+  assert.ok(overlap.green>overlap.red*3,'the higher video row covers the lower row');
+  assert.ok(tail.red>tail.green*3,'the moved clip outlasts the last shot');
+  assert.ok(Math.abs(await toneAt(file,'0.15')-660)<60,'segmented narration stays at its original time');
+  assert.equal(await toneAt(file,'0.55'),0);
+  assert.ok(Math.abs(await toneAt(file,'1.01')-440)<60,'original sound follows the new picture time');
+});
+
+test('track controls keep visibility independent of source and picture-in-picture sound',async(t)=>{
+  const {catalog,output}=await fixtureDirectory(t);
+  const config={...montage,ratio:'16:9',shots:[[{id:'red',start:0,end:.6}]],keepAudio:true,musicIds:[],count:1};
+  const [hidden]=planMontage({...config,trackControls:{vis0:{hidden:true}}},catalog);
+  const [muted]=planMontage({...config,mutedVideoTracks:[0]},catalog);
+  const caption={name:'测试字幕',cues:[{start:0,end:300,text:'轨道字幕'}]};
+  const packaged={...config,shots:[[{id:'green',start:0,end:.6,videoSubtitles:caption}]],timelineCaptions:caption,
+    narrationId:'music',subtitles:caption,packaging:{composites:[[{kind:'pip',id:'red',scale:1,laneId:'cam',volume:100}]]}};
+  const [pipSound]=planMontage({...packaged,trackControls:{'local-subtitles':{hidden:true},'pasted-captions':{hidden:true},
+    caption0:{hidden:true}, whole0:{muted:true}, 'layer-pip-cam':{hidden:true}}},catalog);
+  const [pipPicture]=planMontage({...packaged,trackControls:{'layer-pip-cam':{muted:true}}},catalog);
+  assert.equal(pipSound.subtitles,null);
+  assert.equal(pipSound.videoSubtitles,undefined);
+  assert.deepEqual(pipSound.layers.map(l=>l.kind),['sound']);
+  assert.equal(pipPicture.layers[0].kind,'pip');
+  assert.equal(pipPicture.layers[0].volume,0);
+  const {results,failures}=await exportBatch([hidden,muted,pipSound],output);
+  assert.deepEqual(failures,[]);
+  const [black,red,green]=await Promise.all(results.map(r=>frameColor(r.path,.2)));
+  assert.ok(Math.max(black.red,black.green,black.blue)<8);
+  assert.ok(red.red>3*red.green && green.green>3*green.red);
+  const [sound,mute,pip]=await Promise.all(results.map(r=>toneAt(r.path,'0.2')));
+  assert.ok(Math.abs(sound-440)<50 && Math.abs(pip-440)<50);
+  assert.equal(mute,0);
+});
+
+test('track controls choose solo candidates, narration and music by physical row',async(t)=>{
+  const {catalog}=await fixtureDirectory(t);
+  const config={...montage,count:1,musicIds:['music','otherMusic'],narrationMode:'segmented',
+    segmentNarrationIds:[['music','otherMusic'],['music']],trackControls:{vis1:{solo:true},voice1:{solo:true},music1:{solo:true}}};
+  for (const selection of ['ordered','random']) {
+    const [plan]=planMontage({...config,segmentNarrationSelection:selection},catalog,()=>.99);
+    assert.equal(plan.clips[0].asset,catalog.get('blue'));
+    assert.equal(plan.clips[0].narration,catalog.get('otherMusic'));
+    assert.equal(plan.clips[1].hiddenVideo,true);
+    assert.equal(plan.clips[1].voiceGain,0);
+    assert.equal(plan.music,catalog.get('otherMusic'));
+    assert.throws(()=>planMontage({...config,count:2,segmentNarrationSelection:selection},catalog),/生成数量/);
+  }
+  const [whole]=planMontage({...config,narrationMode:'whole',narrationId:'music',extraWholeTracks:[{narrationId:'otherMusic'}],
+    trackControls:{whole1:{solo:true}}},catalog,()=>0);
+  assert.equal(whole.wholeTrack,2);
+  assert.equal(whole.narration,catalog.get('otherMusic'));
+  assert.equal(whole.musicVolume,0);
+});
+
+test('track controls reveal underlying footage during hidden portions of a voice-aligned clip',async(t)=>{
+  const {catalog,output}=await fixtureDirectory(t);
+  const [plan]=planMontage({...montage,ratio:'16:9',count:1,musicIds:[],priority:'voice',narrationMode:'segmented',
+    segmentNarrationIds:[[],['music']],trackControls:{vis0:{hidden:true}},
+    shots:[[{id:'green',videoLane:2,start:0,end:.9}],
+      [{id:'red',videoStart:0,start:0,end:.17},{id:'blue',start:0,end:.3}]]},catalog,()=>0);
+  assert.deepEqual(plan.clips[1].visuals.map(v=>v.asset),[catalog.get('red'),catalog.get('blue')]);
+  const {results,failures}=await exportBatch([plan],output);
+  assert.deepEqual(failures,[]);
+  const first=await frameColor(results[0].path,.04), second=await frameColor(results[0].path,.29);
+  assert.ok(first.green>3*first.red && first.green>3*first.blue);
+  assert.ok(second.blue>3*second.green);
+});
+
 test('the track proxy contains a smaller seekable picture with the original duration, cadence and sound', async (t) => {
   const { catalog, output } = await fixtureDirectory(t);
   const hd = path.join(output, 'hd.mp4'), proxy = path.join(output, 'proxy.mp4');
