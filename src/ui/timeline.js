@@ -406,18 +406,112 @@ window.mountEditTimeline = function (host, ctx) {
     if (host.clientWidth) clipboardButtons(d,candidateNodes.get(clip),{index,time:clip.videoStart ?? shotTimes[index]});
     d.body.append(btn(clip.enabled===false ? '参与混剪' : '排除此候选',()=>{ctx.toggleClip(clip);d.wrapper.close();}),
       btn('候选包装',()=>{d.wrapper.close();editLayer({key:'local'});}),
+      btn('变换、蒙版与关键帧',()=>{d.wrapper.close();ctx.editCandidateMotion(clip);}),
+      btn('AI 前景抠像',()=>{d.wrapper.close();ctx.cutoutCandidate(clip);}),
       btn('截取封面帧',()=>{d.wrapper.close();ctx.captureCover(clip);}),
       btn('画面处理 · 调色 / 滤镜 / 特效',()=>{d.wrapper.close();ctx.appearance(clip);}));
     if(clip.asset.kind==='video') d.body.append(btn('裁剪素材',()=>{d.wrapper.close();ctx.cut(clip);}),btn('AI 拆分',()=>{d.wrapper.close();ctx.scenes(clip.asset);}),
       btn('自动切片',()=>{d.wrapper.close();ctx.slices(clip.asset);}),btn('视频字幕',()=>{d.wrapper.close();ctx.captions(clip);}));
     d.wrapper.showModal();
   }
+  const videoMenu=document.querySelector('#video-track-menu');
+  const videoCellSelector='.sequence-video [data-candidate-index]';
+  let menuCell,keyboardCell;
+  function closeVideoMenu() {
+    if(videoMenu.matches(':popover-open')) videoMenu.hidePopover();
+  }
+  // An empty project renders guides before it owns any real shots.
+  function adjacentShotIndex(slot,action,index) {
+    if(!slot.shot) return 0;
+    return action==='left' ? index : index+1;
+  }
+  function showVideoMenu(cell,x,y) {
+    const slot=candidateSlots.get(cell);
+    if(!slot || ctx.busy() || cell.closest('[data-track-locked]')) return;
+    menuCell=cell;
+    keyboardCell=cell;
+    const state=ctx.state();
+    const index=state.shots.indexOf(slot.shot);
+    if(index<0 && state.shots.length) return;
+    for(const button of videoMenu.querySelectorAll('button')) {
+      const action=button.dataset.action;
+      const reason=action==='delete' ? (slot.clip ? '' : '此处没有视频片段。')
+        : ctx.insertShotError(adjacentShotIndex(slot,action,index));
+      button.disabled=Boolean(reason);
+      button.title=reason;
+    }
+    (slot.clip ? cell : host).focus({preventScroll:true});
+    const fromPointer=x!==undefined;
+    videoMenu.toggleAttribute('data-pointer-open',fromPointer);
+    videoMenu.showPopover();
+    const bounds=cell.getBoundingClientRect();
+    x ??= bounds.left;
+    y ??= bounds.bottom;
+    const left=Math.max(0,Math.min(x,innerWidth-videoMenu.offsetWidth));
+    const top=Math.max(0,Math.min(y,innerHeight-videoMenu.offsetHeight));
+    videoMenu.style.left=left+'px';
+    videoMenu.style.top=top+'px';
+    videoMenu.style.transformOrigin=(x-left)+'px '+(y-top)+'px';
+    videoMenu.style.setProperty('--menu-shift-y',y-top>videoMenu.offsetHeight/2 ? '3px' : '-3px');
+    const initialFocus=fromPointer ? videoMenu : videoMenu.querySelector('button:enabled') ?? videoMenu;
+    initialFocus.focus({preventScroll:true});
+  }
+  host.addEventListener('contextmenu',event=>{
+    let target=event.target;
+    if(target.closest('.sequence-cursor')) {
+      target=document.elementsFromPoint(event.clientX,event.clientY).find(node=>node.closest('.sequence-video'));
+    }
+    if(!target?.closest('.sequence-video')) return;
+    event.preventDefault();
+    const cell=target.closest(videoCellSelector);
+    if(cell) showVideoMenu(cell,event.clientX,event.clientY);
+    else closeVideoMenu();
+  },true);
+  host.addEventListener('click',event=>{keyboardCell=event.target.closest(videoCellSelector);},true);
   host.addEventListener('keydown',event=>{
     if(event.key!=='ContextMenu' && !(event.key==='F10' && event.shiftKey)) return;
-    const slot=candidateSlots.get(event.target.closest('.sequence-video [data-move-candidate]'));
-    if(!slot?.clip) return;
+    const cell=event.target.closest(videoCellSelector) ?? (event.target===host && keyboardCell?.isConnected ? keyboardCell : null);
+    if(!cell) return;
     event.preventDefault();
-    openCandidateActions(slot.shot,slot.clip);
+    showVideoMenu(cell);
+  });
+  videoMenu.addEventListener('click',event=>{
+    const button=event.target.closest('button:enabled');
+    if(!button) return;
+    const cell=menuCell, slot=candidateSlots.get(cell);
+    closeVideoMenu();
+    if(!cell?.isConnected || !slot || ctx.busy() || cell.closest('[data-track-locked]')) return;
+    const state=ctx.state(), index=state.shots.indexOf(slot.shot);
+    if(state.trackControls?.['vis'+slot.lane]?.locked) return;
+    if(index<0 && state.shots.length) return;
+    if(button.dataset.action==='delete') {
+      if(!slot.clip || !slot.shot.includes(slot.clip)) return;
+      ctx.removeClip(slot.shot,slot.clip);
+      ctx.afterRemove();
+    } else {
+      ctx.insertShot(adjacentShotIndex(slot,button.dataset.action,index));
+    }
+  });
+  videoMenu.addEventListener('keydown',event=>{
+    if(event.key==='Escape' || event.key==='Tab') {
+      closeVideoMenu();
+      (menuCell?.isConnected && menuCell.matches('button') ? menuCell : host).focus({preventScroll:true});
+      if(event.key==='Tab') return;
+    } else {
+      if(!['ArrowDown','ArrowUp','Home','End'].includes(event.key)) return;
+      const buttons=[...videoMenu.querySelectorAll('button:enabled')];
+      const index=buttons.indexOf(document.activeElement);
+      if(buttons.length) {
+        let next;
+        if(event.key==='Home') next=0;
+        else if(event.key==='End') next=buttons.length-1;
+        else if(event.key==='ArrowDown') next=(index+1)%buttons.length;
+        else next=index<=0 ? buttons.length-1 : index-1;
+        buttons[next].focus({preventScroll:true});
+      }
+    }
+    event.preventDefault();
+    event.stopPropagation();
   });
   host.addEventListener('keydown',event=>{
     if(!(event.ctrlKey || event.metaKey) || event.shiftKey || event.altKey || event.isComposing || ctx.busy() ||
@@ -570,6 +664,7 @@ window.mountEditTimeline = function (host, ctx) {
   window.addEventListener('pointercancel',(event)=>{if (shotDrag?.id===event.pointerId) finishShotDrag();},true);
   function draw() {
     refreshFrame=undefined;
+    closeVideoMenu();
     if (!host.clientWidth) return;
     finishShotDrag();
     finishCandidateDrag(false);
@@ -609,7 +704,7 @@ window.mountEditTimeline = function (host, ctx) {
         const kind=layer?.kind;
         const typeIcon=cls==='sequence-video'?'track-video':cls==='sequence-voice'?'audio':
           cls==='sequence-music'||kind==='sound'?'track-music':cls==='sequence-caption'||kind==='text'?'track-type':
-          kind==='pip'||kind==='sticker'?'image':'tracks';
+          kind==='pip'||kind==='sticker'?'image':cls==='sequence-shots'?'track-shot':'tracks';
         function icon(id) {
           const svg=document.createElementNS('http://www.w3.org/2000/svg','svg');
           const use=document.createElementNS(svg.namespaceURI,'use');
@@ -767,7 +862,8 @@ window.mountEditTimeline = function (host, ctx) {
         label.append(name,el('span','sequence-clip-duration',match || duration));
         b.replaceChildren(label);
         b.title=clip.asset.name+' · '+(match || '候选时长 '+duration)+(clip.asset.kind==='video' ? ' · 原片 '+clip.asset.duration.toFixed(2)+' 秒' : '')+' · 拖至视频轨下方新建轨道，Alt＋上下键换轨，Alt＋左右键移动分镜中的候选';
-        b.setAttribute('aria-keyshortcuts','Control+C Control+V Alt+ArrowLeft Alt+ArrowRight Alt+ArrowUp Alt+ArrowDown');
+        b.setAttribute('aria-haspopup','menu');
+        b.setAttribute('aria-keyshortcuts','Shift+F10 Control+C Control+V Alt+ArrowLeft Alt+ArrowRight Alt+ArrowUp Alt+ArrowDown');
         const frames=el('span','sequence-frames');
         const count=Math.max(1,Math.min(6,Math.ceil(span*timeScale/76)));
         const {ranges,rate}=pictureRanges(clip,i);
@@ -1850,7 +1946,8 @@ window.mountEditTimeline = function (host, ctx) {
   function refreshMonitoring() {
     if(draftTransport.state()) draftTransport.updatePlan(draftPlan());
   }
-  return {refresh,refreshMonitoring,syncPlayer,selectClip,locateMaterial,editCaptions,openCardMatchMenu,openCandidateActions,materialVideoDrop,showLibraryLane,clearLibraryLane,previewLibrarySlot,removeSelected:selection.removeSelection,clearSelection:selection.clear,get selectionCount(){return selection.size;},textSettings:()=>textSettings(ctx.state()),
+  return {refresh,refreshMonitoring,syncPlayer,selectClip,locateMaterial,editCaptions,openCardMatchMenu,openCandidateActions,materialVideoDrop,showLibraryLane,clearLibraryLane,previewLibrarySlot,removeSelected:selection.removeSelection,clearSelection:selection.clear,get selectionCount(){return selection.size;},
+    get selectedCandidate(){return candidateSlots.get(selection.single())?.clip;},textSettings:()=>textSettings(ctx.state()),
     toggleDraftPlayback:()=>draftTransport.toggle(draftTransport.playing()?[]:draftPlan(),playTime),
     seekDraft:draftTransport.seek,draftState:draftTransport.state,
     stopDraftPlayback:draftTransport.stop,isDraftPlaying:draftTransport.playing,

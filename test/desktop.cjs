@@ -653,7 +653,12 @@ async function run() {
   await waitFor('document.querySelectorAll("#timeline-clock .sequence-shots .sequence-block").length===3', '时间线应与三个分镜一一对应');
   assert.equal(await runInWindow('document.querySelector("#timeline-view").value'), 'time');
   await require('./timeline-interaction.cjs')(win, runInWindow, waitFor, checkFold);
-  await runInWindow('document.querySelector(".sequence-video .sequence-block").click();document.querySelector("#clip-actions").click()');
+  async function openCandidateActions() {
+    await navigate('#track-more');
+    await navigate('#clip-actions');
+  }
+  await click('.sequence-video .sequence-block');
+  await openCandidateActions();
   await runInWindow('[...document.querySelectorAll(".sequence-dialog[open] button")].find(b=>b.textContent==="候选包装").click()');
   await runInWindow(`(() => {const d=document.querySelector(".sequence-dialog[open]");d.querySelector("textarea").value="产品展示";d.querySelector("form").requestSubmit();})()`);
   await waitFor('document.querySelector("#timeline-clock .kind-text")?.textContent.includes("产品展示")', '候选文字应出现在独立轨道');
@@ -708,16 +713,30 @@ async function run() {
   assert.equal(await runInWindow('document.querySelector("#preview").videoWidth'), 320);
   await runInWindow('document.querySelector("#material-list .material-tile").click()');
   assert.equal(await runInWindow('document.querySelector("#preview-heading").textContent'), '素材预览');
-  assert.ok(await runInWindow('document.querySelector("#clip-inspector").hidden'), '素材库原片应独立于轨道裁剪参数');
+  assert.ok(await runInWindow('!document.querySelector("#clip-inspector") && document.querySelector("#ratio").checkVisibility()'), '素材预览时画面页保留成片画幅设置');
   await runInWindow('document.querySelector("#shots .asset-name").click()');
   assert.equal(await runInWindow('document.querySelector("#preview-heading").textContent'), '轨道预览');
-  assert.ok(await runInWindow('!document.querySelector("#clip-inspector").hidden'), '点击轨道素材应打开画面属性');
-  await runInWindow('document.querySelector("#clip-enabled").click()');
+  assert.ok(await runInWindow('document.querySelector("#ratio").checkVisibility()'), '选择轨道画面后仍可调整成片画幅');
+  await openCandidateActions();
+  await runInWindow('[...document.querySelectorAll(".sequence-dialog[open] button")].find(b=>b.textContent==="排除此候选").click()');
   assert.ok(await runInWindow('document.querySelector("#prepare-preview").disabled && document.querySelector("#combinations").textContent.includes("分镜 1 未勾选")'));
-  await runInWindow('document.querySelector("#clip-enabled").click(); document.querySelector("#clip-track-muted").click()');
+  await openCandidateActions();
+  await runInWindow('[...document.querySelectorAll(".sequence-dialog[open] button")].find(b=>b.textContent==="参与混剪").click()');
+  const trackView = value => runInWindow(`(() => { const v=document.querySelector("#timeline-view"); v.value=${JSON.stringify(value)}; v.dispatchEvent(new Event("change")); })()`);
+  await trackView('time');
+  const muteVideo = '[data-control-key="vis0"] [data-track-action="muted"]';
+  await waitFor(`(() => {
+    const b=document.querySelector('${muteVideo}');
+    if (!b?.checkVisibility()) return false;
+    b.scrollIntoView({block:"center",inline:"nearest"});
+    const r=b.getBoundingClientRect();
+    return b.contains(document.elementFromPoint(r.x+r.width/2,r.y+r.height/2));
+  })()`, '时间线显示后视频轨静音按钮可用');
+  await navigate(muteVideo);
   assert.equal(await runInWindow('document.querySelector("#preview").volume'), 0);
-  await runInWindow('document.querySelector("#clip-track-muted").click()');
+  await navigate(muteVideo);
   assert.equal(await runInWindow('document.querySelector("#preview").volume'), 1);
+  await trackView('cards');
   const openPlayerTools = async () => {
     if (!await runInWindow('document.querySelector("#player-next").checkVisibility()')) await navigate('#player-more');
   };

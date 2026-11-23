@@ -515,7 +515,6 @@ function preview(clip, heading, materialId) {
   $('.preview-readout-name').textContent = clip.asset.name;
   updatePreviewTimecode(isImage ? 0 : clip.start);
   if (mode === 'montage' && heading !== '成片预览') activateInspectorTab($('#inspector-tab-visual'));
-  syncClipInspector();
   playerTools.reset();
   timeline?.selectClip(clip);
   locatedMaterial = heading === '素材预览' ? clip.asset.sourceKey ?? clip.asset.id : undefined;
@@ -560,7 +559,6 @@ function clearPreview() {
   $('#preview-name').hidden = true;
   $('#preview-hint').textContent = mode === 'montage' ? '在素材库或轨道选择一个素材' : '选择素材进行预览';
   $('#preview-hint').hidden = false;
-  syncClipInspector();
   playerTools.reset();
   updateMaterialSelection();
   updateTrackSelection();
@@ -656,35 +654,11 @@ function openCandidateCut(clip) {
   catch (error) { say(error.message); return false; }
 }
 
-function syncClipInspector() {
-  const inspector = $('#clip-inspector');
-  const shot = trackShot();
-  inspector.hidden = !shot;
-  if (!shot) return;
-  inspector.disabled = videoLocked(shot,selected);
-  const { asset } = selected;
-  const image = asset.kind === 'image';
-  $('#clip-inspector-name').textContent = asset.name;
-  $('#clip-inspector-meta').textContent = describe(asset);
-  $('#clip-enabled').checked = selected.enabled !== false;
-  $('#clip-track-muted').checked = mutedVideoTracks.has(window.candidateVideoLanes(shot)[shot.indexOf(selected)]);
-  $('#clip-end-label').textContent = image ? '停留（秒）' : '出点（秒）';
-  for (const input of inspector.querySelectorAll('[data-clip-field]')) {
-    const key = input.dataset.clipField;
-    input.parentElement.hidden = image && key !== 'end';
-    if (key === 'speed') { input.removeAttribute('max'); input.step='any'; }
-    if (key !== 'speed') input.max = image ? maxStillSeconds : asset.duration;
-    const value=image && key==='end' ? selected.matchedDuration ?? selected.end : selected[key];
-    if (!Object.is(input.valueAsNumber, value)) input.value = Number.isFinite(value) ? value : '';
-  }
-}
-
 function setCandidateEnabled(clip, enabled) {
   const owner=shots.find(shot=>shot.includes(clip));
   if (operation || !owner || videoLocked(owner,clip)) return;
   if (enabled) delete clip.enabled;
   else clip.enabled = false;
-  syncClipInspector();
   renderLists();
 }
 
@@ -692,7 +666,6 @@ function setVisualTrackMuted(index, muted) {
   if (operation || !Number.isInteger(index) || index < 0 || index >= maxCandidates) return;
   if (muted) mutedVideoTracks.add(index);
   else mutedVideoTracks.delete(index);
-  syncClipInspector();
   updateTrackMonitoring();
 }
 
@@ -726,12 +699,10 @@ function toggleTrackControl(key, action, on) {
   if(on) flags[action]=true; else delete flags[action];
   laneControls={...laneControls};
   if(Object.keys(flags).length) laneControls[key]=flags; else delete laneControls[key];
-  syncClipInspector();
   if(action==='locked') updateControls(undefined,true);
   else updateTrackMonitoring();
 }
 
-$('#clip-enabled').addEventListener('change', (event) => setCandidateEnabled(selected, event.target.checked));
 let foregroundProgress;
 async function cutoutAsset(asset) {
   if (operation || !asset) return null;
@@ -763,39 +734,22 @@ async function cutoutAsset(asset) {
     foregroundProgress = null; modal.close(); window.afterDialogExit(modal); operation = ''; updateControls();
   }
 }
-$('#clip-foreground').addEventListener('click', async () => {
-  const clip = selected;
-  if (!trackShot() || operation) return;
+async function cutoutCandidate(clip) {
   const asset = await cutoutAsset(clip.asset);
   if (asset && shots.some((shot) => shot.includes(clip))) {
     clip.asset = asset;
     if (asset.kind === 'video') clip.end = Math.min(clip.end, asset.duration);
     preview(clip, '轨道预览'); renderLists(); say('已将当前候选替换为透明前景素材。');
   }
-});
-$('#clip-motion').addEventListener('click', async()=>{
-  const clip=selected;
-  if (!trackShot() || operation) return;
+}
+async function editCandidateMotion(clip) {
   const duration=clip.end-clip.start;
   const changed=await window.editLayerMotion({kind:'candidate',...clip.transform,start:0,end:duration}, {url:clip.asset.url,kind:clip.asset.kind,duration,sourceStart:clip.start});
   if (changed && shots.some((shot)=>shot.includes(clip))) {
     clip.transform=Object.fromEntries(['x','y','scale','rotation','opacity','keyframes','mask'].filter((key)=>changed[key]!=null).map((key)=>[key,changed[key]]));
     renderLists();
   }
-});
-$('#clip-track-muted').addEventListener('change', (event) => {
-  const shot = trackShot();
-  if (shot) setVisualTrackMuted(window.candidateVideoLanes(shot)[shot.indexOf(selected)], event.target.checked);
-});
-
-$('#clip-inspector').addEventListener('input', (event) => {
-  const key = event.target.dataset.clipField;
-  if (!key || !trackShot() || operation) return;
-  const input = clipRows.get(selected)?.querySelector(`.${key}`);
-  if (!input) return;
-  input.value = event.target.value;
-  input.dispatchEvent(new Event('input'));
-});
+}
 
 function assetRow(clip, list, trim, lane) {
   const row = template('#asset-template');
@@ -856,7 +810,6 @@ function assetRow(clip, list, trim, lane) {
         if (clip.ranges && field!=='speed' && validClip(clip)) clip.ranges=window.trimRetainedRanges(clip.ranges,clip.start,clip.end);
         updateDuration();
         if (field === 'speed' && selected === clip && Number.isFinite(clip.speed) && clip.speed >= 0.5) player.playbackRate = Math.min(16,clip.speed);
-        if (selected === clip) syncClipInspector();
         row.classList.toggle('invalid', !validClip(clip));
         updateControls(input);
       });
@@ -866,10 +819,20 @@ function assetRow(clip, list, trim, lane) {
   return row;
 }
 
-function insertShot(index,clips=[]) {
-  if (operation || laneControls['shot-strip']?.locked || shots.length>=maxShots || index<0 || index>shots.length) return;
+function insertShotError(index) {
+  if (operation) return '请等待当前操作完成。';
+  if (laneControls['shot-strip']?.locked) return '分镜轨道已锁定。';
+  if (shots.length>=maxShots) return '分镜数量已达上限。';
+  if (!Number.isInteger(index) || index<0 || index>shots.length) return '分镜位置已改变。';
   const rows=attachedScript?.segmented;
-  if (rows && index<rows.length && rows.length>=maxShots) {say('分段台词已达上限，无法在此插入分镜。');return;}
+  if (rows && index<rows.length && rows.length>=maxShots) return '分段台词已达上限，无法在此插入分镜。';
+  return '';
+}
+
+function insertShot(index,clips=[]) {
+  const error=insertShotError(index);
+  if (error) {say(error);return;}
+  const rows=attachedScript?.segmented;
   const before=[...shots];
   shots.splice(index,0,clips);
   subprojects.reorderVoiceFollows(before);
@@ -1984,6 +1947,7 @@ function openFolderNameDialog(row) {
   const dialog = $('#material-folder-dialog'), input = $('#material-folder-name');
   folderNaming = {row, opener:document.activeElement};
   $('#material-folder-title').textContent = row ? '重命名文件夹' : '新建文件夹';
+  $('#material-folder-submit').textContent = row ? '保存' : '新建';
   input.value = row?.name ?? folderTree.uniqueName('新建文件夹', visibleLibraryFolders());
   $('#material-folder-error').hidden = true;
   dialog.showModal();
@@ -2093,7 +2057,8 @@ function appendVideoClips(shot, clips, targetLane, videoSlot) {
 
 function removeTrackCandidate(shot,clip) {
   if(videoLocked(shot,clip)) return;
-  if(mutedVideoTracks.size || Object.keys(laneControls).some(key=>/^vis\d+$/.test(key))) window.pinCandidateLanes(shot);
+  // Removing a lower candidate leaves the remaining tracks in their physical lanes.
+  window.pinCandidateLanes(shot);
   subprojects.removeCandidate(shot,clip);
 }
 
@@ -4931,8 +4896,19 @@ function matchNarrationDuration(shot,clip) {
 }
 
 $('#match-all-voice-duration').addEventListener('click',()=>matchNarrationDuration());
-$('#clip-actions').addEventListener('click',()=>timeline.openCandidateActions(trackShot(),selected));
-// A secondary click on a picture lane must preserve keyboard focus as well as the selection.
+function currentCandidateActionTarget() {
+  const clip = $('#timeline-view').value === 'time' ? timeline.selectedCandidate : selected;
+  const shot = clip && shots.find(group => group.includes(clip));
+  if (shot && !operation && !videoLocked(shot, clip)) return { shot, clip };
+}
+$('#track-more-options').addEventListener('beforetoggle', event => {
+  if (event.newState === 'open') $('#clip-actions').disabled = !currentCandidateActionTarget();
+});
+$('#clip-actions').addEventListener('click', () => {
+  const target = currentCandidateActionTarget();
+  if (target) timeline.openCandidateActions(target.shot, target.clip);
+});
+// Keep a secondary click from selecting or previewing a different picture.
 function isPictureLane(event) {
   if (event.target.closest('.sequence-video,#visual-track-lane')) return true;
   if (!event.target.closest('.sequence-cursor')) return false;
@@ -4941,8 +4917,8 @@ function isPictureLane(event) {
 tracksPanel.addEventListener('mousedown',event=>{
   if (event.button===2 && isPictureLane(event)) event.preventDefault();
 });
-tracksPanel.addEventListener('contextmenu',event=>{
-  if (isPictureLane(event)) event.preventDefault();
+visualTrackLane.addEventListener('contextmenu',event=>{
+  event.preventDefault();
 },true);
 visualTrackLane.addEventListener('keydown',event=>{
   if (event.key!=='ContextMenu' && !(event.key==='F10' && event.shiftKey)) return;
@@ -5304,7 +5280,7 @@ timeline = window.mountEditTimeline($('#timeline-clock'), {
   showAxis:()=>$('#track-preview-axis').checked,
   shotSettings:(shot,value)=>shotProperties.set(shot,value), newShot:()=>$('#add-shot').click(),
   createAt:(i)=>{if(!operation && i>=0 && i<maxShots){while(shots.length<=i) shots.push([]);renderLists();}},
-  move:moveShot, insertShot, notify:say, segmentVoiceMatchTarget, matchNarrationDuration,
+  move:moveShot, insertShot, insertShotError, notify:say, segmentVoiceMatchTarget, matchNarrationDuration,
   copyClip:(clip)=>{
     const copy=structuredClone(serializeClip(clip));
     delete copy.videoLane;
@@ -5378,7 +5354,7 @@ timeline = window.mountEditTimeline($('#timeline-clock'), {
   mute:setVisualTrackMuted, toggleClip:(clip)=>setCandidateEnabled(clip,clip.enabled===false),
   clear:()=>{clearPreview();activateInspectorTab($('#inspector-tab-visual'));},
   pick:(kind,done)=>pick(kind,1,([asset])=>{if(asset) done(asset);}),
-  cutout:cutoutAsset,
+  cutout:cutoutAsset, cutoutCandidate, editCandidateMotion,
   voice:(voice)=>{activateInspectorTab($('#inspector-tab-narration'));if(!voice.shot){$('#voice-follow-track').value=String(voice.row);syncVoiceFollow();}}, editVoice:openTimelineVoice,
   music:()=>activateInspectorTab($('#inspector-tab-music')),
   setVoiceSpeed, setMusicSpeed:(asset,speed)=>{if(speed===1) musicSpeeds.delete(asset.id);else musicSpeeds.set(asset.id,speed);},
@@ -5531,7 +5507,6 @@ async function editVideoCaptions(clip) {
     renderLists();
   }
 }
-$('#clip-captions').addEventListener('click',()=>editVideoCaptions(selected));
 $('#recognize-voice-captions').addEventListener('click',async()=>{
   const asset=reviewNarration;
   if(!asset) return;

@@ -726,7 +726,8 @@ async function check() {
     await wait(query('#notice')+'.textContent.includes("已打开工程") && '+clipNamed(cell(0,2),files.red),'重开后显示两个空位和第三行的原片段');
     assert.equal(await read(rows),3);
     await click(cell(0,2));
-    assert.equal(await read(query('#clip-track-muted')+'.checked'),false,'移出静音行的片段应恢复其原音量');
+    const thirdLaneMute='[data-control-key="vis2"] [data-track-action="muted"]';
+    assert.equal(await read(query(thirdLaneMute)+'.ariaPressed'),'false','移出静音行的片段应恢复其原音量');
     const draftVideo=query('.draft-transport-preview:not([hidden]) video.draft-main');
     await click('#timeline-play');
     await wait(draftVideo+'?.readyState>=2 && !'+draftVideo+'.paused','轨道预览应播放红色素材');
@@ -747,9 +748,9 @@ async function check() {
     const sound=await ffmpeg(['-ss','0.3','-i',renderedFile,'-t','0.2','-vn','-ac','1','-ar','8000','-f','s16le','pipe:1']);
     assert.ok(sound.length>1000 && Array.from({length:sound.length/2},(_,i)=>Math.abs(sound.readInt16LE(i*2))).some(v=>v>100),
       '第一镜移出静音行后，导出文件能读到红色素材的原声');
-    await click('#clip-track-muted');
+    await click(thirdLaneMute);
     const muted=(await loadProject(await saveAs('第三行静音')));
-    assert.deepEqual(muted.config.mutedVideoTracks,[0,2],'片段检查器应切换当前物理视频行的静音');
+    assert.deepEqual(muted.config.mutedVideoTracks,[0,2],'轨道头应切换所在物理视频行的静音');
     assert.ok(createPreviewBatch(muted.config,muted.assets).plans[0].clips.every(c=>c.volume===0));
 
     await read(query('#timeline-tracks-panel')+'.scrollTop=0');
