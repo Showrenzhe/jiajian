@@ -32,10 +32,12 @@ async function dragLibraryItem(contents, source, target, mimeType, hover, cancel
 // Use Chromium's input pipeline so a hidden, disabled or covered control cannot pass a navigation test.
 async function clickVisible(contents, selector, button = 'left') {
   const point = await contents.executeJavaScript(`(async () => {
-    const button = document.querySelector(${JSON.stringify(selector)});
-    if (!button?.checkVisibility() || button.matches(':disabled') || button.closest('[inert]')) return null;
-    button.scrollIntoView({ block: 'nearest', inline: 'nearest', behavior: 'instant' });
+    const selector = ${JSON.stringify(selector)};
+    document.querySelector(selector)?.scrollIntoView({ block: 'nearest', inline: 'nearest', behavior: 'instant' });
     await new Promise(requestAnimationFrame);
+    // Scrolling can rebuild the timeline, so hit-test the control on the painted frame.
+    const button = document.querySelector(selector);
+    if (!button?.checkVisibility() || button.matches(':disabled') || button.closest('[inert]')) return null;
     const { x, y, width, height } = button.getBoundingClientRect();
     const point = { x: x + width / 2, y: y + height / 2 };
     return button.contains(document.elementFromPoint(point.x, point.y)) ? point : null;
