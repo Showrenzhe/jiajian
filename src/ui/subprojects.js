@@ -8,7 +8,8 @@ function createSubprojects({ shots, serialize, revive,voiceIO }) {
   let mainVoice;
   const keyVoice=(state={})=>({whole:state.whole,segments:new WeakMap((state.segments??[]).map(({index,items})=>[shots[index],items]))});
   const packVoice=(state)=>state && ({...(state.whole && {whole:state.whole}),segments:shots.flatMap((s,index)=>state.segments.has(s)?[{index,items:state.segments.get(s)}]:[])});
-  const same=(a,b)=>JSON.stringify(a)===JSON.stringify(b);
+  const same = typeof module === 'object' && module.exports ? require('./edit-history.js').sameEditSnapshot : window.sameEditSnapshot;
+  const { pinCandidateLanes } = typeof module === 'object' && module.exports ? require('./track-tools.js') : window;
   const hasVoice=(items)=>items?.some((item)=>item?.id || item?.srt);
   function ownRows(current,base,trimWhole) {
     if(same(current,base)||(!hasVoice(current)&&hasVoice(base)))return;
@@ -57,7 +58,7 @@ function createSubprojects({ shots, serialize, revive,voiceIO }) {
       const base = main.get(shot) ?? [];
       const clips = snapshot(shot);
       if (clips.length) active.emptyShots?.delete(shot);
-      if ((clips.length && JSON.stringify(clips) !== JSON.stringify(base)) || active.emptyShots?.has(shot)) active.shots.set(shot, clips);
+      if ((clips.length && !same(clips, base)) || active.emptyShots?.has(shot)) active.shots.set(shot, clips);
       else active.shots.delete(shot);
     }
   }
@@ -99,6 +100,8 @@ function createSubprojects({ shots, serialize, revive,voiceIO }) {
   function removeCandidate(shot, clip) {
     const index=shot.indexOf(clip);
     if(index<0) return;
+    // Preserve the other physical slots when removing a clip from a manually arranged shot.
+    if (shot.some(item => item.videoLane !== undefined) && shot.some(item => item.videoLane === undefined)) pinCandidateLanes(shot);
     shot.splice(index,1);
     if (active && !shot.length && main.get(shot)?.length) {
       active.emptyShots ??= new WeakSet();
@@ -106,7 +109,11 @@ function createSubprojects({ shots, serialize, revive,voiceIO }) {
     }
   }
   function removeMaterialReferences(ids) {
-    for (const shot of shots) for (const clip of [...shot]) if (ids.has(clip.asset.id)) removeCandidate(shot,clip);
+    for (const shot of shots) {
+      const matches = shot.filter(clip => ids.has((clip.sourceEdit?.asset ?? clip.asset).id));
+      if (matches.length && matches.length < shot.length) pinCandidateLanes(shot);
+      for (const clip of matches) removeCandidate(shot, clip);
+    }
   }
   function pack() {
     if (!projects.length) return undefined;

@@ -19,6 +19,8 @@ async function run() {
   await ffmpeg(['-f', 'lavfi', '-i', 'testsrc2=size=320x240:rate=24', '-t', '1', '-c:v', 'libx264', '-threads', '2', movie]);
   let pick;
   let pickerCalls = 0;
+  let savePickerCalls = 0;
+  let cancelSave = false;
   const win = await launchDesktop({ show: false, dataDirectory: path.join(folder, 'profile'), dialogs: {
     async showOpenDialog() {
       pickerCalls++;
@@ -26,7 +28,7 @@ async function run() {
       pick = undefined;
       return { canceled: !choice, filePaths: choice ? [choice] : [] };
     },
-    async showSaveDialog() { return { canceled: false, filePath: project }; },
+    async showSaveDialog() { savePickerCalls++; return { canceled: cancelSave, filePath: project }; },
   } });
   const wc = win.webContents;
   wc.debugger.attach();
@@ -51,6 +53,19 @@ async function run() {
     await fs.mkdir(process.env.JIAJIAN_NAVIGATION_FRAMES, { recursive: true });
     await fs.writeFile(path.join(process.env.JIAJIAN_NAVIGATION_FRAMES, label + '.png'), (await wc.capturePage()).toPNG());
   }
+  async function quickSave(expected) {
+    for (const type of ['rawKeyDown', 'keyUp']) await wc.debugger.sendCommand('Input.dispatchKeyEvent', {
+      type, modifiers: 2, key: 's', code: 'KeyS', windowsVirtualKeyCode: 83,
+    });
+    await wait("!document.querySelector('#save-project').disabled && document.querySelector('#notice').textContent.includes("
+      + JSON.stringify(expected) + ")", '快速保存应提示' + expected);
+  }
+  const setFps = fps => read(`(() => {
+    const field = document.querySelector('#fps');
+    field.value = ${JSON.stringify(String(fps))};
+    field.dispatchEvent(new Event('change', { bubbles: true }));
+  })()`);
+  const fileFps = async () => JSON.parse(await fs.readFile(project, 'utf8')).config.fps;
   async function midpoint() {
     await wait(arrival + '.length === 1', '应有原生页面快照动画');
     return read(`(() => {
@@ -99,6 +114,10 @@ async function run() {
     await click('#home-create');
     await wait(current + " === 'montage'", '减少动态下应直接进入');
     assert.equal(await read(arrival + '.length'), 0);
+    await quickSave('本地草稿已保存');
+    await quickSave('本地草稿已保存');
+    assert.equal(await read('(async () => (await window.workbench.listDrafts()).length)()'), 1, '空工程首次快速保存应生成一份真实草稿');
+    assert.equal(savePickerCalls, 0);
     await click('#title-home');
     await media('no-preference', 'active');
     await click('#home-create');
@@ -112,13 +131,27 @@ async function run() {
     await click('#save-project');
     await wait("!document.querySelector('#save-project').disabled", '应保存真实工程');
     await fs.access(project);
+    await setFps(24);
+    await quickSave('工程已保存');
+    assert.equal(await fileFps(), 24);
+    cancelSave = true;
+    await click('#save-project');
+    await wait("!document.querySelector('#save-project').disabled", '取消另存后应恢复编辑');
+    await setFps(25);
+    await quickSave('工程已保存');
+    assert.equal(await fileFps(), 25, '取消另存保留已绑定文件');
+    assert.equal(savePickerCalls, 2, '两次快速保存应直接写入原工程');
     await click('#title-home');
-    await wait("document.querySelector('.draft-cover img')?.naturalWidth > 0", '首页应载入草稿的真实视频封面');
-    await click('.draft-open');
+    const movieDraft = '.draft-open[title="剪辑样片"]';
+    await wait("document.querySelector('" + movieDraft + " .draft-cover img')?.naturalWidth > 0", '首页应载入草稿的真实视频封面');
+    await click(movieDraft);
     await wait(current + " === 'montage' && document.querySelector('#preview').readyState >= 2", '打开草稿后原始视频应可解码');
     assert.ok(await read("originalPlayer === document.querySelector('#preview') && originalPlayer.videoWidth === 320"));
     assert.ok(await read("document.querySelector('#editor-workspace').contains(document.activeElement)"));
     assert.ok(await read("getComputedStyle(document.querySelector('#editor-workspace')).transform === 'none'"));
+    await setFps(60);
+    await quickSave('本地草稿已保存');
+    assert.equal(await fileFps(), 25, '从草稿打开后不能写回先前绑定的文件');
     await click('#title-home');
     await wait(current + " === 'home' && !document.querySelector('.draft-cover-transition')", '返回时应清理草稿封面过渡');
     pick = project;
@@ -127,8 +160,24 @@ async function run() {
     assert.equal(await read('document.activeElement.id'), 'workflow-title');
     assert.ok(await read("originalPlayer === document.querySelector('#preview') && document.querySelectorAll('#preview').length === 1"));
     await wait(arrival + '.length === 0', '动画结束后页面应恢复稳定');
+    await setFps(30);
+    await quickSave('工程已保存');
+    assert.equal(await fileFps(), 30, '从文件打开后应直接保存');
+    await fs.rename(project, project + '.bak');
+    await fs.mkdir(project);
+    await quickSave('工程文件保存失败');
+    assert.match(await read("document.querySelector('#notice').textContent"), /本地草稿已保存/);
+    await fs.rmdir(project);
+    await fs.rename(project + '.bak', project);
+    await quickSave('工程已保存');
     await capture('04-project-open');
     await media('reduce');
+    await click('#title-home');
+    await click('#home-create');
+    await setFps(60);
+    await quickSave('本地草稿已保存');
+    assert.equal(await fileFps(), 30, '新建工程应解除原文件绑定');
+    assert.equal(savePickerCalls, 2);
     await click('#title-home');
     win.setSize(850, 600);
     await wait('innerWidth <= 850', '窗口应缩小至支持的最小宽度');

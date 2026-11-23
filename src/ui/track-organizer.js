@@ -1,6 +1,7 @@
 'use strict';
 
 (() => {
+  const { candidateVideoLanes } = typeof module === 'object' && module.exports ? require('./track-tools.js') : window;
   const actions = [
     ['empty', '删除空轨道'], ['placeholder', '清理默认文字和空白文本框'],
     ['duration', '分镜时长对齐最长口播'], ['bounds', '修正画布外的元素'], ['start', '口播及关联轨道对齐分镜起点'],
@@ -108,8 +109,12 @@
       }
       // The fixed visual track remains. Discard mute flags for rows that no longer contain video.
       if (config.mutedVideoTracks) {
-        const max = Math.max(0, ...config.shots.map((shot) => shot.length));
-        const kept = config.mutedVideoTracks.filter((i) => i < max);
+        const occupied = new Set();
+        const include = shot => candidateVideoLanes(shot).forEach(lane => occupied.add(lane));
+        config.shots.forEach(include);
+        config.subprojects?.main?.forEach(row => include(row.clips));
+        config.subprojects?.projects?.forEach(project => project.shots.forEach(row => include(row.clips)));
+        const kept = config.mutedVideoTracks.filter((i) => occupied.has(i));
         counts.empty += config.mutedVideoTracks.length - kept.length;
         config.mutedVideoTracks = kept;
       }

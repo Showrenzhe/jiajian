@@ -11,6 +11,18 @@
   const spanPosition = { player: 'below', timeline: 'above', dock: 'full' };
   const collapsedPosition = { player: 'above', timeline: 'full', dock: 'above' };
 
+  // Panels and dividers share a single pending sample per gesture. Release uses
+  // the pointerup coordinates synchronously, even between two display frames.
+  function queuePointer(drag, x, y, move) {
+    drag.xPending = x;
+    drag.yPending = y;
+    if (drag.frame) return;
+    drag.frame = requestAnimationFrame(() => {
+      drag.frame = 0;
+      move(drag.xPending, drag.yPending);
+    });
+  }
+
   function read() {
     try {
       const saved = JSON.parse(localStorage.getItem(key));
@@ -26,9 +38,14 @@
   }
 
   window.mountSplitView = (workspace, bounds, topologyChanged) => {
+    const compactWindow = matchMedia('(max-width: 940px)');
     const dividers = [...workspace.querySelectorAll('.workspace-divider')];
     const handles = [...dividers];
     const guides = new Map();
+    const cursorSurface = document.createElement('div');
+    cursorSurface.className = 'workspace-resize-cursor';
+    cursorSurface.hidden = true;
+    workspace.append(cursorSurface);
     for (const side of sides) {
       const guide = document.createElement('div');
       guide.className = 'workspace-dock-guide';
@@ -75,7 +92,7 @@
       const left = min.materials + extraLeft * extraScale;
       const right = min.inspector + extraRight * extraScale;
       const max = { materials: sideBudget - right, inspector: sideBudget - left, timeline: panelHeight - minRow };
-      const defaultTimeline = Math.max(205, height * (matchMedia('(max-width: 940px)').matches ? .47 : .405));
+      const defaultTimeline = Math.max(205, height * (compactWindow.matches ? .47 : .405));
       const timeline = clamp(preferred.timeline ? height * preferred.timeline : defaultTimeline, min.timeline, max.timeline);
       return { width, height, gutter, min, max, wanted: { materials, inspector }, size: { materials: left, inspector: right, timeline } };
     }
@@ -88,7 +105,7 @@
       return position(side) === 'below' || (position(side) === 'full' && preferred[returnKey(side)] === 'below');
     }
 
-    let lastTopology;
+    let lastTopology, lastLayout;
     function render(layout = measure()) {
       const topology = sides.map(side => position(side) + (lowerSide(side) ? '-lower' : '')).join('/');
       if (topology !== lastTopology) {
@@ -112,15 +129,21 @@
       for (const handle of dividers) {
         const id = handle.dataset.split;
         const value = layout.size[id];
-        workspace.style.setProperty(`--split-${id}`, `${value}px`);
-        handle.setAttribute('aria-valuenow', Math.round(value));
-        handle.setAttribute('aria-valuetext', `${Math.round(value)} 像素`);
-        handle.setAttribute('aria-valuemin', Math.round(layout.min[id]));
-        handle.setAttribute('aria-valuemax', Math.round(layout.max[id]));
+        if (value !== lastLayout?.size[id]) workspace.style.setProperty(`--split-${id}`, `${value}px`);
+        if (Math.round(value) !== Math.round(lastLayout?.size[id])) {
+          handle.setAttribute('aria-valuenow', Math.round(value));
+          handle.setAttribute('aria-valuetext', `${Math.round(value)} 像素`);
+        }
+        for (const limit of ['min', 'max']) {
+          if (Math.round(layout[limit][id]) !== Math.round(lastLayout?.[limit][id])) {
+            handle.setAttribute('aria-value' + limit, Math.round(layout[limit][id]));
+          }
+        }
       }
+      lastLayout = layout;
     }
 
-    function update(id, value, layout = measure()) {
+    function setSize(id, value, layout) {
       const size = clamp(value, layout.min[id], layout.max[id]);
       if (Math.abs(size - layout.size[id]) < .01) return;
       if (id !== 'timeline') {
@@ -130,7 +153,11 @@
         if (Math.abs(layout.wanted[other] - layout.size[other]) > 1) preferred[other] = layout.size[other] / layout.width;
       }
       preferred[id] = size / (id === 'timeline' ? layout.height : layout.width);
-      render(measure(layout));
+      return true;
+    }
+
+    function update(id, value, layout = measure()) {
+      if (setSize(id, value, layout)) render(measure(layout));
     }
 
     function setSpan(kind, side, expand) {
@@ -176,13 +203,20 @@
     }
 
     function gesture(horizontal, vertical, event) {
-      const { size } = measure();
+      const initial = measure();
+      const { size } = initial;
       const startX = event.clientX, startY = event.clientY;
       const moveDock = sides.includes(vertical) ? spanGesture('dock', vertical, event) : undefined;
       return (x, y) => {
-        if (horizontal) update(horizontal, size[horizontal] + (x - startX) * (horizontal === 'materials' ? 1 : -1));
-        if (vertical === 'timeline') update('timeline', size.timeline - (y - startY));
-        else moveDock?.(x, y);
+        if (horizontal || vertical === 'timeline') {
+          // Resizing the tracks does not change the outer workspace bounds.
+          // Its ResizeObserver remeasures independently when those bounds change.
+          const layout = measure(lastLayout ?? initial);
+          const widthChanged = horizontal && setSize(horizontal, size[horizontal] + (x - startX) * (horizontal === 'materials' ? 1 : -1), layout);
+          const heightChanged = vertical === 'timeline' && setSize('timeline', size.timeline - (y - startY), layout);
+          if (widthChanged || heightChanged) render(measure(layout));
+        }
+        moveDock?.(x, y);
       };
     }
 
@@ -193,15 +227,17 @@
     function finish(event) {
       if (!drag || (event?.pointerId != null && event.pointerId !== drag.pointerId)) return;
       const { handle, pointerId, before } = drag;
+      cancelAnimationFrame(drag.frame);
       if (event?.type === 'pointerup') {
         drag.move(event.clientX, event.clientY);
-        if (drag.tapped) {
+        if (drag.tapped && Math.hypot(event.clientX - drag.startX, event.clientY - drag.startY) <= 3) {
           const { areaHandle: kind, side } = handle.dataset;
           setSpan(kind, side, position(side) !== spanPosition[kind]);
         }
       }
       clearGuides();
       drag = null;
+      cursorSurface.hidden = true;
       handle.removeAttribute('data-dragging');
       if (handle.hasPointerCapture(pointerId)) handle.releasePointerCapture(pointerId);
       if (event?.type === 'pointerup') save();
@@ -218,15 +254,14 @@
         const focused = document.activeElement;
         if (focused?.matches('input, select, textarea') || focused?.isContentEditable) event.preventDefault();
         try { handle.setPointerCapture(event.pointerId); } catch { return; }
+        cursorSurface.style.cursor = getComputedStyle(handle).cursor;
         handle.dataset.pointerFocus = '';
         const move = spanPosition[areaHandle] ? spanGesture(areaHandle, side, event) : gesture(horizontal, vertical, event);
         drag = { handle, pointerId: event.pointerId, before: { ...preferred },
           tapped: handle.classList.contains('workspace-span-handle'),
-          move(x, y) {
-            if (Math.hypot(x - event.clientX, y - event.clientY) > 3) this.tapped = false;
-            move(x, y);
-          } };
+          startX: event.clientX, startY: event.clientY, move };
         handle.dataset.dragging = '';
+        cursorSurface.hidden = false;
       });
       handle.addEventListener('focus', () => {
         if (drag?.handle !== handle) handle.removeAttribute('data-pointer-focus');
@@ -289,7 +324,8 @@
     window.addEventListener('pointermove', (event) => {
       if (!drag || drag.pointerId !== event.pointerId) return;
       if (!(event.buttons & 1)) return finish();
-      drag.move(event.clientX, event.clientY);
+      if (Math.hypot(event.clientX - drag.startX, event.clientY - drag.startY) > 3) drag.tapped = false;
+      queuePointer(drag, event.clientX, event.clientY, drag.move);
     });
     for (const name of ['pointerup', 'pointercancel']) window.addEventListener(name, finish);
     window.addEventListener('blur', () => finish());
@@ -301,7 +337,7 @@
       },
       sizes() { return measure().size; },
       resize: update,
-      gesture, spanGesture, setSpan, lowerSide, position, clearGuides,
+      gesture, spanGesture, setSpan, lowerSide, position, clearGuides, queuePointer,
       get dragging() { return Boolean(drag); },
       save,
       snapshot() { return { ...(drag?.before ?? preferred) }; },

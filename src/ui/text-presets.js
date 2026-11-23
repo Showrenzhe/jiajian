@@ -33,6 +33,47 @@
     node.style.textShadow = s.shadow ? (s.shadowX*factor)+'px '+(s.shadowY*factor)+'px 0 '+s.shadowColor : 'none';
   };
 
+  // Timed text in the draft player uses the same typefaces and stroke treatment as the inspector.
+  window.draftTextPreview = (entry, frame) => {
+    const style=entry.appearance, layer=style.kind==='text';
+    const custom=layer || style.position==='custom';
+    const align=custom?'center':style.align ?? 'center', position=style.position ?? 'bottom';
+    const node=el('div');
+    node.className='draft-text-overlay';
+    const height=frame.clientHeight || 288;
+    const unit=layer ? height/1080 : height/288;
+    window.previewTextAppearance(node,layer?style.textStyle:style,layer?style.color ?? '#ffffff':style.textColor ?? '#ffffff',unit);
+    const margin=(style.margin ?? 16)/288*100;
+    const x=custom ? (layer?(style.x ?? .5)*100:style.x ?? 50) : align==='left'?margin:align==='right'?100-margin:50;
+    const y=custom ? (layer?(style.y ?? .5)*100:style.y ?? 85) : position==='top'?margin:position==='middle'?50:100-margin;
+    const dx=align==='left'?0:align==='right'?-100:-50;
+    const dy=custom || position==='middle'?-50:position==='top'?0:-100;
+    Object.assign(node.style,{left:x+'%',top:y+'%',textAlign:align,
+      transform:'translate('+dx+'%, '+dy+'%) rotate('+(style.rotation ?? 0)+'deg)',
+      opacity:String(style.opacity ?? 1),
+      fontSize:(layer?(style.fontSize ?? 48)*(style.scale ?? 1)/10.8:(style.size ?? 18)/2.88)+'cqh'});
+    if(!layer) {
+      if(style.bold) node.style.fontWeight='700';
+      if(style.italic) node.style.fontStyle='italic';
+      if(style.underline) node.style.textDecoration='underline';
+      node.style.letterSpacing=((style.spacing ?? 0)*unit)+'px';
+    }
+    let offset=0;
+    const marks=(entry.highlights ?? []).filter(mark=>mark.word);
+    while(offset<entry.text.length) {
+      let at=entry.text.length, picked;
+      for(const mark of marks) {
+        const match=entry.text.indexOf(mark.word,offset);
+        if(match>=0 && (match<at || match===at && mark.word.length>(picked?.word.length ?? 0))) {at=match;picked=mark;}
+      }
+      node.append(entry.text.slice(offset,at));
+      if(!picked) break;
+      const word=el('b',picked.word);word.style.color=picked.color;node.append(word);
+      offset=at+picked.word.length;
+    }
+    return node;
+  };
+
   window.createTextPresets = (initial, bindings = {}) => {
     const root = el('details'); root.className = 'text-presets';
     root.append(el('summary','字体、描边与样式预设'));

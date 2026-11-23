@@ -1,20 +1,202 @@
 'use strict';
 
-window.mountPlayerTools = ({ panel, getClip, isEditor, isTrack, validClip, notify, onImageTime }) => {
+// Keep the last picture in the monitor until the incoming decoder submits its
+// requested frame. Steady playback stays on the native video surface.
+function createPreviewFrameHandoff(stage) {
+  const canvas = document.createElement('canvas');
+  canvas.className = 'preview-frame-hold';
+  canvas.setAttribute('aria-hidden', 'true');
+  let pendingFrame, videoCallback, incoming;
+
+  function cancelReveal() {
+    cancelAnimationFrame(pendingFrame);
+    if (videoCallback !== undefined) incoming.cancelVideoFrameCallback(videoCallback);
+    videoCallback = undefined;
+    incoming = undefined;
+  }
+  function clear(parent) {
+    if (parent && canvas.parentElement !== parent) return;
+    cancelReveal();
+    canvas.remove();
+  }
+  function copyFrame(source) {
+    const width = source.videoWidth || source.naturalWidth, height = source.videoHeight || source.naturalHeight;
+    if (!width || !height || (source.tagName === 'VIDEO' && source.readyState < 2)) return false;
+    const rect = source.getBoundingClientRect(), fit = getComputedStyle(source).objectFit;
+    if (!rect.width || !rect.height) return false;
+    const fitScale = fit === 'cover' ? Math.max : Math.min;
+    const scale = Math.min(1, 1920 / Math.max(width, height),
+      devicePixelRatio * fitScale(rect.width / width, rect.height / height));
+    canvas.width = Math.max(1, Math.round(width * scale));
+    canvas.height = Math.max(1, Math.round(height * scale));
+    try { canvas.getContext('2d').drawImage(source, 0, 0, canvas.width, canvas.height); }
+    catch { return false; }
+    canvas.style.objectFit = fit;
+    return true;
+  }
+  function capture() {
+    cancelReveal();
+    if (canvas.isConnected) return;
+    const draft = stage.querySelector('.draft-transport-preview:not([hidden])');
+    const parent = draft || stage.querySelector('.player-picture:not([hidden]):not([data-track-hidden])');
+    if (!parent) return;
+    // Independently positioned video lanes share the monitor; the highest
+    // z-index is the visible source, matching the timeline compositor.
+    const source = draft ? [...draft.querySelectorAll('.draft-main:not([hidden])')]
+      .sort((a,b) => Number(b.style.zIndex) - Number(a.style.zIndex))[0]
+      : parent.querySelector('video:not([hidden]), img:not([hidden])');
+    if (source?.checkVisibility() && copyFrame(source)) parent.append(canvas);
+  }
+  function moveTo(parent) {
+    if (canvas.isConnected && parent !== canvas.parentElement) {
+      cancelReveal();
+      parent.append(canvas);
+    }
+  }
+  function retain(source) {
+    if (!source.checkVisibility() || !copyFrame(source)) return false;
+    cancelReveal();
+    source.parentElement.append(canvas);
+    return true;
+  }
+  function revealWhen(source) {
+    if (!canvas.isConnected || incoming === source) return;
+    cancelReveal();
+    incoming = source;
+    const video = source.tagName === 'VIDEO';
+    let presented = !video, copied = false;
+    function ready() {
+      return source.currentSrc === source.src && (video ? source.readyState >= 2 && !source.seeking
+        : source.complete && source.naturalWidth > 0);
+    }
+    function check() {
+      if (incoming !== source) return;
+      if (ready()) {
+        if (presented && copied) { clear(); return; }
+        if (!copied) copied = copyFrame(source);
+        // A warmed or paused video may already have submitted its only frame.
+        // Show that decoded frame and wait for native presentation to resume.
+        if (copied && !presented) return;
+      }
+      pendingFrame = requestAnimationFrame(check);
+    }
+    if (video) {
+      function onPresented() {
+        if (incoming !== source) return;
+        videoCallback = undefined;
+        if (!ready()) { videoCallback = source.requestVideoFrameCallback(onPresented); return; }
+        presented = true;
+        cancelAnimationFrame(pendingFrame);
+        pendingFrame = requestAnimationFrame(check);
+      }
+      videoCallback = source.requestVideoFrameCallback(onPresented);
+    }
+    pendingFrame = requestAnimationFrame(check);
+  }
+  return { capture, moveTo, revealWhen, retain, clear };
+}
+
+function mountStereoMeter(stage, meter) {
+  const bars = [...meter.children];
+  const sources = new WeakMap();
+  const playing = new Set();
+  const samples = new Float32Array(1024);
+  let context, mix, channels, frame;
+
+  function render() {
+    frame = undefined;
+    for (const node of playing) if (node.paused || !node.isConnected) playing.delete(node);
+    bars.forEach((bar, i) => {
+      let peak = 0;
+      if (playing.size) {
+        channels[i].getFloatTimeDomainData(samples);
+        for (const sample of samples) peak = Math.max(peak, Math.abs(sample));
+      }
+      // Show the top 54 dB of the actual post-mix signal, with six LED steps.
+      const level = Math.min(6, Math.max(0, Math.ceil((54 + 20 * Math.log10(peak)) / 9)));
+      if (bar.dataset.level !== String(level)) {
+        bar.dataset.level = String(level);
+        bar.style.setProperty('--level', level * 100 / 6 + '%');
+      }
+    });
+    if (playing.size) frame = requestAnimationFrame(render);
+  }
+  stage.addEventListener('playing', async event => {
+    const node = event.target;
+    if (!(node instanceof HTMLMediaElement)) return;
+    if (!context) {
+      context = new AudioContext();
+      mix = context.createGain();
+      mix.channelCount = 2;
+      mix.channelCountMode = 'explicit';
+      mix.connect(context.destination);
+      const splitter = context.createChannelSplitter(2);
+      mix.connect(splitter);
+      channels = bars.map((_, i) => {
+        const analyser = context.createAnalyser();
+        analyser.fftSize = samples.length;
+        splitter.connect(analyser, i);
+        return analyser;
+      });
+    }
+    if (context.state !== 'running') await context.resume().catch(() => {});
+    if (context.state !== 'running' || node.paused || !node.isConnected) return;
+    let source = sources.get(node);
+    if (!source) {
+      source = context.createMediaElementSource(node);
+      sources.set(node, source);
+    }
+    // Reuses the same connection on resume, including after a panel reattach.
+    source.connect(mix);
+    playing.add(node);
+    if (frame === undefined) render();
+  }, true);
+  // The transport creates and releases media elements as it crosses edits.
+  new MutationObserver(records => {
+    for (const record of records) for (const node of record.removedNodes) {
+      if (node instanceof HTMLMediaElement && !node.isConnected) {
+        sources.get(node)?.disconnect();
+        playing.delete(node);
+      }
+    }
+  }).observe(stage, { childList:true, subtree:true });
+}
+
+window.mountPlayerTools = ({ panel, getClip, isEditor, isTrack, validClip, notify, onImageTime,
+  getDraft, getIdleDraft, toggleDraft, seekDraft, canProxy, changeQuality }) => {
   const find = (selector) => panel.querySelector(selector);
   const video = find('#preview');
   const image = find('#still-preview');
   const frame = find('.player-picture');
+  const stage = find('.preview-stage');
+  mountStereoMeter(stage, find('.stereo-meter'));
   const transport = find('#player-transport');
   const play = find('#player-play');
   const position = find('#player-position');
   const ratio = document.querySelector('#ratio');
   const float = find('#player-float');
   const full = find('#player-fullscreen');
+  const more = find('#player-more');
+  const menu = find('#player-more-menu');
+  const quality = find('#player-quality');
+  const qualityLabel = find('.player-quality-label');
+  const zoom = find('#player-zoom');
+  const clock = find('#player-time');
+  const duration = find('#player-duration');
+  const seekClock = find('#player-seek-time');
+  const row = find('.player-control-row');
+  const display = find('.player-display');
+  new ResizeObserver(([entry]) => {
+    const width = entry.contentRect.width;
+    if (!width) return;
+    const parent = width < 270 ? menu : row;
+    if (display.parentElement !== parent) parent.append(display);
+  }).observe(transport);
   let imageTime = 0;
   let imageStart = null;
   let animation = 0;
   let drag;
+  let cut;
 
   const imagePlaying = () => imageStart !== null;
   const imagePosition = () => imagePlaying() ? imageTime + (performance.now() - imageStart) / 1000 : imageTime;
@@ -31,18 +213,36 @@ window.mountPlayerTools = ({ panel, getClip, isEditor, isTrack, validClip, notif
     return [Math.floor(total / 3600), Math.floor(total / 60) % 60, total % 60, frames]
       .map((part) => String(part).padStart(2, '0')).join(':');
   }
-  function updatePosition() {
+  function updatePosition(draft = cut || getDraft(), idle = draft ? null : getIdleDraft()) {
     const clip = getClip();
-    const seconds = ready(clip) ? Math.max(clip.start, Math.min(clip.end,
-      clip.asset.kind === 'image' ? imagePosition() : video.currentTime)) : 0;
-    find('#player-time').textContent = timecode(seconds, fps(clip));
+    const active = !draft && ready(clip);
+    const timeline = draft || (idle?.end ? idle : null);
+    const clipTime = clip?.asset.kind === 'image' ? imagePosition() : video.currentTime;
+    const seconds = timeline ? Math.min(timeline.time,timeline.end) : active ? Math.max(clip.start,Math.min(clip.end,clipTime)) : 0;
+    const rate = fps(cut || (draft ? null : clip));
+    const timedClip = !draft && clip && validClip(clip) && (clip.asset.kind !== 'image' || isTrack());
+    const length = draft?.end ?? idle?.end ?? (timedClip ? clip.end - clip.start : 0);
+    const elapsed = draft ? seconds : Math.max(0, seconds - (clip?.start ?? 0));
+    const currentText = timecode(elapsed, rate), endText = timecode(length, rate);
+    if (clock.textContent !== currentText) {
+      clock.textContent = currentText;
+      seekClock.textContent = currentText;
+    }
+    if (duration.textContent !== endText) {
+      duration.textContent = endText;
+      find('#player-seek-end').textContent = endText;
+    }
+    const proxy = draft ? draft.proxy : !video.hidden && video.dataset.proxyFor && video.currentSrc === video.getAttribute('src') && video.readyState >= 1;
+    const label = proxy ? '流畅' : '原画';
+    if (qualityLabel.textContent !== label) qualityLabel.textContent = label;
+    if (cut && position.max !== String(cut.end)) position.max = cut.end;
     position.value = seconds;
-    if (clip?.asset.kind === 'image' && ready(clip)) onImageTime?.(clip, seconds);
+    if (!draft && clip?.asset.kind === 'image' && active) onImageTime?.(clip, seconds);
   }
   function tick() {
     cancelAnimationFrame(animation);
     const clip = getClip();
-    if (imagePlaying() && imagePosition() >= clip.end) {
+    if (imagePlaying() && clip && imagePosition() >= clip.end) {
       imageStart = null;
       imageTime = clip.end;
       sync();
@@ -53,31 +253,49 @@ window.mountPlayerTools = ({ panel, getClip, isEditor, isTrack, validClip, notif
   }
   function sync() {
     const clip = getClip();
+    const draft = cut || getDraft();
+    const idle = draft ? null : getIdleDraft();
+    const timelineView = Boolean(draft || idle?.end);
+    find('#preview-heading').hidden = timelineView;
+    find('#draft-preview-heading').hidden = !timelineView || Boolean(cut);
+    find('#cut-preview-heading').hidden = !cut;
+    find('#cut-preview-name').hidden = !cut;
+    find('#preview-meta').hidden = timelineView;
+    panel.setAttribute('aria-labelledby', cut ? 'cut-preview-heading' : timelineView ? 'draft-preview-heading' : 'preview-heading');
+    if (!clip && !draft && isEditor()) {
+      find('#preview-hint').textContent = idle?.end ? '播放时间线，或选择素材单独预览' : '在素材库或轨道选择一个素材';
+    }
     transport.hidden = !isEditor();
     video.controls = !isEditor();
-    const active = ready(clip);
-    for (const button of panel.querySelectorAll('.player-buttons button')) button.disabled = !active;
-    position.disabled = !active;
-    position.min = active ? clip.start : 0;
-    position.max = active ? clip.end : 1;
-    const playing = active && (clip.asset.kind === 'image' ? imagePlaying() : !video.paused);
-    play.textContent = playing ? '❚❚' : '▶';
+    const active = Boolean(draft) || ready(clip);
+    play.disabled = Boolean(cut?.busy || (!active && !idle?.end));
+    for (const button of panel.querySelectorAll('.player-buttons button')) button.disabled = !active || Boolean(cut?.busy);
+    position.disabled = !active || Boolean(cut?.busy);
+    position.min = active && !draft ? clip.start : 0;
+    position.max = draft?.end ?? (active ? clip.end : 1);
+    const playing = draft?.playing ?? (active && (clip.asset.kind === 'image' ? imagePlaying() : !video.paused));
+    play.setAttribute('aria-pressed', String(playing));
     play.setAttribute('aria-label', playing ? '暂停' : '播放');
-    play.title = `${play.getAttribute('aria-label')}（空格）`;
+    play.title = `${play.getAttribute('aria-label')}${cut ? '片段' : timelineView ? '时间线' : ''}（空格）`;
     find('#player-ratio').value = ratio.value;
-    find('#player-ratio').disabled = ratio.matches(':disabled');
+    find('.player-ratio-label').textContent = ratio.value;
+    find('#player-ratio').disabled = Boolean(cut) || ratio.matches(':disabled');
     frame.toggleAttribute('data-project-frame', Boolean(clip && isTrack()));
     const [width, height] = ratio.value.split(':').map(Number);
-    frame.style.setProperty('--picture-ratio', width / height);
-    frame.style.setProperty('--picture-background', document.querySelector('#background-color').value);
-    frame.style.setProperty('--picture-fit', document.querySelector('#fit').value === 'fill' ? 'cover' : 'contain');
-    updatePosition();
+    stage.style.setProperty('--picture-ratio', width / height);
+    stage.style.setProperty('--picture-background', document.querySelector('#background-color').value);
+    stage.style.setProperty('--picture-fit', document.querySelector('#fit').value === 'fill' ? 'cover' : 'contain');
+    quality.disabled = !(draft ? draft.canProxy : canProxy(clip?.asset));
+    zoom.disabled = !cut && !(draft ? draft.visual : clip && !frame.hidden && clip.asset.kind !== 'audio');
+    float.disabled = !draft && (!clip || frame.hidden);
+    stage.toggleAttribute('data-audio', !draft && clip?.asset.kind === 'audio' && !frame.hidden);
+    updatePosition(draft,idle);
   }
   function reset() {
     imageStart = null;
     imageTime = 0;
     cancelAnimationFrame(animation);
-    if (!getClip()) closeFloating();
+    if (!cut && !getClip()) closeFloating();
     sync();
   }
   function seek(value) {
@@ -91,6 +309,7 @@ window.mountPlayerTools = ({ panel, getClip, isEditor, isTrack, validClip, notif
     updatePosition();
   }
   function pause() {
+    cut?.pause();
     if (imagePlaying()) {
       imageTime = imagePosition();
       imageStart = null;
@@ -99,12 +318,21 @@ window.mountPlayerTools = ({ panel, getClip, isEditor, isTrack, validClip, notif
     sync();
   }
   function step(direction) {
+    if (cut) return cut.seek(cut.time + direction / fps(cut));
+    const draft = getDraft();
+    if (draft) {
+      if (draft.playing) toggleDraft();
+      seekDraft(draft.time + direction / fps(null));
+      return;
+    }
     const clip = getClip();
     if (!ready(clip)) return;
     pause();
     seek((clip.asset.kind === 'image' ? imageTime : video.currentTime) + direction / fps(clip));
   }
   async function togglePlay() {
+    if (cut) return cut.togglePlay();
+    if (getDraft() || getIdleDraft()?.end || (isTrack() && isEditor())) return toggleDraft();
     const clip = getClip();
     if (!ready(clip)) return;
     if (clip.asset.kind === 'image') {
@@ -134,9 +362,10 @@ window.mountPlayerTools = ({ panel, getClip, isEditor, isTrack, validClip, notif
     if (document.pictureInPictureElement === video) document.exitPictureInPicture().catch(() => {});
   }
   float.addEventListener('click', async () => {
+    if (menu.matches(':popover-open')) menu.hidePopover();
     if (panel.matches(':popover-open') || document.pictureInPictureElement === video) return closeFloating();
     if (document.fullscreenElement === panel) await document.exitFullscreen();
-    if (getClip()?.asset.kind === 'video' && video.readyState >= 2 && document.pictureInPictureEnabled) {
+    if (!cut && !getDraft() && zoom.value === '1' && getClip()?.asset.kind === 'video' && video.readyState >= 2 && document.pictureInPictureEnabled) {
       try { await video.requestPictureInPicture(); return; } catch { /* Use the floating editor panel when system PiP is unavailable. */ }
     }
     panel.setAttribute('popover', 'manual');
@@ -178,7 +407,7 @@ window.mountPlayerTools = ({ panel, getClip, isEditor, isTrack, validClip, notif
     event.preventDefault();
     event.stopPropagation();
     if (drag) endMove();
-    else { dock(); float.focus({preventScroll:true}); }
+    else { dock(); more.focus({preventScroll:true}); }
   },true);
   async function toggleFullscreen() {
     try {
@@ -190,12 +419,33 @@ window.mountPlayerTools = ({ panel, getClip, isEditor, isTrack, validClip, notif
     } catch { notify('当前窗口无法切换全屏。'); }
   }
   full.addEventListener('click', toggleFullscreen);
-  document.addEventListener('fullscreenchange', () => full.setAttribute('aria-pressed', String(document.fullscreenElement === panel)));
+  document.addEventListener('fullscreenchange', () => {
+    const active = document.fullscreenElement === panel;
+    full.setAttribute('aria-pressed', String(active));
+    full.setAttribute('aria-label', active ? '退出全屏' : '全屏');
+    full.title = full.getAttribute('aria-label') + '（.）';
+  });
   play.addEventListener('click', togglePlay);
   find('#player-previous').addEventListener('click', () => step(-1));
   find('#player-next').addEventListener('click', () => step(1));
-  find('#player-stop').addEventListener('click', () => { pause(); seek(getClip().start); });
-  position.addEventListener('input', () => seek(position.valueAsNumber));
+  find('#player-stop').addEventListener('click', () => {
+    if (cut) return cut.seek(0);
+    const draft = getDraft();
+    if (draft) {
+      if (draft.playing) toggleDraft();
+      seekDraft(0);
+    } else if (getClip()) { pause(); seek(getClip().start); }
+  });
+  position.addEventListener('input', () => {
+    if (cut) cut.seek(position.valueAsNumber);
+    else if (getDraft()) seekDraft(position.valueAsNumber);
+    else seek(position.valueAsNumber);
+  });
+  quality.addEventListener('change', changeQuality);
+  zoom.addEventListener('change', () => {
+    stage.style.setProperty('--player-zoom', zoom.value);
+    zoom.parentElement.title = '预览缩放 · ' + zoom.selectedOptions[0].textContent;
+  });
   find('#player-ratio').addEventListener('change', (event) => {
     ratio.value = event.target.value;
     ratio.dispatchEvent(new Event('change', { bubbles: true }));
@@ -209,15 +459,43 @@ window.mountPlayerTools = ({ panel, getClip, isEditor, isTrack, validClip, notif
       || event.shiftKey || document.querySelector('dialog[open], :popover-open:not(#player-pane), .app-frame[data-navigation="floating"]')
       || !(target instanceof Element) || target.isContentEditable
       || target.closest('input, textarea, select, [role="textbox"], [role="tab"], [role="separator"]')) return;
-    const onPlayer = panel.contains(target) && (!target.closest('button, a') || target.closest('.player-buttons'));
+    const onPlayer = panel.contains(target) && (!target.closest('button, a') || target === play || target.closest('.player-buttons'));
     const onTimeline = target.matches('#timeline-clock, #timeline-tracks-panel, #timeline-clock .sequence-block:not(.sequence-empty)');
     if (target !== document.body && !onPlayer && !onTimeline) return;
     if (key === '.' && !event.repeat) toggleFullscreen();
-    else if (!ready(getClip())) return;
+    else if (!cut && !getDraft() && !getIdleDraft()?.end && !ready(getClip())) return;
     else if (key === 'ArrowLeft' || key === 'ArrowRight') step(key === 'ArrowRight' ? 1 : -1);
     else if (key === ' ' && !event.repeat && !event.target.closest?.('button, a')) togglePlay();
     else return;
     event.preventDefault();
   });
-  return { sync, reset, closeFloating, pause, seek, step, togglePlay };
+  function mountCutMonitor(preview, controller) {
+    pause();
+    if (document.pictureInPictureElement === video) closeFloating();
+    cut = controller;
+    panel.setAttribute('data-cut-monitor', '');
+    find('#cut-preview-name').textContent = cut.asset.name;
+    stage.append(preview);
+    sync();
+    const onKey = event => {
+      if (menu.matches(':popover-open') || event.target.closest('input, select, textarea') ||
+          event.key === '.' || event.key === 'Tab' ||
+          (event.key === 'Escape' && (document.fullscreenElement || panel.matches(':popover-open'))) ||
+          ((event.key === ' ' || event.key === 'Enter') && event.target.closest('button'))) return;
+      controller.onKey(event);
+    };
+    panel.addEventListener('keydown', onKey);
+    return {updatePosition, sync, close() {
+      panel.removeEventListener('keydown', onKey);
+      // Removing the media node in the stage lets the stereo meter disconnect its source.
+      preview.querySelector('video')?.remove();
+      preview.remove();
+      if (cut !== controller) return;
+      cut = undefined;
+      panel.removeAttribute('data-cut-monitor');
+      find('#cut-preview-name').textContent = '';
+      sync();
+    }};
+  }
+  return { sync, updatePosition, reset, closeFloating, pause, seek, step, togglePlay, mountCutMonitor, get monitoringCut() { return Boolean(cut); } };
 };

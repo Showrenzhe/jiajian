@@ -6,6 +6,7 @@ const os = require('node:os');
 const path = require('node:path');
 const { app } = require('electron');
 const { launchDesktop } = require('../src/desktop.cjs');
+const { clickVisible } = require('./desktop-input.cjs');
 
 app.disableHardwareAcceleration();
 
@@ -70,6 +71,33 @@ async function run() {
     await click('#add-shot');
     await checkPopover('#timeline-more', '#timeline-more-menu');
     await checkPopover('#track-more', '#track-more-options');
+
+    const originalSize = window.getContentSize();
+    for (const [width, height] of [[1400, 900], [850, 600]]) {
+      window.setContentSize(width, height);
+      await settle();
+      await clickVisible(wc, '#track-more');
+      await settle();
+      const geometry = await read(`(() => {
+        const menu = document.querySelector('#track-more-options'), box = menu.getBoundingClientRect();
+        const trigger = document.querySelector('#track-more').getBoundingClientRect();
+        const controls = [...menu.querySelectorAll('button, input, select')].map(el => {
+          const r = el.getBoundingClientRect();
+          return { id: el.id, reachable: r.width > 0 && r.height > 0 && r.left >= box.left && r.right <= box.right
+            && el.contains(document.elementFromPoint(r.left + r.width / 2, r.top + r.height / 2)) };
+        });
+        return { controls, fits: box.top >= 0 && box.bottom <= innerHeight && box.left >= 0 && box.right <= innerWidth,
+          gap: Math.min(Math.abs(box.top - trigger.bottom), Math.abs(trigger.top - box.bottom)) };
+      })()`);
+      assert.ok(geometry.fits && geometry.gap <= 8, 'Edit tools should fit the window and sit against the toolbar trigger');
+      for (const control of geometry.controls) assert.ok(control.reachable, control.id + ' should fit the edit popover');
+      await clickVisible(wc, '#track-more-options .p-switch');
+      await key('Escape', 27);
+      await settle();
+      assert.equal(await read('document.activeElement.id'), 'track-more', 'Escape returns to edit tools');
+    }
+    window.setContentSize(...originalSize);
+    await settle();
 
     await click('#track-more');
     await settle();

@@ -31,6 +31,121 @@ test('the five organizer operations keep occupied rows and move only out-of-boun
 });
 const { splitRanges } = require('../src/ui/track-tools.js');
 
+test('lane insertion uses existing space, ripples only collisions and shares the shot clock',()=>{
+  const {insertVideoGap,videoLaneCells}=require('../src/ui/track-tools.js');
+  const {timing,makePlan}=require('../src/ui/draft-transport.js');
+  const {waveformSource}=require('../src/ui/waveform.js');
+  const clip=(name,start,lane=0)=>({asset:{url:name,kind:'video'},start:0,end:1,videoStart:start,videoLane:lane});
+  const a=clip('a',0), b=clip('b',1.5), c=clip('c',2.5), late=clip('late',5), other=clip('other',1.5,1);
+  const shots=[[a],[b,other],[c],[late]];
+  const starts=[0,1,2,3], widths=[1,1,1,1];
+  const pending=insertVideoGap(videoLaneCells(shots,starts,widths)[0],b,'left');
+  assert.deepEqual(pending,{start:1,span:1});
+  assert.deepEqual([a,b,c,late,other].map(clip=>clip.videoStart),[0,2,3,5,1.5]);
+  const resized=videoLaneCells(shots,starts,[1,5,.5,1])[0];
+  assert.deepEqual(resized.map(cell=>[cell.start,cell.span]),[[0,1],[2,1],[3,1],[5,1]],'分镜长短变化保留本次实际让位的片段边界');
+  const lone=clip('right',0);
+  const right=insertVideoGap(videoLaneCells([[lone]],[0],[2])[0],lone,'right');
+  assert.deepEqual(right,{start:2,span:2});
+  assert.equal(videoLaneCells([[lone]],[0],[5])[0][0].span,2,'延长分镜后，末端空位仍可填入');
+  delete b.videoGaps;
+  const fill={...clip('fill',1),videoFit:'hold',videoDuration:1,videoGroup:'seq'};
+  b.videoGroup='seq';
+  shots[1].push(fill);
+  const state={shots,settings:shots.map(()=>({duration:1})),whole:[],segments:[],music:[],muted:new Set(),
+    pack:{global:[],composites:[],wholeNarration:[]},priority:'picture',timelineCaptions:[{text:'固定字幕',start:1100,end:1400}]};
+  const layout=timing(state,()=>1,()=>null,fill);
+  assert.deepEqual(layout.starts,starts);
+  assert.deepEqual(layout.widths,widths);
+  const plan=makePlan(state,layout,()=>null,waveformSource,fill);
+  assert.deepEqual(plan.map(entry=>[entry.asset?.url ?? entry.text,entry.start,entry.end]),[
+    ['a',0,1],['fill',1,2],['固定字幕',1.1,1.4],['b',2,3],['c',3,4],['late',5,6]]);
+});
+
+test('timeline picture tail trims keep draft playback speed and trailing silence',()=>{
+  const {timing,makePlan}=require('../src/ui/draft-transport.js');
+  const {waveformSource}=require('../src/ui/waveform.js');
+  const clip={asset:{kind:'video',url:'test://video'},start:0,end:2,speed:2,videoDuration:.75,
+    layers:[{kind:'text',text:'局部',start:.5,end:2}]};
+  const state={shots:[[clip]],settings:[{duration:1}],whole:[],segments:[[]],segmented:true,priority:'picture',
+    keepAudio:true,muted:new Set(),music:[],pack:{global:[],composites:[],segmentNarration:[],wholeNarration:[]}};
+  const read=()=>makePlan(state,timing(state,()=>1,()=>null),()=>null,waveformSource);
+  assert.deepEqual(read().map(e=>[e.start,e.end,e.rate??e.text??'留空']),[[0,.75,2],[.25,.75,'局部'],[.75,1,'留空']]);
+  clip.videoStart=1;
+  assert.deepEqual(read().map(e=>[e.start,e.end]),[[1,1.75],[1.25,1.75]]);
+});
+
+test('a positioned short candidate plays its retained sources at its own speed inside a longer shot',()=>{
+  const {timing,makePlan}=require('../src/ui/draft-transport.js');
+  const {waveformSource}=require('../src/ui/waveform.js');
+  const long={asset:{kind:'video',url:'test://long'},start:0,end:8};
+  const short={asset:{kind:'video',url:'test://short'},start:0,end:6,speed:2,
+    ranges:[{start:0,end:2},{start:4,end:6}],videoStart:1,videoDuration:2,
+    videoSubtitles:{cues:[{text:'第二段',start:4500,end:5500}]}};
+  const state={shots:[[long,short]],settings:[{duration:8}],whole:[],segments:[[]],segmented:true,priority:'picture',
+    keepAudio:true,muted:new Set(),music:[],pack:{global:[],composites:[],segmentNarration:[],wholeNarration:[]}};
+  for(const priority of ['picture','voice']) {
+    state.priority=priority;
+    const layout=timing(state,c=>c.end-c.start,()=>null,short);
+    const plan=makePlan(state,layout,()=>null,waveformSource,short);
+    assert.equal(layout.total,8);
+    assert.deepEqual(plan.filter(e=>e.asset).map(e=>[e.asset.url,e.source,e.start,e.end,e.rate]),[
+      ['test://short',0,1,2,2],['test://short',4,2,3,2]]);
+    assert.deepEqual(plan.filter(e=>e.text).map(e=>[e.text,e.start,e.end]),[['第二段',2.25,2.75]]);
+    const extended={...short,videoDuration:3.25,videoFit:'hold'};
+    const extendedState={...state,shots:[[long,extended]]};
+    const held=makePlan(extendedState,layout,()=>null,waveformSource,extended).filter(entry=>entry.asset).at(-1);
+    assert.deepEqual([held.asset.url,held.start,held.end,held.volume],['test://short',3,4.25,0]);
+    assert.ok(held.rate===0 && held.source>5.9 && held.source<6,'停在最后保留区间的尾帧，原声不延长');
+    const legacy={...short,videoDuration:3.25};
+    const legacyPlan=makePlan({...state,shots:[[long,legacy]]},layout,()=>null,waveformSource,legacy);
+    assert.equal(legacyPlan.filter(entry=>entry.asset).at(-1).end,3,'读取未标注保持尾帧的旧工程时沿用原来的片尾');
+  }
+});
+
+test('only current rows participate in visual and audio solo, and locking does not mute', () => {
+  const {normalize,forLayout,allows}=require('../src/ui/track-controls.js');
+  const state=normalize({vis1:{hidden:true},whole1:{solo:true},music2:{solo:true},voice1:{locked:true}});
+  const current=forLayout(state,[[{},{}]],[[{},{}]],2,1,true);
+  assert.equal(allows(current,'vis1','visual'),false);
+  assert.equal(allows(current,'vis1','audio'),true);
+  assert.equal(allows(current,'voice1','audio'),true);
+  assert.equal(current.voice1.locked,true);
+  const whole=forLayout(state,[[{},{}]],[[{},{}]],2,1,false);
+  assert.equal(allows(whole,'whole1','audio'),true);
+  assert.equal(allows(whole,'music0','audio'),false);
+  assert.equal(allows(whole,'vis0','visual'),true);
+  assert.equal(state.whole1.solo,true);
+});
+
+test('draft text uses actual clip positions, subtitle tracks, export switch and independent packaging visibility', () => {
+  const {makePlan,timing}=require('../src/ui/draft-transport.js');
+  const {waveformSource}=require('../src/ui/waveform.js');
+  const clip={asset:{kind:'video',id:'v',url:'test://v',duration:5},start:1,end:3,videoStart:1.5,
+    videoSubtitles:{cues:[{text:'画面字幕',start:1250,end:1500}]}};
+  const title={kind:'text',text:'片名',laneId:'title',start:.25,end:.75};
+  const state={shots:[[clip]],settings:[],whole:[],segments:[[]],segmented:true,priority:'picture',music:[],
+    keepAudio:true,muted:new Set(),pack:{global:[title],composites:[],wholeNarration:[],segmentNarration:[]},
+    timelineCaptions:[{text:'粘贴',start:500,end:900}],captions:[{row:0,shot:0,start:.25,duration:.4,name:'口播'}]};
+  const read=()=>makePlan(state,timing(state,()=>2,()=>null),()=>null,waveformSource).filter(entry=>entry.text).map(e=>[e.text,e.start,e.end]);
+  assert.deepEqual(read(),[['片名',.25,.75],['口播',.25,.65],['粘贴',.5,.9],['画面字幕',1.75,2]]);
+  state.trackControls={'caption0':{hidden:true},'layer-text-title':{hidden:true}};
+  assert.deepEqual(read().map(([text])=>text),['粘贴','画面字幕']);
+  state.subtitleStyle={enabled:false};state.trackControls={};
+  assert.deepEqual(read(),[['片名',.25,.75]]);
+});
+
+test('legacy candidates fill unreserved video rows without stealing explicitly placed rows', () => {
+  const { candidateVideoLanes }=require('../src/ui/track-tools.js');
+  const clips=[{id:'first'},{id:'moved',videoLane:3},{id:'second'},{id:'pinned',videoLane:0}];
+  assert.deepEqual(candidateVideoLanes(clips,100),[1,3,2,0]);
+  assert.deepEqual(candidateVideoLanes([{videoLane:99}],100),[99]);
+  for(const invalid of [-1,100,1.5,'2',null]) {
+    assert.throws(()=>candidateVideoLanes([{videoLane:invalid}],100),/视频轨/);
+  }
+  assert.throws(()=>candidateVideoLanes([{videoLane:3},{videoLane:3}],100),/视频轨/);
+});
+
 test('playhead split preserves the original trimmed boundaries', () => {
   assert.deepEqual(splitRanges(2.2, 3, { point: 2.3 }), [
     { start: 2.2, end: 2.3 },
@@ -126,4 +241,32 @@ test('live voice priority fills a short candidate, accelerates a long selection 
   assert.equal(visuals(second)[0].end,1);
   state.segmented=false;state.whole=[{asset:voice}];state.voiceAlignment='fill';
   assert.deepEqual(visuals(first).map(e=>e.asset.id),['short','long']);
+  first.videoStart=0;first.videoDuration=.4;
+  for(const segmented of [true,false]) {
+    state.segmented=segmented;
+    assert.deepEqual(plan(first).filter(e=>e.visual).map(e=>[e.asset.id,e.start,e.end,e.rate]),
+      [['short',0,.2,2.5],['long',.2,.4,2.5]],'实际跟随口播时沿用原混剪填充与倍速');
+  }
+});
+
+test('live playback applies mute to physical video rows in both picture and narration timing', () => {
+  const { timing, makePlan } = require('../src/ui/draft-transport.js');
+  const { waveformSource } = require('../src/ui/waveform.js');
+  const media=(id,kind,duration)=>({id,kind,duration,url:'test://'+id});
+  const moved={asset:media('moved','video',.5),start:0,end:.5,volume:42,videoLane:3};
+  const other={asset:media('other','video',1),start:0,end:1,volume:71,videoLane:0};
+  const state={shots:[[moved,other]],settings:[],whole:[],segments:[[media('voice','audio',1)]],
+    segmented:true,voiceDuration:()=>1,voiceOffset:()=>0,voiceRanges:()=>undefined,voiceVolume:()=>100,
+    keepAudio:true,muted:new Set([0]),music:[],pack:{global:[],composites:[],segmentNarration:[],wholeNarration:[]}};
+  function levels(priority,focus) {
+    state.priority=priority;
+    const layout=timing(state,c=>c.end,()=>null,focus);
+    return makePlan(state,layout,()=>null,waveformSource,focus)
+      .filter(e=>e.lane==='picture').map(e=>[e.asset.id,e.volume]);
+  }
+  assert.deepEqual(levels('picture',moved),[['moved',42]]);
+  assert.deepEqual(levels('picture',other),[['other',0]]);
+  assert.deepEqual(levels('voice',moved),[['moved',42],['other',0]]);
+  state.muted=new Set([3]);
+  assert.deepEqual(levels('voice',moved),[['moved',0],['other',71]]);
 });

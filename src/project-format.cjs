@@ -3,17 +3,21 @@
 const { randomUUID } = require('node:crypto');
 const fs = require('node:fs/promises');
 const path = require('node:path');
+const os = require('node:os');
+const { normalizeSourceEditRanges, prepareSourceEdit } = require('./source-edit.cjs');
 const {
   audioExtensions, imageExtensions, videoExtensions, maxShots, maxCandidates, maxMontageBatch, maxWholeTracks,
   inspectAsset, createFrameThumbnail, planMontage, normalizeSubtitleStyle, normalizeGeneratedCaptions, normalizeMutedVideoTracks,
 } = require('./media.cjs');
 const { normalizeSubtitles } = require('./subtitles.cjs');
 const { normalizeSubprojects } = require('./subprojects.cjs');
+const { normalizeLibraryFolders } = require('./library-folders.cjs');
 const { normalizeLayers, normalizeTransform, normalizePackaging } = require('./packaging.cjs');
-const { normalizeShotSettings, normalizeRanges, candidateKey, normalizeSegmentVoiceCuts, normalizeSceneCuts } = require('./shot-timing.cjs');
+const { normalizeShotSettings, normalizeRanges, normalizeSegmentVoiceCuts, normalizeSceneCuts } = require('./shot-timing.cjs');
 const { normalizeCover } = require('./cover.cjs');
 const { audioSpeed, normalizeMusicSpeeds, normalizeVolumeOverrides } = require('./shot-timing.cjs');
 const { normalizeLook, inspectLut } = require('./visual-style.cjs');
+const { candidateVideoLanes, normalizeVideoGaps } = require('./ui/track-tools.js');
 
 const format = 'sdworkbench';
 const version = 1;
@@ -93,19 +97,22 @@ function cleanConfig(config) {
   const references = new Map();
   function record(id, role) {
     if (typeof id !== 'string' || !/^[A-Za-z0-9_-]{1,128}$/.test(id)) throw new Error('工程中有无效的素材编号。');
-    if (references.has(id) && references.get(id) !== role) throw new Error('同一素材不能同时作为画面和音频。');
+    const previous = references.get(id);
+    if (previous && role === 'library' && previous !== 'lut') return id;
+    if (previous && previous !== role && !(previous === 'library' && role !== 'lut')) throw new Error('同一素材不能同时作为画面和音频。');
     references.set(id, role);
     return id;
   }
   const recordLayer = (id, kind) => record(id, kind === 'sound' ? 'audio' : kind === 'lut' ? 'lut' : 'visual');
   function cleanShot(shot, index) {
     if (!Array.isArray(shot) || shot.length > maxCandidates) throw new Error(`第 ${index + 1} 组分镜的候选素材数量无效。`);
-    const seen = new Set();
+    candidateVideoLanes(shot, maxCandidates);
     return Array.from(shot, (clip) => {
       const id = record(clip?.id, 'visual');
       if (![clip.start, clip.end].every(Number.isFinite) || clip.start < 0 || clip.end < clip.start) {
         throw new Error(`第 ${index + 1} 组分镜的裁切时间无效。`);
       }
+      if (clip.sourceMuted !== undefined && typeof clip.sourceMuted !== 'boolean') throw new Error('片段原声静音状态无效。');
       if (clip.volume !== undefined && (!Number.isFinite(clip.volume) || clip.volume < 0 || clip.volume > 100)) {
         throw new Error(`第 ${index + 1} 组分镜的原声音量无效。`);
       }
@@ -116,12 +123,34 @@ function cleanConfig(config) {
         throw new Error(`第 ${index + 1} 组分镜的匹配时长无效。`);
       }
       if (clip.enabled !== undefined && typeof clip.enabled !== 'boolean') throw new Error('候选参与状态无效。');
+      if (clip.videoGroup !== undefined && (typeof clip.videoGroup!=='string' || !clip.videoGroup.length || clip.videoGroup.length>64)) throw Error('视频片段组合编号无效。');
+      if (clip.videoStart !== undefined && (!Number.isFinite(clip.videoStart) || clip.videoStart < 0 || clip.videoStart > Number.MAX_SAFE_INTEGER)) {
+        throw new Error('视频片段的时间轴落点无效。');
+      }
+      if (clip.videoDuration !== undefined && (!Number.isFinite(clip.videoDuration) || clip.videoDuration <= 0 || clip.videoDuration > Number.MAX_SAFE_INTEGER)) {
+        throw new Error('视频片段的时间轴裁切时长无效。');
+      }
+      if(clip.videoWindow!==undefined && (clip.videoStart===undefined || !Number.isFinite(clip.videoWindow) || clip.videoWindow<=0 || clip.videoWindow>Number.MAX_SAFE_INTEGER)) throw Error('视频轨插入时保留的片段时长无效。');
+      if (clip.videoFit !== undefined && (clip.videoFit !== 'hold' || clip.videoStart === undefined || clip.videoDuration === undefined)) {
+        throw new Error('视频片段的切点窗口无效。');
+      }
       const ranges = clip.ranges === undefined ? undefined : normalizeRanges(clip.ranges, clip.start, clip.end);
-      const key = candidateKey({ ...clip, ranges });
-      if (seen.has(key)) throw new Error(`第 ${index + 1} 组分镜有重复素材。`);
-      seen.add(key);
+      let sourceEdit;
+      if (clip.sourceEdit !== undefined) {
+        const original = record(clip.sourceEdit?.id, 'visual');
+        if (original === id) throw new Error('剪辑成片与原素材不能使用同一编号。');
+        sourceEdit = { id: original, ranges: normalizeSourceEditRanges(clip.sourceEdit.ranges, Number.MAX_SAFE_INTEGER) };
+      }
       return {
         id, start: clip.start, end: clip.end,
+        ...(sourceEdit && { sourceEdit }),
+        ...(clip.videoLane !== undefined && { videoLane: clip.videoLane }),
+        ...(clip.videoStart !== undefined && { videoStart: clip.videoStart }),
+        ...(clip.videoDuration !== undefined && { videoDuration: clip.videoDuration }),
+        ...(clip.videoFit !== undefined && { videoFit: clip.videoFit }),
+        ...(clip.videoGaps !== undefined && {videoGaps:normalizeVideoGaps(clip.videoGaps)}),
+        ...(clip.videoWindow!==undefined && {videoWindow:clip.videoWindow}),
+        ...(clip.videoGroup && {videoGroup:clip.videoGroup}),
         ...(clip.enabled !== undefined && { enabled: clip.enabled }),
         ...(clip.layers !== undefined && { layers: normalizeLayers(clip.layers, recordLayer) }),
         ...(clip.transform !== undefined && { transform: normalizeTransform(clip.transform) }),
@@ -129,6 +158,7 @@ function cleanConfig(config) {
         ...(clip.videoSubtitles && {videoSubtitles:normalizeSubtitles(clip.videoSubtitles)}),
         ...(ranges && { ranges }),
         ...(clip.volume !== undefined && { volume: clip.volume }),
+        ...(clip.sourceMuted && {sourceMuted:true}),
         ...(clip.speed !== undefined && { speed: clip.speed }),
         ...(clip.matchedDuration !== undefined && { matchedDuration: clip.matchedDuration }),
       };
@@ -152,6 +182,7 @@ function cleanConfig(config) {
     });
   }
   if (config.mutedVideoTracks !== undefined) projectConfig.mutedVideoTracks = normalizeMutedVideoTracks(config.mutedVideoTracks);
+  if (config.trackControls !== undefined) projectConfig.trackControls = require('./ui/track-controls.js').normalize(config.trackControls);
   if (config.subprojects !== undefined) projectConfig.subprojects = normalizeSubprojects(config.subprojects, shots.length, cleanShot,(id)=>record(id,'audio'));
   if (config.materialFolderKeys !== undefined) {
     const keys = config.materialFolderKeys;
@@ -164,8 +195,12 @@ function cleanConfig(config) {
     projectConfig.materialBins = config.materialBins.map(({scope, ids, hidden}) => {
       if (!scopes.delete(scope) || !Array.isArray(ids) || !Array.isArray(hidden)
           || !hidden.every((key) => typeof key === 'string' && /^[a-f0-9]{64}$/.test(key))) throw new Error('工程素材库条目无效。');
-      return {scope, ids: [...new Set(ids.map((id) => record(id,'visual')))], hidden: [...new Set(hidden)]};
+      return {scope, ids: [...new Set(ids.map((id) => record(id,'library')))], hidden: [...new Set(hidden)]};
     });
+  }
+  if (config.libraryFolders !== undefined) {
+    const scopes = new Set([null, ...(projectConfig.subprojects?.projects ?? []).map(project => project.id)]);
+    projectConfig.libraryFolders = normalizeLibraryFolders(config.libraryFolders, scopes, record);
   }
   if (config.packaging !== undefined) projectConfig.packaging = normalizePackaging(config.packaging, recordLayer, shots.length);
   if (config.shotSettings !== undefined) projectConfig.shotSettings = normalizeShotSettings(config.shotSettings, shots.length);
@@ -262,14 +297,30 @@ function cleanConfig(config) {
 function mediaDeclaration(id, asset, role) {
   const file = asset?.path;
   const kind = asset?.kind;
-  const validKind = role === 'visual' ? ['image','video'].includes(kind) : role === kind;
+  const validKind = role === 'library' ? ['image','video','audio'].includes(kind) :
+    role === 'visual' ? ['image','video'].includes(kind) : role === kind;
   if (!role || !validKind || !localPath(file) || !extensions[kind].includes(path.extname(file).slice(1).toLowerCase())) {
     throw new Error(`工程素材 ${id} 缺失或类型不匹配，请重新选择素材。`);
   }
   return { id, kind, path: file };
 }
 
+function* sourceEdits(config) {
+  const subprojects = config.subprojects;
+  const rows = subprojects ? [...subprojects.main, ...subprojects.projects.flatMap(project => project.shots)] : [];
+  for (const shot of [...config.shots, ...rows.map(row => row.clips)]) {
+    for (const clip of shot) {
+      if (clip.sourceEdit) yield [clip.id, clip.sourceEdit];
+    }
+  }
+}
+
 function validateCuts(config, assets) {
+  for (const [id, edit] of sourceEdits(config)) {
+    const original = assets.get(edit.id);
+    if (original?.kind !== 'video' || assets.get(id)?.kind !== 'video') throw new Error('素材剪辑需要原始视频和剪辑后的视频。');
+    normalizeSourceEditRanges(edit.ranges, original.duration);
+  }
   for (const item of config.cover?.items ?? []) {
     const asset = assets.get(item.id);
     if (!asset || (asset.kind === 'image' ? item.time !== 0 : asset.kind !== 'video' || item.time > asset.duration)) throw new Error('封面帧超出素材范围。');
@@ -418,10 +469,11 @@ function projectReferences(project) {
   return {config,rows};
 }
 
-async function loadProject(file,resolvePath,inspect=inspectAsset) {
+async function loadProject(file,resolvePath,inspect=inspectAsset,sourceEditDirectory=path.join(os.tmpdir(),'jiajian-source-edits')) {
   requireProjectPath(file);
   const {config,rows}=projectReferences(await readProject(file));
   const assets = new Map();
+  const edits = new Map(sourceEdits(config));
   const cancellation = new AbortController();
   try {
     for (let index = 0; index < rows.length; index += 4) {
@@ -431,13 +483,21 @@ async function loadProject(file,resolvePath,inspect=inspectAsset) {
           const source=resolvePath ? await resolvePath(row.path) : row.path;
           return [row.id, row.kind==='lut' ? await inspectLut(source) : await inspect(source, row.kind, { signal })];
         } catch (error) {
+          if (edits.has(row.id) && !signal.aborted) return [row.id, null];
           const name = path.basename(row.path);
           if (error.code === 'ENOENT') throw new Error(`找不到工程素材「${name}」。请将它放回原位置后重试。`);
           if (signal.aborted) throw new Error('读取工程素材超时。');
           throw new Error(`无法读取工程素材「${name}」。${error.message}`);
         }
       }));
-      for (const [id, asset] of batch) assets.set(id, asset);
+      for (const [id, asset] of batch) if (asset) assets.set(id, asset);
+    }
+    for (const [id, edit] of edits) {
+      if (assets.has(id)) continue;
+      const original = assets.get(edit.id);
+      if (original?.kind !== 'video') throw new Error('找不到可用于恢复剪辑的原始视频。');
+      const restored = await prepareSourceEdit(original, edit.ranges, sourceEditDirectory, { signal: cancellation.signal });
+      assets.set(id, await inspect(restored, 'video', { signal: cancellation.signal }));
     }
   } catch (error) {
     cancellation.abort();

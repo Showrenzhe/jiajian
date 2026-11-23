@@ -44,9 +44,11 @@
       generation += 1;
       waveforms.clear();
       current?.video.pause();
+      current?.destroy?.();
       current = null;
       host.replaceChildren();
       host.hidden = true;
+      delete host.dataset.mode;
     }
     function status(message) { if (current) current.message.textContent = message; }
     function sceneRecords() { return options.getSceneCuts?.() ?? []; }
@@ -166,11 +168,22 @@
     }
     function openCut(clip) {
       if (clip?.asset?.kind !== 'video') return false;
-      const s = makeView('cut', clip.asset);
-      s.clip = clip;
-      s.ranges = (clip.ranges ?? [{ start: clip.start, end: clip.end }]).map((r) => ({ ...r }));
-      s.commit = (ranges) => options.commitRanges(clip, ranges);
-      showRangeTools(s);
+      const trigger = document.activeElement;
+      close();
+      const openedAt = generation;
+      const isCurrent = () => generation === openedAt;
+      current = window.mountVideoCutTimeline(host, clip, {
+        sourceRanges: options.sourceRanges?.(clip),
+        mountMonitor: options.mountMonitor,
+        commit: options.createCommit?.(clip, isCurrent) ?? ((ranges) => options.commitRanges(clip, ranges, isCurrent)),
+        prepareSourceEdit: options.prepareSourceEdit,
+        close: () => {
+          close();
+          const fallback = document.querySelector('#timeline-clock .sequence-selected, #timeline-clock');
+          const target = trigger?.isConnected && trigger !== document.body ? trigger : fallback?.querySelector('.sequence-selected') ?? fallback;
+          target?.focus({ preventScroll: true });
+        },
+      });
       return true;
     }
     function openVoice(asset, ranges, commit, initialOffset = 0, speed = 1) {
@@ -238,21 +251,21 @@
       const next = record.points.filter((v) => v !== s.activePoint);
       s.activePoint = null; updatePoints(next, record);
     }
-    function applyScene(asset, range, shotIndex) {
+    function applyScene(asset, range, shotIndex, targetLane, videoSlot) {
       const record = recordFor(asset);
       if (!record || !sceneRanges(record, asset).some((r) => sameRange(r, range))) return false;
-      if (options.addCandidate(shotIndex, asset, { ...range }) !== true) return false;
+      if (options.addCandidate(shotIndex, asset, { ...range }, targetLane, videoSlot) !== true) return false;
       writeRecord({ ...record, used: record.used.some((r) => sameRange(r, range)) ? record.used : [...record.used, { ...range }] });
       if (current?.mode === 'scene') renderScenes();
       return true;
     }
-    function dropScene(event, shotIndex) {
+    function dropScene(event, shotIndex, targetLane, videoSlot) {
       if (!event.dataTransfer?.types.includes(mime)) return false;
       event.preventDefault(); event.stopPropagation();
       try {
         const { assetId, start, end } = JSON.parse(event.dataTransfer.getData(mime));
         const asset = current?.asset?.id === assetId ? current.asset : options.getAsset?.(assetId);
-        if (asset) return applyScene(asset, { start, end }, shotIndex);
+        if (asset) return applyScene(asset, { start, end }, shotIndex, targetLane, videoSlot);
       } catch { status('无法读取拖入的片段。'); }
       return false;
     }
@@ -285,7 +298,7 @@
       dest.value = String(s.destination ?? -1);
       if (dest.selectedIndex < 0) dest.value = '-1';
       dest.onchange = () => { s.destination = Number(dest.value); };
-      const add = button('加入分镜', () => { if (!applyScene(s.asset, items[s.selected], Number(dest.value))) status('未能加入该分镜，请查看候选数量或是否重复。'); });
+      const add = button('加入分镜', () => { if (!applyScene(s.asset, items[s.selected], Number(dest.value))) status('未能加入该分镜，请检查剩余候选数量。'); });
       add.disabled = s.selected < 0;
       const bulk = button('批量加入', () => {
         const pending = visible.filter((row) => !(row.used || row.hidden));
@@ -347,7 +360,7 @@
       return true;
     }
     host.addEventListener('keydown', (event) => {
-      if (!current || event.target.closest('input, select, textarea')) return;
+      if (!current || current.mode === 'cut' || event.target.closest('input, select, textarea')) return;
       if (event.key === 'Delete') { event.preventDefault(); event.stopPropagation(); if (current.mode === 'scene') deletePoint(); else removeCut(); }
       if (event.key === 'Escape') { event.preventDefault(); event.stopPropagation(); close(); }
     });

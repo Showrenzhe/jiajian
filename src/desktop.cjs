@@ -28,10 +28,11 @@ const { splitNarration: splitNarrationAudio } = require('./subs2srs.cjs');
 const { normalizeLayers, normalizePackaging } = require('./packaging.cjs');
 const {normalizeLook,inspectLut,previewLook} = require('./visual-style.cjs');
 const { createForeground } = require('./foreground.cjs');
+const { prepareSourceEdit } = require('./source-edit.cjs');
 const { detectPauses, processAudio, retimeCaptions } = require('./audio-tools.cjs');
 const { createCreativeSettings, runCreative } = require('./creative-service.cjs');
 const { createWaveformCache } = require('./waveform-cache.cjs');
-const { createPerformanceCache, readPerformance } = require('./performance-cache.cjs');
+const { createPerformanceCache } = require('./performance-cache.cjs');
 const { createAppUpdates } = require('./app-updates.cjs');
 
 const scheme = 'sd-workbench';
@@ -39,10 +40,10 @@ const page = `${scheme}://app/index.html`;
 const uiFiles = new Set(['/index.html', '/app.js', '/styles.css', '/dialog-focus.js', '/creative-service.js', '/script-workspace.js', '/script-workspace.css',
   '/editor-text.js', '/text-presets.js', '/caption-inspector.js', '/caption-inspector.css', '/audio-tools.js', '/waveform.js', '/voice-alignment.js', '/draft-transport.js',
   '/track-organizer.js', '/cover-editor.js', '/visual-editor.js', '/batch-edit.js',
-  '/timeline.js', '/timeline-selection.js', '/timeline.css', '/cut-track.js', '/cut-track.css', '/layer-motion.js', '/layer-motion.css', '/subprojects.js',
-  '/track-workspace.css', '/edit-history.js', '/track-tools.js', '/track-tools.css', '/cloud-tts-dialog.js', '/cloud-tts-dialog.css',
-  '/cloud-tts-settings.js', '/cloud-tts-settings.css', '/split-view.js', '/panel-layout.js', '/draft-workspace.js', '/player-tools.js', '/assets/jiajian-logo.png', '/assets/project-cover.jpg',
-  '/glass-material.css', '/inspector-controls.css', '/editor-surfaces.css', '/appearance.js', '/appearance.css', '/software-updates.js',
+  '/timeline.js', '/timeline-selection.js', '/timeline.css', '/cut-filmstrip.js', '/cut-picture-view.js', '/video-cut-timeline.js', '/cut-track.js', '/cut-track.css', '/layer-motion.js', '/layer-motion.css', '/subprojects.js',
+  '/track-workspace.css', '/edit-history.js', '/track-tools.js', '/track-controls.js', '/track-tools.css', '/cloud-tts-dialog.js', '/cloud-tts-dialog.css',
+  '/cloud-tts-settings.js', '/cut-shortcuts.js', '/cloud-tts-settings.css', '/split-view.js', '/panel-layout.js', '/material-folders.js', '/draft-workspace.js', '/player-tools.js', '/assets/jiajian-logo.png', '/assets/project-cover.jpg',
+  '/glass-material.css', '/inspector-controls.css', '/editor-surfaces.css', '/player-controls.css', '/appearance.js', '/appearance.css', '/software-updates.js',
   '/color-wheel.js', '/color-wheel.css', '/menu-motion.js', '/menu-motion.css']);
 const maxCatalog = (maxShots + 1) * (maxCandidates + maxWholeTracks);
 const maxSubtitleBatchBytes = 1024 * 1024;
@@ -68,7 +69,7 @@ const mediaTypes = new Map(Object.entries({
 }));
 let schemeRegistered = false;
 try {
-  protocol.registerSchemesAsPrivileged([{ scheme, privileges: { standard: true, secure: true, stream: true } }]);
+  protocol.registerSchemesAsPrivileged([{ scheme, privileges: { standard: true, secure: true, stream: true, corsEnabled: true } }]);
   schemeRegistered = true;
 } catch {
   // Electron may already be ready when a caller performs asynchronous setup before launchDesktop().
@@ -101,6 +102,7 @@ function materialKind(file) {
   const extension = path.extname(file).slice(1).toLowerCase();
   if (imageExtensions.includes(extension)) return 'image';
   if (videoExtensions.includes(extension)) return 'video';
+  if (audioExtensions.includes(extension)) return 'audio';
   return null;
 }
 
@@ -129,7 +131,7 @@ async function mediaResponse(file, range) {
 
     let start = 0;
     let end = size - 1;
-    const headers = new Headers({ 'Accept-Ranges': 'bytes' });
+    const headers = new Headers({ 'Accept-Ranges': 'bytes', 'Access-Control-Allow-Origin': `${scheme}://app` });
     if (range) {
       const match = /^bytes=(\d*)-(\d*)$/.exec(range);
       const first = match?.[1];
@@ -177,7 +179,6 @@ async function launchDesktop({
   app.setName('佳剪');
   mkdirSync(dataDirectory, { recursive: true });
   app.setPath('userData', dataDirectory);
-  if (!app.isReady() && !readPerformance(dataDirectory).gpu) app.disableHardwareAcceleration();
   if (show && !app.requestSingleInstanceLock()) {
     app.quit();
     return null;
@@ -185,7 +186,7 @@ async function launchDesktop({
   app.commandLine.appendSwitch('disable-background-networking');
   app.commandLine.appendSwitch('disable-component-update');
   if (!schemeRegistered) {
-    protocol.registerSchemesAsPrivileged([{ scheme, privileges: { standard: true, secure: true, stream: true } }]);
+    protocol.registerSchemesAsPrivileged([{ scheme, privileges: { standard: true, secure: true, stream: true, corsEnabled: true } }]);
     schemeRegistered = true;
   }
   await app.whenReady();
@@ -195,9 +196,11 @@ async function launchDesktop({
   const lookupByPath = new Map();
   const recent = await readHistory(dataDirectory);
   const projects = await readProjectLibrary(dataDirectory);
+  let boundProject;
   const resolveOutputFile=(file)=>resolveOutput(recent,file);
   const performanceCache = createPerformanceCache(dataDirectory, {inspect:inspectAsset, thumbnail:createVideoThumbnail, encode:createTrackProxy});
-  const drafts = createDraftStore(path.join(dataDirectory, 'drafts'),resolveOutputFile,performanceCache.inspectCached);
+  const sourceEditDirectory = path.join(dataDirectory, 'source-edits');
+  const drafts = createDraftStore(path.join(dataDirectory, 'drafts'),resolveOutputFile,performanceCache.inspectCached,sourceEditDirectory);
   const published = new Set(recent.map((item) => item.path));
   let job;
   let pickerOpen = false;
@@ -517,8 +520,6 @@ async function launchDesktop({
     } catch { return new Response(null, { status: 404 }); }
   }
 
-  session.defaultSession.setPermissionRequestHandler((_contents, _permission, reply) => reply(false));
-  session.defaultSession.setPermissionCheckHandler(() => false);
   protocol.handle(scheme, (request) => {
     const url = new URL(request.url);
     if (request.method !== 'GET' || url.search || url.port || url.username || url.password) {
@@ -587,6 +588,13 @@ async function launchDesktop({
     },
   });
   const firstPaint = show && new Promise((resolve) => win.once('ready-to-show', resolve));
+  const allowPlayerFullscreen = (contents, permission, details) =>
+    permission === 'fullscreen' && !win.isDestroyed() && contents === win.webContents
+    && details.isMainFrame && details.requestingUrl === page && contents.getURL() === page;
+  session.defaultSession.setPermissionRequestHandler((contents, permission, reply, details) =>
+    reply(allowPlayerFullscreen(contents, permission, details)));
+  session.defaultSession.setPermissionCheckHandler((contents, permission, _origin, details) =>
+    allowPlayerFullscreen(contents, permission, details));
   function unlockUpdate() {
     updateLocked = false;
     draftCloseAllowed = false;
@@ -784,7 +792,7 @@ async function launchDesktop({
       const queue = [id];
       for (let i = 0; i < queue.length && i < maxFolderDepth; i++) {
         const listing = await browseMaterialFolder(queue[i]);
-        const first = listing.files[0];
+        const first = listing.files.find(item => item.kind !== 'audio');
         if (first) return first.previewUrl ? { url: first.previewUrl } : { url: await videoThumbnail(first.id) };
         queue.push(...listing.folders.map((item) => item.id));
       }
@@ -797,6 +805,28 @@ async function launchDesktop({
   handle('workbench:material-tile-preview', materialTilePreview);
   handle('workbench:video-thumbnail', (id) => (catalog.has(id) || materialFiles.has(id)) ? videoThumbnail(id) : null);
   handle('workbench:clip-thumbnail', ({id,time}={})=>catalog.has(id) ? videoThumbnail(id,time) : null);
+  handle('workbench:prepare-source-edit', async ({id,ranges}={}) => {
+    const asset=catalog.get(id);
+    if (asset?.kind!=='video') throw Error('请选择已载入的视频素材。');
+    const origin=folderAssetOrigins.get(asset), signal=thumbnailScope.signal;
+    if (origin) await checkedMaterialPath(origin);
+    const file=await prepareSourceEdit(asset,ranges,sourceEditDirectory,{signal});
+    if (origin) await checkedMaterialPath(origin);
+    signal.throwIfAborted();
+    const key=assetPathKey('video',file);
+    const known=lookupByPath.get(key);
+    if (known) return describeAsset(known,catalog.get(known));
+    const result=await performanceCache.inspectCached(file,'video',{signal});
+    signal.throwIfAborted();
+    if (catalog.get(id)!==asset) throw Error('原素材已关闭。');
+    const existing=lookupByPath.get(key);
+    if (existing) return describeAsset(existing,catalog.get(existing));
+    if (catalog.size>=maxCatalog) throw Error('本次会话的素材已达到上限。');
+    const outputId=randomUUID();
+    catalog.set(outputId,result);
+    lookupByPath.set(key,outputId);
+    return describeAsset(outputId,result);
+  });
   handle('workbench:audio-waveform', audioWaveform);
   handle('workbench:track-proxy', trackProxyUrl);
   handle('workbench:playback-proxy', async (id) => {
@@ -808,7 +838,7 @@ async function launchDesktop({
   handle('workbench:proxy-default', () => performanceCache.settings.defaultProxy);
   handle('workbench:performance-settings', () => performanceCache.view());
   handle('workbench:performance-save', (patch) => {
-    if (!patch || Object.keys(patch).some(key => !['gpu','optimization','defaultProxy'].includes(key))) throw new Error('性能设置无效。');
+    if (!patch || Object.keys(patch).some(key => !['optimization','defaultProxy'].includes(key))) throw new Error('性能设置无效。');
     if (patch.optimization && patch.optimization !== performanceCache.settings.optimization) clearTrackProxies();
     return performanceCache.change(patch);
   });
@@ -827,6 +857,7 @@ async function launchDesktop({
   });
   handle('workbench:subtitle-style-preview', previewSubtitleStyle);
   handle('workbench:list-drafts', async () => (await drafts.list()).map(publicDraft));
+  handle('workbench:delete-draft', (value) => drafts.remove(value));
   handle('workbench:create-draft', async (value) => {
     if (!value || typeof value !== 'object' || Array.isArray(value)) throw new Error('草稿请求无效。');
     return publicDraft(await drafts.create(value, new Map(catalog)));
@@ -945,7 +976,9 @@ async function launchDesktop({
         title: '选择素材文件夹', properties: ['openDirectory'],
       });
       if (canceled || !filePaths[0]) return null;
-      return await registerMaterialFolder(filePaths[0]);
+      const listing = await registerMaterialFolder(filePaths[0]);
+      await rememberFolderGrant(filePaths[0], listing.sourceKey);
+      return listing;
     } finally {
       pickerOpen = false;
     }
@@ -1230,7 +1263,19 @@ async function launchDesktop({
         await saveProject(filePath, config, catalog, { overwrite: true });
       }
       const libraryWarning = await trackProject(filePath);
-      return { name: path.basename(filePath, path.extname(filePath)), libraryWarning };
+      boundProject = { token: randomUUID(), filePath };
+      return { name: path.basename(filePath, path.extname(filePath)), projectToken: boundProject.token, libraryWarning };
+    } finally {
+      pickerOpen = false;
+    }
+  });
+
+  handle('workbench:quick-save-project', async ({ token, config }) => {
+    if (!boundProject || token !== boundProject.token) throw new Error('当前工程文件已切换，请重新打开或使用“保存工程”。');
+    if (job || pickerOpen) throw new Error('请先完成当前操作。');
+    pickerOpen = true;
+    try {
+      await saveProject(boundProject.filePath, config, catalog, { overwrite: true });
     } finally {
       pickerOpen = false;
     }
@@ -1241,6 +1286,7 @@ async function launchDesktop({
     const remap = (id) => ids.get(id);
     const remapShot = (shot) => shot.map((clip) => ({
       ...clip, id: remap(clip.id), ...(clip.layers && { layers: normalizeLayers(clip.layers, remap) }),
+      ...(clip.sourceEdit && {sourceEdit:{...clip.sourceEdit,id:remap(clip.sourceEdit.id)}}),
       ...(clip.look && {look:normalizeLook(clip.look,remap)}),
     }));
     const descriptions = [...assets].map(([id, asset]) => describeAsset(ids.get(id), asset));
@@ -1252,6 +1298,7 @@ async function launchDesktop({
       ...(config.packaging && { packaging: normalizePackaging(config.packaging, remap, config.shots.length) }),
       musicIds: config.musicIds.map((id) => ids.get(id)),
       ...(config.materialBins && {materialBins:config.materialBins.map((bin)=>({...bin,ids:bin.ids.map(remap)}))}),
+      ...(config.libraryFolders && {libraryFolders:config.libraryFolders.map(folder=>({...folder,assetIds:folder.assetIds.map(remap)}))}),
       ...(config.processedLibrary && {processedLibrary:config.processedLibrary.map((item)=>({...item,id:ids.get(item.id)}))}),
       ...(config.cover && {cover:{...config.cover,items:config.cover.items.map((item)=>({...item,id:ids.get(item.id)}))}}),
       ...(config.filterLibrary && {filterLibrary:config.filterLibrary.map(remap)}),
@@ -1293,7 +1340,9 @@ async function launchDesktop({
     pickerOpen = true;
     try {
       const { config, assets, ...meta } = await drafts.open(id);
-      return { ...publicDraft(meta), ...(await restoreCatalog(config, assets)) };
+      const restored = await restoreCatalog(config, assets);
+      boundProject = undefined;
+      return { ...publicDraft(meta), ...restored };
     } finally {
       pickerOpen = false;
     }
@@ -1314,10 +1363,11 @@ async function launchDesktop({
         projectPath = projects.find((project) => project.id === id)?.path;
         if (!projectPath) throw new Error('找不到这个本地项目。');
       }
-      const { config, assets } = await loadProject(projectPath,resolveOutputFile,performanceCache.inspectCached);
+      const { config, assets } = await loadProject(projectPath,resolveOutputFile,performanceCache.inspectCached,sourceEditDirectory);
       const restored = await restoreCatalog(config, assets);
       const libraryWarning = await trackProject(projectPath);
-      return { name: path.basename(projectPath, path.extname(projectPath)), ...restored, libraryWarning };
+      boundProject = { token: randomUUID(), filePath: projectPath };
+      return { name: path.basename(projectPath, path.extname(projectPath)), projectToken: boundProject.token, ...restored, libraryWarning };
     } finally {
       pickerOpen = false;
     }
@@ -1373,7 +1423,8 @@ async function launchDesktop({
     pickerOpen = true;
     const assets = [], folders = [], warnings = [];
     try {
-      for (const file of new Set(paths.slice(0, maxCandidates))) {
+      const selected = paths.slice(0, maxCandidates);
+      for (const file of destination === 'visual' ? selected : new Set(selected)) {
         try {
           if (!localMaterialPath(file)) throw new Error('请选择本机文件。');
           const info = await fs.lstat(file);
@@ -1382,7 +1433,7 @@ async function launchDesktop({
             await rememberFolderGrant(file, listing.sourceKey);
             folders.push(listing);
           } else {
-            const kind = materialKind(file) ?? (audioExtensions.includes(path.extname(file).slice(1).toLowerCase()) ? 'audio' : null);
+            const kind = materialKind(file);
             if (destination === 'audio' && kind !== 'audio') throw new Error('请将音频拖入口播或配乐轨。');
             if (destination === 'visual' && kind === 'audio') throw new Error('请将音频拖入口播或配乐轨。');
             if (!kind || !info.isFile()) throw new Error(info.isDirectory() ? '文件夹请拖到素材库。' : '不支持此素材类型。');
@@ -1399,7 +1450,7 @@ async function launchDesktop({
 
   handle('workbench:pick', async (value) => {
     const { kind, limit } = value || {};
-    if (!['visual', 'video', 'image', 'audio', 'narration', 'audio-tools'].includes(kind) || !Number.isInteger(limit)
+    if (!['library', 'visual', 'video', 'image', 'audio', 'narration', 'audio-tools'].includes(kind) || !Number.isInteger(limit)
       || limit < 1 || limit > maxCandidates || (kind === 'narration' && limit !== 1)) {
       throw new Error('素材选择参数无效。');
     }
@@ -1407,13 +1458,14 @@ async function launchDesktop({
     pickerOpen = true;
     try {
       const filters = {
+        library: { name:'素材文件', extensions:[...new Set([...videoExtensions,...imageExtensions,...audioExtensions])] },
         visual: { name: '视频和图片', extensions: [...videoExtensions, ...imageExtensions] },
         video: { name: '视频', extensions: videoExtensions },
         image: { name:'封面图片', extensions:imageExtensions },
         audio: { name: '音频', extensions: audioExtensions },
       };
       const mediaKind = kind === 'narration' || kind === 'audio-tools' ? 'audio' : kind;
-      const titles = { visual: '选择分镜素材', video: '选择视频素材', image:'选择封面图片', audio: '选择配乐', narration: '选择口播音频', 'audio-tools': '选择待处理音频' };
+      const titles = { library:'选择素材文件', visual: '选择分镜素材', video: '选择视频素材', image:'选择封面图片', audio: '选择配乐', narration: '选择口播音频', 'audio-tools': '选择待处理音频' };
       const { canceled, filePaths } = await dialogs.showOpenDialog(win, {
         title: titles[kind],
         properties: limit === 1 ? ['openFile'] : ['openFile', 'multiSelections'],
@@ -1425,7 +1477,11 @@ async function launchDesktop({
       for (const file of filePaths.slice(0, limit)) {
         try {
           const extension = path.extname(file).slice(1).toLowerCase();
-          const fileKind = mediaKind === 'visual' ? (imageExtensions.includes(extension) ? 'image' : 'video') : mediaKind;
+          let fileKind = mediaKind === 'visual' ? (imageExtensions.includes(extension) ? 'image' : 'video') : mediaKind;
+          if (mediaKind === 'library') {
+            fileKind = materialKind(file);
+            if (!fileKind) throw Error('不支持此素材类型。');
+          }
           assets.push(await importLocalFile(file, fileKind));
         } catch (error) {
           warnings.push(`${path.basename(file)}：${error.message}`);

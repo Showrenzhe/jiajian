@@ -5,7 +5,7 @@ const fs = require('node:fs/promises');
 const os = require('node:os');
 const path = require('node:path');
 const { test } = require('node:test');
-const { inspectAsset, planMontage } = require('../src/media.cjs');
+const { inspectAsset, planMontage, exportBatch } = require('../src/media.cjs');
 const { saveProject, loadProject, normalizeScriptModel } = require('../src/project-format.cjs');
 const { fixtures, ffmpeg } = require('./fixtures.cjs');
 
@@ -65,15 +65,73 @@ test('persists packaging-only assets and voice, text-group and candidate layers 
   assert.deepEqual((await loadProject(file)).config, loaded.config);
 });
 
+test('reopens reversible source edits and rebuilds a missing result in the local edit cache', async (t) => {
+  const { prepareSourceEdit } = require('../src/source-edit.cjs');
+  const root = await testDirectory(t);
+  const file = path.join(root, 'source-edits.sdworkbench');
+  const { red } = await fixtures(root);
+  const original = await inspectAsset(red, 'video');
+  const bytes = await fs.readFile(red);
+  const ranges = [{start:.25, end:.75, mirror:true, reverse:true}];
+  const rendered = await prepareSourceEdit(original, ranges, path.join(root, 'cache'));
+  const result = await inspectAsset(rendered, 'video');
+  const clip = {id:'edited', start:0, end:.5, sourceEdit:{id:'original',ranges}};
+  const config = editingConfig({shots:[[clip]], subprojects:{
+    active:null, main:[], projects:[{id:'second',name:'副本',shots:[{index:0,clips:[clip]}]}]
+  }});
+  const assets = new Map([['original', original], ['edited', result]]);
+  await saveProject(file, config, assets);
+  assert.deepEqual((await loadProject(file)).config, config);
+  await fs.unlink(rendered);
+  const cache = path.join(root, 'rebuilt');
+  const reopened = await loadProject(file, undefined, inspectAsset, cache);
+  assert.deepEqual(reopened.config, config);
+  assert.equal(path.dirname(reopened.assets.get('edited').path), cache);
+  assert.ok(Math.abs(reopened.assets.get('edited').duration - .5) < .05);
+  assert.deepEqual(await fs.readFile(red), bytes);
+  await assert.rejects(saveProject(file, editingConfig({shots:[[{...clip, sourceEdit:{id:'original', ranges:[{start:0,end:2000}]}}]]}), assets, {overwrite:true}), /范围/);
+});
+
 test('a draft with every visual excluded keeps muted tracks, clips and original volume', async (t) => {
   const root = await testDirectory(t);
   const file = path.join(root, '未参与剪辑.sdworkbench');
   const files = await fixtures(root);
   const catalog = new Map([['red', await inspectAsset(files.red, 'video')]]);
-  const config = editingConfig({ shots: [[{ id: 'red', start: .1, end: .8, volume: 42, enabled: false }]], mutedVideoTracks: [0] });
+  const config = editingConfig({ shots: [[
+    { id: 'red', start: .1, end: .8, videoLane:0, videoStart:2.125, videoDuration:.35, volume: 42, enabled: false },
+    { id: 'red', start: .8, end: 1, videoLane:0, videoStart:5.25, enabled:false },
+  ]], mutedVideoTracks: [0], trackControls:{vis0:{locked:true,hidden:true}} });
   await saveProject(file, config, catalog);
   assert.deepEqual((await loadProject(file)).config, config);
+  await assert.rejects(saveProject(file, {...config, shots:[[{...config.shots[0][0],videoStart:-1}]]}, catalog), /落点/);
+  await assert.rejects(saveProject(file, {...config, shots:[[{...config.shots[0][0],videoDuration:0}]]}, catalog), /裁切时长/);
+  const placed={...config.shots[0][0],enabled:true,videoFit:'hold'};
+  const occupied={...config,shots:[[placed,{...placed}]]};
+  await assert.rejects(saveProject(file,occupied,catalog,{overwrite:true}),/视频轨/);
+  assert.throws(()=>planMontage(occupied,catalog),/视频轨/);
+  assert.deepEqual((await loadProject(file)).config,config,'回绝同一轨道起点的两个片段后保留旧工程');
   await assert.rejects(saveProject(file, { ...config, mutedVideoTracks: [-1] }, catalog), /静音/);
+});
+
+test('independent instances of one video save, reopen and export at the same time on different tracks', async (t) => {
+  const root = await testDirectory(t);
+  const file = path.join(root, '同源双轨.sdworkbench');
+  const { red } = await fixtures(root);
+  const catalog = new Map([['red', await inspectAsset(red, 'video')]]);
+  const placed = { id: 'red', start: 0, end: 1, videoStart: 0, videoDuration: .5, videoFit: 'hold' };
+  const clips = [{ ...placed, videoLane: 0, speed: 1, volume: 40 }, { ...placed, videoLane: 1, speed: 2, volume: 75 }];
+  const config = editingConfig({ shots: [clips], resolution: 720, keepAudio: true, useMirrors: false, count: 2 });
+  await saveProject(file, config, catalog);
+  const loaded = await loadProject(file);
+  assert.equal(loaded.assets.size, 1);
+  assert.deepEqual(loaded.config.shots[0], clips);
+  const plans = planMontage(loaded.config, loaded.assets);
+  const variants = plans.map(plan => plan.clips[0]).sort((a, b) => a.videoLane - b.videoLane);
+  assert.deepEqual(variants.map(clip => [clip.videoLane, clip.speed, clip.volume]), [[0, 1, .4], [1, 2, .75]]);
+  const { failures, results } = await exportBatch(plans, root);
+  assert.deepEqual(failures, []);
+  assert.equal(results.length, 2);
+  for (const result of results) assert.ok((await inspectAsset(result.path, 'video')).duration >= .5);
 });
 
 test('deleting inherited footage in one store persists its empty shot without removing the shared footage', async (t) => {
@@ -298,6 +356,111 @@ test('cold draft lists reuse their index and JPEG and recover from external edit
   assert.equal(await legacy.thumbnail(first.id,1),null);
   assert.deepEqual(legacy.cover(first.id,1),rebuilt.cover(first.id,1));
   assert.equal(reads,8,'旧格式封面路径和无内嵌封面标记可从索引加载');
+});
+
+test('draft folders follow nested renames and deletions without touching external or unmanaged files', async t => {
+  const {createDraftStore}=require('../src/draft-store.cjs');
+  const root=await testDirectory(t), directory=path.join(root,'drafts'), catalog=new Map();
+  const store=createDraftStore(directory);
+  const item=(id,name,parentId=null)=>({id,name,parentId,scope:null,assetIds:[]});
+  const first=[item('a','主素材'),item('b','空目录','a'),item('c','图片')];
+  const config=folders=>editingConfig({shots:[],libraryFolders:folders});
+  let draft=await store.create({name:'分镜',config:config(first)},catalog);
+  const mirror=path.join(directory,draft.id+'.素材库');
+  const save=async folders=>{
+    draft=await store.save({id:draft.id,expectedRevision:draft.revision,config:config(folders)},catalog);
+  };
+  const external=path.join(root,'图片');
+  await fs.mkdir(external);
+  await fs.writeFile(path.join(external,'原始文件'),'original');
+  const manual=path.join(mirror,'主素材','空目录','个人笔记');
+  await fs.writeFile(manual,'keep');
+  const renamed=[item('a','图片'),item('b','空目录','a'),item('c','主素材')];
+  await save(renamed);
+  const moved=path.join(mirror,'图片','空目录','个人笔记');
+  assert.equal(await fs.readFile(moved,'utf8'),'keep');
+  assert.deepEqual((await createDraftStore(directory).open(draft.id)).config.libraryFolders,renamed);
+  await assert.rejects(save([]),/额外文件/);
+  assert.deepEqual((await store.open(draft.id)).config.libraryFolders,renamed);
+  assert.equal(await fs.readFile(moved,'utf8'),'keep');
+  await fs.unlink(moved);
+  await fs.mkdir(path.join(mirror,'已有文件夹'));
+  await assert.rejects(save([...renamed,item('d','已有文件夹')]),/同名/);
+  assert.deepEqual((await store.open(draft.id)).config.libraryFolders,renamed);
+  await fs.rmdir(path.join(mirror,'已有文件夹'));
+  const target=path.join(mirror,'外部目录');
+  await fs.symlink(external,target,process.platform==='win32'?'junction':'dir');
+  await assert.rejects(save([item('d','外部目录')]),/同名/);
+  await fs.unlink(target);
+  for (const invalid of [[item('x','..')],[item('x','COM1.mov')],[item('a','父','b'),item('b','子','a')],
+    [item('x','A'),item('y','a')]]) await assert.rejects(save(invalid),/文件夹/);
+  await save([]);
+  await assert.rejects(fs.stat(mirror),{code:'ENOENT'});
+  assert.equal(await fs.readFile(path.join(external,'原始文件'),'utf8'),'original');
+});
+
+test('deleting a draft survives restart, rejects stale writes and preserves shared media', async t => {
+  const { createDraftStore } = require('../src/draft-store.cjs');
+  const root = await testDirectory(t), directory = path.join(root, 'drafts');
+  const store = createDraftStore(directory);
+  const image = path.join(root, 'original.png');
+  await ffmpeg(['-f', 'lavfi', '-i', 'color=red:s=32x32', '-frames:v', '1', '-threads', '1', '-update', '1', image]);
+  const bytes = await fs.readFile(image);
+  const catalog = new Map([['image', await inspectAsset(image, 'image')]]);
+  const config = editingConfig({ shots: [[{ id: 'image', start: 0, end: 1 }]], libraryFolders: [
+    { id: 'group', name: '素材', scope: null, parentId: null, assetIds: ['image'] },
+  ] });
+  const first = await store.create({ name: '同名', config }, catalog);
+  const second = await store.create({ name: '同名', config }, catalog);
+  const request = { id: first.id, expectedRevision: first.revision };
+  const file = path.join(directory, first.id + '.sdworkbench');
+  const external = path.join(root, first.id + '.sdworkbench');
+  await saveProject(external, config, catalog);
+  const projectBytes = await fs.readFile(external);
+  await assert.rejects(store.remove({ ...request, id: external }), /找不到/);
+  await assert.rejects(store.remove({ ...request, expectedRevision: 0 }), /刷新/);
+  await fs.appendFile(file, ' ');
+  await assert.rejects(store.remove(request), /刷新/);
+  await store.list();
+  const mirror = path.join(directory, first.id + '.素材库');
+  const unlink = fs.unlink;
+  const locked = t.mock.method(fs, 'unlink', async target => {
+    if (target === file) throw Object.assign(new Error('locked'), { code: 'EBUSY' });
+    return unlink(target);
+  });
+  await assert.rejects(store.remove(request), /被占用/);
+  locked.mock.restore();
+  assert.equal((await store.open(first.id)).revision, first.revision);
+  assert.ok((await fs.stat(mirror)).isDirectory());
+  const outcomes = await Promise.allSettled([store.remove(request), store.save({ ...request, config }, catalog)]);
+  assert.deepEqual(outcomes[0], { status: 'fulfilled', value: true });
+  assert.match(outcomes[1].reason.message, /找不到/);
+  for (const removed of [file, mirror, path.join(directory, '.list-cache', first.id + '.jpg')]) {
+    await assert.rejects(fs.stat(removed), { code: 'ENOENT' });
+  }
+  const cold = createDraftStore(directory);
+  assert.deepEqual(await cold.list(), [second]);
+  await assert.rejects(cold.open(first.id), /找不到/);
+  assert.equal((await cold.open(second.id)).assets.get('image').path, image);
+  const manual = path.join(directory, second.id + '.素材库', '素材', '个人笔记');
+  await fs.writeFile(manual, 'keep');
+  await cold.remove({ id: second.id, expectedRevision: second.revision });
+  assert.deepEqual(await createDraftStore(directory).list(), []);
+  assert.equal(await fs.readFile(manual, 'utf8'), 'keep');
+  assert.deepEqual(await fs.readFile(image), bytes);
+  assert.deepEqual(await fs.readFile(external), projectBytes);
+});
+
+test('folder-only audio and visual assets persist without a timeline reference', async t=>{
+  const root=await testDirectory(t), files=await fixtures(root), file=path.join(root,'素材目录.sdworkbench');
+  const libraryFolders=[{id:'group',parentId:null,scope:null,name:'声画',assetIds:['still','music'],
+    sourceKey:'a'.repeat(64),hiddenKeys:['b'.repeat(64)]}];
+  const catalog=new Map(await Promise.all([['still','image'],['music','audio']].map(async ([id,kind])=>[id,await inspectAsset(files[id],kind)])));
+  await saveProject(file,editingConfig({shots:[],libraryFolders,materialBins:[{scope:null,ids:['music'],hidden:[]}]}),catalog);
+  const project=await loadProject(file);
+  assert.deepEqual(project.config.libraryFolders,libraryFolders);
+  assert.equal(project.assets.get('music').kind,'audio');
+  assert.equal(project.assets.get('still').path,files.still);
 });
 
 test('allows empty drafts and atomically rejects unconfirmed same-name saves', async (t) => {

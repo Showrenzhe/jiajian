@@ -1,4 +1,9 @@
 /* The editing panels share a desktop. The gutters also act as resize targets. */
+/* Only the workspace grid consumes these tracks. Resizing a column must not
+   change the inherited style of every timeline clip and material thumbnail. */
+@property --split-materials { syntax: "*"; inherits: false; }
+@property --split-inspector { syntax: "*"; inherits: false; }
+@property --split-timeline { syntax: "*"; inherits: false; }
 .app-frame[data-mode="montage"] {
   --workspace-gutter: 8px;
   --workspace-radius: 10px;
@@ -185,19 +190,14 @@
 }
 .workspace-divider[aria-orientation="vertical"]::before { inset-block: var(--workspace-radius); width: 2px; }
 .workspace-divider[aria-orientation="horizontal"]::before { inset-inline: var(--workspace-radius); height: 2px; }
-/* Retain the resize cursor over other controls when the seam reaches its limit. */
-body:has(.workspace-divider[data-dragging]) {
-  cursor: col-resize;
-  &:has(.workspace-divider[aria-orientation="horizontal"][data-dragging]) { cursor: row-resize; }
-  * { cursor: inherit !important; }
+/* Pointer capture keeps delivering input to the divider at its limit. One
+   transparent hit surface keeps the cursor there without restyling every clip. */
+.workspace-resize-cursor:not([hidden]) {
+  position: fixed;
+  inset: 0;
+  z-index: 100;
+  user-select: none;
 }
-body:has(.workspace-area-handle[data-dragging]) {
-  cursor: row-resize;
-  &:has([data-area-handle="junction"][data-dragging]) { cursor: nwse-resize; }
-  &:has([data-side="inspector"][data-area-handle="junction"][data-dragging]) { cursor: nesw-resize; }
-  * { cursor: inherit !important; }
-}
-#editor-workspace:has([data-dragging]) { user-select: none; }
 .app-frame[data-mode="montage"] :is(.editor, .sidebar) { display: contents; }
 .app-frame[data-mode="montage"] :focus-visible { outline: 2px solid var(--focus-ring); outline-offset: 2px; }
 
@@ -397,10 +397,6 @@ body:has(.workspace-area-handle[data-dragging]) {
   box-shadow: 0 6px 32px #0009;
 }
 .editor-player:popover-open > .panel-heading { cursor: move; touch-action: none; }
-#clip-inspector { min-width: 0; margin: 0 0 12px; padding: 7px; border: 1px solid var(--edge); border-radius: 5px; }
-#clip-inspector legend { padding-inline: 4px; font-size: 12px; }
-#clip-inspector-name { display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 13px; }
-#clip-inspector-meta { margin: 3px 0 6px; }
 
 .app-frame[data-mode="montage"] .editor-materials { grid-area: var(--panel-grid-area, materials); position: relative; container-type: inline-size; padding: 12px 13px; overflow: auto; }
 .material-marquee {
@@ -447,7 +443,21 @@ body:has(.workspace-area-handle[data-dragging]) {
   text-overflow: ellipsis;
   white-space: nowrap;
 }
-.app-frame[data-mode="montage"] :is(.material-back, .material-quick-add) {
+.app-frame[data-mode="montage"] .material-back {
+  display: grid;
+  place-items: center;
+  flex: 0 0 30px;
+  height: 28px;
+  padding: 0;
+  border: 0;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--ink);
+}
+.app-frame[data-mode="montage"] .material-back .ui-icon { transform: rotate(180deg); stroke-width: 2; }
+.app-frame[data-mode="montage"] .material-back:hover:enabled { background: var(--control-hover); }
+.app-frame[data-mode="montage"] .material-back:active:enabled { background: var(--selected-fill); }
+.app-frame[data-mode="montage"] .material-quick-add {
   padding: 3px 6px;
   border: 1px solid var(--control-edge);
   border-radius: 4px;
@@ -455,7 +465,7 @@ body:has(.workspace-area-handle[data-dragging]) {
   color: var(--accent);
   font-size: 11px;
 }
-.app-frame[data-mode="montage"] :is(.material-back, .material-quick-add):hover:enabled { border-color: var(--selected-edge); background: var(--control); }
+.app-frame[data-mode="montage"] .material-quick-add:hover:enabled { border-color: var(--selected-edge); background: var(--control); }
 .app-frame[data-mode="montage"] #material-folders {
   margin: 0;
 }
@@ -638,59 +648,29 @@ body:has(.workspace-area-handle[data-dragging]) {
   outline-offset: -2px;
   box-shadow: inset 0 0 0 3px color-mix(in srgb, var(--system-blue) 40%, transparent);
 }
+.material-used, .processed-used {
+  padding: 0 4px;
+  border-inline-start: 3px solid var(--system-blue);
+  border-radius: 4px;
+  font-weight: 600;
+  line-height: 15px;
+}
 .app-frame[data-mode="montage"] .material-tile > .material-used {
-  position:absolute;left:7px;top:7px;color:#efffff;background:#124b4cec;border-radius:3px;
-  font-weight:600;font-size:10px;line-height:15px;padding:0 4px;pointer-events:auto;
+  position: absolute;
+  left: 6px;
+  top: 6px;
+  color: white;
+  background: #202124e8;
+  font-size: 10px;
 }
 @container (max-width: 84px) {
   .app-frame[data-mode="montage"] .material-tile > .material-used { top: 23px; }
 }
-:root { --material-used-edge: #53c8ac; }
-:root[data-theme="light"] { --material-used-edge: #107d66; }
-.material-tile[data-used]::after,
-#processed-material-list li[data-used]::after {
-  content: "";
-  position: absolute;
-  inset: -1px;
-  border: 2px solid var(--material-used-edge);
-  border-radius: inherit;
-  box-shadow: 0 0 5px color-mix(in srgb, var(--material-used-edge) 75%, transparent);
-  pointer-events: none;
+.processed-used { background: var(--control-fill); font-size: 11px; }
+#visual-track-lane :is(.material-instance, .material-shot) {
+  box-shadow: inset 3px 0 var(--system-blue);
 }
-#processed-material-list li[data-used] { position: relative; border-radius: 5px; }
-@media (forced-colors: active) {
-  .material-tile[data-used]::after, #processed-material-list li[data-used]::after { border-color: Highlight; }
-}
-.processed-used { color:#84dad9;font-size:11px; }
-.timeline-marquee {position:absolute;pointer-events:none;z-index:5;border:1px solid #86e8e7;background:#5bcecf30;}
-#timeline-clock[data-group-selected] .sequence-selected:not(.sequence-marked) {outline:none;}
-#timeline-clock .sequence-block.sequence-marked {outline:2px solid #9bf4f2;outline-offset:-2px;box-shadow:inset 0 0 0 3px #15484a;}
-:root { --material-match-gold: rgb(255, 207, 82); }
-:root[data-theme="light"] { --material-match-gold: rgb(174, 108, 0); }
-#timeline-clock .sequence-row .sequence-block.material-instance,
-#visual-track-lane .material-instance,
-#visual-track-lane .material-shot {
-  outline: 3px solid var(--material-match-gold);
-  outline-offset: -2px;
-  box-shadow: 0 0 6px 1px color-mix(in srgb, var(--material-match-gold) 80%, transparent);
-}
-/* Keep the entire outline above the thumbnail, waveform and adjacent clips. */
-#timeline-clock .sequence-row .sequence-block.material-instance { z-index: 1; }
-#timeline-clock .sequence-block.material-instance::after {
-  content: "";
-  position: absolute;
-  inset: 0;
-  border: 2px solid var(--material-match-gold);
-  border-radius: inherit;
-  z-index: 2;
-  pointer-events: none;
-}
-#timeline-clock .sequence-block.material-instance.sequence-disabled { opacity: 1; filter: none; }
-#timeline-clock .material-instance.sequence-disabled > * { opacity: .48; filter: grayscale(.9); }
-@media (forced-colors: active) {
-  :root, :root[data-theme="light"] { --material-match-gold: Highlight; }
-}
-#timeline-selection-count {color:#9de8e6;font-size:12px;white-space:nowrap;}
+#timeline-selection-count { font-size: 12px; white-space: nowrap; }
 
 .app-frame[data-mode="montage"] .montage-inspector {
   grid-area: var(--panel-grid-area, properties);
@@ -843,7 +823,7 @@ body:has(.workspace-area-handle[data-dragging]) {
 .app-frame[data-mode="montage"] #montage-pane .track-toolbar {
   position: relative;
 }
-.app-frame[data-mode="montage"] .track-toolbar :is(.track-edit-actions, .track-view-options) {
+.app-frame[data-mode="montage"] .track-toolbar .track-edit-actions {
   display: flex;
   align-items: center;
   flex-wrap: wrap;
@@ -851,16 +831,8 @@ body:has(.workspace-area-handle[data-dragging]) {
   min-width: 0;
   max-width: 100%;
 }
-@container (min-width: 920px) {
-  .app-frame[data-mode="montage"] .track-toolbar .track-view-options {
-    margin-inline-start: auto;
-    padding-inline-start: 7px;
-    border-inline-start: 1px solid var(--edge);
-  }
-}
-.app-frame[data-mode="montage"] #timeline-tracks-panel:has(#shots-empty:not([hidden])) #track-selection-info { display: none; }
 .app-frame[data-mode="montage"] #montage-pane:has(#shots-empty:not([hidden]))
-  :is(#track-split, .track-interval, #track-slice, #track-delete, #track-clean, .track-view-options) { display: none; }
+  :is(.track-tools-slice, #track-delete, #track-clean, .track-tools-view) { display: none; }
 @media (max-height: 700px) {
   .app-frame[data-mode="montage"] #montage-pane .track-toolbar { position: static; }
 }
@@ -1315,6 +1287,7 @@ body:has(.workspace-area-handle[data-dragging]) {
   .material-list > li:not(:hover, :focus-within) > .material-select:not(:checked),
   .material-list > li:not(:hover, :focus-within) > .material-quick-add { opacity: 0; }
   .material-select { width: 14px; height: 14px; outline: 0; }
+  .material-select:focus-visible { outline: 2px solid var(--focus-ring); outline-offset: 1px; }
   .material-empty { align-content: start; margin-top: 25px; }
   .editor-materials h2, .editor-player h2, .editor-properties h2 { font-size: 14px; }
   .editor-properties .panel-heading .tag { padding: 0; border: 0; }

@@ -87,10 +87,14 @@ async function run() {
   assert.ok(await read(`(() => {
     const entry = document.querySelector('.titlebar #software-update-entry');
     const group = entry?.closest('#titlebar-update');
+    const shortcuts = document.querySelector('#cut-shortcuts-entry');
     const settings = document.querySelector('#app-settings');
     return entry?.checkVisibility() && entry.textContent.includes('软件更新') &&
-      group?.nextElementSibling === settings && group.getBoundingClientRect().right <= settings.getBoundingClientRect().left;
-  })()`), 'The update button should appear immediately left of Settings');
+      shortcuts?.checkVisibility() && settings?.checkVisibility() &&
+      group?.nextElementSibling === shortcuts && shortcuts.nextElementSibling === settings &&
+      group.getBoundingClientRect().right <= shortcuts.getBoundingClientRect().left &&
+      shortcuts.getBoundingClientRect().right <= settings.getBoundingClientRect().left;
+  })()`), 'The title bar should show Updates, Shortcuts and Settings in order');
   assert.match(await textOf('update-notice'), /发现新版本 0\.6\.4/);
   await click('update-notice-dismiss');
   assert.equal(await read('document.getElementById("update-notice").hidden'), true);
@@ -111,6 +115,8 @@ async function run() {
   } finally { shell.openExternal = originalOpen; }
   await press('Escape', 27);
   await until('!document.getElementById("update-dialog").open && document.activeElement.id === "software-update-entry"');
+  await press('Tab', 9);
+  assert.equal(await read('document.activeElement.id'), 'cut-shortcuts-entry');
   await press('Tab', 9);
   assert.equal(await read('document.activeElement.id'), 'app-settings');
   await press('Enter', 13);

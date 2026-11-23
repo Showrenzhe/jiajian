@@ -36,6 +36,7 @@ async function run() {
     shots: [...images.keys()].map(id => [{ id, start: 0, end: 3 }]),
     ratio: '16:9', resolution: 720, fps: 24, fit: 'fit', keepAudio: true, priority: 'picture',
     unordered: false, useOriginal: true, useMirrors: false, count: 1, musicIds: [], musicVolume: 50,
+    packaging:{global:[{kind:'text',text:'包装文字',start:1,end:2.5}]},
   };
   await saveProject(project, config, images);
   const minuteShots = [...images.keys()].map(id => [{ id, start: 0, end: 60 }]);
@@ -86,6 +87,32 @@ async function run() {
     await read(`document.querySelector('#track-zoom').value = '3';
       document.querySelector('#track-zoom').dispatchEvent(new Event('input', { bubbles: true }));`);
     await settled();
+    const layer='.sequence-layer.kind-text .sequence-block';
+    await read(`document.querySelector('${layer}').scrollIntoView({block:'nearest',inline:'nearest'})`);
+    const grab=await pointIn(layer), release={x:grab.x+20,y:grab.y};
+    const scaleBeforeDrag=(await track(grab.x)).scale;
+    const mouse=(type,point,buttons)=>wc.debugger.sendCommand('Input.dispatchMouseEvent',{
+      type,...point,button:'left',buttons,clickCount:1,
+    });
+    await mouse('mousePressed',grab,1);
+    await mouse('mouseMoved',release,1);
+    await settled();
+    await wheel(release,-120);
+    await settled();
+    assert.equal((await track(grab.x)).scale,scaleBeforeDrag,'包装片段拖动期间应沿用抓取时的刻度');
+    await mouse('mouseReleased',release,0);
+    await until(async()=>(await track(grab.x)).scale>scaleBeforeDrag,'松手后应用已输入的缩放档位');
+    const movedStart=await read(`parseFloat(document.querySelector('${layer}').style.left)`)/(await track(grab.x)).scale;
+    assert.ok(Math.abs(movedStart-1-20/scaleBeforeDrag)<.002,'松手后包装起点与拖动时预览的位置一致');
+    const openMenu='#video-track-menu:popover-open';
+    await read(`const firstClip=document.querySelector('.sequence-video button[data-move-candidate]');
+      firstClip.focus();firstClip.dispatchEvent(new KeyboardEvent('keydown',{key:'ContextMenu',bubbles:true}));`);
+    assert.ok(await read(`!!document.querySelector('${openMenu}')`),'可通过键盘在候选片段处打开菜单');
+    await read(`document.querySelector('#track-zoom').value = '3';
+      document.querySelector('#track-zoom').dispatchEvent(new Event('input', { bubbles: true }));
+      document.querySelector('#timeline-tracks-panel').scrollTop=0;`);
+    await settled();
+    assert.equal(await read(`!!document.querySelector('${openMenu}')`),false,'缩放改变目标片段的位置时关闭旧菜单');
     await read("document.querySelector('#timeline-clock').scrollLeft = 600");
     await settled();
     const ruler = await pointIn('#timeline-clock', .45);
@@ -98,10 +125,13 @@ async function run() {
     assert.ok(Math.abs(enlarged.left - enlarged.bar) <= 2, '底部滚动条应同步至新的时间位置');
     assert.ok(await setting() > 3);
     assert.equal(await width(thumb), originalWidth);
+    const filmstripCount=()=>read('document.querySelector(".sequence-video .sequence-frames").childElementCount');
+    await until(async()=>await filmstripCount()===Math.min(6,Math.ceil(3*enlarged.scale/76)),'缩放停下后应补齐最终密度的缩略图');
     await wheel(ruler, 120);
     await until(async () => (await track(ruler.x)).scale < enlarged.scale, '下滚应缩小时间刻度');
     const reduced = await track(ruler.x);
     assert.ok(Math.abs(reduced.time - start.time) * reduced.scale < 2);
+    await until(async()=>await filmstripCount()===Math.min(6,Math.ceil(3*reduced.scale/76)),'反向缩放后按新的刻度更新缩略图');
     await wheel(ruler, 120, 0);
     await settled();
     assert.equal((await track(ruler.x)).scale, reduced.scale, '普通滚轮应保留时间刻度');

@@ -52,7 +52,8 @@
       onState(draft ? 'saved' : 'idle');
     }
 
-    function stage(name, configKey) {
+    function stage(name, configKey, { ensureDraft = false } = {}) {
+      if (ensureDraft && !draft) savedKey = undefined;
       const key = keyOf(name, configKey);
       if (pending?.key === key || (!pending && !inFlight && key === savedKey)) return;
       clearTimeout(timer);
@@ -66,22 +67,112 @@
       timer = setTimeout(flush, 350);
     }
 
-    return { stage, reset, flush };
+    function forget(id) {
+      if (draft?.id !== id) return;
+      clearTimeout(timer);
+      savedKey = pending?.key ?? savedKey;
+      pending = undefined;
+      draft = undefined;
+      onState('idle');
+    }
+
+    return { stage, reset, flush, forget };
   };
 
-  window.mountDraftLibrary = (container, { load, open, importMaterials, showEmptyImport }) => {
+  window.mountDraftLibrary = (container, { load, open, remove, notify, importMaterials, showEmptyImport }) => {
     const $ = (selector) => container.querySelector(selector);
     const list = $('#draft-list');
     const search = $('#draft-search');
     const sort = $('#draft-sort');
     const status = $('#draft-list-status');
     const statusAction = $('#draft-status-action');
+    const menu = $('#draft-context-menu');
+    const menuDelete = $('#draft-context-delete');
+    const dialog = $('#draft-delete-dialog');
+    const cancel = $('#draft-delete-cancel');
+    const confirm = $('#draft-delete-confirm');
     const reduceMotion = matchMedia('(prefers-reduced-motion: reduce), (forced-colors: active)');
     let coverTransition;
     let drafts = [];
     let request = 0;
     let loaded = false;
     let busy = false;
+    let target;
+    let deleting = false;
+
+    const cardFor = id => list.querySelector('[data-draft-id="' + CSS.escape(id) + '"]');
+
+    function showMenu(draft, button, x, y) {
+      if (busy || dialog.open) return;
+      if (menu.matches(':popover-open')) menu.hidePopover();
+      target = draft;
+      button.focus({ preventScroll: true });
+      const bounds = button.getBoundingClientRect();
+      x ??= bounds.left;
+      y ??= bounds.bottom;
+      menu.showPopover();
+      button.setAttribute('aria-expanded', 'true');
+      const left = Math.max(4, Math.min(x, innerWidth - menu.offsetWidth - 4));
+      const top = Math.max(4, Math.min(y, innerHeight - menu.offsetHeight - 4));
+      menu.style.left = left + 'px';
+      menu.style.top = top + 'px';
+      menu.style.transformOrigin = (x - left) + 'px ' + (y - top) + 'px';
+      menu.style.setProperty('--menu-shift-y', y - top > menu.offsetHeight / 2 ? '3px' : '-3px');
+      menuDelete.focus({ preventScroll: true });
+    }
+
+    menu.addEventListener('beforetoggle', event => {
+      if (event.newState === 'closed' && target) cardFor(target.id)?.setAttribute('aria-expanded', 'false');
+    });
+    menu.addEventListener('keydown', event => {
+      if (event.key === 'Escape' || event.key === 'Tab') {
+        if (event.key === 'Escape') event.preventDefault();
+        menu.hidePopover();
+        cardFor(target.id)?.focus({ preventScroll: true });
+      } else if (['ArrowUp', 'ArrowDown', 'Home', 'End'].includes(event.key)) {
+        event.preventDefault();
+        menuDelete.focus({ preventScroll: true });
+      }
+    });
+    menuDelete.addEventListener('click', () => {
+      if (busy || !menu.matches(':popover-open')) return;
+      menu.hidePopover();
+      cardFor(target.id)?.focus({ preventScroll: true });
+      $('#draft-delete-title').textContent = '删除“' + target.name + '”？';
+      dialog.showModal();
+    });
+
+    cancel.addEventListener('click', () => dialog.close());
+    dialog.addEventListener('cancel', event => { if (deleting) event.preventDefault(); });
+    dialog.addEventListener('close', () => {
+      if (!dialog.open && document.activeElement === document.body && target) {
+        (cardFor(target.id) ?? $('#draft-heading')).focus({ preventScroll: true });
+      }
+    });
+    confirm.addEventListener('click', async () => {
+      if (deleting || busy || !dialog.open) return;
+      const draft = target;
+      const index = [...list.children].indexOf(cardFor(draft.id)?.parentElement);
+      deleting = true;
+      confirm.disabled = cancel.disabled = true;
+      confirm.textContent = '正在删除…';
+      try {
+        await remove(draft);
+        drafts = drafts.filter(item => item.id !== draft.id);
+        render();
+        notify('已删除草稿“' + draft.name + '”。');
+      } catch (error) {
+        notify('删除草稿失败。' + error.message);
+      } finally {
+        deleting = false;
+        confirm.disabled = cancel.disabled = false;
+        confirm.textContent = '删除';
+        dialog.close();
+        const next = list.children[Math.min(index, list.children.length - 1)]?.querySelector('button');
+        (cardFor(draft.id) ?? next ?? $('#draft-heading')).focus({ preventScroll: true });
+        refresh();
+      }
+    });
 
     const cancelCoverTransition = () => coverTransition?.cancel();
     reduceMotion.addEventListener('change', cancelCoverTransition);
@@ -134,6 +225,11 @@
       row.className = 'draft-card';
       button.type = 'button';
       button.className = 'draft-open';
+      button.dataset.draftId = draft.id;
+      button.setAttribute('aria-haspopup', 'menu');
+      button.setAttribute('aria-controls', menu.id);
+      button.setAttribute('aria-expanded', 'false');
+      button.setAttribute('aria-keyshortcuts', 'Shift+F10');
       button.disabled = busy;
       button.title = draft.name;
       cover.className = 'draft-cover';
@@ -160,6 +256,16 @@
       }
       copy.append(name, time);
       button.append(cover, copy);
+      row.addEventListener('contextmenu', event => {
+        event.preventDefault();
+        showMenu(draft, button, event.clientX, event.clientY);
+      });
+      button.addEventListener('keydown', event => {
+        if (event.key === 'ContextMenu' || (event.shiftKey && event.key === 'F10')) {
+          event.preventDefault();
+          if (!event.repeat) showMenu(draft, button);
+        }
+      });
       button.addEventListener('click', async () => {
         const focused = document.activeElement === button;
         const image = cover.querySelector('img');
@@ -175,11 +281,14 @@
     }
 
     function render() {
+      const focusId = menu.contains(document.activeElement) ? target?.id : document.activeElement?.dataset.draftId;
+      if (menu.matches(':popover-open')) menu.hidePopover();
       const query = search.value.trim().toLocaleLowerCase();
       const visible = drafts.filter(({ name }) => name.toLocaleLowerCase().includes(query));
       if (sort.value === 'name') visible.sort((a, b) => a.name.localeCompare(b.name, 'zh-CN', { numeric: true }));
       $('#draft-count').textContent = `${drafts.length} 个`;
       list.replaceChildren(...visible.map(draftCard));
+      if (focusId) (cardFor(focusId) ?? $('#draft-heading')).focus({ preventScroll: true });
       if (visible.length) showStatus('');
       else if (query) showStatus('没有匹配的草稿', '可以换个名称再试。', '清空搜索');
       else showStatus('还没有本地草稿', '开始剪辑后，草稿会自动保存到本机。', showEmptyImport() ? '导入素材' : '');
@@ -227,6 +336,8 @@
       cancelCoverTransition,
       setBusy(value) {
         busy = value;
+        if (busy && menu.matches(':popover-open')) menu.hidePopover();
+        confirm.disabled = busy || deleting;
         statusAction.disabled = value;
         for (const button of list.querySelectorAll('.draft-open')) button.disabled = busy;
       },

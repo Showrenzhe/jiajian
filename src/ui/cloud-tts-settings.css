@@ -32,3 +32,34 @@
 #update-manage-installation { margin-inline-end: auto; }
 #update-notes { padding-top: 6px; white-space: pre-wrap; overflow-wrap: anywhere; }
 #update-error { color: var(--dialog-alert); }
+
+#cut-shortcuts-dialog[open] {
+  display: grid;
+  grid-template-rows: auto minmax(0, 1fr) auto;
+}
+#cut-shortcuts-dialog .cloud-settings-body { gap: 9px; }
+#cut-shortcuts-dialog h3 { margin: 0; }
+#cut-shortcuts-reset { margin-inline-end: auto; }
+#cut-shortcuts-status { min-height: 1.4em; color: var(--secondary-ink); }
+.cut-shortcut-row {
+  min-height: 36px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 9px;
+  padding-block: 4px;
+  border-bottom: 1px solid var(--hairline);
+}
+.cut-shortcut-slots { display: flex; gap: 6px; flex-wrap: wrap; justify-content: flex-end; }
+.cut-shortcut-key {
+  display: inline-flex;
+  align-items: center;
+  border: 1px solid var(--hairline);
+  border-radius: 6px;
+  background: var(--field-fill);
+}
+.cut-shortcut-key button { min-height: 26px; padding: 2px 7px; }
+.cut-shortcut-key [data-bind-action] { border-start-end-radius: 0; border-end-end-radius: 0; font-variant-numeric: tabular-nums; }
+.cut-shortcut-key [data-clear-action] { border-inline-start: 0; border-start-start-radius: 0; border-end-start-radius: 0; }
+.cut-shortcut-key [data-clear-action]:disabled { display: none; }
+.cut-shortcut-key [aria-pressed="true"] { outline: 2px solid var(--focus-ring); outline-offset: 1px; }

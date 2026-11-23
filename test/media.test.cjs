@@ -166,6 +166,44 @@ async function frameColor(file, seconds) {
   return { red, green, blue };
 }
 
+test('filled video insertions reopen and play in lane order in an ordinary montage export',async t=>{
+  const {catalog,output}=await fixtureDirectory(t);
+  const {saveProject,loadProject}=require('../src/project-format.cjs');
+  const project=path.join(output,'相邻画面.sdworkbench');
+  const anchor={id:'red',start:0,end:.5,videoStart:.5,videoLane:0,videoGroup:'local',videoWindow:.5};
+  const fill={id:'green',start:0,end:.5,videoStart:0,videoLane:0,videoGroup:'local',videoDuration:.5,videoFit:'hold'};
+  const config={...montage,ratio:'16:9',musicIds:[],keepAudio:true,count:1,
+    shots:[[anchor,fill],[{id:'blue',start:0,end:.5,videoStart:1,videoGaps:[{start:1.5,span:.5}]}]]};
+  await saveProject(project,config,catalog);
+  const reopened=await loadProject(project);
+  assert.deepEqual(reopened.config.shots,config.shots);
+  assert.throws(()=>planMontage({...config,count:2},catalog),/生成数量/,'相邻片段属于同一组合');
+  const [plan]=planMontage(reopened.config,reopened.assets);
+  assert.equal(plan.duration,2);
+  const batch=await exportBatch([plan],output);
+  assert.deepEqual(batch.failures,[]);
+  const [green,red,blue,gap]=await Promise.all([.25,.75,1.25,1.75].map(t=>frameColor(batch.results[0].path,t)));
+  assert.ok(green.green>green.red*2 && red.red>red.green*2 && blue.blue>blue.red*2 && Math.max(...Object.values(gap))<15);
+
+  const voice={...catalog.get('music'),duration:.5};
+  const referenceCatalog=new Map(catalog).set('voice',voice);
+  const shots=[[{id:'blue',start:0,end:1}],[{...anchor,videoStart:1,end:1,videoWindow:1},{...fill,videoStart:2,end:1,videoDuration:1}]];
+  const [reference]=planMontage({...config,shots,priority:'voice',voiceAlignment:'reference',narrationId:'voice',narrationVolume:100},referenceCatalog);
+  const referenceBatch=await exportBatch([reference],output);
+  assert.deepEqual(referenceBatch.failures,[]);
+  const {timing,makePlan}=require('../src/ui/draft-transport.js');
+  const {waveformSource}=require('../src/ui/waveform.js');
+  const draftShots=shots.map(shot=>shot.map(clip=>({...clip,asset:{...catalog.get(clip.id),url:clip.id}})));
+  const state={shots:draftShots,settings:[{},{}],whole:[{asset:{...voice,url:'voice'}}],segments:[[],[]],music:[],muted:new Set(),
+    pack:{global:[],composites:[],wholeNarration:[]},priority:'voice',voiceAlignment:'reference',voiceVolume:()=>100};
+  const draft=makePlan(state,timing(state,c=>c.end-c.start,()=>null),()=>null,waveformSource);
+  for(const [time,color] of [[1.25,'red'],[2.25,'green']]) {
+    assert.equal(draft.find(entry=>entry.visual && entry.start<=time && entry.end>time)?.asset.url,color);
+    const frame=await frameColor(referenceBatch.results[0].path,time);
+    assert.ok(frame[color]>Math.max(...Object.entries(frame).filter(([key])=>key!==color).map(([,v])=>v))*2);
+  }
+});
+
 async function toneAt(media, position) {
   const pcm = await ffmpeg(['-ss', position, '-i', media, '-t', '0.1', '-vn', '-ac', '1', '-ar', '8000', '-f', 's16le', 'pipe:1']);
   assert.ok(pcm.length >= 1000);
@@ -180,6 +218,142 @@ async function toneAt(media, position) {
   }
   return peak < 100 ? 0 : crossings * 8000 / (pcm.length / 2);
 }
+
+test('free video placements keep narration anchored and extend the canvas beyond the last shot',async(t)=>{
+  const {catalog,output}=await fixtureDirectory(t);
+  const [plan]=planMontage({...montage,ratio:'16:9',keepAudio:true,count:1,musicIds:[],priority:'picture',
+    shots:[[{id:'red',start:0,end:.75,videoStart:.875,videoLane:1}],[{id:'green',start:0,end:.75}]],
+    narrationMode:'segmented',segmentNarrationIds:[['music'],[]]},catalog);
+  assert.equal(plan.duration,1.625);
+  const {results,failures}=await exportBatch([plan],output);
+  assert.deepEqual(failures,[]);
+  const file=results[0].path;
+  const blank=await frameColor(file,.16), overlap=await frameColor(file,1), tail=await frameColor(file,1.54);
+  assert.ok(Math.max(blank.red,blank.green,blank.blue)<8,'moving the first picture leaves the original slot empty');
+  assert.ok(overlap.green>overlap.red*3,'the higher video row covers the lower row');
+  assert.ok(tail.red>tail.green*3,'the moved clip outlasts the last shot');
+  assert.ok(Math.abs(await toneAt(file,'0.15')-660)<60,'segmented narration stays at its original time');
+  assert.equal(await toneAt(file,'0.55'),0);
+  assert.ok(Math.abs(await toneAt(file,'1.01')-440)<60,'original sound follows the new picture time');
+});
+
+test('timeline tail trims cut source sound and picture at their original rate and keep the shot clock',async(t)=>{
+  const {catalog,output}=await fixtureDirectory(t);
+  const source=path.join(output,'双段有声.mp4');
+  await ffmpeg(['-f','lavfi','-i',"color=blue:s=160x90:r=24:d=1.5,drawbox=color=red:t=fill:enable='lt(t,0.82)'",
+    '-f','lavfi','-i','sine=frequency=440:duration=1.5','-c:v','libx264','-threads','1','-c:a','aac',source]);
+  catalog.set('color-change',await inspectAsset(source,'video'));
+  const clip={id:'color-change',start:.25,end:1.25,speed:2,videoDuration:.375,
+    videoSubtitles:{name:'原声字幕',cues:[{start:500,end:1200,text:'源字幕'}]},
+    layers:[{kind:'text',text:'候选文字',start:0,end:1}]};
+  const config={...montage,count:1,keepAudio:true,musicIds:[],ratio:'16:9',
+    shots:[[clip],[{id:'green',start:0,end:.75}]],
+    timelineCaptions:{name:'固定字幕',cues:[{start:520,end:700,text:'固定'}]}};
+  const [plan]=planMontage(config,catalog);
+  assert.equal(plan.duration,1.25);
+  assert.equal(plan.videoSubtitles.cues[0].end,375);
+  assert.equal(plan.layers[0].end,.375);
+  assert.equal(plan.subtitles.cues[0].start,520);
+  const {failures,results}=await exportBatch([plan],output);
+  assert.deepEqual(failures,[]);
+  const rendered=results[0].path;
+  const [red,blue,black,green]=await Promise.all([.22,.32,.44,.75].map(t=>frameColor(rendered,t)));
+  assert.ok(red.red>red.blue*2 && blue.blue>blue.red*2,'裁去片尾不额外加速');
+  assert.ok(Math.max(...Object.values(black))<15 && green.green>green.red*2,'裁切形成留空，下一分镜按原时钟播放');
+  assert.ok(Math.abs(await toneAt(rendered,'0.15')-440)<50);
+  assert.equal(await toneAt(rendered,'0.40'),0);
+  const [moved]=planMontage({...config,shots:[[{...clip,videoStart:1.25}],config.shots[1]]},catalog);
+  assert.equal(moved.duration,1.625,'时间线结尾只延长到可见片尾');
+  const [sliced]=planMontage({...config,shots:[[{...clip,speed:1,videoDuration:.5,
+    ranges:[{start:.25,end:.5},{start:.875,end:1.25}]}],config.shots[1]]},catalog);
+  const partial=await exportBatch([sliced],output);
+  assert.deepEqual(partial.failures,[]);
+  const [secondRange,tail]=await Promise.all([.39,.55].map(t=>frameColor(partial.results[0].path,t)));
+  assert.ok(secondRange.blue>secondRange.red*2 && Math.max(...Object.values(tail))<15,'多段源区间合成后，保留第二段开头并只裁一次尾部');
+
+  const placedConfig={...config,count:2,shotSettings:[{duration:1.5}],
+    shots:[[{id:'green',start:0,end:1.5},{...clip,videoStart:.25,videoDuration:.9,videoFit:'hold'}]]};
+  const placedPlans=planMontage(placedConfig,catalog);
+  const placed=placedPlans.find(plan=>plan.clips[0].videoStart===.25);
+  assert.equal(placed.duration,1.5);
+  assert.equal(placed.videoSubtitles.cues[0].start,375);
+  const placedBatch=await exportBatch([placed],output);
+  assert.deepEqual(placedBatch.failures,[]);
+  const file=placedBatch.results[0].path;
+  const [head,end,held,afterWindow]=await Promise.all([.4,.70,1.08,1.27].map(t=>frameColor(file,t)));
+  assert.ok(head.red>head.blue*2 && end.blue>end.green*2,'落位短片按自身倍速播完，不混入同分镜的绿色候选');
+  assert.ok(held.blue>held.red*2 && held.blue>held.green*2,'在源片结束后至窗口末端保持蓝色尾帧');
+  assert.ok(Math.max(...Object.values(afterWindow))<15,'超出落位窗口才恢复空画面');
+  assert.ok(Math.abs(await toneAt(file,'0.59')-440)<50);
+  assert.equal(await toneAt(file,'0.83'),0);
+  const legacyClip={...clip,videoStart:.25,videoDuration:.5};
+  const segmented=planMontage({...placedConfig,priority:'voice',narrationMode:'segmented',segmentNarrationIds:[[],['music']],
+    shotSettings:[...placedConfig.shotSettings,{}],shots:[[placedConfig.shots[0][0],legacyClip],[{id:'red',start:0,end:1}]]},catalog)
+    .find(plan=>plan.clips[0].videoStart===.25);
+  assert.equal(segmented.clips[0].visuals,undefined,'无跟镜口播时保留独立短片来源');
+  assert.equal(segmented.clips[0].speed,2);
+  assert.equal(segmented.clips[0].outputDuration,1.5);
+});
+
+test('track controls keep visibility independent of source and picture-in-picture sound',async(t)=>{
+  const {catalog,output}=await fixtureDirectory(t);
+  const config={...montage,ratio:'16:9',shots:[[{id:'red',start:0,end:.6}]],keepAudio:true,musicIds:[],count:1};
+  const [hidden]=planMontage({...config,trackControls:{vis0:{hidden:true}}},catalog);
+  const [muted]=planMontage({...config,mutedVideoTracks:[0]},catalog);
+  const caption={name:'测试字幕',cues:[{start:0,end:300,text:'轨道字幕'}]};
+  const packaged={...config,shots:[[{id:'green',start:0,end:.6,videoSubtitles:caption}]],timelineCaptions:caption,
+    narrationId:'music',subtitles:caption,packaging:{composites:[[{kind:'pip',id:'red',scale:1,laneId:'cam',volume:100}]]}};
+  const [pipSound]=planMontage({...packaged,trackControls:{'local-subtitles':{hidden:true},'pasted-captions':{hidden:true},
+    caption0:{hidden:true}, whole0:{muted:true}, 'layer-pip-cam':{hidden:true}}},catalog);
+  const [pipPicture]=planMontage({...packaged,trackControls:{'layer-pip-cam':{muted:true}}},catalog);
+  assert.equal(pipSound.subtitles,null);
+  assert.equal(pipSound.videoSubtitles,undefined);
+  assert.deepEqual(pipSound.layers.map(l=>l.kind),['sound']);
+  assert.equal(pipPicture.layers[0].kind,'pip');
+  assert.equal(pipPicture.layers[0].volume,0);
+  const {results,failures}=await exportBatch([hidden,muted,pipSound],output);
+  assert.deepEqual(failures,[]);
+  const [black,red,green]=await Promise.all(results.map(r=>frameColor(r.path,.2)));
+  assert.ok(Math.max(black.red,black.green,black.blue)<8);
+  assert.ok(red.red>3*red.green && green.green>3*green.red);
+  const [sound,mute,pip]=await Promise.all(results.map(r=>toneAt(r.path,'0.2')));
+  assert.ok(Math.abs(sound-440)<50 && Math.abs(pip-440)<50);
+  assert.equal(mute,0);
+});
+
+test('track controls choose solo candidates, narration and music by physical row',async(t)=>{
+  const {catalog}=await fixtureDirectory(t);
+  const config={...montage,count:1,musicIds:['music','otherMusic'],narrationMode:'segmented',
+    segmentNarrationIds:[['music','otherMusic'],['music']],trackControls:{vis1:{solo:true},voice1:{solo:true},music1:{solo:true}}};
+  for (const selection of ['ordered','random']) {
+    const [plan]=planMontage({...config,segmentNarrationSelection:selection},catalog,()=>.99);
+    assert.equal(plan.clips[0].asset,catalog.get('blue'));
+    assert.equal(plan.clips[0].narration,catalog.get('otherMusic'));
+    assert.equal(plan.clips[1].hiddenVideo,true);
+    assert.equal(plan.clips[1].voiceGain,0);
+    assert.equal(plan.music,catalog.get('otherMusic'));
+    assert.throws(()=>planMontage({...config,count:2,segmentNarrationSelection:selection},catalog),/生成数量/);
+  }
+  const [whole]=planMontage({...config,narrationMode:'whole',narrationId:'music',extraWholeTracks:[{narrationId:'otherMusic'}],
+    trackControls:{whole1:{solo:true}}},catalog,()=>0);
+  assert.equal(whole.wholeTrack,2);
+  assert.equal(whole.narration,catalog.get('otherMusic'));
+  assert.equal(whole.musicVolume,0);
+});
+
+test('track controls reveal underlying footage during hidden portions of a voice-aligned clip',async(t)=>{
+  const {catalog,output}=await fixtureDirectory(t);
+  const [plan]=planMontage({...montage,ratio:'16:9',count:1,musicIds:[],priority:'voice',narrationMode:'segmented',
+    segmentNarrationIds:[[],['music']],trackControls:{vis0:{hidden:true}},
+    shots:[[{id:'green',videoLane:2,start:0,end:.9}],
+      [{id:'red',videoStart:0,start:0,end:.17},{id:'blue',start:0,end:.3}]]},catalog,()=>0);
+  assert.deepEqual(plan.clips[1].visuals.map(v=>v.asset),[catalog.get('red'),catalog.get('blue')]);
+  const {results,failures}=await exportBatch([plan],output);
+  assert.deepEqual(failures,[]);
+  const first=await frameColor(results[0].path,.04), second=await frameColor(results[0].path,.29);
+  assert.ok(first.green>3*first.red && first.green>3*first.blue);
+  assert.ok(second.blue>3*second.green);
+});
 
 test('the track proxy contains a smaller seekable picture with the original duration, cadence and sound', async (t) => {
   const { catalog, output } = await fixtureDirectory(t);
@@ -698,6 +872,25 @@ test('exports enabled picture candidates and mutes original audio only in the se
   assert.ok((await frameColor(file, .2)).red > 220);
   assert.equal(await toneAt(file, '0.2'), 0);
   assert.ok(Math.abs(await toneAt(file, '0.7') - 440) < 25);
+});
+
+test('muting one instance preserves another use of its source and independent narration in the exported audio', async (t) => {
+  const {catalog,output}=await fixtureDirectory(t);
+  const red={id:'red',start:0,end:.75,volume:37};
+  const config={...montage,shots:[[{...red,sourceMuted:true}],[red]],count:1,keepAudio:true,musicIds:[],
+    priority:'picture',narrationMode:'segmented',segmentNarrationIds:[['music'],[]]};
+  const [plan]=planMontage(config,catalog);
+  assert.deepEqual(plan.clips.map(clip=>clip.volume),[0,.37]);
+  const [withMusic]=planMontage({...config,segmentNarrationIds:[[],[]],musicIds:['otherMusic']},catalog);
+  const batch=await exportBatch([plan,withMusic],output);
+  assert.deepEqual(batch.failures,[]);
+  const file=batch.results[0].path;
+  const [voice,quiet,original]=await Promise.all(['0.1','0.52','0.95'].map(time=>toneAt(file,time)));
+  assert.ok(Math.abs(voice-660)<45,'独立口播保持 660 Hz');
+  assert.equal(quiet,0,'静音实例在口播结束后安静');
+  assert.ok(Math.abs(original-440)<45,'后一实例播放同一原片的 440 Hz 原声');
+  assert.ok(Math.abs(await toneAt(batch.results[1].path,'0.1')-880)<45,'片段静音时配乐仍播放');
+  assert.throws(()=>planMontage({...config,shots:[[{...red,sourceMuted:'true'}]]},catalog),/静音状态/);
 });
 
 test('applies candidate original volume and narration gain to rendered audio', async (t) => {

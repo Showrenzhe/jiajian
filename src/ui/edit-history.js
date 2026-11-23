@@ -77,6 +77,11 @@
     };
   }
 
-  if (typeof module === 'object' && module.exports) module.exports = { createEditHistory };
-  else window.createEditHistory = createEditHistory;
+  function sameEditSnapshot(left, right) {
+    if (left === right || JSON.stringify(left) === JSON.stringify(right)) return true;
+    return left !== undefined && right !== undefined && serialize(left) === serialize(right);
+  }
+
+  if (typeof module === 'object' && module.exports) module.exports = { createEditHistory, sameEditSnapshot };
+  else Object.assign(window, { createEditHistory, sameEditSnapshot });
 })();

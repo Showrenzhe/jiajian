@@ -74,6 +74,15 @@ async function check() {
     assert.ok((await levels('.kind-sound',[.35]))[0]>3,'音效从指定源偏移取样');
     assert.ok((await levels('.kind-pip',[.35]))[0]>3,'静音画中画也可看到原声形状');
     assert.ok(await run('!!'+query('.kind-pip .waveform-muted')),'静音画中画使用弱化样式');
+    for(const part of ['.sequence-head','.sequence-content','.sequence-block']) {
+      assert.ok(await run('!'+query('.kind-sound '+part)+'.dispatchEvent(new MouseEvent("contextmenu",{bubbles:true,cancelable:true})) && !document.querySelector("dialog[open],:popover-open")'),'音效右键留空 '+part);
+    }
+    await run(query('.kind-sound .sequence-block')+'.dispatchEvent(new MouseEvent("dblclick",{bubbles:true}))');
+    assert.ok(await run('document.querySelector("dialog[open]").textContent.includes("在播放头分割")'),'音效分割可从编辑片段进入');
+    await run('document.querySelector("dialog[open]").close()');
+    await run(query('.kind-pip .sequence-block')+'.dispatchEvent(new MouseEvent("contextmenu",{bubbles:true,cancelable:true}))');
+    assert.ok(await run('document.querySelector("dialog[open]").textContent.includes("在此处分割")'),'画中画仍可在右击位置分割');
+    await run('document.querySelector("dialog[open]").close()');
     await run(query('.sequence-music button[aria-expanded]')+'.click()');
     await wait(query('.sequence-music .audio-waveform canvas')+'?.height<=8','折叠后波形应缩成细条');
     await run(query('.sequence-music button[aria-expanded]')+'.click()');
@@ -82,7 +91,11 @@ async function check() {
     const resized=await levels('.sequence-music',[.12,.37,.62,.87]);
     assert.ok(resized[1]>resized[0]+2 && resized[3]>resized[2]+2,'适配缩放后波形仍严格对应时间');
     async function setSpeed(selector,value) {
-      await run(query(selector)+'.dispatchEvent(new MouseEvent("contextmenu",{bubbles:true,cancelable:true}))');
+      if(selector.includes('.sequence-voice')) {
+        await run(query(selector)+'.click()');
+        await wait(query('#selected-voice-settings')+'.checkVisibility()','口播检查器显示所选片段设置');
+        await run(query('#selected-voice-settings')+'.click()');
+      } else await run(query(selector)+'.dispatchEvent(new MouseEvent("dblclick",{bubbles:true}))');
       await run('(()=>{const d=document.querySelector("dialog[open]");d.querySelector("input[type=number]").value='+value+';d.querySelector("form").requestSubmit();})()');
       await wait('!document.querySelector("dialog[open]")','应用倍速');
       await wait(query(selector)+'.title.includes("'+value+' 倍")','倍速轨道刷新');

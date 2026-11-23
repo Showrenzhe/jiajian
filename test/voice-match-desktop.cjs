@@ -80,14 +80,14 @@ async function run() {
     }
     throw new Error(label + ' / ' + await read(node('#notice') + '.textContent'));
   }
-  async function click(expr, button = 'left') {
-    const position = await read('(async () => {const el=' + expr
+  async function click(expr, button = 'left',clickCount=1) {
+    const position = await read('(async () => {let el=' + expr
       + '; if (!el?.checkVisibility() || el.disabled) return null; el.scrollIntoView({block:"nearest",inline:"nearest",behavior:"instant"});'
-      + 'await new Promise(requestAnimationFrame); const r=el.getBoundingClientRect(),x=r.x+r.width/2,y=r.y+r.height/2;'
+      + 'await new Promise(requestAnimationFrame);el='+expr+';if(!el?.checkVisibility() || el.disabled) return null;const r=el.getBoundingClientRect(),x=r.x+r.width/2,y=r.y+r.height/2;'
       + 'return el.contains(document.elementFromPoint(x,y)) ? {x,y} : null;})()');
     assert.ok(position, '无法点击 ' + expr);
     for (const type of ['mousePressed', 'mouseReleased']) {
-      await wc.debugger.sendCommand('Input.dispatchMouseEvent', { type, ...position, button, clickCount: 1,
+      await wc.debugger.sendCommand('Input.dispatchMouseEvent', { type, ...position, button, clickCount,
         buttons: type === 'mouseReleased' ? 0 : button === 'right' ? 2 : 1 });
     }
   }
@@ -136,18 +136,49 @@ async function run() {
     await verifyLegacyPlayback('旧版本地草稿');
     await click(node('#open-project'));
     await verify(before, '应打开三个分镜和五个候选');
-    await click(candidate(2, 0), 'right');
+    const setTrackView=view=>read('(()=>{const field='+node('#timeline-view')+';field.value='+JSON.stringify(view)+';field.dispatchEvent(new Event("change"))})()');
+    await setTrackView('cards');
+    const cardPreview=node('#visual-track-lane .shot .shot-poster');
+    await wait(cardPreview+'?.checkVisibility()', '分镜卡片显示视频封面');
+    await read('window.cardRightClick=false;window.addEventListener("contextmenu",event=>{window.cardRightClick=event.isTrusted && event.defaultPrevented},{once:true})');
+    await click(cardPreview,'right');
+    assert.ok(await read('window.cardRightClick && !document.querySelector("dialog[open],#video-track-menu:popover-open")'),'分镜卡片封面右击应保留原有行为');
+    await click(cardPreview);
+    win.setContentSize(1000,720);
+    for (const theme of ['dark','light']) {
+      await wc.debugger.sendCommand('Emulation.setEmulatedMedia',{features:[{name:'prefers-color-scheme',value:theme},{name:'prefers-reduced-motion',value:'reduce'}]});
+      await wait('document.documentElement.dataset.theme==='+JSON.stringify(theme),'工作区切换主题');
+      await click(node('#track-more'));
+      await click(node('#clip-actions'));
+      await click(menu('候选包装'));
+      await wait(node('.sequence-dialog[open] select')+'?.value==="local"','紧凑窗口从编辑工具进入当前候选包装');
+      await click(menu('关闭'));
+    }
+    win.setContentSize(1560,960);
+    await setTrackView('time');
+    await wait(candidate(2, 0)+'?.checkVisibility()', '切回时间线');
+    await click(node('#track-more'));
+    await click(node('#timeline-fit'));
+    if (await read(node('#track-more-options')+'.matches(":popover-open")')) await click(node('#track-more'));
+    await click(candidate(2, 0));
+    await wait(candidate(2,0)+'.matches(".sequence-marked")','第三镜候选已选中');
+    await click(node('#track-more'));
+    await click(node('#clip-actions'));
     await wait(menu(single) + '?.disabled', '缺少口播的候选应禁用匹配');
     assert.match(await read(node('.sequence-dialog[open]') + '.textContent'), /还没有分段口播/);
     await read(node('.sequence-dialog[open]') + '.close()');
-    await click(candidate(0, 0), 'right');
+    await click(candidate(0, 0));
+    await click(node('#track-more'));
+    await click(node('#clip-actions'));
     await click(menu(single));
-    await verify([[1, 3], [4, 2.5], [3.5]], '候选右键只应将所点的四秒候选匹配为一秒');
+    await verify([[1, 3], [4, 2.5], [3.5]], '候选操作只应将所选的四秒候选匹配为一秒');
     await click(node('#track-undo'));
     await verify(before, '撤销候选匹配');
     await click(shotHeader(0), 'right');
+    assert.ok(await read('!document.querySelector("dialog[open],:popover-open")'),'分镜右键保留为空');
+    await click(shotHeader(0), 'left', 2);
     await click(menu(group));
-    await verify([[1, 1], [4, 2.5], [3.5]], '分镜右键应匹配本镜内两条候选');
+    await verify([[1, 1], [4, 2.5], [3.5]], '分镜属性应匹配本镜内两条候选');
     await click(node('#track-undo'));
     await verify(before, '一次撤销应恢复整个分镜');
     await click(node('#match-all-voice-duration'));

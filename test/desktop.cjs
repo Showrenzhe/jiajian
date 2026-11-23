@@ -653,11 +653,17 @@ async function run() {
   await waitFor('document.querySelectorAll("#timeline-clock .sequence-shots .sequence-block").length===3', '时间线应与三个分镜一一对应');
   assert.equal(await runInWindow('document.querySelector("#timeline-view").value'), 'time');
   await require('./timeline-interaction.cjs')(win, runInWindow, waitFor, checkFold);
-  await runInWindow('document.querySelector("#timeline-layer-add").click()');
+  async function openCandidateActions() {
+    await navigate('#track-more');
+    await navigate('#clip-actions');
+  }
+  await click('.sequence-video .sequence-block');
+  await openCandidateActions();
+  await runInWindow('[...document.querySelectorAll(".sequence-dialog[open] button")].find(b=>b.textContent==="候选包装").click()');
   await runInWindow(`(() => {const d=document.querySelector(".sequence-dialog[open]");d.querySelector("textarea").value="产品展示";d.querySelector("form").requestSubmit();})()`);
-  await waitFor('document.querySelector("#timeline-clock .kind-text")?.textContent.includes("产品展示")', '全局文字应出现在独立轨道');
+  await waitFor('document.querySelector("#timeline-clock .kind-text")?.textContent.includes("产品展示")', '候选文字应出现在独立轨道');
   await runInWindow('document.querySelector("#track-undo").click()');
-  await waitFor('!document.querySelector("#timeline-clock .kind-text")','撤销应同步移除全局文字');
+  await waitFor('!document.querySelector("#timeline-clock .kind-text")','撤销应同步移除候选文字');
   await runInWindow('document.querySelector("#timeline-clock .sequence-video .sequence-block").click()');
   await runInWindow(`(() => { const view = document.querySelector('#timeline-view'); view.value = 'cards'; view.dispatchEvent(new Event('change')); })()`);
   {
@@ -707,20 +713,45 @@ async function run() {
   assert.equal(await runInWindow('document.querySelector("#preview").videoWidth'), 320);
   await runInWindow('document.querySelector("#material-list .material-tile").click()');
   assert.equal(await runInWindow('document.querySelector("#preview-heading").textContent'), '素材预览');
-  assert.ok(await runInWindow('document.querySelector("#clip-inspector").hidden'), '素材库原片应独立于轨道裁剪参数');
+  assert.ok(await runInWindow('!document.querySelector("#clip-inspector") && document.querySelector("#ratio").checkVisibility()'), '素材预览时画面页保留成片画幅设置');
   await runInWindow('document.querySelector("#shots .asset-name").click()');
   assert.equal(await runInWindow('document.querySelector("#preview-heading").textContent'), '轨道预览');
-  assert.ok(await runInWindow('!document.querySelector("#clip-inspector").hidden'), '点击轨道素材应打开画面属性');
-  await runInWindow('document.querySelector("#clip-enabled").click()');
+  assert.ok(await runInWindow('document.querySelector("#ratio").checkVisibility()'), '选择轨道画面后仍可调整成片画幅');
+  await openCandidateActions();
+  await runInWindow('[...document.querySelectorAll(".sequence-dialog[open] button")].find(b=>b.textContent==="排除此候选").click()');
   assert.ok(await runInWindow('document.querySelector("#prepare-preview").disabled && document.querySelector("#combinations").textContent.includes("分镜 1 未勾选")'));
-  await runInWindow('document.querySelector("#clip-enabled").click(); document.querySelector("#clip-track-muted").click()');
+  await openCandidateActions();
+  await runInWindow('[...document.querySelectorAll(".sequence-dialog[open] button")].find(b=>b.textContent==="参与混剪").click()');
+  const trackView = value => runInWindow(`(() => { const v=document.querySelector("#timeline-view"); v.value=${JSON.stringify(value)}; v.dispatchEvent(new Event("change")); })()`);
+  await trackView('time');
+  assert.ok(await runInWindow(`(() => {
+    const header = document.querySelector('.timeline-header').getBoundingClientRect();
+    const ruler = document.querySelector('#timeline-clock .sequence-ruler').getBoundingClientRect();
+    return document.querySelector('#track-selection-info') === null && ruler.top <= header.bottom + 3;
+  })()`), '选中片段后，时间尺应紧接轨道工具栏');
+  const muteVideo = '[data-control-key="vis0"] [data-track-action="muted"]';
+  await waitFor(`(() => {
+    const b=document.querySelector('${muteVideo}');
+    if (!b?.checkVisibility()) return false;
+    b.scrollIntoView({block:"center",inline:"nearest"});
+    const r=b.getBoundingClientRect();
+    return b.contains(document.elementFromPoint(r.x+r.width/2,r.y+r.height/2));
+  })()`, '时间线显示后视频轨静音按钮可用');
+  await navigate(muteVideo);
   assert.equal(await runInWindow('document.querySelector("#preview").volume'), 0);
-  await runInWindow('document.querySelector("#clip-track-muted").click()');
+  await navigate(muteVideo);
   assert.equal(await runInWindow('document.querySelector("#preview").volume'), 1);
-  await runInWindow('document.querySelector("#player-next").click()');
+  await trackView('cards');
+  const openPlayerTools = async () => {
+    if (!await runInWindow('document.querySelector("#player-next").checkVisibility()')) await navigate('#player-more');
+  };
+  await openPlayerTools();
+  await navigate('#player-next');
   await waitFor('Math.abs(document.querySelector("#preview").currentTime - 1 / selected.asset.fps) < 0.008', '下一帧应按素材帧率前进');
-  await runInWindow('document.querySelector("#player-stop").click()');
+  await openPlayerTools();
+  await navigate('#player-stop');
   await waitFor('document.querySelector("#preview").paused && document.querySelector("#preview").currentTime < 0.001', '停止应回到片段入点');
+  if (await runInWindow('document.querySelector("#player-next").checkVisibility()')) await navigate('#player-more');
   await runInWindow('document.querySelector("#player-ratio").value = "9:16"; document.querySelector("#player-ratio").dispatchEvent(new Event("change"))');
   assert.equal(await runInWindow('document.querySelector("#ratio").value'), '9:16');
   await runInWindow('document.querySelector("#player-ratio").value = "16:9"; document.querySelector("#player-ratio").dispatchEvent(new Event("change"))');
@@ -731,16 +762,13 @@ async function run() {
   assert.equal(await runInWindow('document.querySelector("#preview").playbackRate'), 0.5);
   await runInWindow('(() => { const speed = document.querySelector("#shots .speed"); speed.value = "1"; speed.dispatchEvent(new Event("input")); speed.dispatchEvent(new Event("blur")); })()');
   await runInWindow('(() => { const head = document.querySelector("#track-playhead"); head.value = "0.65"; head.dispatchEvent(new Event("input")); })()');
-  await waitFor('Math.abs(document.querySelector("#preview").currentTime - 0.65) < 0.04 && !document.querySelector("#track-split").disabled', '播放头应定位并允许分割');
-  await runInWindow('document.querySelector("#track-split").click()');
-  assert.equal(await runInWindow('document.querySelectorAll("#shots .shot").length'), 4);
-  assert.equal(await runInWindow('document.querySelector(\'#shots .shot[data-shot-index="1"] .start\').valueAsNumber'), 0.65);
+  await waitFor('Math.abs(document.querySelector("#preview").currentTime - 0.65) < 0.04', '播放头应定位');
+  assert.equal(await runInWindow('document.querySelectorAll(".track-toolbar #track-split, .track-toolbar #track-toggle-audio").length'), 0);
+  await runInWindow('(() => { const interval = document.querySelector("#track-slice-interval"); interval.value = "0.5"; interval.dispatchEvent(new Event("input")); document.querySelector("#track-slice").click(); })()');
+  assert.equal(await runInWindow('document.querySelectorAll("#shots .shot").length'), 5);
   await runInWindow('document.querySelector("#track-undo").click()');
   assert.equal(await runInWindow('document.querySelectorAll("#shots .shot").length'), 3);
   await runInWindow('document.querySelector("#track-redo").click()');
-  assert.equal(await runInWindow('document.querySelectorAll("#shots .shot").length'), 4);
-  await runInWindow('document.querySelector("#track-undo").click(); document.querySelector("#shots .preview-asset").click();');
-  await runInWindow('(() => { const interval = document.querySelector("#track-slice-interval"); interval.value = "0.5"; interval.dispatchEvent(new Event("input")); document.querySelector("#track-slice").click(); })()');
   assert.equal(await runInWindow('document.querySelectorAll("#shots .shot").length'), 5);
   await runInWindow('document.querySelector("#track-undo").click(); document.querySelector("#add-shot").click(); document.querySelector("#track-clean").click();');
   assert.equal(await runInWindow('document.querySelectorAll("#shots .shot").length'), 3);
@@ -1009,7 +1037,8 @@ async function run() {
     })()`), '素材应通过实际拖放事件发送素材标识');
   }
   selections.push({ title: '选择素材文件夹', files: [library] });
-  await click('#material-folder-import');
+  await click('#material-import');
+  await click('#material-import-directory');
   await waitFor(`Boolean(${folder(path.basename(library))})`, '选中的目录应出现在素材库根目录');
   assert.equal(await runInWindow('document.querySelectorAll("#shots .shot").length'), 0, '选择素材目录不会生成分镜');
   assert.equal(await runInWindow(`document.querySelectorAll(${JSON.stringify(tiles)}).length`), 0);
@@ -1026,12 +1055,11 @@ async function run() {
   await dragMaterial(files.still, '#shots .shot');
   await waitFor('document.querySelectorAll("#shots .shot").length === 1 && document.querySelectorAll("#shots .asset").length === 2', '拖到现有分镜应加入候选');
   await dragMaterial(files.still, '#shots .shot');
-  await waitFor('document.querySelector("#notice").textContent.includes("已在本组")', '应等到重复素材检查完成');
-  assert.equal(await runInWindow('document.querySelectorAll("#shots .asset").length'), 2, '重复拖入同一分镜不能复制候选');
+  await waitFor('document.querySelectorAll("#shots .asset").length === 3', '再次拖入同一分镜应新增一个候选片段');
   await click(`${material(files.blue)} ~ .material-quick-add`);
   await waitFor('document.querySelector("#material-add-dialog").open && document.querySelector("#material-add-target").options.length === 2', '快捷添加应允许选择新建或已有分镜');
   await runInWindow('document.querySelector("#material-add-target").value = "0"; document.querySelector("#material-add-confirm").click();');
-  await waitFor('!document.querySelector("#material-add-dialog").open && document.querySelectorAll("#shots .shot").length === 1 && document.querySelectorAll("#shots .asset").length === 3', '快捷添加应把视频放到指定分镜');
+  await waitFor('!document.querySelector("#material-add-dialog").open && document.querySelectorAll("#shots .shot").length === 1 && document.querySelectorAll("#shots .asset").length === 4', '快捷添加应把视频放到指定分镜');
   await screenshot('material-folder.png');
   assert.equal(await runInWindow('document.querySelector("#material-selection-actions").hidden'), true);
   async function selectNestedBatch() {
@@ -1067,6 +1095,33 @@ async function run() {
   await waitFor(`!document.querySelector('#material-add-dialog').open && document.querySelectorAll('#shots .shot').length === 2 && document.querySelectorAll(${JSON.stringify(`${batchShot} .asset`)}).length === 2`, '两个勾选素材应批量加入同一个新分镜');
   assert.deepEqual(await runInWindow(`[...document.querySelectorAll(${JSON.stringify(`${batchShot} .asset-name`)})].map((label) => label.textContent).sort()`), [path.basename(files.blue), path.basename(files.still)].sort());
   assert.equal(await runInWindow('document.querySelectorAll("#material-list .material-select:checked").length'), 0, '批量添加完成后应清除已提交勾选');
+  await runInWindow('const view = document.querySelector("#timeline-view"); view.value = "time"; view.dispatchEvent(new Event("change"));');
+  const batchCell = lane => `[data-lane-key="vis${lane}"] [data-drop-shot="1"]`;
+  await waitFor(`document.querySelector(${JSON.stringify(batchCell(3))})?.classList.contains('sequence-empty')`, '第二镜的第四轨应有可投放空位');
+  await selectNestedBatch();
+  const previewBounds = await runInWindow(`(() => {
+    const source = document.querySelector(${JSON.stringify(material(files.blue))});
+    const transfer = new DataTransfer();
+    const send = (node, type) => node.dispatchEvent(new DragEvent(type, { bubbles:true, cancelable:true, dataTransfer:transfer }));
+    send(source, 'dragstart');
+    const target = document.querySelector(${JSON.stringify(batchCell(3))});
+    send(target, 'dragover');
+    const ghost = target.closest('.sequence-content').querySelector('.candidate-new-placement');
+    const bounds = ghost && [ghost.style.left, ghost.style.width];
+    send(target, 'drop');
+    send(source, 'dragend');
+    return bounds;
+  })()`);
+  assert.ok(previewBounds, '目标轨应显示本次批量放置的时间窗口');
+  await waitFor(`document.querySelector(${JSON.stringify(batchCell(4))})?.hasAttribute('data-move-candidate')`, '批量拖到第四轨后第二个素材应落在第五轨');
+  const actual = await runInWindow(`[3,4].map(lane => {
+    const clip = document.querySelector('[data-lane-key="vis'+lane+'"] [data-drop-shot="1"]');
+    return [clip.style.left, clip.style.width];
+  })`);
+  assert.deepEqual(actual, [previewBounds, previewBounds], '两条视频应落在预览标示的同一切点窗口');
+  assert.ok(await runInWindow(`document.querySelector(${JSON.stringify(batchCell(2))}).classList.contains('sequence-empty')`), '上方第三轨的空位应保留');
+  await click('#track-undo');
+  await waitFor(`document.querySelectorAll(${JSON.stringify(`${batchShot} .asset`)}).length === 2`, '一次撤销应同时还原两条视频轨');
   await selectNestedBatch();
   await click('#add-shot');
   const draggedBatch = '#shots .shot[data-shot-index="2"]';
@@ -1086,7 +1141,8 @@ async function run() {
   await click('#save-project');
   await waitFor('document.querySelector("#notice").textContent.includes("工程已保存")', '应保存从文件夹加入的分镜');
   const savedFolderProject = JSON.parse(await fs.readFile(folderProject, 'utf8'));
-  assert.deepEqual(savedFolderProject.config.shots.map((shot) => shot.length), [3, 2], '工程应保留两项素材在同一分镜');
+  assert.deepEqual(savedFolderProject.config.shots.map((shot) => shot.length), [4, 2], '工程应保留两次添加的同源片段及批量候选');
+  assert.equal(savedFolderProject.config.shots[0][1].id, savedFolderProject.config.shots[0][2].id);
   assert.deepEqual(savedFolderProject.assets.map(({ path: file }) => file).sort(), [
     path.join(library, path.basename(files.green)),
     path.join(nested, path.basename(files.blue)),
@@ -1097,8 +1153,11 @@ async function run() {
   await reopenFolderProject;
   selections.push({ title: '打开工程', files: [folderProject] });
   await click('#home-open-project');
-  await waitFor('document.querySelector("#notice").textContent.includes("已打开工程") && document.querySelectorAll("#shots .asset").length === 5', '重开应恢复文件夹分镜和同组批量素材');
-  assert.equal(await runInWindow('document.querySelector("#material-breadcrumb").hidden && document.querySelectorAll("#material-folders .material-folder").length === 0'), true, '目录浏览状态只保留在当前会话');
+  await waitFor('document.querySelector("#notice").textContent.includes("已打开工程") && document.querySelectorAll("#shots .asset").length === 6', '重开应恢复同源片段和同组批量素材');
+  await waitFor(`document.querySelector("#material-breadcrumb").hidden && Boolean(${folder(path.basename(library))})`, '重开后从素材库根目录显示保存的文件夹');
+  await runInWindow(`(${folder(path.basename(library))}).dispatchEvent(new MouseEvent('dblclick', { bubbles: true }))`);
+  await waitFor(`Boolean(${folder(path.basename(nested))}) && Boolean(document.querySelector(${JSON.stringify(material(files.green))}))`, '重开后的文件夹应恢复子目录和素材');
+  await click('#material-breadcrumb .material-back');
   await click(`${batchShot} .remove-shot`);
 
   await runInWindow(`(() => { const view=document.querySelector('#timeline-view');view.value='cards';view.dispatchEvent(new Event('change')); })()`);
@@ -1235,7 +1294,7 @@ async function run() {
     const toggles = [...document.querySelectorAll('#shots :is(.shot-toggle, .clip-toggle, .segment-toggle, .segment-track-toggle, .transition-toggle)')];
     return toggles.length > 8 && toggles.every((toggle) => toggle.getAttribute('aria-expanded') === 'true');
   })()`, '全部展开应打开每张分镜卡和内层设置');
-  assert.equal(await runInWindow('document.querySelectorAll("#shots .asset").length'), 10, '折叠不能删除候选素材');
+  assert.equal(await runInWindow('document.querySelectorAll("#shots .asset").length'), 11, '折叠不能删除候选素材');
   assert.equal(await runInWindow('document.querySelector("#shots .start").valueAsNumber'), 0.2, '折叠不能丢失已编辑的裁剪点');
   assert.ok(await runInWindow(hasFixtureNarration(firstNarration)), '折叠不能移除已导入的口播');
   await click(`${firstShot} .move-down`);
@@ -1286,14 +1345,42 @@ async function run() {
   await goHome();
   await click('#home-create');
   await waitFor("!document.querySelector('#editor-workspace').hidden && !document.querySelector('#material-import').disabled", '新草稿完成初始化后应启用素材导入');
-  selections.push({ title: '选择分镜素材', files: [wideVideo] });
+  selections.push({ title: '选择素材文件', files: [wideVideo] });
   await click('#material-import');
+  await click('#material-import-files');
   await waitFor('document.querySelector("#preview").videoWidth === 640 && document.querySelector("#preview").currentSrc.includes("/track-proxy/")', '高清轨道索引应实际解码本地低分辨率代理');
+  const setPlayerQuality = value => runInWindow(`(() => {
+    const select = document.getElementById('player-quality');
+    select.value = ${JSON.stringify(value)};
+    select.dispatchEvent(new Event('change', {bubbles:true}));
+  })()`);
+  await setPlayerQuality('original');
+  await waitFor('document.querySelector("#preview").videoWidth === 960 && !document.querySelector("#preview").currentSrc.includes("/track-proxy/")', '切到原画应解码 960 像素原片');
+  assert.equal(await runInWindow('document.querySelector(".player-quality-label").textContent'), '原画');
+  await setPlayerQuality('proxy');
+  await waitFor('document.querySelector("#preview").videoWidth === 640 && document.querySelector("#preview").currentSrc.includes("/track-proxy/")', '手动切回流畅应实际恢复 640 像素代理');
+  await waitFor('document.querySelector(".player-quality-label").textContent==="流畅"', '画质标签应显示实际解码的代理');
+  await setPlayerQuality('auto');
+  await navigate('#timeline-play');
+  await waitFor('document.querySelector(".draft-transport-preview:not([hidden]) video")?.paused===false', '时间线应开始试播');
   await click('#material-list .material-tile');
   await waitFor('document.querySelector("#preview").videoWidth === 960 && !document.querySelector("#preview").currentSrc.includes("/track-proxy/")', '回到素材库应恢复原片画质');
-  await click('#subproject-new');
-  await runInWindow('document.querySelector("#subproject-name").value = "杭州门店"; document.querySelector("#subproject-new-form").requestSubmit()');
-  await waitFor('document.querySelector("#subproject-select").selectedOptions[0].textContent === "杭州门店"', '应在刚创建的子工程中编辑');
+  await waitFor('!document.querySelector(".draft-transport-preview:not([hidden])") && !document.querySelector("#preview").paused && document.querySelector("#preview").currentTime>0', '点击素材库视频应结束时间线试播并点播原片');
+  assert.equal(await runInWindow('!!document.querySelector("#subproject-new")'), false);
+  const legacyProject = path.join(root, '已有门店.sdworkbench');
+  saves.push({ title: '保存工程', file: legacyProject });
+  await click('#save-project');
+  await waitFor('document.querySelector("#project-status").textContent.includes("已有门店")', '保存门店测试工程');
+  const fixture = JSON.parse(await fs.readFile(legacyProject, 'utf8'));
+  fixture.config.subprojects = { active: null, main: [], projects: [
+    { id: 'hangzhou', name: '杭州门店', shots: [] }, { id: 'shanghai', name: '上海门店', shots: [] }
+  ] };
+  await fs.writeFile(legacyProject, JSON.stringify(fixture));
+  selections.push({ title: '打开工程', files: [legacyProject] });
+  await click('#open-project');
+  await waitFor('document.querySelector("#subproject-select").options.length === 3', '读取已有子工程');
+  const selectBranch = id => runInWindow(`{const el=document.querySelector("#subproject-select");el.value=${JSON.stringify(id)};el.dispatchEvent(new Event("change"));}`);
+  await selectBranch('hangzhou');
   await click('#subproject-materials');
   selections.push({ title: '选择分镜素材', files: [files.blue] });
   await click('#subproject-replace');
@@ -1308,8 +1395,7 @@ async function run() {
   await waitFor(`document.querySelector("#subproject-select").selectedOptions[0].textContent === "杭州门店" && document.querySelector("#material-list .material-tile").dataset.materialId !== ${JSON.stringify(branchAsset)}`, '重开工程应保留子工程选择');
   await runInWindow('document.querySelector("#subproject-select").selectedIndex = 0; document.querySelector("#subproject-select").dispatchEvent(new Event("change"))');
   assert.equal(await runInWindow('document.querySelector("#shots .asset-name").textContent'), '高清素材.mp4');
-  await click('#subproject-new');
-  await runInWindow('document.querySelector("#subproject-name").value = "上海门店"; document.querySelector("#subproject-new-form").requestSubmit()');
+  await selectBranch('shanghai');
   await click('#subproject-batch');
   await click('#subproject-batch-confirm');
   await waitFor('document.querySelectorAll("#preview-batch-list .batch-title").length === 2', '选中的两家门店应各生成一份预览');

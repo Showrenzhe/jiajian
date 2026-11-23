@@ -26,8 +26,6 @@
           <details id="performance-settings" hidden>
             <summary>性能与代理</summary>
             <fieldset id="performance-options" aria-label="性能与代理设置" disabled>
-              <label class="cloud-settings-check"><input id="performance-gpu" type="checkbox">启用 GPU 绘制界面</label>
-              <p class="cloud-settings-muted">GPU 设置在下次启动佳剪时生效。</p>
               <div class="cloud-settings-field">
                 <label for="performance-optimization">自动优化</label>
                 <select id="performance-optimization"><option value="smart">智能</option><option value="smooth">优先流畅</option><option value="quality">优先画质</option></select>
@@ -113,7 +111,6 @@
     let session;
 
     function showPerformance(data) {
-      perf('gpu').checked = data.gpu;
       perf('optimization').value = data.optimization;
       perf('default-proxy').checked = data.defaultProxy;
       perf('location').textContent = data.location;
@@ -155,7 +152,7 @@
     }
     perf('settings').addEventListener('toggle', () => { if (perf('settings').open) void changePerformance('load'); });
     perf('retry').addEventListener('click', () => changePerformance('load'));
-    for (const [id, key] of [['gpu', 'gpu'], ['default-proxy', 'defaultProxy'], ['optimization', 'optimization']]) {
+    for (const [id, key] of [['default-proxy', 'defaultProxy'], ['optimization', 'optimization']]) {
       perf(id).addEventListener('change', () => changePerformance('save', { [key]: key === 'optimization' ? perf(id).value : perf(id).checked }));
     }
     perf('folder').addEventListener('click', () => changePerformance('folder'));

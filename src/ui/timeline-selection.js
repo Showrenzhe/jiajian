@@ -22,7 +22,7 @@ window.mountTimelineSelection = function (host, {busy, changed, removed}) {
     changed(selected.size);
   }
   function attach(canvas) {
-    visible = [...canvas.querySelectorAll('[data-selectable]')];
+    visible = [...canvas.querySelectorAll('[data-selectable]')].filter(node=>!node.closest('[data-track-locked]'));
     const current = new Set(visible.map((node) => entries.get(node).key));
     selected = new Set([...selected].filter((key) => current.has(key)));
     canvas.append(frame);
@@ -41,8 +41,7 @@ window.mountTimelineSelection = function (host, {busy, changed, removed}) {
     if (actions.size) removed();
     return actions.size > 0;
   }
-  function point(x, y) {
-    const canvas = frame.parentElement.getBoundingClientRect();
+  function point(x, y, canvas = frame.parentElement.getBoundingClientRect()) {
     const viewport = host.getBoundingClientRect(), pane = scroller.getBoundingClientRect();
     const left = viewport.left + (host.querySelector('.sequence-head')?.offsetWidth ?? 0);
     return {x:Math.max(left, Math.min(viewport.right,x))-canvas.left,
@@ -50,34 +49,43 @@ window.mountTimelineSelection = function (host, {busy, changed, removed}) {
   }
   function update() {
     if (!gesture?.active || gesture.cancelled || !frame.parentElement) return;
-    const end = point(gesture.x,gesture.y), start = gesture.start;
+    const canvas = frame.parentElement.getBoundingClientRect();
+    const end = point(gesture.x,gesture.y,canvas), start = gesture.start;
     const x = Math.min(start.x,end.x), y = Math.min(start.y,end.y);
-    Object.assign(frame.style, {left:x+'px', top:y+'px', width:Math.abs(end.x-start.x)+'px', height:Math.abs(end.y-start.y)+'px'});
-    frame.hidden = false;
-    const box = frame.getBoundingClientRect();
-    selected = new Set(gesture.base);
+    const width=Math.abs(end.x-start.x), height=Math.abs(end.y-start.y);
+    const left=canvas.left+x, top=canvas.top+y;
+    const next = new Set(gesture.base);
     for (const node of visible) {
       if (!entries.get(node).boxed) continue;
       const r = node.getBoundingClientRect();
-      if (r.width && r.height && r.right>box.left && r.left<box.right && r.bottom>box.top && r.top<box.bottom) selected.add(entries.get(node).key);
+      if (r.width && r.height && r.right>left && r.left<left+width && r.bottom>top && r.top<top+height) next.add(entries.get(node).key);
     }
-    paint();
+    Object.assign(frame.style, {left:x+'px', top:y+'px', width:width+'px', height:height+'px'});
+    frame.hidden = false;
+    if(next.size!==selected.size || [...next].some(key=>!selected.has(key))) {
+      selected=next;
+      paint();
+    }
   }
-  function autoScroll() {
+  function autoScroll(now) {
+    scrollFrame=undefined;
     if (!gesture?.active || gesture.cancelled) return;
     const bounds = host.getBoundingClientRect(), pane = scroller.getBoundingClientRect();
-    const step = (value,low,high) => value<low+15 ? -12 : value>high-15 ? 12 : 0;
+    const elapsed=Math.min(50,Math.max(1,now-gesture.lastFrame));
+    gesture.lastFrame=now;
+    const step = (value,low,high) => (value<low+15 ? -1 : value>high-15 ? 1 : 0)*.72*elapsed;
     const left = host.scrollLeft, top = scroller.scrollTop;
     host.scrollLeft += step(gesture.x,bounds.left+90,bounds.right);
     scroller.scrollTop += step(gesture.y,pane.top,pane.bottom);
-    if (left!==host.scrollLeft || top!==scroller.scrollTop) update();
-    scrollFrame=requestAnimationFrame(autoScroll);
+    update();
+    if (left!==host.scrollLeft || top!==scroller.scrollTop) scrollFrame=requestAnimationFrame(autoScroll);
   }
   function finish(cancelled) {
     if (!gesture) return;
     const {active,id,before} = gesture;
     gesture = undefined;
     cancelAnimationFrame(scrollFrame);
+    scrollFrame=undefined;
     if (host.hasPointerCapture(id)) host.releasePointerCapture(id);
     frame.hidden = true;
     if (active && cancelled) { selected=before;paint(); }
@@ -92,7 +100,7 @@ window.mountTimelineSelection = function (host, {busy, changed, removed}) {
     if (busy() || event.button!==0 || !event.isPrimary || !frame.parentElement
       || target.closest('.sequence-ruler,.sequence-cursor,.sequence-height-handle,.sequence-head,.sequence-edge')
       || !target.closest('.sequence-canvas')) return;
-    const node=target.closest('.sequence-block');
+    const node=target.closest('button.sequence-block');
     const additive=event.ctrlKey || event.metaKey || event.shiftKey;
     if (node && (node.draggable || node.matches('[data-reorder-shot],[data-move-candidate]') || node.closest('.sequence-layer')) && !additive) return;
     gesture={id:event.pointerId,start:point(event.clientX,event.clientY),initialX:event.clientX,initialY:event.clientY,
@@ -105,10 +113,12 @@ window.mountTimelineSelection = function (host, {busy, changed, removed}) {
     if (!gesture.active) {
       if (Math.hypot(gesture.x-gesture.initialX,gesture.y-gesture.initialY)<4) return;
       gesture.active=true;host.setPointerCapture(event.pointerId);
-      scrollFrame=requestAnimationFrame(autoScroll);
     }
     event.preventDefault();
-    update();
+    if(scrollFrame===undefined) {
+      gesture.lastFrame=performance.now();
+      scrollFrame=requestAnimationFrame(autoScroll);
+    }
   },true);
   window.addEventListener('pointerup',(event)=>{if(gesture?.id===event.pointerId) {gesture.x=event.clientX;gesture.y=event.clientY;update();finish(false);}},true);
   host.addEventListener('pointercancel',(event)=>{if(gesture?.id===event.pointerId) finish(true);});
@@ -127,7 +137,7 @@ window.mountTimelineSelection = function (host, {busy, changed, removed}) {
     if (suppressClick) {event.preventDefault();event.stopPropagation();return;}
     const node=event.target.closest('[data-selectable]');
     if (!node) {
-      if (event.target.closest('.sequence-content:not(.sequence-ruler .sequence-content)') && !event.target.closest('.sequence-block')) {selected.clear();paint();}
+      if (event.target.closest('.sequence-content:not(.sequence-ruler .sequence-content)') && !event.target.closest('button.sequence-block')) {selected.clear();paint();}
       return;
     }
     const key=entries.get(node).key;

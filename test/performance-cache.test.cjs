@@ -36,12 +36,24 @@ test('preload once per boot, reuse unchanged draft media, invalidate edits and c
   assert.equal(probes,2);
   assert.equal(encodes,2);
   const location=path.join(dir,'移动缓存');
-  await cache.change({location,optimization:'smooth',gpu:false,defaultProxy:false});
-  assert.equal(readPerformance(dir).gpu,false);
+  await cache.change({location,optimization:'smooth',defaultProxy:false});
   assert.equal(await fs.readFile(await cache.proxy(newAsset),'utf8'),'proxy480');
   await fs.writeFile(path.join(location,'用户原片.mp4'),'original');
   assert.equal((await cache.view()).bytes,8);
   await cache.clear();
   assert.deepEqual(await fs.readdir(location),['用户原片.mp4']);
   assert.equal((await cache.view()).bytes,0);
+});
+
+test('loading a legacy GPU preference preserves proxy settings and drops the obsolete key on save', async t => {
+  const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'jiajian-legacy-performance-'));
+  t.after(() => fs.rm(dir, { recursive: true, force: true }));
+  const file = path.join(dir, 'performance.json');
+  const prefs = { defaultProxy: false, optimization: 'quality', location: path.join(dir, '代理') };
+  await fs.writeFile(file, JSON.stringify({ ...prefs, gpu: false }));
+  assert.deepEqual(readPerformance(dir), prefs);
+  const cache = createPerformanceCache(dir, {});
+  await assert.rejects(cache.change({ gpu: false }), /性能设置无效/);
+  await cache.change({ optimization: 'smooth' });
+  assert.deepEqual(JSON.parse(await fs.readFile(file, 'utf8')), { ...prefs, optimization: 'smooth' });
 });
