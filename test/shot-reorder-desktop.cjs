@@ -73,6 +73,11 @@ async function check() {
     await send('dispatchKeyEvent',{...event,type:'rawKeyDown'});
     await send('dispatchKeyEvent',{...event,type:'keyUp'});
   }
+  async function fitTimeline() {
+    // Fit applies its new clip positions in the next animation frame.
+    await read('new Promise(done=>{'+query('#timeline-fit')+'.click();requestAnimationFrame(()=>done(true));})');
+    await wait(host+'.scrollWidth<='+host+'.clientWidth+1','适配后的分镜应全部进入可视区');
+  }
   async function point(index,portion=.5) {
     const selector='.sequence-shots [data-drop-shot="'+index+'"]';
     const p=await read('(()=>{const e='+query(selector)+',r=e.getBoundingClientRect(),x=r.left+r.width*'+portion+',y=r.top+r.height/2;'
@@ -100,7 +105,7 @@ async function check() {
     await click('#insert-shot-right');await verify(['A','B','分镜 03','C']);
     await click('#track-undo');await verify(['A','B','C']);
     await click('#add-shot');await verify(['A','B','C','分镜 04']);
-    await click('#timeline-fit');await delay(80);
+    await fitTimeline();
     await drag(3,0,.2);await verify(['分镜 01','A','B','C']);
     await drag(0,3,.8,true);await verify(['分镜 01','A','B','C']);
     await drag(0,3,.8);await verify(['A','B','C','分镜 04']);
@@ -225,7 +230,7 @@ async function check() {
     assert.equal(await read(order+'.length'),shotCount,'粘贴应保持分镜数');
     await context(shotCell(3));await action('粘贴视频');
     await wait(query('#notice')+'.textContent.includes("已包含")','重复粘贴应提示且不修改工程');
-    await click('#timeline-fit');await delay(100);
+    await fitTimeline();
     const geometry=await read('(()=>{const src='+query(cell(3,1))+',dst='+query(cell(4,0))+';src.scrollIntoView({block:"center",inline:"center"});'
       +'return [src,dst].map(n=>{const r=n.getBoundingClientRect(),x=r.x+r.width/2,y=r.y+r.height/2;return {x,y,hit:n.contains(document.elementFromPoint(x,y))};});})()');
     const [sourcePoint,dropPoint]=geometry;
