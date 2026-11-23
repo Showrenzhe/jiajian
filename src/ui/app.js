@@ -882,12 +882,8 @@ function shotLabel(index) {
   return shotProperties.get(shots[index])?.name || `分镜 ${String(index + 1).padStart(2, '0')}`;
 }
 
-let toolbarCardShot;
 function shotRow(shot, index, previousPosters) {
   const row = template('#shot-template');
-  const remember = () => { toolbarCardShot = shot; };
-  row.addEventListener('focusin', remember);
-  row.addEventListener('click', remember, true);
   row.dataset.shotIndex = index;
   row.classList.toggle('material-shot', Boolean(locatedMaterial && shot.some(({ asset }) => (asset.sourceKey ?? asset.id) === locatedMaterial)));
   const shotName = shotLabel(index);
@@ -917,11 +913,6 @@ function shotRow(shot, index, previousPosters) {
   bindTrackDisclosure(row.querySelector('.shot-toggle'), row.querySelector('.shot-body'), shot, 'body', shotName);
   row.querySelector('.shot-size').textContent = `${shot.length} 条候选`;
   row.querySelector('.no-candidates').hidden = shot.length > 0;
-  for (const [side,offset] of [['left',0],['right',1]]) {
-    const insert=row.querySelector('.insert-'+side);
-    insert.disabled=Boolean(operation) || shots.length>=maxShots;
-    insert.onclick=()=>{if(insertShot(index+offset)) visualTrackLane.querySelectorAll('.shot')[index+offset]?.querySelector('.add-candidate')?.focus();};
-  }
   const up = row.querySelector('.move-up');
   up.disabled = index === 0;
   up.addEventListener('click', () => moveShot(shot, index - 1));
@@ -1945,12 +1936,12 @@ function clearMaterialDrag() {
 
 function materialDropAt(event) {
   const types = Array.from(event.dataTransfer?.types ?? []);
-  if (mode !== 'montage' || operation || !(types.includes('Files') || (materialDrag && types.includes(materialDragType)))
-      || event.target.closest('.track-toolbar, #track-playhead-row, #script-brief, .timeline-lane-label, .sequence-head')) return;
-  if (types.includes('Files')) {
+  if (mode !== 'montage' || operation || event.target.closest('.track-toolbar, #track-playhead-row, #script-brief, .timeline-lane-label, .sequence-head')) return;
+  if (types.includes('Files') || types.includes(processedAudioDrag)) {
     const audio = processedDropTarget(event.target);
     if (audio) return audioDropPlace(audio);
   }
+  if (!(types.includes('Files') || (materialDrag && types.includes(materialDragType)))) return;
   if (event.target.closest('.narration-lane')) return;
   const row = event.target.closest('.shot, [data-drop-shot]');
   const shot = row ? shots[Number(row.dataset.shotIndex ?? row.dataset.dropShot)] : undefined;
@@ -2153,9 +2144,6 @@ function updateControls(group, keepDraftPlayback = false) {
 
   $('#add-shot').disabled = busy || shots.length >= maxShots;
   $('#match-all-voice-duration').disabled = busy || !segmented || !shots.length;
-  for (const side of ['left','right']) {
-    $('#insert-shot-'+side).disabled = $('#add-shot').disabled || !shots.length;
-  }
   $('#import-materials').disabled = busy || (audioMode ? audioTargets.length >= maxExports : shots.length >= maxShots);
   for (const [index, button] of [...document.querySelectorAll('.add-candidate')].entries()) {
     button.disabled = busy || shots[index].length >= maxCandidates;
@@ -4072,7 +4060,13 @@ function renderProcessedMaterials(usage) {
       });
       libraryWaves.add(li,asset);
       li.draggable=true;li.title='拖入口播轨或配乐面板';
-      li.ondragstart=(event)=>{event.dataTransfer.setData(processedAudioDrag,asset.id);event.dataTransfer.effectAllowed='copy';};
+      li.ondragstart=(event)=>{
+        if(operation) {event.preventDefault();return;}
+        event.dataTransfer.setData(processedAudioDrag,asset.id);
+        event.dataTransfer.effectAllowed='copy';
+        activateTimelineTab($('#timeline-tracks-tab'));
+      };
+      li.ondragend=clearMaterialDrag;
       action('加入口播',()=>applyProcessedAudio(asset,'voice'));
       action('加入配乐',()=>applyProcessedAudio(asset,'music'));
       action('音频处理',()=>materialAudio.open([asset]));
@@ -4239,17 +4233,6 @@ $('#import-materials').addEventListener('click', importMaterials);
 $('#add-shot').addEventListener('click', () => {
   if(insertShot(shots.length)) visualTrackLane.lastElementChild.querySelector('.add-candidate').focus();
 });
-for (const side of ['left','right']) {
-  $('#insert-shot-'+side).addEventListener('click', () => {
-    if ($('#timeline-view').value === 'time') {
-      timeline.insertAtSelection(side);
-      return;
-    }
-    const anchor = shots.includes(toolbarCardShot) ? toolbarCardShot : trackShot();
-    const index = Math.max(0, shots.indexOf(anchor)) + Number(side === 'right');
-    if (insertShot(index)) visualTrackLane.children[index]?.querySelector('.add-candidate')?.focus();
-  });
-}
 $('#pick-music').addEventListener('click', importMusic);
 $('#music-start-shot').addEventListener('change', (event) => {
   musicStartFrom = event.target.value === '' ? null : shots[Number(event.target.value)] ?? null;
@@ -4713,11 +4696,6 @@ timeline = window.mountEditTimeline($('#timeline-clock'), {
   pick:(kind,done)=>pick(kind,1,([asset])=>{if(asset) done(asset);}),
   cutout:cutoutAsset,
   voice:(voice)=>{activateInspectorTab($('#inspector-tab-narration'));if(!voice.shot){$('#voice-follow-track').value=String(voice.row);syncVoiceFollow();}}, editVoice:openTimelineVoice,
-  addVoice:({shot,row})=>pick('narration',1,([asset])=>{
-    if(!asset) return;
-    if(shot){const tracks=segmentNarrations.get(shot) ?? []; while(tracks.length<=row) tracks.push(null); tracks[row]=asset; segmentNarrations.set(shot,tracks);}
-    else if(row===0){narration=asset;renderNarration();} else {extraWholeTracks[row-1].narration=asset;renderWholeTracks();}
-  }),
   music:()=>activateInspectorTab($('#inspector-tab-music')),
   setVoiceSpeed, setMusicSpeed:(asset,speed)=>{if(speed===1) musicSpeeds.delete(asset.id);else musicSpeeds.set(asset.id,speed);},
   seek:(clip,time)=>{
@@ -4777,7 +4755,6 @@ $('#timeline-clock').addEventListener('pointerdown',(event)=>{
   if(event.button===0 && !event.target.closest('button,input,select,textarea')) $('#timeline-clock').focus({preventScroll:true});
 },true);
 $('#timeline-more-menu').addEventListener('click',(event)=>{if(event.target.closest('button') && $('#timeline-more-menu').matches(':popover-open')) $('#timeline-more-menu').hidePopover();});
-$('#timeline-layer-add').addEventListener('click',()=>timeline.editLayer());
 $('#timeline-text-groups').addEventListener('click',()=>timeline.textSettings());
 $('#timeline-scenes').addEventListener('click',()=>{
   if (selected?.asset.kind==='video' && $('#preview-heading').textContent!=='成片预览') {

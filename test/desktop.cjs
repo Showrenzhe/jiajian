@@ -653,11 +653,12 @@ async function run() {
   await waitFor('document.querySelectorAll("#timeline-clock .sequence-shots .sequence-block").length===3', '时间线应与三个分镜一一对应');
   assert.equal(await runInWindow('document.querySelector("#timeline-view").value'), 'time');
   await require('./timeline-interaction.cjs')(win, runInWindow, waitFor, checkFold);
-  await runInWindow('document.querySelector("#timeline-layer-add").click()');
+  await runInWindow('document.querySelector(".sequence-video .sequence-block").dispatchEvent(new MouseEvent("contextmenu",{bubbles:true,cancelable:true}))');
+  await runInWindow('[...document.querySelectorAll(".sequence-dialog[open] button")].find(b=>b.textContent==="候选包装").click()');
   await runInWindow(`(() => {const d=document.querySelector(".sequence-dialog[open]");d.querySelector("textarea").value="产品展示";d.querySelector("form").requestSubmit();})()`);
-  await waitFor('document.querySelector("#timeline-clock .kind-text")?.textContent.includes("产品展示")', '全局文字应出现在独立轨道');
+  await waitFor('document.querySelector("#timeline-clock .kind-text")?.textContent.includes("产品展示")', '候选文字应出现在独立轨道');
   await runInWindow('document.querySelector("#track-undo").click()');
-  await waitFor('!document.querySelector("#timeline-clock .kind-text")','撤销应同步移除全局文字');
+  await waitFor('!document.querySelector("#timeline-clock .kind-text")','撤销应同步移除候选文字');
   await runInWindow('document.querySelector("#timeline-clock .sequence-video .sequence-block").click()');
   await runInWindow(`(() => { const view = document.querySelector('#timeline-view'); view.value = 'cards'; view.dispatchEvent(new Event('change')); })()`);
   {

@@ -291,9 +291,6 @@
               <select id="timeline-view" aria-label="轨道视图"><option value="time">时间线</option><option value="cards">分镜卡片</option></select>
               <button type="button" class="secondary" id="timeline-play" aria-keyshortcuts="Space" aria-pressed="false" title="时间线播放 / 暂停（空格）">▶ 时间线播放</button>
               <button type="button" class="secondary" id="add-shot" title="新增空分镜，再向其中添加一条或多条候选"><svg class="ui-icon" aria-hidden="true"><use href="#icon-plus"></use></svg>新增分镜</button>
-              <button type="button" class="secondary" id="insert-shot-left" title="在当前分镜左侧插入空分镜">左侧插入</button>
-              <button type="button" class="secondary" id="insert-shot-right" title="在当前分镜右侧插入空分镜">右侧插入</button>
-              <button type="button" class="secondary" id="timeline-layer-add">＋ 包装轨道</button>
               <button type="button" class="secondary" id="track-undo" aria-label="撤销" title="撤销（Ctrl+Z）"><svg class="ui-icon" aria-hidden="true"><use href="#icon-undo-edit"></use></svg></button>
               <button type="button" class="secondary" id="track-redo" aria-label="恢复" title="恢复（Ctrl+Y）"><svg class="ui-icon" aria-hidden="true"><use href="#icon-redo-edit"></use></svg></button>
               <button type="button" class="secondary" id="track-split" title="将单候选视频分镜从播放头拆成两组连续分镜">分割</button>
@@ -846,8 +843,6 @@
         <button type="button" class="track-disclosure shot-toggle"></button>
         <div><h3 class="shot-name"></h3><span class="shot-size muted"></span></div>
         <div class="shot-actions">
-          <button type="button" class="insert-left quiet" title="在左侧插入空分镜">左插</button>
-          <button type="button" class="insert-right quiet" title="在右侧插入空分镜">右插</button>
           <button type="button" class="move-up quiet" aria-label="上移分镜" title="上移分镜">↑</button>
           <button type="button" class="move-down quiet" aria-label="下移分镜" title="下移分镜">↓</button>
           <button type="button" class="remove-shot quiet">移除组</button>

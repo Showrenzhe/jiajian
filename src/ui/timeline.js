@@ -195,16 +195,16 @@ window.mountEditTimeline = function (host, ctx) {
     }
     return list;
   }
-  function editLayer(initialTarget, existing, initialKind) {
+  function editLayer(initialTarget, existing) {
     if (ctx.busy()) return;
     const s = ctx.state();
     const ti = s.shots.indexOf(focusShot);
     const available=targets(s,ti,focusClip,voiceTarget);
     const groups = existing ? [initialTarget,...available.filter((g)=>g.key!==initialTarget.key && (existing.kind==='text' || !g.key.startsWith('text')))] : available;
-    const selectedKey = initialTarget?.key ?? (voiceTarget ? 'voice' : 'global');
-    const d = dialog(existing ? '编辑包装片段' : '添加包装轨道');
+    const selectedKey = initialTarget.key;
+    const d = dialog(existing ? '编辑包装片段' : '添加包装片段');
     const scope = choice(groups.map((g)=>[g.key,g.label]), groups.some((g)=>g.key===selectedKey) ? selectedKey : 'global');
-    const type = choice(Object.entries(kinds), existing?.kind ?? initialKind ?? 'text');
+    const type = choice(Object.entries(kinds), existing?.kind ?? 'text');
     const content = el('textarea'); content.maxLength = 4096; content.value = existing?.text ?? '';
     const begin = input('number',existing?.start ?? 0,0,null,.001), end = input('number',existing?.end,0,null,.001);
     end.placeholder = '随所属轨道结束';
@@ -371,19 +371,6 @@ window.mountEditTimeline = function (host, ctx) {
     matchDurationButton(d,state,index,clip);
     d.wrapper.showModal();
   }
-  function insertBeside(index,side) {
-    const shot=ctx.insertShot(index+(side==='right' ? 1 : 0));
-    if(shot) {
-      refocusShot=focusShot=shot;focusClip=voiceTarget=undefined;
-      pastePosition=undefined;
-      ctx.notify('已在分镜 '+(index+1)+' '+(side==='right' ? '右侧' : '左侧')+'插入空分镜。');
-    }
-  }
-  function insertButtons(d,index) {
-    for(const [side,label] of [['left','在左侧插入分镜'],['right','在右侧插入分镜']]) {
-      d.body.append(btn(label,()=>{d.wrapper.close();insertBeside(index,side);}));
-    }
-  }
   host.addEventListener('keydown',event=>{
     if(!(event.ctrlKey || event.metaKey) || event.shiftKey || event.altKey || event.isComposing || ctx.busy() ||
         event.target.closest('input,textarea,select,[contenteditable="true"],dialog')) return;
@@ -409,7 +396,6 @@ window.mountEditTimeline = function (host, ctx) {
     const duration=input('number',config.duration,.1,86400,.001); duration.placeholder='跟随候选素材';
     const smart=input('checkbox'); smart.checked=!!config.smartTrim;
     d.field('名称',name); d.field('分镜说明',desc); d.field('指定时长（秒）',duration); d.field('随机选择素材起点',smart);
-    insertButtons(d,index);
     d.foot.append(btn('添加候选',()=>{d.wrapper.close();ctx.importShot(shot);}));
     d.save(()=>ctx.shotSettings(shot,{name:name.value.trim(),description:desc.value,duration:duration.value ? duration.valueAsNumber : null,smartTrim:smart.checked}));
     d.wrapper.showModal();
@@ -640,7 +626,7 @@ window.mountEditTimeline = function (host, ctx) {
       const lane=row('视频 '+(j+1),'sequence-video','vis'+j,mute);
       for(let i=0;i<columns;i++) {
         const clip=s.shots[i]?.[j];
-        const b=block(lane,shotTimes[i],widths[i],clip ? clip.asset.name : '拖入素材',clip ? (event)=>{
+        const b=block(lane,shotTimes[i],widths[i],clip?.asset.name ?? '',clip ? (event)=>{
           focusShot=s.shots[i];focusClip=clip;voiceTarget=undefined;
           playTime=shotTimes[i];syncCursor();ctx.preview(clip);
           host.querySelector('.sequence-selected')?.classList.remove('sequence-selected');
@@ -727,7 +713,7 @@ window.mountEditTimeline = function (host, ctx) {
       if(shot) b.oncontextmenu=(event)=>{
         event.preventDefault();const d=dialog('分镜 '+(i+1));
         matchDurationButton(d,s,i);
-        insertButtons(d,i);clipboardButtons(d,b,eventPosition(event));
+        clipboardButtons(d,b,eventPosition(event));
         if(i===0) d.body.append(btn('首分镜封面',()=>{d.wrapper.close();ctx.firstCover();}));
         d.wrapper.showModal();
       };
@@ -739,10 +725,9 @@ window.mountEditTimeline = function (host, ctx) {
       const speed=asset ? s.voiceSpeed(asset,voice.shot,voice.row) : 1;
       const duration=!asset ? undefined : si>=0 ? s.voiceDuration(si,voice.row) : asset.duration/speed;
       const displayed=Math.min(Math.max(.1,span-delay),duration ?? span);
-      const b=block(lane,from+delay,displayed,asset?.name ?? '＋ 添加口播',()=>{
-        if (asset) {voiceTarget=voice;focusShot=voice.shot;focusClip=undefined;ctx.voice(voice);}
-        else ctx.addVoice(voice);
-      });
+      const b=block(lane,from+delay,displayed,asset?.name ?? '',asset ? ()=>{
+        voiceTarget=voice;focusShot=voice.shot;focusClip=undefined;ctx.voice(voice);
+      } : undefined);
       if(asset) b.title=asset.name+' · '+speed+' 倍 · 右键调整倍速或复制口播';
       b.dataset.voiceRow=String(voice.row);
       if(si>=0) b.dataset.voiceShot=String(si);
@@ -1321,14 +1306,9 @@ window.mountEditTimeline = function (host, ctx) {
     }
     if(lastState.selected!==clip && (clip?.videoSubtitles || lastState.selected?.videoSubtitles)) refresh();
   }
-  return {refresh,syncPlayer,selectClip,locateMaterial,editCaptions,openCardMatchMenu,removeSelected:selection.removeSelection,clearSelection:selection.clear,get selectionCount(){return selection.size;},editLayer:()=>editLayer(),textSettings:()=>textSettings(ctx.state()),
+  return {refresh,syncPlayer,selectClip,locateMaterial,editCaptions,openCardMatchMenu,removeSelected:selection.removeSelection,clearSelection:selection.clear,get selectionCount(){return selection.size;},textSettings:()=>textSettings(ctx.state()),
     toggleDraftPlayback:()=>draftTransport.toggle(draftTransport.playing()?[]:draftPlan(),playTime),
     seekDraft:draftTransport.seek,draftState:draftTransport.state,
-    insertAtSelection(side) {
-      const item = selection.single();
-      const index = Number(item?.dataset.dropShot ?? item?.dataset.voiceShot ?? pastePosition?.index ?? positionAt(playTime).index);
-      if (ctx.state().shots[index]) insertBeside(index,side);
-    },
     stopDraftPlayback:draftTransport.stop,isDraftPlaying:draftTransport.playing,
     canPlayDraft:()=>draftDuration()>0,draftDuration,get playheadTime(){return playTime;},
     zoom,zoomFromCards(level) {

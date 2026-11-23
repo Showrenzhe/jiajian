@@ -85,6 +85,29 @@ async function run() {
       await send('dispatchDragEvent', { type, ...coords, data });
     }
   }
+  async function dragLibraryAudio(selector) {
+    const source = await point('#processed-material-list li:first-child strong'), target = await point(selector);
+    let data;
+    const capture = (_event, method, params) => { if (method === 'Input.dragIntercepted') data = params.data; };
+    wc.debugger.on('message', capture);
+    await send('setInterceptDrags', { enabled: true });
+    try {
+      await send('dispatchMouseEvent', { type:'mouseMoved', ...source });
+      await send('dispatchMouseEvent', { type:'mousePressed', ...source, button:'left', buttons:1, clickCount:1 });
+      await send('dispatchMouseEvent', { type:'mouseMoved', x:source.x+9, y:source.y, button:'left',buttons:1 });
+      await send('dispatchMouseEvent', { type:'mouseMoved', ...target, button:'left',buttons:1 });
+      const end = Date.now() + 3000;
+      while (!data && Date.now() < end) await delay(20);
+      assert.ok(data?.items.some(item=>item.mimeType==='application/x-jiajian-processed-audio'), '素材库音频应发起原生拖放');
+      for (const type of ['dragEnter','dragOver']) await send('dispatchDragEvent', { type, ...target, data });
+      assert.equal(await read(el(selector)+'.dataset.materialDrop'), 'active', '鼠标所在的口播槽应显示接收状态');
+      await send('dispatchDragEvent', { type:'drop', ...target, data });
+    } finally {
+      wc.debugger.off('message', capture);
+      await send('dispatchMouseEvent', { type:'mouseReleased', ...target, button:'left', clickCount:1 });
+      await send('setInterceptDrags', { enabled: false });
+    }
+  }
   async function pickFolder() {
     picks.push({ title: '选择素材文件夹', files: [library] });
     await mouseClick('#material-folder-import');
@@ -267,6 +290,18 @@ async function run() {
     await wait(count('.sequence-voice .material-instance') + '===1', '口播轨里的同一音频应显示金色外框');
     assert.notEqual(await read('getComputedStyle(' + el('#processed-material-list li[data-used]') + ',"::after").boxShadow'), 'none',
       '已经加入口播的音频卡也应发光');
+    const voiceSlot = '.sequence-voice [data-voice-row="1"]';
+    await click('#add-whole-track');
+    await wait('!!'+el(voiceSlot+'.sequence-empty'),'添加第二条整段口播轨');
+    await dragLibraryAudio(voiceSlot);
+    await wait(el(voiceSlot)+'.textContent.includes('+JSON.stringify(path.basename(files.music))+')','从素材库拖入第二条整段口播轨');
+    await read(el('#narration-mode')+'.value="segmented";'+el('#narration-mode')+'.dispatchEvent(new Event("change",{bubbles:true}))');
+    const addVoice = '.segment-narration-panel[data-shot-index="1"] .add-segment-narration';
+    await click(addVoice);await click(addVoice);
+    const segment = voiceSlot+'[data-voice-shot="1"]';
+    await wait('!!'+el(segment+'.sequence-empty'),'分镜 2 应有第二轨空位');
+    await dragLibraryAudio(segment);
+    await wait(el(segment)+'.textContent.includes('+JSON.stringify(path.basename(files.music))+') && '+count('.sequence-voice [data-selectable]')+'===1','拖入的音频应仅出现在目标分镜的第二条口播轨');
     await mouseClick(red);
     await mouseClick(green);
     await wait(playing + ' && ' + el('#preview-name') + '.textContent===' + JSON.stringify(path.basename(files.green)),
@@ -277,6 +312,7 @@ async function run() {
     picks.push({ title: '打开工程', files: [savedProject] });
     await click('#open-project');
     await wait(el('#notice') + '.textContent.includes("已打开工程") && !!' + el(child), '重开后应恢复拖入的目录');
+    await wait(el(segment)+'?.textContent.includes('+JSON.stringify(path.basename(files.music))+')','重开工程后口播仍在第二镜第二轨');
     for (const [i, file] of [files.red, files.still].entries()) assert.deepEqual(await fs.readFile(file), originals[i]);
     assert.ok((await fs.stat(nested)).isDirectory(), '原子目录应留在磁盘');
     assert.deepEqual(picks, []);

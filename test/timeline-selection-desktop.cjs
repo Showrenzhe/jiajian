@@ -76,10 +76,19 @@ async function check() {
   const layer = '.sequence-layer .sequence-block[data-selectable]';
   const tile = (file) => '.material-tile[title=' + JSON.stringify(path.basename(file)) + ']';
   const slot='.sequence-video .sequence-empty[data-drop-shot="0"]';
+  const wholeSlot='.sequence-voice .sequence-empty[data-voice-row="0"]';
+  const segmentSlot=wholeSlot+'[data-voice-shot="1"]';
+  const setVoiceMode = mode => read(query('#narration-mode')+'.value='+JSON.stringify(mode)+';'+query('#narration-mode')+'.dispatchEvent(new Event("change",{bubbles:true}))');
+  async function clickBlank(selector) {
+    await actualClick(selector);
+    assert.ok(await read(query(selector)+'.textContent==="" && '+query(selector)+'.tabIndex<0 && !'+query(selector)+'.matches("button,[role=button]") && document.activeElement.id==="timeline-clock"'),
+      '空轨格应无文字，点击后焦点留在时间线');
+  }
   try {
     await clickVisible(win.webContents,'#home-create');
     await wait('!!'+query(slot),'空工程的视频轨道应有素材落点');
-    await actualClick(slot);
+    await clickBlank(slot);
+    await clickBlank(wholeSlot);
     await pressKey('Enter',13);
     await pressKey(' ',32);
     assert.ok(await read(query(slot)+'.tabIndex<0 && !'+query(slot)+'.matches("button,[role=button]") && document.activeElement.id==="timeline-clock"'),'空位是静态落点，键盘焦点留在时间线');
@@ -92,7 +101,7 @@ async function check() {
     await wait(count(video)+'===2 && !'+query(tile(files.red))+'.dataset.used','删除一个候选应移除它的使用标志并保留源素材');
     await actualClick(video);
     await wait(count(video+'.sequence-marked')+'===1','点选已有候选');
-    await actualClick(slot);
+    await clickBlank(slot);
     await wait(count(video+'.sequence-marked')+'===0','点击已建分镜空位应像轨道空白一样清除选区');
     const emptyPoint=await pointerPoint(slot), nextPoint=await pointerPoint(video);
     await mouse('mousePressed',emptyPoint.x,emptyPoint.y);await mouse('mouseMoved',nextPoint.x,nextPoint.y);
@@ -101,6 +110,18 @@ async function check() {
     assert.deepEqual(openedPickers,['选择分镜素材'],'只有素材库显式导入打开了文件框');
     await undo();
     await wait(count(video)+'===3 && '+query(tile(files.red))+'.dataset.used==="true"','撤销应恢复视频及使用标志');
+    await setVoiceMode('segmented');
+    await wait('!!'+query(segmentSlot),'分镜应显示自己的空口播落点');
+    await actualClick(video);
+    await clickBlank(segmentSlot);
+    assert.equal(await read(count(video+'.sequence-marked')),0,'点击空口播格清除选区');
+    const fromVoice=await pointerPoint(segmentSlot), toVideo=await pointerPoint(video);
+    await mouse('mousePressed',fromVoice.x,fromVoice.y);await mouse('mouseMoved',toVideo.x,toVideo.y);
+    await mouse('mouseReleased',toVideo.x,toVideo.y);
+    await wait(count(video+'.sequence-marked')+'>0','可从分镜口播空格开始框选素材');
+    assert.deepEqual(openedPickers,['选择分镜素材'],'从口播空格起拖或松手应保留文件框的关闭状态');
+    await setVoiceMode('whole');
+    await wait('!!'+query(wholeSlot)+' && !'+query(segmentSlot),'恢复整段口播');
 
     const box = await read('(() => {const [a,b]=document.querySelectorAll('+JSON.stringify(video)+');a.scrollIntoView({block:"nearest",inline:"nearest"});'
       +'const one=a.getBoundingClientRect(),two=b.getBoundingClientRect(),row=a.closest(".sequence-row").getBoundingClientRect();'
@@ -135,7 +156,8 @@ async function check() {
     if (!await read(query('#whole-track-settings')+'.open')) await click('#whole-track-summary');
     await click('#pick-narration');
     await wait(count(voice)+'===1','添加口播');
-    await click('#timeline-layer-add');
+    await read(query(video)+'.dispatchEvent(new MouseEvent("contextmenu",{bubbles:true,cancelable:true}))');
+    await read('[...document.querySelectorAll(".sequence-dialog[open] button")].find(button=>button.textContent==="候选包装").click()');
     await read('(() => {const d=document.querySelector(".sequence-dialog[open]");d.querySelector("textarea").value="删除验收";d.querySelector("form").requestSubmit()})()');
     await wait(count(layer)+'===1','添加包装文字');
     for (const [name, target] of [['配乐',music], ['包装',layer], ['口播',voice]]) {

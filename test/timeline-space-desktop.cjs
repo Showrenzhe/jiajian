@@ -169,15 +169,16 @@ async function check() {
     await wait(live + '.paused', '播放器中央按钮应暂停时间线正在播出的画面');
     await click('#material-search');
     await ensurePaused('#material-search', '');
-    await read(q('#timeline-layer-add') + '.click()');
+    await read(q('#open-project') + '.click()');
+    const textLayer = '.sequence-layer.kind-text .sequence-block';
+    await wait('!!' + q(textLayer), '打开带全局文字包装的工程');
+    await read(q(textLayer) + '.dispatchEvent(new MouseEvent("dblclick",{bubbles:true}))');
     const textField = '.sequence-dialog[open] textarea';
     await wait('!!' + q(textField), '打开文字包装编辑器');
     await read(q(textField) + '.focus();' + q(textField) + '.setSelectionRange(' + q(textField) + '.value.length,' + q(textField) + '.value.length)');
     await ensurePaused(textField, await read(q(textField) + '.value'));
     await read(q('.sequence-dialog[open]') + '.close()');
 
-    await read(q('#open-project') + '.click()');
-    await wait('!!' + q('.sequence-layer.kind-text .sequence-block'), '打开带全局文字包装的工程');
     await seek(1.84);
     await space();
     await wait('!!' + live + ' && !' + live + '.paused && ' + time + '>1.84', '含包装且分镜已填满时空格播放时间线');

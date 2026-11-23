@@ -98,12 +98,7 @@ async function check() {
   }
   try {
     await click('#home-open-project');await verify(['A','B','C']);
-    await click('.sequence-shots [data-drop-shot="1"]');
-    await click('#insert-shot-left');await verify(['A','分镜 02','B','C']);
-    await click('#track-undo');await verify(['A','B','C']);
-    await click('[data-candidate-index="0"][data-drop-shot="1"]');
-    await click('#insert-shot-right');await verify(['A','B','分镜 03','C']);
-    await click('#track-undo');await verify(['A','B','C']);
+    assert.equal(await read('document.querySelector("#insert-shot-left,#insert-shot-right,#timeline-layer-add")'),null);
     await click('#add-shot');await verify(['A','B','C','分镜 04']);
     await fitTimeline();
     await drag(3,0,.2);await verify(['分镜 01','A','B','C']);
@@ -189,10 +184,9 @@ async function check() {
     await read('document.querySelector("dialog[open] input[type=number]").value=".75"');
     await action('保存');
 
-    await context(shotCell(0));await action('在左侧插入分镜');
-    await wait(order+'[1]==="C"','在首镜左侧插入');
-    await context(shotCell(1));await action('在右侧插入分镜');
-    await wait(order+'[3]==="A"','在已有分镜右侧插入');
+    await fitTimeline();
+    await drag(9,0,.2);await wait(order+'[1]==="C"','将空镜移到 C 前');
+    await drag(9,2,.2);await wait(order+'[3]==="A"','将空镜移到 A 前');
     const srcVoice='[data-voice-shot="1"][data-voice-row="0"]';
     await context(srcVoice);await action('复制口播');
     await context(shotCell(0));await action('粘贴口播');
@@ -288,7 +282,7 @@ async function check() {
     await wait(noHint+' && '+query('#notice')+'.textContent==='+JSON.stringify(fullMessage),'满额分镜保持禁放并提示上限');
     assert.ok(await read('!!'+filled(0,0)+' && !!'+filled(1,99)+' && !'+filled(1,100)),'禁止移动到满额分镜应保留原有候选');
     assert.deepEqual(opens,[]);assert.deepEqual(saves,[]);
-    console.log('分镜拖动、左右插入、倍速、音频字幕视频复制粘贴、撤销重做、保存重开与成片排序通过。');
+    console.log('新增分镜、拖动排序、倍速、音频字幕视频复制粘贴、撤销重做、保存重开与成片排序通过。');
   } finally {
     wc.debugger.detach();win.destroy();
   }
