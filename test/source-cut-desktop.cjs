@@ -88,6 +88,8 @@ async function check() {
   const film = host+' .video-cut-filmstrip';
   const bands = host+' .cut-source-band';
   const activeBand = q(bands+'[data-current]');
+  const marker = edge => host+' [data-source-edge="'+edge+'"][role="slider"]';
+  const rail = host+' .cut-source-rail';
   const availableFrames = `[...document.querySelectorAll(${JSON.stringify(film+' img')})].filter(img=>img.checkVisibility() && img.naturalWidth>0).length`;
   const segment = host+' .video-cut-segment[data-index]';
   const count = 'document.querySelectorAll('+JSON.stringify(segment)+').length';
@@ -113,9 +115,9 @@ async function check() {
     }
     throw Error('画面颜色不对应原片，目标 '+selector+'，实际 '+rgb);
   }
-  async function checkBounds(start,finish) {
-    await wait(approx('Number('+activeBand+'.dataset.start)',start) + ' && ' +
-      approx('Number('+activeBand+'.dataset.end)',finish),'原片上的入、出点应跟随当前片段');
+  async function checkBounds(start,finish,tolerance=.06) {
+    await wait(approx('Number('+activeBand+'.dataset.start)',start,tolerance) + ' && ' +
+      approx('Number('+activeBand+'.dataset.end)',finish,tolerance),'原片上的入、出点应跟随当前片段');
     const actual=await read(`(()=>{const band=${activeBand}, r=band.getBoundingClientRect(), rail=band.parentElement.getBoundingClientRect();return [(r.left-rail.left)/rail.width,(r.right-rail.left)/rail.width];})()`);
     assert.ok(Math.abs(actual[0]-start/6)<.015 && Math.abs(actual[1]-finish/6)<.015,
       '标记应使用整段 6 秒原片的比例 '+actual);
@@ -169,7 +171,9 @@ async function check() {
     await wait(q(host)+'?.checkVisibility()', '原生双击应进入素材编辑器 '+selector);
   }
   async function seek(value) {
-    const coords=await point(ruler,value/await read(end));
+    const coords = await read(count)>1
+      ? await point(host+' .video-cut-sequence',value/await read(end))
+      : await point(ruler,value/6);
     await mouse('mousePressed',coords);
     await mouse('mouseReleased',coords);
     await wait(approx(time,value),'定位剪辑播放头至 '+value);
@@ -236,8 +240,10 @@ async function check() {
     await wait('!'+q('#player-more-menu')+'.matches(":popover-open") && !!'+q(monitor),'关闭更多播放控制应保留片段监看');
     await checkBounds(0,6);
     await wait(availableFrames+'>=3','拖动前胶片有原片缩略图');
-    const right=await point(host+' .video-cut-handle[data-edge="end"]');
-    const span=await read(q(ruler)+'.getBoundingClientRect().width');
+    await expectFrame(film,2,.86);
+    assert.equal(await read(q(host+' input[type=number]')),null,'片段入点和出点通过胶片上的标记调节');
+    const right=await point(marker('end'));
+    const span=await read(q(rail)+'.getBoundingClientRect().width');
     await mouse('mousePressed',right);
     let minFrames=Infinity;
     for (let step=1;step<=12;step++) {
@@ -248,9 +254,27 @@ async function check() {
     await checkBounds(0,1.5);
     await expectFrame(monitor+' .video-cut-preview',0);
     await mouse('mouseReleased',{x:right.x-.75*span,y:right.y});
-    await expectFrame(film,0,.86);
+    const omittedFrame=await pixel(film,.86);
+    assert.ok(omittedFrame[2]>omittedFrame[0]+35 && omittedFrame[2]>omittedFrame[1]+35,
+      '剪短后原片末段仍应显示可补回的蓝色胶片 '+omittedFrame);
+    const fixedTicks=await read(q(ruler)+'.textContent');
+    const startMark=await point(marker('start')), endMark=await point(marker('end'));
+    assert.ok(Math.abs(right.x-endMark.x-.75*span)<3,'剪短后出点仍应停在原片 1.5 秒');
+    const frameWidth=span/(6*24);
+    await drag(endMark,{x:endMark.x+3*frameWidth,y:endMark.y});
+    await checkBounds(0,1.625,.001);
+    await key('ArrowRight',39);
+    await checkBounds(0,1.625+1/24);
+    await wait(approx('Number('+q(marker('end'))+'.getAttribute("aria-valuenow"))',1.625+1/24,.001),'键盘应可逐帧补回出点');
+    await drag(startMark,{x:startMark.x+12*frameWidth,y:startMark.y});
+    await checkBounds(.5,1.625+1/24,.001);
+    const markedStart=await point(marker('start'));
+    await drag(markedStart,{x:markedStart.x-3*frameWidth,y:markedStart.y});
+    await checkBounds(.375,1.625+1/24,.001);
+    await wait(approx(localVideo+'.currentTime',.375,.025),'再次向外拖入点，主播放器应跟回原片');
+    assert.equal(await read(q(ruler)+'.textContent'),fixedTicks,'修剪和补帧应使用同一原片时间刻度');
     console.log('连续 12 次拖动，最少仍有 '+minFrames+' 个已加载的可见胶片帧。');
-    await click(tool('undo'));
+    for (let steps=0;steps<5;steps++) await click(tool('undo'));
     await checkBounds(0,6);
     await seek(1);
     await key('w',87);
@@ -278,15 +302,13 @@ async function check() {
     await wait(count+'===2','W 在 2 秒分割');
     await seek(4); await key('w',87);
     await wait(count+'===3','W 在 4 秒分割');
-    const field=host+' input[type=number]';
-    await click(field);
+    await click('#material-search');
     for (const [char,code] of [['w',87],['q',81],['e',69]]) await key(char,code);
     await key('z',90,2);
-    assert.equal(await read(count),3,'数字输入时快捷键与局部历史隔离');
-    assert.equal(await read(end),6,'输入框内 Q/E 不裁剪素材');
+    assert.equal(await read(count),3,'输入素材搜索时快捷键与局部历史隔离');
+    assert.equal(await read(end),6,'搜索框内 Q/E 不裁剪素材');
 
-    const handle=host+' .video-cut-handle[data-edge="end"]';
-    const lastHandle=await read(`(()=>{const nodes=document.querySelectorAll(${JSON.stringify(handle)}),r=nodes[nodes.length-1].getBoundingClientRect();return {x:r.left+r.width/2,y:r.top+r.height/2};})()`);
+    const lastHandle=await point(marker('end'));
     const rulerWidth=await read(q(ruler)+'.getBoundingClientRect().width');
     const shortened={x:lastHandle.x-rulerWidth/6,y:lastHandle.y};
     await drag(lastHandle,shortened,true);
@@ -322,7 +344,20 @@ async function check() {
       if (process.env.JIAJIAN_SOURCE_CUT_SCREENSHOTS) await wait(
         `[...document.querySelectorAll(${JSON.stringify(host+' .video-cut-filmstrip img')})].every(img=>img.naturalWidth>0)`,
         '截取已载入完整色带的素材剪辑界面');
-      await screenshot('素材剪辑-'+scheme);
+      await screenshot('素材剪辑-'+scheme,host);
+      if (width===960) {
+        const left=await point(marker('start')), railWidth=await read(q(rail)+'.getBoundingClientRect().width');
+        await drag(left,{x:left.x+railWidth/6,y:left.y});
+        const startsAt=await read('Number('+activeBand+'.dataset.start)');
+        assert.ok(startsAt>4.83 && startsAt<5,'将两端拖近到仅剩几帧');
+        for (const edge of ['start','end']) {
+          const selector=marker(edge), p=await point(selector);
+          assert.ok(await read(q(selector)+'.contains(document.elementFromPoint('+p.x+','+p.y+'))'),
+            '窄窗口中短片段的两个手柄必须可以分别抓住 '+edge);
+        }
+        await click(tool('undo'));
+        await checkBounds(4,5);
+      }
     }
     await click(tool('apply'));
     await wait('!'+q('#timeline-cut-editor')+'.checkVisibility() && '+approx('parseFloat('+duration+')',4.5),'应用后主时间线时长更新');
@@ -352,6 +387,10 @@ async function check() {
     assert.equal(await read(count),3,'重开后的素材编辑器恢复三段');
     await seek(1.8);
     await wait(approx(localVideo+'.currentTime',4.3,.10),'重开后原片蓝色选段仍在第二位');
+    await checkBounds(4,5);
+    const savedOut=await point(marker('end')), savedRail=await read(q(rail)+'.getBoundingClientRect().width');
+    await drag(savedOut,{x:savedOut.x+savedRail/48,y:savedOut.y});
+    await checkBounds(4,5.125);
     await click(tool('cancel'));
     await dblclick(mainClip(1));
     assert.equal(await read(count),1);
@@ -365,6 +404,15 @@ async function check() {
     await dblclick(mainClip(0));
     await click(tool('reset'));
     await click(tool('reverse'));
+    await checkBounds(0,6);
+    const reversedOut=await point(marker('end')), reverseWidth=await read(q(rail)+'.getBoundingClientRect().width');
+    await mouse('mousePressed',reversedOut);
+    const reversePoint={x:reversedOut.x-reverseWidth*.5,y:reversedOut.y};
+    await mouse('mouseMoved',reversePoint);
+    await checkBounds(0,3);
+    await expectFrame(monitor+' .video-cut-preview',1);
+    await mouse('mouseReleased',reversePoint);
+    await click(tool('undo'));
     await checkBounds(0,6);
     await click(tool('mirror'));
     await click(tool('rotate'));

@@ -137,7 +137,7 @@ async function check(dir) {
     await key('Escape');
     await wait('!document.querySelector("#cut-shortcuts-dialog[open]")');
     await click('#cloud-settings-cancel');
-    await click(host+' input[data-edge-field=start]');
+    await click('#material-search');
     await key('z',2);
     assert.equal(await read('document.querySelector('+JSON.stringify(button('mirror'))+').getAttribute("aria-pressed")'),'true');
     await mouseClick(host+' .video-cut-ruler',.7);

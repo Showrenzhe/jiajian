@@ -52,7 +52,7 @@ window.mountVideoCutTimeline = function mountVideoCutTimeline(host, clip, option
     ruler.append(tick);
     return tick;
   });
-  const lane = node('div', 'video-cut-lane');
+  const lane = node('div', 'video-cut-lane cut-source-rail');
   const film = node('div', 'video-cut-filmstrip');
   lane.append(film);
   const playhead = node('div', 'video-cut-playhead');
@@ -60,23 +60,28 @@ window.mountVideoCutTimeline = function mountVideoCutTimeline(host, clip, option
   playhead.setAttribute('role', 'slider');
   playhead.setAttribute('aria-label', '剪辑播放头');
   playhead.setAttribute('aria-valuemin', '0');
-  const guide = node('div', 'video-cut-trim-guide');
-  guide.hidden = true;
-  timeline.append(ruler, lane, playhead, guide);
-  const sourceOverview = node('div', 'video-cut-source-overview');
-  const sourceAxis = node('div', 'cut-source-axis');
-  const sourceLabel = node('span', 'cut-source-heading', '原片范围');
-  const sourceRail = node('div', 'cut-source-rail');
-  sourceRail.setAttribute('role', 'img');
-  const inMark = node('span', 'cut-source-in', '入');
-  const outMark = node('span', 'cut-source-out', '出');
-  sourceRail.append(inMark, outMark);
-  sourceAxis.append(sourceLabel, node('span', 'cut-source-limit', '0'), sourceRail,
-    node('span', 'cut-source-limit', round(asset.duration) + ' 秒'));
-  const sourceFields = node('div', 'cut-source-fields');
-  sourceOverview.append(sourceAxis, sourceFields);
+  timeline.append(ruler, lane, playhead);
+  lane.setAttribute('role', 'group');
+  function marker(key, cssClass, title) {
+    const handle = node('button', 'cut-source-marker ' + cssClass);
+    handle.type = 'button';
+    handle.dataset.sourceEdge = key;
+    handle.setAttribute('role', 'slider');
+    handle.setAttribute('aria-label', title);
+    handle.title = title + ' · 拖动调整，方向键微调一帧';
+    handle.append(node('span', 'cut-source-mark-label'));
+    lane.append(handle);
+    return handle;
+  }
+  const markers = {
+    start: marker('start', 'cut-source-in', '原片入点'),
+    end: marker('end', 'cut-source-out', '原片出点'),
+  };
+  const sequence = node('div', 'video-cut-sequence');
+  sequence.setAttribute('role', 'group');
+  sequence.setAttribute('aria-label', '剪后片段顺序');
   const usedBands = [];
-  let currentBand, currentSourceRange;
+  let currentBand, currentSegment, currentSourceRange;
   const message = node('output');
   message.setAttribute('aria-live', 'polite');
   const status = text => { message.textContent = text; };
@@ -94,36 +99,6 @@ window.mountVideoCutTimeline = function mountVideoCutTimeline(host, clip, option
     buttons[action] = item;
     return item;
   }
-  function field(title, key) {
-    const wrap = node('label', '', title);
-    const input = node('input');
-    input.type = 'number';
-    input.dataset.edgeField = key;
-    input.min = '0';
-    input.max = String(asset.duration);
-    input.step = 'any';
-    input.setAttribute('aria-label', '源' + title);
-    input.onfocus = pause;
-    input.onchange = () => {
-      const range = ranges[selected], value = round(input.valueAsNumber);
-      if (!Number.isFinite(value) || value < 0 || value > asset.duration ||
-          (key === 'start' ? range.end - value : value - range.start) < minimum - 1e-7) {
-        status('入点和出点须在原片内，且至少相差 0.1 秒。');
-        input.value = String(range[key]);
-        return;
-      }
-      const index = selected;
-      pause();
-      ranges = ranges.with(index, {...range, [key]: value});
-      measure();
-      const atStart = (key === 'start') !== Boolean(range.reverse);
-      head = atStart ? starts[index] : starts[index + 1];
-      record(atStart ? undefined : lastFrame(ranges[index]));
-    };
-    wrap.append(input);
-    sourceFields.append(wrap);
-    return input;
-  }
   header.append(title, name);
   button('cancel', '取消', 'Escape', () => { if (!applying) options.close(); }, header);
   button('play', '播放', 'Space', togglePlay, tools);
@@ -137,20 +112,21 @@ window.mountVideoCutTimeline = function mountVideoCutTimeline(host, clip, option
   button('crop', '裁剪画面', '', openCrop, tools);
   button('rotate', '旋转', '', () => effect('rotation'), tools);
   tools.append(timer);
-  const startField = field('入点', 'start'), endField = field('出点', 'end');
   button('move-left', '前移', '', () => move(-1), actions);
   button('move-right', '后移', '', () => move(1), actions);
   button('delete', '移除片段', 'Delete', remove, actions);
   button('reset', '恢复完整素材', '', reset, actions);
   button('apply', '应用裁剪', '', apply, actions);
-  work.append(tools, timeline, sourceOverview, actions, message);
+  work.append(tools, timeline, sequence, actions, message);
   body.append(work);
   host.dataset.mode = 'cut';
   host.classList.add('cut-track-editor');
   host.replaceChildren(header, body);
   host.hidden = false;
   host.tabIndex = -1;
-  const filmstrip = window.mountCutFilmstrip(film, asset, ranges);
+  // Keep source coordinates stable even after a trim, split or reorder.
+  const fullSource = [{start: 0, end: asset.duration}];
+  const filmstrip = window.mountCutFilmstrip(film, asset, fullSource);
   const framePreview = window.mountCutFramePreview?.(preview, video);
   const segments = [];
   function measure() {
@@ -179,6 +155,11 @@ window.mountVideoCutTimeline = function mountVideoCutTimeline(host, clip, option
     const range = ranges[index];
     return Math.min(sourceAt(index, time), Math.max(range.start, range.end - Math.min(frame / 2, (range.end - range.start) / 2)));
   }
+  function playheadIndex() {
+    // At a cut, the out marker belongs to the selected clip even though the
+    // same edit time is also the next clip's in point.
+    return head >= starts[selected] && head <= starts[selected + 1] ? selected : indexAt(head);
+  }
   function setSource(transformed) {
     if (usingRender === transformed) return;
     usingRender = transformed;
@@ -197,21 +178,49 @@ window.mountVideoCutTimeline = function mountVideoCutTimeline(host, clip, option
   watch(video, 'loadedmetadata', flushSeek);
   watch(video, 'seeked', flushSeek);
   function previewAt(source) {
-    const index = source !== undefined ? selected : indexAt(head);
+    const index = source !== undefined ? selected : playheadIndex();
     framePreview?.update(usingRender ? {} : ranges[index]);
     seekMedia(usingRender ? Math.min(head, Math.max(0, total - frame / 2)) : source ?? frameAt(index, head));
   }
   function showHead() {
     const value = round(head);
-    playhead.style.left = (total ? value / total * 100 : 0) + '%';
+    const source = sourceAt(playheadIndex(), head);
+    playhead.style.left = source / asset.duration * 100 + '%';
     playhead.setAttribute('aria-valuenow', String(value));
-    playhead.setAttribute('aria-valuetext', value.toFixed(2) + ' 秒');
+    playhead.setAttribute('aria-valuetext', '原片 ' + source.toFixed(2) + ' 秒，剪后 ' + value.toFixed(2) + ' 秒');
     timer.textContent = value.toFixed(2) + ' / ' + total.toFixed(2) + ' 秒';
     monitor?.updatePosition();
   }
+  function edgeLimits(range, key) {
+    // An older recipe can contain a fragment shorter than the normal minimum.
+    const keep = Math.min(minimum, range.end - range.start);
+    return key === 'start' ? [0, round(range.end - keep)] : [round(range.start + keep), asset.duration];
+  }
+  function updateMarker(range, key, name) {
+    const item = markers[key], value = range[key], percent = value / asset.duration * 100;
+    const [min, max] = edgeLimits(range, key);
+    item.style.setProperty('--at', percent + '%');
+    lane.style.setProperty(key === 'start' ? '--source-in' : '--source-out', percent + '%');
+    item.dataset.labelSide = percent > 50 ? 'left' : 'right';
+    item.setAttribute('aria-valuemin', String(min));
+    item.setAttribute('aria-valuemax', String(max));
+    item.setAttribute('aria-valuenow', String(round(value)));
+    item.setAttribute('aria-valuetext', round(value) + ' 秒');
+    const precision = frame < .01 ? 3 : 2;
+    const units = 10 ** precision, ticks = Math.round(value * units);
+    const seconds = ((ticks % (60 * units)) / units).toFixed(precision);
+    item.firstChild.textContent = name + ' ' + Math.floor(ticks / (60 * units)) + ':' + seconds.padStart(precision + 3, '0');
+  }
   function selection(index) {
-    segments[selected]?.setAttribute('aria-pressed', 'false');
-    if (segments[selected]) segments[selected].tabIndex = -1;
+    if (currentSegment !== segments[index]) {
+      if (currentSegment) {
+        currentSegment.setAttribute('aria-pressed', 'false');
+        currentSegment.tabIndex = -1;
+      }
+      currentSegment = segments[index];
+      currentSegment.setAttribute('aria-pressed', 'true');
+      currentSegment.tabIndex = 0;
+    }
     selected = index;
     const range = ranges[index];
     if (currentBand !== usedBands[index] || currentSourceRange !== range) {
@@ -219,15 +228,11 @@ window.mountVideoCutTimeline = function mountVideoCutTimeline(host, clip, option
       currentBand = usedBands[index];
       currentBand?.setAttribute('data-current', '');
       currentSourceRange = range;
-      sourceRail.setAttribute('aria-label', '原片共 ' + round(asset.duration) + ' 秒，片段 ' + (index + 1) +
+      lane.setAttribute('aria-label', '原片共 ' + round(asset.duration) + ' 秒，片段 ' + (index + 1) +
         ' 入点 ' + round(range.start) + ' 秒，出点 ' + round(range.end) + ' 秒');
-      inMark.style.setProperty('--at', (range.start / asset.duration * 100) + '%');
-      outMark.style.setProperty('--at', (range.end / asset.duration * 100) + '%');
+      updateMarker(range, 'start', '入');
+      updateMarker(range, 'end', '出');
     }
-    segments[index]?.setAttribute('aria-pressed', 'true');
-    if (segments[index]) segments[index].tabIndex = 0;
-    startField.value = String(round(range.start));
-    endField.value = String(round(range.end));
     buttons.reverse.setAttribute('aria-pressed', String(Boolean(range.reverse)));
     buttons.mirror.setAttribute('aria-pressed', String(Boolean(range.mirror)));
     buttons.crop.setAttribute('aria-pressed', String(Boolean(range.crop)));
@@ -240,55 +245,48 @@ window.mountVideoCutTimeline = function mountVideoCutTimeline(host, clip, option
     const segment = node('button', 'video-cut-segment');
     segment.type = 'button';
     segment.dataset.index = String(index);
-    const label = node('span', 'video-cut-label');
-    const handle = edge => {
-      const item = node('span', 'video-cut-handle');
-      item.dataset.edge = edge;
-      item.title = edge === 'start' ? '拖动片段左边缘' : '拖动片段右边缘';
-      return item;
-    };
-    segment.append(handle('start'), label, handle('end'));
+    const label = node('span', 'video-cut-label', String(index + 1));
+    segment.append(label);
+    segment.tabIndex = -1;
+    segment.setAttribute('aria-pressed', 'false');
     segment.onclick = event => { if (event.detail === 0) scrub(starts[index]); };
     segments.push(segment);
-    lane.append(segment);
+    sequence.append(segment);
+  }
+  function drawRange(range, i) {
+    const band = usedBands[i], segment = segments[i];
+    const start = String(range.start), end = String(range.end);
+    if (band.dataset.start === start && band.dataset.end === end) return;
+    band.dataset.start = segment.dataset.sourceStart = start;
+    band.dataset.end = segment.dataset.sourceEnd = end;
+    const duration = range.end - range.start;
+    band.style.left = (range.start / asset.duration * 100) + '%';
+    band.style.width = (duration / asset.duration * 100) + '%';
+    segment.style.flex = Math.max(1, Math.round(duration * 1e6)) + ' 1 0px';
+    segment.title = band.title = '片段 ' + (i + 1) + ' · 原片 ' + start + ' – ' + end + ' 秒';
+    segment.setAttribute('aria-label', segment.title);
   }
   function layout() {
     measure();
+    sequence.hidden = ranges.length < 2;
     while (segments.length < ranges.length) newSegment(segments.length);
     while (segments.length > ranges.length) segments.pop().remove();
     while (usedBands.length > ranges.length) usedBands.pop().remove();
-    ranges.forEach((range, i) => {
-      let band = usedBands[i];
-      if (!band) {
-        band = node('span', 'cut-source-band');
-        sourceRail.append(band);
-        usedBands.push(band);
-      }
-      if (band.dataset.start !== String(range.start) || band.dataset.end !== String(range.end)) {
-        band.dataset.start = String(range.start);
-        band.dataset.end = String(range.end);
-        band.style.left = (range.start / asset.duration * 100) + '%';
-        band.style.width = ((range.end - range.start) / asset.duration * 100) + '%';
-        band.title = '片段 ' + (i + 1) + ' · 原片 ' + round(range.start) + ' – ' + round(range.end) + ' 秒';
-      }
-      const segment = segments[i], label = String(i + 1);
-      segment.style.width = (starts[i + 1] - starts[i]) / total * 100 + '%';
-      segment.dataset.sourceStart = String(range.start);
-      segment.dataset.sourceEnd = String(range.end);
-      segment.querySelector('.video-cut-label').textContent = label;
-      segment.title = '片段 ' + label + ' · 原片 ' + range.start.toFixed(2) + ' – ' + range.end.toFixed(2) + ' 秒';
-      segment.setAttribute('aria-label', segment.title);
-      segment.tabIndex = -1;
-      segment.setAttribute('aria-pressed', 'false');
-    });
-    ticks.forEach((tick, i) => { tick.textContent = (total * i / 4).toFixed(total < 10 ? 2 : 1); });
+    while (usedBands.length < ranges.length) {
+      const band = node('span', 'cut-source-band');
+      lane.insertBefore(band, markers.start);
+      usedBands.push(band);
+    }
+    ranges.forEach(drawRange);
+    ticks.forEach((tick, i) => { tick.textContent = (asset.duration * i / 4).toFixed(asset.duration < 10 ? 2 : 1); });
     playhead.setAttribute('aria-valuemax', String(total));
-    selection(clamp(selected, 0, ranges.length - 1));
+    selected = clamp(selected, 0, ranges.length - 1);
+    head = clamp(head, 0, total);
+    selection(playheadIndex());
     buttons.undo.disabled = !history.canUndo();
     buttons.redo.disabled = !history.canRedo();
-    head = clamp(head, 0, total);
     showHead();
-    filmstrip.update(ranges, Boolean(drag?.edge));
+    filmstrip.update(fullSource, Boolean(drag?.edge));
   }
   function invalidate() {
     renderKey++;
@@ -522,38 +520,66 @@ window.mountVideoCutTimeline = function mountVideoCutTimeline(host, clip, option
   watch(video, 'timeupdate', advance);
   watch(video, 'error', () => { if (playing) playbackError(video.error, run); });
 
+  function scrubSource(source) {
+    // Source intervals may be repeated, out of order, or separated by gaps.
+    // Prefer the selected copy in an overlap and the closest retained frame in a gap.
+    let index = selected, best = Infinity;
+    if (!(source >= ranges[index].start && source < ranges[index].end)) {
+      for (let i = 0; i < ranges.length; i++) {
+        const range = ranges[i];
+        if (source >= range.start && source < range.end) { index = i; break; }
+        const distance = Math.abs(source - clamp(source, range.start, range.end));
+        if (distance < best || (distance === best && i === selected)) { best = distance; index = i; }
+      }
+    }
+    const range = ranges[index], position = clamp(source, range.start, range.end);
+    head = round(starts[index] + (range.reverse ? range.end - position : position - range.start));
+    selection(index);
+    showHead();
+    setSource(false);
+    previewAt(frameAt(index, head));
+  }
+  function editEdge(before, index, edge, proposed) {
+    const previous = before[index];
+    const [low, high] = edgeLimits(previous, edge);
+    const value = clamp(round(proposed), low, high);
+    ranges = value === previous[edge] ? before : before.with(index, {...previous, [edge]: value});
+    measure();
+    const atStart = (edge === 'start') !== Boolean(previous.reverse);
+    head = starts[atStart ? index : index + 1];
+    setSource(false);
+    drawRange(ranges[index], index);
+    selection(index);
+    playhead.setAttribute('aria-valuemax', String(total));
+    filmstrip.update(fullSource, Boolean(drag?.edge));
+    showHead();
+    previewAt(frameAt(index, head));
+  }
   function dragAt(event) {
-    const {box, duration, index, edge, before, x} = drag;
+    const {box, index, edge, before, x, surface} = drag;
     if (!edge) {
-      scrub((event.clientX - box.left) * duration / box.width);
+      const fraction = clamp((event.clientX - box.left) / box.width, 0, 1);
+      if (surface === sequence) scrub(fraction * total);
+      else scrubSource(fraction * asset.duration);
       return;
     }
-    const delta = (event.clientX - x) * duration / box.width;
-    const previous = before[index];
-    const isStart = (edge === 'start') !== Boolean(previous.reverse);
-    const key = isStart ? 'start' : 'end';
-    const proposed = previous[key] + (previous.reverse ? -delta : delta);
-    // A trim applied to a rendered recipe may already contain a shorter edge fragment.
-    const retainedMinimum = Math.min(minimum, previous.end - previous.start);
-    const low = isStart ? 0 : previous.start + retainedMinimum;
-    const high = isStart ? previous.end - retainedMinimum : asset.duration;
-    const value = clamp(round(proposed), low, high);
-    const next = delta === 0 ? previous : {...previous, [key]: value};
-    ranges = before.with(index, next);
-    measure();
-    head = starts[edge === 'start' ? index : index + 1];
-    setSource(false);
-    layout();
-    guide.style.left = clamp((event.clientX - box.left) / box.width, 0, 1) * 100 + '%';
-    previewAt(edge === 'start' ? frameAt(index, head) : lastFrame(next));
+    const delta = (event.clientX - x) * asset.duration / box.width;
+    const previous = before[index][edge], proposed = previous + delta;
+    let value = previous;
+    if (Math.abs(delta) >= frame / 2) {
+      if (proposed >= asset.duration - frame / 2) value = asset.duration;
+      else value = Math.round(proposed / frame) * frame;
+    }
+    if (value === drag.lastValue) return;
+    drag.lastValue = value;
+    editEdge(before, index, edge, value);
   }
   function finishDrag(cancel) {
     if (!drag) return;
-    const {id, before, oldHead, oldSelection, edge, index} = drag;
+    const {id, before, oldHead, oldSelection, edge, index, surface} = drag;
     drag = undefined;
     delete timeline.dataset.dragging;
-    guide.hidden = true;
-    if (timeline.hasPointerCapture(id)) timeline.releasePointerCapture(id);
+    if (surface.hasPointerCapture(id)) surface.releasePointerCapture(id);
     if (cancel) {
       ranges = before;
       head = oldHead;
@@ -561,38 +587,37 @@ window.mountVideoCutTimeline = function mountVideoCutTimeline(host, clip, option
       layout();
       previewAt();
     } else if (edge && (ranges[index].start !== before[index].start || ranges[index].end !== before[index].end)) {
-      record(edge === 'end' ? lastFrame(ranges[index]) : frameAt(index, head));
-    } else if (edge) filmstrip.update(ranges);
+      record(frameAt(index, head));
+    } else if (edge) filmstrip.update(fullSource);
   }
-  watch(timeline, 'pointerdown', event => {
+  function startDrag(event) {
     if (event.button !== 0 || applying || drag) return;
-    const box = lane.getBoundingClientRect();
+    const surface = event.currentTarget;
+    const box = (surface === sequence ? sequence : lane).getBoundingClientRect();
     if (!box.width) return;
     const segment = event.target.closest('.video-cut-segment');
-    const edge = event.target.closest('[data-edge]')?.dataset.edge;
-    const index = segment ? Number(segment.dataset.index) : indexAt(head);
+    const handle = event.target.closest('[data-source-edge]');
+    const edge = handle?.dataset.sourceEdge;
     const oldHead = head, oldSelection = selected;
     event.preventDefault();
     pause();
-    drag = {id: event.pointerId, edge, index, x: event.clientX, box, duration: total, before: ranges, oldHead, oldSelection};
+    drag = {id: event.pointerId, edge, index: selected, x: event.clientX, box, surface, before: ranges, oldHead, oldSelection};
     timeline.dataset.dragging = edge ?? 'playhead';
-    timeline.setPointerCapture(event.pointerId);
-    if (edge) {
-      selection(index);
-      guide.hidden = false;
-    }
-    if (segment) segment.focus({preventScroll: true});
-    else playhead.focus({preventScroll: true});
+    surface.setPointerCapture(event.pointerId);
+    (handle || segment || playhead).focus({preventScroll: true});
     dragAt(event);
-  });
-  watch(timeline, 'pointermove', event => { if (drag?.id === event.pointerId) dragAt(event); });
-  watch(timeline, 'pointerup', event => {
-    if (drag?.id !== event.pointerId) return;
-    dragAt(event);
-    finishDrag(false);
-  });
-  watch(timeline, 'pointercancel', event => { if (drag?.id === event.pointerId) finishDrag(true); });
-  watch(timeline, 'lostpointercapture', event => { if (drag?.id === event.pointerId) finishDrag(true); });
+  }
+  for (const surface of [timeline, sequence]) {
+    watch(surface, 'pointerdown', startDrag);
+    watch(surface, 'pointermove', event => { if (drag?.id === event.pointerId) dragAt(event); });
+    watch(surface, 'pointerup', event => {
+      if (drag?.id !== event.pointerId) return;
+      dragAt(event);
+      finishDrag(false);
+    });
+    watch(surface, 'pointercancel', event => { if (drag?.id === event.pointerId) finishDrag(true); });
+    watch(surface, 'lostpointercapture', event => { if (drag?.id === event.pointerId) finishDrag(true); });
+  }
   watch(window, 'blur', () => { if (drag) finishDrag(true); });
   const shortcuts = ['undo', 'redo', 'split', 'trim-left', 'trim-right', 'reverse', 'mirror', 'crop', 'rotate'];
   function shortcutTitle(action) {
@@ -640,6 +665,17 @@ window.mountVideoCutTimeline = function mountVideoCutTimeline(host, clip, option
       if (!event.repeat) togglePlay();
     } else if (['ArrowLeft', 'ArrowRight', 'Home', 'End'].includes(event.key)) {
       event.preventDefault();
+      const edge = event.target.closest('[data-source-edge]')?.dataset.sourceEdge;
+      if (edge) {
+        pause();
+        const before = ranges, current = ranges[selected][edge];
+        const direction = event.key === 'ArrowLeft' ? -1 : 1;
+        const proposed = event.key === 'Home' ? 0 : event.key === 'End' ? asset.duration :
+          current + direction * frame * (event.shiftKey ? 10 : 1);
+        editEdge(before, selected, edge, proposed);
+        if (ranges !== before) record(frameAt(selected, head));
+        return;
+      }
       if (event.key === 'Home') scrub(0);
       else if (event.key === 'End') scrub(total);
       else scrub(head + (event.key === 'ArrowLeft' ? -1 : 1) * frame * (event.shiftKey ? 10 : 1));
