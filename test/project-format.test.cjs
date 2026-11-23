@@ -358,6 +358,59 @@ test('cold draft lists reuse their index and JPEG and recover from external edit
   assert.equal(reads,8,'旧格式封面路径和无内嵌封面标记可从索引加载');
 });
 
+test('draft folders follow nested renames and deletions without touching external or unmanaged files', async t => {
+  const {createDraftStore}=require('../src/draft-store.cjs');
+  const root=await testDirectory(t), directory=path.join(root,'drafts'), catalog=new Map();
+  const store=createDraftStore(directory);
+  const item=(id,name,parentId=null)=>({id,name,parentId,scope:null,assetIds:[]});
+  const first=[item('a','主素材'),item('b','空目录','a'),item('c','图片')];
+  const config=folders=>editingConfig({shots:[],libraryFolders:folders});
+  let draft=await store.create({name:'分镜',config:config(first)},catalog);
+  const mirror=path.join(directory,draft.id+'.素材库');
+  const save=async folders=>{
+    draft=await store.save({id:draft.id,expectedRevision:draft.revision,config:config(folders)},catalog);
+  };
+  const external=path.join(root,'图片');
+  await fs.mkdir(external);
+  await fs.writeFile(path.join(external,'原始文件'),'original');
+  const manual=path.join(mirror,'主素材','空目录','个人笔记');
+  await fs.writeFile(manual,'keep');
+  const renamed=[item('a','图片'),item('b','空目录','a'),item('c','主素材')];
+  await save(renamed);
+  const moved=path.join(mirror,'图片','空目录','个人笔记');
+  assert.equal(await fs.readFile(moved,'utf8'),'keep');
+  assert.deepEqual((await createDraftStore(directory).open(draft.id)).config.libraryFolders,renamed);
+  await assert.rejects(save([]),/额外文件/);
+  assert.deepEqual((await store.open(draft.id)).config.libraryFolders,renamed);
+  assert.equal(await fs.readFile(moved,'utf8'),'keep');
+  await fs.unlink(moved);
+  await fs.mkdir(path.join(mirror,'已有文件夹'));
+  await assert.rejects(save([...renamed,item('d','已有文件夹')]),/同名/);
+  assert.deepEqual((await store.open(draft.id)).config.libraryFolders,renamed);
+  await fs.rmdir(path.join(mirror,'已有文件夹'));
+  const target=path.join(mirror,'外部目录');
+  await fs.symlink(external,target,process.platform==='win32'?'junction':'dir');
+  await assert.rejects(save([item('d','外部目录')]),/同名/);
+  await fs.unlink(target);
+  for (const invalid of [[item('x','..')],[item('x','COM1.mov')],[item('a','父','b'),item('b','子','a')],
+    [item('x','A'),item('y','a')]]) await assert.rejects(save(invalid),/文件夹/);
+  await save([]);
+  await assert.rejects(fs.stat(mirror),{code:'ENOENT'});
+  assert.equal(await fs.readFile(path.join(external,'原始文件'),'utf8'),'original');
+});
+
+test('folder-only audio and visual assets persist without a timeline reference', async t=>{
+  const root=await testDirectory(t), files=await fixtures(root), file=path.join(root,'素材目录.sdworkbench');
+  const libraryFolders=[{id:'group',parentId:null,scope:null,name:'声画',assetIds:['still','music'],
+    sourceKey:'a'.repeat(64),hiddenKeys:['b'.repeat(64)]}];
+  const catalog=new Map(await Promise.all([['still','image'],['music','audio']].map(async ([id,kind])=>[id,await inspectAsset(files[id],kind)])));
+  await saveProject(file,editingConfig({shots:[],libraryFolders,materialBins:[{scope:null,ids:['music'],hidden:[]}]}),catalog);
+  const project=await loadProject(file);
+  assert.deepEqual(project.config.libraryFolders,libraryFolders);
+  assert.equal(project.assets.get('music').kind,'audio');
+  assert.equal(project.assets.get('still').path,files.still);
+});
+
 test('allows empty drafts and atomically rejects unconfirmed same-name saves', async (t) => {
   const root = await testDirectory(t);
   const file = path.join(root, 'draft.sdworkbench');

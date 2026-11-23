@@ -1016,7 +1016,8 @@ async function run() {
     })()`), '素材应通过实际拖放事件发送素材标识');
   }
   selections.push({ title: '选择素材文件夹', files: [library] });
-  await click('#material-folder-import');
+  await click('#material-import');
+  await click('#material-import-directory');
   await waitFor(`Boolean(${folder(path.basename(library))})`, '选中的目录应出现在素材库根目录');
   assert.equal(await runInWindow('document.querySelectorAll("#shots .shot").length'), 0, '选择素材目录不会生成分镜');
   assert.equal(await runInWindow(`document.querySelectorAll(${JSON.stringify(tiles)}).length`), 0);
@@ -1132,7 +1133,10 @@ async function run() {
   selections.push({ title: '打开工程', files: [folderProject] });
   await click('#home-open-project');
   await waitFor('document.querySelector("#notice").textContent.includes("已打开工程") && document.querySelectorAll("#shots .asset").length === 6', '重开应恢复同源片段和同组批量素材');
-  assert.equal(await runInWindow('document.querySelector("#material-breadcrumb").hidden && document.querySelectorAll("#material-folders .material-folder").length === 0'), true, '目录浏览状态只保留在当前会话');
+  await waitFor(`document.querySelector("#material-breadcrumb").hidden && Boolean(${folder(path.basename(library))})`, '重开后从素材库根目录显示保存的文件夹');
+  await runInWindow(`(${folder(path.basename(library))}).dispatchEvent(new MouseEvent('dblclick', { bubbles: true }))`);
+  await waitFor(`Boolean(${folder(path.basename(nested))}) && Boolean(document.querySelector(${JSON.stringify(material(files.green))}))`, '重开后的文件夹应恢复子目录和素材');
+  await click('#material-breadcrumb .material-back');
   await click(`${batchShot} .remove-shot`);
 
   await runInWindow(`(() => { const view=document.querySelector('#timeline-view');view.value='cards';view.dispatchEvent(new Event('change')); })()`);
@@ -1320,8 +1324,9 @@ async function run() {
   await goHome();
   await click('#home-create');
   await waitFor("!document.querySelector('#editor-workspace').hidden && !document.querySelector('#material-import').disabled", '新草稿完成初始化后应启用素材导入');
-  selections.push({ title: '选择分镜素材', files: [wideVideo] });
+  selections.push({ title: '选择素材文件', files: [wideVideo] });
   await click('#material-import');
+  await click('#material-import-files');
   await waitFor('document.querySelector("#preview").videoWidth === 640 && document.querySelector("#preview").currentSrc.includes("/track-proxy/")', '高清轨道索引应实际解码本地低分辨率代理');
   const setPlayerQuality = value => runInWindow(`(() => {
     const select = document.getElementById('player-quality');
@@ -1340,9 +1345,21 @@ async function run() {
   await click('#material-list .material-tile');
   await waitFor('document.querySelector("#preview").videoWidth === 960 && !document.querySelector("#preview").currentSrc.includes("/track-proxy/")', '回到素材库应恢复原片画质');
   await waitFor('!document.querySelector(".draft-transport-preview:not([hidden])") && !document.querySelector("#preview").paused && document.querySelector("#preview").currentTime>0', '点击素材库视频应结束时间线试播并点播原片');
-  await click('#subproject-new');
-  await runInWindow('document.querySelector("#subproject-name").value = "杭州门店"; document.querySelector("#subproject-new-form").requestSubmit()');
-  await waitFor('document.querySelector("#subproject-select").selectedOptions[0].textContent === "杭州门店"', '应在刚创建的子工程中编辑');
+  assert.equal(await runInWindow('!!document.querySelector("#subproject-new")'), false);
+  const legacyProject = path.join(root, '已有门店.sdworkbench');
+  saves.push({ title: '保存工程', file: legacyProject });
+  await click('#save-project');
+  await waitFor('document.querySelector("#project-status").textContent.includes("已有门店")', '保存门店测试工程');
+  const fixture = JSON.parse(await fs.readFile(legacyProject, 'utf8'));
+  fixture.config.subprojects = { active: null, main: [], projects: [
+    { id: 'hangzhou', name: '杭州门店', shots: [] }, { id: 'shanghai', name: '上海门店', shots: [] }
+  ] };
+  await fs.writeFile(legacyProject, JSON.stringify(fixture));
+  selections.push({ title: '打开工程', files: [legacyProject] });
+  await click('#open-project');
+  await waitFor('document.querySelector("#subproject-select").options.length === 3', '读取已有子工程');
+  const selectBranch = id => runInWindow(`{const el=document.querySelector("#subproject-select");el.value=${JSON.stringify(id)};el.dispatchEvent(new Event("change"));}`);
+  await selectBranch('hangzhou');
   await click('#subproject-materials');
   selections.push({ title: '选择分镜素材', files: [files.blue] });
   await click('#subproject-replace');
@@ -1357,8 +1374,7 @@ async function run() {
   await waitFor(`document.querySelector("#subproject-select").selectedOptions[0].textContent === "杭州门店" && document.querySelector("#material-list .material-tile").dataset.materialId !== ${JSON.stringify(branchAsset)}`, '重开工程应保留子工程选择');
   await runInWindow('document.querySelector("#subproject-select").selectedIndex = 0; document.querySelector("#subproject-select").dispatchEvent(new Event("change"))');
   assert.equal(await runInWindow('document.querySelector("#shots .asset-name").textContent'), '高清素材.mp4');
-  await click('#subproject-new');
-  await runInWindow('document.querySelector("#subproject-name").value = "上海门店"; document.querySelector("#subproject-new-form").requestSubmit()');
+  await selectBranch('shanghai');
   await click('#subproject-batch');
   await click('#subproject-batch-confirm');
   await waitFor('document.querySelectorAll("#preview-batch-list .batch-title").length === 2', '选中的两家门店应各生成一份预览');

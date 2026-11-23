@@ -106,8 +106,9 @@ async function check() {
     await pressKey(' ',32);
     assert.ok(await read(query(slot)+'.tabIndex<0 && !'+query(slot)+'.matches("button,[role=button]") && document.activeElement.id==="timeline-clock"'),'空位是静态落点，键盘焦点留在时间线');
     assert.deepEqual(openedPickers,[],'点击空工程落点及按回车、空格均不应打开文件框');
-    picks.push({ title: '选择分镜素材', files: [files.red, files.green, files.blue] });
+    picks.push({ title: '选择素材文件', files: [files.red, files.green, files.blue] });
     await actualClick('#material-import');
+    await actualClick('#material-import-files');
     await wait(count(video)+'===3 && '+count('.material-used')+'===3','三个素材均应标记已用');
     await actualClick(video);
     await pressDelete();
@@ -120,7 +121,7 @@ async function check() {
     await mouse('mousePressed',emptyPoint.x,emptyPoint.y);await mouse('mouseMoved',nextPoint.x,nextPoint.y);
     await mouse('mouseReleased',nextPoint.x,nextPoint.y);
     await wait(count(video+'.sequence-marked')+'===1','可从空候选格开始框选相邻素材');
-    assert.deepEqual(openedPickers,['选择分镜素材'],'只有素材库显式导入打开了文件框');
+    assert.deepEqual(openedPickers,['选择素材文件'],'只有素材库显式导入打开了文件框');
     await undo();
     await wait(count(video)+'===3 && '+query(tile(files.red))+'.dataset.used==="true"','撤销应恢复视频及使用标志');
     await setVoiceMode('segmented');
@@ -132,7 +133,7 @@ async function check() {
     await mouse('mousePressed',fromVoice.x,fromVoice.y);await mouse('mouseMoved',toVideo.x,toVideo.y);
     await mouse('mouseReleased',toVideo.x,toVideo.y);
     await wait(count(video+'.sequence-marked')+'>0','可从分镜口播空格开始框选素材');
-    assert.deepEqual(openedPickers,['选择分镜素材'],'从口播空格起拖或松手应保留文件框的关闭状态');
+    assert.deepEqual(openedPickers,['选择素材文件'],'从口播空格起拖或松手应保留文件框的关闭状态');
     await setVoiceMode('whole');
     await wait('!!'+query(wholeSlot)+' && !'+query(segmentSlot),'恢复整段口播');
 
@@ -197,7 +198,8 @@ async function check() {
     }
 
     picks.push({ title:'选择素材文件夹',files:[library] });
-    await click('#material-folder-import');
+    await click('#material-import');
+    await click('#material-import-directory');
     await wait('!!'+query('#material-folders .material-folder'),'添加素材目录');
     await read(query('#material-folders .material-folder') + '.dispatchEvent(new MouseEvent("dblclick", {bubbles:true}))');
     await wait(query(tile(files.red))+'?.dataset.used==="true" && !!'+query(tile(files.still))+' && !'+query(tile(files.still))+'.dataset.used','文件夹应区分已用与未用素材');

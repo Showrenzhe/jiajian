@@ -84,6 +84,7 @@ async function run() {
     await click('#home-create');
     await wait(() => js('!document.querySelector("#material-import").disabled'), '打开新草稿');
     await js('document.querySelector("#material-import").click()');
+    await click('#material-import-files');
     await wait(() => js('document.querySelector("#preview-meta").textContent.includes("原片") && !document.querySelector("#preview").hidden && document.querySelector("#preview").videoWidth===960'), '轨道代理解码失败应自动显示原片');
     await js('document.querySelector("#timeline-play").click()');
     await wait(() => js('(()=>{const v=document.querySelector(".draft-transport-preview:not([hidden]) video");return v?.videoWidth===960 && v.currentTime>0.08})()'), '草稿连续播放遇到坏代理应继续播放原片');

@@ -87,7 +87,7 @@
       '<div class="cloud-settings-body"><h3>片段剪辑</h3><p class="cloud-settings-muted">选中键位后按下新组合键。按 Esc 取消录制。</p>' +
       '<div class="cut-shortcut-list"></div><output id="cut-shortcuts-status" role="status"></output></div>' +
       '<footer class="cloud-settings-actions"><button type="button" id="cut-shortcuts-reset">恢复默认</button>' +
-      '<button type="button" id="cut-shortcuts-back">返回设置</button></footer>';
+      '<button type="button" id="cut-shortcuts-close">完成</button></footer>';
     const list = dialog.querySelector('.cut-shortcut-list'), status = dialog.querySelector('output');
     const items = [];
     let recording;
@@ -146,7 +146,7 @@
       });
     }
     function onKey(event) {
-      // Keep app-level commands out of this nested settings page.
+      // Keep editing shortcuts out of the key binding dialog.
       if (!recording) { if (event.key !== 'Tab') event.stopPropagation(); return; }
       event.stopImmediatePropagation();
       if (event.key === 'Tab') return;
@@ -172,7 +172,7 @@
     }
     dialog.addEventListener('keydown', onKey);
     dialog.querySelector('#cut-shortcuts-reset').onclick = () => save(defaults(), '已恢复默认快捷键。');
-    dialog.querySelector('#cut-shortcuts-back').onclick = () => dialog.close();
+    dialog.querySelector('#cut-shortcuts-close').onclick = () => dialog.close();
     window.addEventListener('cutshortcutschange', paint);
     dialog.addEventListener('close', () => {
       window.removeEventListener('cutshortcutschange', paint);

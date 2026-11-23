@@ -5,6 +5,7 @@ const fs = require('node:fs/promises');
 const path = require('node:path');
 const { saveProject, loadProject, readProject, embeddedThumbnail, projectReferences } = require('./project-format.cjs');
 const { imageExtensions, videoExtensions } = require('./media.cjs');
+const { withDraftFolderMirror } = require('./library-folders.cjs');
 
 const maxBytes = 1024 * 1024;
 const maxDrafts = 2048;
@@ -64,6 +65,7 @@ function createDraftStore(directory,resolvePath,inspect,sourceEditDirectory) {
   const coverPath=id=>path.join(cacheDir,id+'.jpg');
   const digest=bytes=>createHash('sha256').update(bytes).digest('hex');
   const pendingThumbnails=new WeakMap();
+  const mirrored = new Map();
   let indexDirty=false;
 
   async function fileStamp(file) {
@@ -143,7 +145,7 @@ function createDraftStore(directory,resolvePath,inspect,sourceEditDirectory) {
     }
     let scanned = 0;
     for await (const entry of directoryHandle) {
-      if (++scanned > 4096 || next.size >= maxDrafts) break;
+      if (++scanned > maxDrafts * 3 || next.size >= maxDrafts) break;
       if (!entry.isFile() || path.extname(entry.name) !== '.sdworkbench') continue;
       const id = path.basename(entry.name, '.sdworkbench');
       if (!idPattern.test(id)) continue;
@@ -151,6 +153,7 @@ function createDraftStore(directory,resolvePath,inspect,sourceEditDirectory) {
       try {
         const stamp=await fileStamp(file), old=previous.get(id);
         if(old?.stamp===stamp) {next.set(id,old);continue;}
+        mirrored.delete(id);
         indexDirty=true;
         const doc=await readProject(file);
         if(await fileStamp(file)===stamp) next.set(id,await recordDocument(id,doc,stamp));
@@ -161,6 +164,7 @@ function createDraftStore(directory,resolvePath,inspect,sourceEditDirectory) {
     for(const id of previous.keys()) if(!next.has(id)) {
       indexDirty=true;
       records.delete(id);
+      mirrored.delete(id);
       await fs.rm(coverPath(id),{force:true}).catch(()=>{});
     }
     for(const [id,row] of next) records.set(id,row);
@@ -168,6 +172,15 @@ function createDraftStore(directory,resolvePath,inspect,sourceEditDirectory) {
   }
 
   function initialize() { return ready ??= scan(true); }
+
+  async function mirror(id, config, publish) {
+    const folders = config.libraryFolders ?? [];
+    const structure = JSON.stringify(folders.map(({id,parentId,scope,name}) => [id,parentId,scope,name]));
+    if (mirrored.get(id) === structure) return publish();
+    const result = await withDraftFolderMirror(directory,id,folders,publish);
+    mirrored.set(id,structure);
+    return result;
+  }
 
   function serialize(action) {
     const operation = writes.then(async () => { await initialize(); return action(); });
@@ -192,7 +205,7 @@ function createDraftStore(directory,resolvePath,inspect,sourceEditDirectory) {
         await writer.truncate(contents.length);
         await writer.sync();
       } finally { await writer.close(); }
-      await fs.rename(stage, snapshotPath(meta.id));
+      await mirror(meta.id,document.config,() => fs.rename(stage, snapshotPath(meta.id)));
       records.set(meta.id,await recordDocument(meta.id,document,await fileStamp(snapshotPath(meta.id))));
       await persistIndex();
       return draft;
@@ -238,7 +251,12 @@ function createDraftStore(directory,resolvePath,inspect,sourceEditDirectory) {
       const file = snapshotPath(id);
       if (await fileStamp(file)!==find(id).stamp) await scan();
       const {meta}=find(id);
-      return { ...meta, ...(await loadProject(file,resolvePath,inspect,sourceEditDirectory)) };
+      const project = await loadProject(file,resolvePath,inspect,sourceEditDirectory);
+      // Reconcile the source of truth after an interrupted rename or save.
+      mirrored.delete(id);
+      try { await mirror(id,project.config,() => undefined); }
+      catch { /* The snapshot remains readable; saving will report any disk conflict. */ }
+      return { ...meta, ...project };
     });
   }
 

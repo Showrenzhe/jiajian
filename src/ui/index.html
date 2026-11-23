@@ -58,6 +58,7 @@
   <script src="./timeline-selection.js" defer></script>
   <script src="./timeline.js" defer></script>
   <script src="./editor-text.js" defer></script>
+  <script src="./material-folders.js" defer></script>
   <script src="./app.js" defer></script>
 </head>
 <body>
@@ -99,6 +100,7 @@
         <symbol id="icon-more" viewBox="0 0 24 24"><circle cx="5" cy="12" r="1"/><circle cx="12" cy="12" r="1"/><circle cx="19" cy="12" r="1"/></symbol>
         <symbol id="icon-chevron" viewBox="0 0 24 24"><path d="m9 5 7 7-7 7"/></symbol>
         <symbol id="icon-settings" viewBox="0 0 24 24"><path d="M4 6h6m5 0h5M4 12h11m4 0h1M4 18h3m5 0h8"/><circle cx="12" cy="6" r="2"/><circle cx="17" cy="12" r="2"/><circle cx="9" cy="18" r="2"/></symbol>
+        <symbol id="icon-keyboard" viewBox="0 0 24 24"><rect x="2" y="5.5" width="20" height="13" rx="3"/><path d="M6.5 9h.3m3.2 0h.3m3.2 0h.3m3.2 0h.3M6.5 12h.3m3.2 0h.3m3.2 0h.3m3.2 0h.3M8.5 15h7"/></symbol>
         <symbol id="icon-person" viewBox="0 0 18 18"><circle cx="9" cy="5.4" r="2.8"/><path d="M3 15.2c.4-3 2.7-4.8 6-4.8s5.6 1.8 6 4.8z"/></symbol>
         <symbol id="icon-team" viewBox="0 0 18 18"><circle cx="7" cy="5.6" r="2.5"/><path d="M1.8 14.8c.4-2.7 2.3-4.3 5.2-4.3s4.8 1.6 5.2 4.3zM12 3.8a2.5 2.5 0 0 1 .4 4.8m1 2.4a4.3 4.3 0 0 1 2.8 3.8"/></symbol>
         <symbol id="icon-face" viewBox="0 0 18 18"><rect x="2.1" y="2.1" width="13.8" height="13.8" rx="4"/><path d="M6.2 6.9v.7m5.6-.7v.7m-5.5 3.3a3.3 3.3 0 0 0 5.4 0"/></symbol>
@@ -133,6 +135,7 @@
       </button>
       <button type="button" id="update-notice-dismiss" title="收起本次更新提醒" aria-label="收起本次更新提醒" hidden>×</button>
     </span>
+    <button type="button" id="cut-shortcuts-entry" title="自定义剪辑快捷键" aria-haspopup="dialog"><svg class="ui-icon" aria-hidden="true"><use href="#icon-keyboard"></use></svg>快捷键</button>
     <button type="button" id="app-settings" title="打开设置" aria-haspopup="dialog"><svg class="ui-icon" aria-hidden="true"><use href="#icon-settings"></use></svg>设置</button>
   </header>
   <div class="app-frame" data-mode="home">
@@ -425,7 +428,6 @@
       <div class="panel-heading"><h2 id="materials-heading" title="按住 Ctrl 滚动可缩放缩略图（macOS 也可用 ⌘）。拖动空白处可框选素材。">素材库</h2><span id="material-status" class="material-count muted compact" role="status"></span></div>
       <div class="subproject-picker">
         <select id="subproject-select" aria-label="当前素材工程"><option value="">主工程 · 公共素材</option></select>
-        <button type="button" class="secondary" id="subproject-new">＋ 子工程</button>
         <button type="button" class="secondary" id="subproject-materials" hidden>替换素材</button>
         <button type="button" class="secondary" id="subproject-batch" hidden>子工程批量预览</button>
         <button type="button" class="secondary" id="subproject-fill" hidden>按分类填充</button>
@@ -433,9 +435,13 @@
       </div>
       <div class="materials-toolbar">
         <div class="material-entry-actions" role="group" aria-label="素材操作">
-          <button type="button" id="material-import" title="选择视频或图片，每个文件直接生成一个分镜"><svg class="ui-icon" aria-hidden="true"><use href="#icon-import"></use></svg>导入文件</button>
-          <button type="button" id="material-folder-import"><svg class="ui-icon" aria-hidden="true"><use href="#icon-folder"></use></svg>添加文件夹</button>
+          <button type="button" id="material-import" popovertarget="material-import-menu" aria-haspopup="menu"><svg class="ui-icon" aria-hidden="true"><use href="#icon-import"></use></svg>导入素材</button>
+          <button type="button" id="material-folder-import"><svg class="ui-icon" aria-hidden="true"><use href="#icon-folder"></use></svg>新建文件夹</button>
           <button type="button" id="material-audio-open" title="提取原声、分离人声与伴奏、去气口"><svg class="ui-icon" aria-hidden="true"><use href="#icon-audio"></use></svg>音频处理</button>
+        </div>
+        <div id="material-import-menu" popover="auto" role="menu" aria-label="导入素材">
+          <button type="button" id="material-import-files" role="menuitem"><svg class="ui-icon" aria-hidden="true"><use href="#icon-import"></use></svg>选择文件…</button>
+          <button type="button" id="material-import-directory" role="menuitem"><svg class="ui-icon" aria-hidden="true"><use href="#icon-folder"></use></svg>选择文件夹…</button>
         </div>
         <label class="material-search-box"><svg class="ui-icon" aria-hidden="true"><use href="#icon-search"></use></svg><input type="search" id="material-search" placeholder="搜索素材" aria-label="搜索当前素材目录"></label>
       </div>
@@ -457,6 +463,7 @@
       </div>
       <ul id="material-list" class="material-list"></ul>
       <div popover="auto" id="material-context-menu" role="menu" aria-label="素材操作">
+        <button type="button" role="menuitem" id="material-context-rename" hidden>重命名文件夹</button>
         <button type="button" role="menuitem" id="material-context-remove"><span>从素材库移除</span><kbd>Delete</kbd></button>
         <button type="button" role="menuitem" id="material-context-audio">音频处理</button>
       </div>
@@ -772,13 +779,12 @@
     <p id="subproject-batch-status" class="muted compact" role="status"></p>
     <div class="narration-review-actions"><button type="button" id="subproject-batch-close" class="secondary">取消</button><button type="button" id="subproject-batch-confirm" class="primary">生成预览</button></div>
   </dialog>
-  <dialog id="subproject-new-dialog" class="narration-review" aria-labelledby="subproject-new-title">
-    <form id="subproject-new-form">
-      <h2 id="subproject-new-title">新建子工程</h2>
-      <label class="narration-review-field">子工程名称<textarea id="subproject-name" required rows="3" maxlength="40500" placeholder="每行一个门店或账号"></textarea></label>
-      <p class="muted compact">沿用主工程的分镜和公共素材。进入子工程后，可逐镜替换专属画面。</p>
-      <p id="subproject-error" role="alert" hidden></p>
-      <div class="narration-review-actions"><button type="button" id="subproject-cancel" class="secondary">取消</button><button type="submit" class="primary">创建</button></div>
+  <dialog id="material-folder-dialog" class="narration-review" aria-labelledby="material-folder-title">
+    <form id="material-folder-form">
+      <h2 id="material-folder-title">新建文件夹</h2>
+      <label class="narration-review-field">文件夹名称<input id="material-folder-name" type="text" required autofocus autocomplete="off"></label>
+      <p id="material-folder-error" role="alert" hidden></p>
+      <div class="narration-review-actions"><button type="button" id="material-folder-cancel" class="secondary">取消</button><button type="submit" id="material-folder-submit" class="primary">确定</button></div>
     </form>
   </dialog>
   <dialog id="subproject-variable-dialog" class="narration-review" aria-labelledby="subproject-variable-title">

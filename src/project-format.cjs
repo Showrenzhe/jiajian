@@ -11,6 +11,7 @@ const {
 } = require('./media.cjs');
 const { normalizeSubtitles } = require('./subtitles.cjs');
 const { normalizeSubprojects } = require('./subprojects.cjs');
+const { normalizeLibraryFolders } = require('./library-folders.cjs');
 const { normalizeLayers, normalizeTransform, normalizePackaging } = require('./packaging.cjs');
 const { normalizeShotSettings, normalizeRanges, normalizeSegmentVoiceCuts, normalizeSceneCuts } = require('./shot-timing.cjs');
 const { normalizeCover } = require('./cover.cjs');
@@ -96,7 +97,9 @@ function cleanConfig(config) {
   const references = new Map();
   function record(id, role) {
     if (typeof id !== 'string' || !/^[A-Za-z0-9_-]{1,128}$/.test(id)) throw new Error('工程中有无效的素材编号。');
-    if (references.has(id) && references.get(id) !== role) throw new Error('同一素材不能同时作为画面和音频。');
+    const previous = references.get(id);
+    if (previous && role === 'library' && previous !== 'lut') return id;
+    if (previous && previous !== role && !(previous === 'library' && role !== 'lut')) throw new Error('同一素材不能同时作为画面和音频。');
     references.set(id, role);
     return id;
   }
@@ -185,8 +188,12 @@ function cleanConfig(config) {
     projectConfig.materialBins = config.materialBins.map(({scope, ids, hidden}) => {
       if (!scopes.delete(scope) || !Array.isArray(ids) || !Array.isArray(hidden)
           || !hidden.every((key) => typeof key === 'string' && /^[a-f0-9]{64}$/.test(key))) throw new Error('工程素材库条目无效。');
-      return {scope, ids: [...new Set(ids.map((id) => record(id,'visual')))], hidden: [...new Set(hidden)]};
+      return {scope, ids: [...new Set(ids.map((id) => record(id,'library')))], hidden: [...new Set(hidden)]};
     });
+  }
+  if (config.libraryFolders !== undefined) {
+    const scopes = new Set([null, ...(projectConfig.subprojects?.projects ?? []).map(project => project.id)]);
+    projectConfig.libraryFolders = normalizeLibraryFolders(config.libraryFolders, scopes, record);
   }
   if (config.packaging !== undefined) projectConfig.packaging = normalizePackaging(config.packaging, recordLayer, shots.length);
   if (config.shotSettings !== undefined) projectConfig.shotSettings = normalizeShotSettings(config.shotSettings, shots.length);
@@ -283,7 +290,8 @@ function cleanConfig(config) {
 function mediaDeclaration(id, asset, role) {
   const file = asset?.path;
   const kind = asset?.kind;
-  const validKind = role === 'visual' ? ['image','video'].includes(kind) : role === kind;
+  const validKind = role === 'library' ? ['image','video','audio'].includes(kind) :
+    role === 'visual' ? ['image','video'].includes(kind) : role === kind;
   if (!role || !validKind || !localPath(file) || !extensions[kind].includes(path.extname(file).slice(1).toLowerCase())) {
     throw new Error(`工程素材 ${id} 缺失或类型不匹配，请重新选择素材。`);
   }

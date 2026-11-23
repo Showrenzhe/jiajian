@@ -94,7 +94,8 @@ async function run() {
   }
   async function pickFolder() {
     picks.push({ title: '选择素材文件夹', files: [library] });
-    await mouseClick('#material-folder-import');
+    await mouseClick('#material-import');
+    await mouseClick('#material-import-directory');
   }
   const item = (type, file) => '.' + type + '[title=' + JSON.stringify(path.basename(file)) + ']';
   const folder = item('material-folder', library), child = item('material-folder', nested);
@@ -122,8 +123,16 @@ async function run() {
     await wait(el('#audio-tool-status') + '.textContent.includes("检测到")', '重新操作应能完成两项素材的停顿检测');
     assert.equal(await read('document.activeElement.id'), 'audio-tool-close');
     await mouseClick('#audio-tool-close');
-    picks.push({ title: '选择分镜素材', files: [files.red] });
+    await read(el('#material-import') + '.focus()');
+    await key('ArrowDown', 40);
+    await wait('document.activeElement.id==="material-import-files"', '键盘打开导入菜单应聚焦文件选项');
+    await key('ArrowDown', 40);
+    await wait('document.activeElement.id==="material-import-directory"', '方向键应切换到整个目录');
+    await key('Escape', 27);
+    await wait('document.activeElement.id==="material-import" && !'+el('#material-import-menu')+'.matches(":popover-open")', 'Esc 应返回工具栏');
+    picks.push({ title: '选择素材文件', files: [files.red] });
     await mouseClick('#material-import');
+    await mouseClick('#material-import-files');
     await wait(tracks + '===1 && !!' + el(red), '导入视频应同时显示素材和一个分镜');
     await pickFolder();
     await wait('!!' + el(folder), '应显示导入的文件夹');
@@ -212,8 +221,9 @@ async function run() {
     await read(el(red) + '.focus()');
     await key('Delete', 46);
     await wait('!' + el(red) + ' && ' + tracks + '===1', '素材卡片上按 Delete 应只移除库条目');
-    picks.push({ title: '选择分镜素材', files: [files.red] });
+    picks.push({ title: '选择素材文件', files: [files.red] });
     await click('#material-import');
+    await click('#material-import-files');
     await wait(el(red) + '?.dataset.used==="true" && ' + tracks + '===2', '重新导入同一文件应恢复素材，照常创建新分镜');
     await mouseClick(red);
     await wait(count('.sequence-video .material-instance') + '===2', '素材应高亮时间线中使用它的两个实例');
@@ -292,7 +302,9 @@ async function run() {
       '快速切换后应播放最后选中的素材');
     await click('#save-project');
     await wait(el('#notice') + '.textContent.includes("工程已保存")', '应能保存带拖入文件夹的工程');
-    assert.equal(JSON.parse(await fs.readFile(savedProject, 'utf8')).config.materialFolderKeys.length, 1);
+    const saved = JSON.parse(await fs.readFile(savedProject, 'utf8')).config;
+    const roots = saved.libraryFolders.filter(row => row.parentId === null);
+    assert.ok(roots.some(row => row.name === path.basename(nested)), '拖入的文件夹应作为独立根目录保存');
     picks.push({ title: '打开工程', files: [savedProject] });
     await click('#open-project');
     await wait(el('#notice') + '.textContent.includes("已打开工程") && !!' + el(child), '重开后应恢复拖入的目录');

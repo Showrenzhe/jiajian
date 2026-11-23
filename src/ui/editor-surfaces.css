@@ -111,8 +111,8 @@
 #timeline-more-menu button { color: var(--ink); background: var(--control-fill); border-color: var(--hairline); }
 #timeline-more-menu button:hover:enabled { background: var(--control-hover); }
 
-#material-context-menu:popover-open { display: grid; }
-#material-context-menu {
+:is(#material-import-menu, #material-context-menu):popover-open { display: grid; }
+:is(#material-import-menu, #material-context-menu) {
   position: fixed;
   inset: auto;
   margin: 0;
@@ -124,7 +124,7 @@
   color: var(--ink);
   box-shadow: var(--glass-shadow);
 }
-#material-context-menu button {
+:is(#material-import-menu, #material-context-menu) button {
   display: flex;
   justify-content: space-between;
   align-items: center;
@@ -136,8 +136,24 @@
   background: transparent;
 }
 #material-context-menu button[hidden] { display: none; }
-#material-context-menu button:is(:hover, :focus-visible) { background: var(--control-hover); }
+:is(#material-import-menu, #material-context-menu) button:is(:hover, :focus-visible) { background: var(--control-hover); }
 #material-context-menu kbd { font: inherit; color: var(--secondary-ink); }
+#material-import { anchor-name: --material-import-button; }
+#material-import-menu {
+  position-anchor: --material-import-button;
+  position-area: block-end span-inline-end;
+  position-try-fallbacks: flip-block, flip-inline, flip-block flip-inline;
+  justify-self: start;
+  margin-block: 4px;
+}
+#material-import-menu button { justify-content: start; gap: 8px; }
+#material-folder-dialog { width: min(340px, 90vw); }
+#material-folder-error { color: var(--destructive-ink); }
+#materials-pane .material-folder-drop {
+  background: var(--selected-fill);
+  outline: 2px solid var(--system-blue);
+  outline-offset: -2px;
+}
 
 .sequence-dialog, .layer-motion-dialog, .cut-track-editor, .track-organizer,
 .jj-cover-editor, .jj-visual-editor, .jj-batch-editor, #caption-zoom-dialog {

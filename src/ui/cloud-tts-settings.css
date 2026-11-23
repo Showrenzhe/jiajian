@@ -33,14 +33,6 @@
 #update-notes { padding-top: 6px; white-space: pre-wrap; overflow-wrap: anywhere; }
 #update-error { color: var(--dialog-alert); }
 
-#cut-shortcuts-entry:not([hidden]) {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  padding: 7px 12px;
-  text-align: start;
-}
-#cut-shortcuts-entry > span { color: var(--secondary-ink); }
 #cut-shortcuts-dialog[open] {
   display: grid;
   grid-template-rows: auto minmax(0, 1fr) auto;

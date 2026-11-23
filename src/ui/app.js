@@ -288,6 +288,15 @@ const thumbnailQueue = [];
 let thumbnailsLoading = 0;
 const materialFolders = new Map();
 const knownMaterialFolders = new Map();
+const folderTree = window.createMaterialFolderTree();
+const libraryScope = () => subprojects.active?.id ?? null;
+const currentLibraryFolder = () => materialFolderPath.at(-1);
+function visibleLibraryFolders() {
+  const parent = currentLibraryFolder();
+  if (parent && !folderTree.rows.has(parent.id)) return parent.folders;
+  const organized = folderTree.children(libraryScope(), parent?.id ?? null);
+  return parent ? organized : [...organized, ...materialFolders.values()];
+}
 
 function rememberLibraryFolder({ id, name, sourceKey }, persistent = false) {
   const folder = { id, name, sourceKey, persistent: persistent || knownMaterialFolders.get(sourceKey)?.persistent };
@@ -351,7 +360,7 @@ function loadMaterialThumbnails() {
     const target = thumbnailQueue.shift();
     if (!target.isConnected) continue;
     thumbnailsLoading += 1;
-    const id = target.dataset.folderId ?? target.dataset.materialId;
+    const id = target.dataset.previewId ?? target.dataset.folderId ?? target.dataset.materialId;
     const tile = target.matches('.material-tile, .material-folder');
     const result = tile ? api.materialTilePreview(id) : api.videoThumbnail(id).then((url) => ({ url }));
     result.then(({ url, duration, width, height }) => {
@@ -1248,25 +1257,6 @@ $('#subproject-select').addEventListener('change', (event) => {
   subprojects.select(event.target.value || null);
   changedSubproject();
 });
-$('#subproject-new').addEventListener('click', () => {
-  $('#subproject-name').value = '';
-  $('#subproject-error').hidden = true;
-  $('#subproject-new-dialog').showModal();
-  $('#subproject-name').focus();
-});
-$('#subproject-cancel').addEventListener('click', () => $('#subproject-new-dialog').close());
-$('#subproject-new-form').addEventListener('submit', (event) => {
-  event.preventDefault();
-  if (operation) return;
-  try {
-    subprojects.create($('#subproject-name').value);
-    $('#subproject-new-dialog').close();
-    changedSubproject();
-  } catch (error) {
-    $('#subproject-error').textContent = error.message;
-    $('#subproject-error').hidden = false;
-  }
-});
 function describeSubprojectShot() {
   const shot = shots[Number($('#subproject-shot').value)];
   const overridden = subprojects.overridden(shot);
@@ -1383,7 +1373,8 @@ function renderMaterials() {
   const excluded = bin.hidden;
   const hiddenFolder = materialFolderPath.findIndex((entry) => excluded.has(entry.sourceKey));
   if (hiddenFolder !== -1) materialFolderPath.splice(hiddenFolder);
-  const folder = materialFolderPath.at(-1);
+  const folder = currentLibraryFolder();
+  const organization = folderTree.rows.get(folder?.id);
   for (const shot of shots) {
     for (const clip of shot) {
       const source = originalMaterial(clip);
@@ -1393,7 +1384,6 @@ function renderMaterials() {
       bin.ids.add(id);
     }
   }
-  renderProcessedMaterials(usage);
   for (const id of bin.ids) {
     const asset=editAssets.get(id);
     if (asset && !catalog.has(id)) catalog.set(id, {id,name:asset.name,kind:asset.kind,sourceKey:asset.sourceKey,clip:candidate(asset)});
@@ -1402,9 +1392,19 @@ function renderMaterials() {
   for (const [id, item] of selectedMaterials) {
     if (item.clip && !catalog.has(id)) selectedMaterials.delete(id);
   }
-  const files = folder ? folder.files.map((item) => ({ ...item, name: materialAliases.get(item.assetId)?.name ?? item.name }))
-    : [...new Set([...bin.ids, ...catalog.keys()])].map((id) => catalog.get(id)).filter(Boolean);
-  const folders = folder?.folders ?? [...materialFolders.values()];
+  const assigned = new Set();
+  for (const row of folderTree.rows.values()) if (row.scope === libraryScope()) for (const id of row.assetIds) assigned.add(id);
+  renderProcessedMaterials(usage, assigned);
+  const assignedKeys = new Set([...assigned].map(id => editAssets.get(id)?.sourceKey).filter(Boolean));
+  const linkedFiles = organization ? folderTree.files.get(organization.id) ?? [] : folder?.files ?? [];
+  const files = linkedFiles.filter(item => !organization?.hiddenKeys?.includes(item.sourceKey) && !assignedKeys.has(item.sourceKey))
+    .map(item => ({...item, name: materialAliases.get(item.assetId)?.name ?? item.name}));
+  if (organization) {
+    for (const id of organization.assetIds) if (catalog.has(id)) files.push(catalog.get(id));
+  } else if (!folder) {
+    for (const [id,item] of catalog) if (!assigned.has(id)) files.push(item);
+  }
+  const folders = visibleLibraryFolders();
   const matches = ({ name }) => name.toLocaleLowerCase().includes(query);
   const availableFiles = files.filter((item)=>!excluded.has(item.sourceKey ?? item.clip?.asset.sourceKey));
   const visibleFiles = availableFiles.filter(matches);
@@ -1461,7 +1461,7 @@ function renderMaterials() {
       image.addEventListener('load', () => setMaterialAspect(thumbnail, image.naturalWidth, image.naturalHeight), { once: true });
       image.src = imageUrl;
       thumbnail.append(image);
-    } else thumbnail.textContent = kind === 'video' ? '▶' : '▧';
+    } else thumbnail.textContent = kind === 'video' ? '▶' : kind === 'audio' ? '♫' : '▧';
     button.append(thumbnail, name, detail);
     updateMaterialUsage(button, used);
     button.addEventListener('click', (event) => {
@@ -1482,7 +1482,8 @@ function renderMaterials() {
       materialDrag = {id,items,visual:items.every(item=>item.kind==='video' || item.kind==='image'),
         thumbnail:button.querySelector('.material-thumbnail img')?.currentSrc};
       event.dataTransfer.setData(materialDragType, id);
-      event.dataTransfer.effectAllowed = 'copy';
+      if (items.length === 1 && items[0].kind === 'audio') event.dataTransfer.setData(processedAudioDrag, items[0].clip?.asset.id ?? items[0].id);
+      event.dataTransfer.effectAllowed = 'copyMove';
       activateTimelineTab($('#timeline-tracks-tab'));
       if(materialDrag.visual) timeline.showLibraryLane(materialDrag,maxCandidates);
     });
@@ -1494,6 +1495,7 @@ function renderMaterials() {
     check.addEventListener('change', () => selectMaterial(materialItems.get(button), check.checked));
     add.type = 'button';
     add.className = 'material-quick-add';
+    add.hidden = kind === 'audio';
     add.textContent = '＋';
     add.disabled = !canPlace;
     add.title = '添加到分镜';
@@ -1517,7 +1519,7 @@ function updateMaterialBatchControls() {
   const count = selectedMaterials.size;
   $('#material-selection-actions').hidden = count === 0;
   $('#material-selected-count').textContent = `已选 ${count} 项`;
-  $('#material-add-selected').disabled = !canPlaceMaterial();
+  $('#material-add-selected').disabled = !canPlaceMaterial() || [...selectedMaterials.values()].some(item => item.kind === 'audio');
   $('#material-clear-selection').disabled = Boolean(operation);
   for (const check of document.querySelectorAll('#material-list .material-select')) {
     const tile = check.previousElementSibling;
@@ -1666,7 +1668,7 @@ function finishMaterialMarquee(event) {
 function libraryTarget(element) {
   const folderButton = element.closest('.material-folder');
   if (folderButton) {
-    const folders = materialFolderPath.at(-1)?.folders ?? [...materialFolders.values()];
+    const folders = visibleLibraryFolders();
     const folder = folders.find(({ id }) => id === folderButton.dataset.folderId);
     if (folder) return { anchor: folderButton, items: [folder], folder: true };
   }
@@ -1685,6 +1687,21 @@ function removeLibraryItems({ items, folder }) {
   if (operation || mode !== 'montage') return;
   const bin = currentMaterialBin();
   const keys = new Set(items.map((item) => item.sourceKey ?? item.clip?.asset.sourceKey));
+  const parent = folderTree.rows.get(currentLibraryFolder()?.id);
+  const managed = folder && folderTree.rows.get(items[0].id);
+  if (managed) {
+    keys.clear();
+    for (const removed of folderTree.remove(managed)) for (const id of removed.assetIds) {
+      const sourceKey = editAssets.get(id)?.sourceKey;
+      if (sourceKey) keys.add(sourceKey);
+    }
+  } else if (!folder && parent) {
+    const ids = new Set(items.map(item => item.clip?.asset.id ?? item.assetId));
+    parent.assetIds = parent.assetIds.filter(id => !ids.has(id));
+    const linked = (folderTree.files.get(parent.id) ?? []).filter(item => keys.has(item.sourceKey));
+    if (linked.length) parent.hiddenKeys = [...new Set([...(parent.hiddenKeys ?? []), ...linked.map(item => item.sourceKey)])];
+  }
+  keys.delete(undefined);
   for (const key of keys) bin.hidden.add(key);
   for (const id of bin.ids) {
     if (keys.has(editAssets.get(id)?.sourceKey)) bin.ids.delete(id);
@@ -1709,6 +1726,7 @@ function removeLibraryItems({ items, folder }) {
 
 function showMaterialMenu(target, x, y) {
   materialMenuTarget = target;
+  $('#material-context-rename').hidden = !target.folder;
   const remove = $('#material-context-remove');
   remove.querySelector('span').textContent = target.items.length > 1 ? `从素材库移除 ${target.items.length} 项` : '从素材库移除';
   const audio = $('#material-context-audio');
@@ -1732,6 +1750,7 @@ materialMenu.addEventListener('click', (event) => {
   const target = materialMenuTarget;
   materialMenu.hidePopover();
   if (button.id === 'material-context-remove') removeLibraryItems(target);
+  else if (button.id === 'material-context-rename') renameLibraryFolder(target.items[0]);
   else if (!operation) openMaterialAudio(target.items);
 });
 materialMenu.addEventListener('keydown', (event) => {
@@ -1759,7 +1778,13 @@ materialPanel.addEventListener('keydown', (event) => {
   if (operation || mode !== 'montage' || event.defaultPrevented || event.isComposing || event.ctrlKey || event.altKey || event.metaKey
       || event.target.isContentEditable || event.target.closest('textarea,input:not([type=checkbox]),select,[role="textbox"],dialog')
       || document.querySelector('dialog[open]')) return;
-  if (event.key === 'Delete' && !event.shiftKey) {
+  if (event.key === 'F2' && !event.shiftKey) {
+    const target = libraryTarget(event.target);
+    if (!target?.folder) return;
+    event.preventDefault();
+    event.stopPropagation();
+    if (!event.repeat) renameLibraryFolder(target.items[0]);
+  } else if (event.key === 'Delete' && !event.shiftKey) {
     const target = materialMenu.matches(':popover-open') ? materialMenuTarget : libraryTarget(event.target);
     if (!target) return;
     event.preventDefault();
@@ -1800,6 +1825,7 @@ function renderMaterialFolders(current, folders) {
         ($('#material-folders .material-folder[data-folder-id="' + CSS.escape(previous.id) + '"]')
           ?? $('#material-breadcrumb .material-back') ?? materialPanel).focus();
       });
+      enableFolderDrop(back, () => materialFolderPath.at(-2));
       path.textContent = ['素材库', ...materialFolderPath.map(({ name }) => name)].join(' / ');
       path.title = path.textContent;
       breadcrumb.append(back, path);
@@ -1808,14 +1834,14 @@ function renderMaterialFolders(current, folders) {
   const list = $('#material-folders');
   const previous = new Map([...list.children].map((row) => [row.firstElementChild.dataset.folderId, row]));
   reconcileMaterialRows(list, folders.map((folder) => {
-    if (previous.has(folder.id)) return previous.get(folder.id);
+    if (previous.get(folder.id)?.firstElementChild.title === folder.name) return previous.get(folder.id);
     const row = document.createElement('li');
     const button = document.createElement('button');
     button.type = 'button';
     button.className = 'material-folder';
     button.title = folder.name;
     button.setAttribute('aria-description', '单击选中，双击或按 Enter 打开');
-    button.setAttribute('aria-keyshortcuts', 'Enter Delete');
+    button.setAttribute('aria-keyshortcuts', 'Enter F2 Delete');
     button.dataset.folderId = folder.id;
     const icon = document.createElementNS('http://www.w3.org/2000/svg', 'svg');
     const symbol = document.createElementNS(icon.namespaceURI, 'use');
@@ -1832,7 +1858,12 @@ function renderMaterialFolders(current, folders) {
     preview.className = 'folder-preview';
     frame.append(icon, preview);
     button.append(frame, name);
-    thumbnailObserver.observe(button);
+    const previewId = folderTree.rows.has(folder.id) ? folderTree.sources.get(folder.sourceKey) : folder.id;
+    if (previewId) {
+      button.dataset.previewId = previewId;
+      thumbnailObserver.observe(button);
+    }
+    enableFolderDrop(button, () => folder);
     button.addEventListener('click', () => {
       selectedMaterials.clear();
       updateMaterialBatchControls();
@@ -1851,21 +1882,141 @@ function renderMaterialFolders(current, folders) {
   $('#material-browse').hidden = !current && !folders.length;
 }
 
+function enableFolderDrop(button, destination) {
+  button.addEventListener('dragover', event => {
+    if (operation || !materialDrag || !event.dataTransfer.types.includes(materialDragType)) return;
+    event.preventDefault();
+    event.stopPropagation();
+    event.dataTransfer.dropEffect = 'move';
+    button.classList.add('material-folder-drop');
+  });
+  button.addEventListener('dragleave', event => {
+    if (!button.contains(event.relatedTarget)) button.classList.remove('material-folder-drop');
+  });
+  button.addEventListener('drop', async event => {
+    button.classList.remove('material-folder-drop');
+    if (operation || !materialDrag || !event.dataTransfer.types.includes(materialDragType)) return;
+    event.preventDefault();
+    event.stopPropagation();
+    const source = currentLibraryFolder(), target = destination(), items = materialDrag.items;
+    clearMaterialDrag();
+    operation = 'import';
+    try {
+      const from = await managedFolder(source);
+      const to = await managedFolder(target);
+      const assets = await Promise.all(items.map(item => item.clip?.asset ?? api.loadMaterialFile(item.id)));
+      if (from?.sourceKey) {
+        const linkedKeys = new Set((folderTree.files.get(from.id) ?? source?.files ?? []).map(item => item.sourceKey));
+        from.hiddenKeys = [...new Set([...(from.hiddenKeys ?? []), ...assets.map(asset => asset.sourceKey).filter(key => linkedKeys.has(key))])];
+      }
+      assignLibraryAssets(assets, to);
+      selectedMaterials.clear();
+      materialMessage('已移至「' + (to?.name ?? '素材库') + '」。');
+    } catch (error) { materialMessage(error.message); }
+    finally { operation = ''; renderLists(); }
+  });
+}
+
+function assignLibraryAssets(assets, destination) {
+  const ids = new Set(assets.map(asset => asset.id));
+  const bin = currentMaterialBin();
+  for (const row of folderTree.rows.values()) if (row.scope === libraryScope()) row.assetIds = row.assetIds.filter(id => !ids.has(id));
+  for (const asset of assets) {
+    editAssets.set(asset.id, asset);
+    bin.ids.add(asset.id);
+    bin.hidden.delete(asset.sourceKey);
+    if (destination) destination.assetIds.push(asset.id);
+  }
+}
+
 async function openMaterialFolder(id) {
+  if (operation) return;
   const request = ++materialBrowseRequest;
   materialMessage('正在读取文件夹…');
   try {
-    const listing = await api.browseMaterialFolder(id);
+    const managed = folderTree.rows.get(id);
+    const listing = managed ?? await api.browseMaterialFolder(id);
+    const warning = managed ? await folderTree.read(api, managed) : listing.warnings?.join(' · ');
     if (request !== materialBrowseRequest || currentMaterialBin().hidden.has(listing.sourceKey)) return;
+    selectedMaterials.clear();
     materialFolderPath.push(listing);
     $('#material-search').value = '';
     renderMaterials();
-    materialMessage(listing.warnings?.join(' · '));
+    materialMessage(warning);
     $('#material-breadcrumb .material-back').focus();
   } catch (error) {
     if (request === materialBrowseRequest) materialMessage(error.message);
   }
 }
+
+async function attachSourceDirectory(source, parent) {
+  const legacySiblings = parent ? [] : [...materialFolders.values()].filter(item => item.sourceKey !== source.sourceKey);
+  const result = await folderTree.importDirectory(api, libraryScope(), parent?.id ?? null, source, legacySiblings);
+  knownMaterialFolders.set(source.sourceKey, {id:source.id, name:source.name, sourceKey:source.sourceKey, persistent:true});
+  materialFolders.delete(source.id);
+  currentMaterialBin().hidden.delete(source.sourceKey);
+  return result;
+}
+
+// Older drafts linked a whole external tree without storing its folder names.
+// Promote it on the first organizing action, keeping the user's location.
+async function managedFolder(folder) {
+  if (!folder || folderTree.rows.has(folder.id)) return folderTree.rows.get(folder?.id);
+  if (folderTree.rows.has(materialFolderPath[0]?.id)) {
+    const existing = [...folderTree.rows.values()].find(row => row.scope === libraryScope() && row.sourceKey === folder.sourceKey);
+    if (existing) return existing;
+  }
+  const root = materialFolderPath[0] ?? folder;
+  const {row} = await attachSourceDirectory(root);
+  let parentId = null;
+  for (const [index, old] of materialFolderPath.entries()) {
+    const managed = index === 0 ? row : folderTree.children(libraryScope(), parentId).find(child => child.sourceKey === old.sourceKey);
+    if (!managed) throw Error('文件夹已改变，请重新打开。');
+    if (old.files) folderTree.files.set(managed.id, old.files);
+    materialFolderPath[index] = managed;
+    parentId = managed.id;
+  }
+  return [...folderTree.rows.values()].find(item => item.scope === libraryScope() && item.sourceKey === folder.sourceKey);
+}
+
+let folderNaming;
+function openFolderNameDialog(row) {
+  const dialog = $('#material-folder-dialog'), input = $('#material-folder-name');
+  folderNaming = {row, opener:document.activeElement};
+  $('#material-folder-title').textContent = row ? '重命名文件夹' : '新建文件夹';
+  input.value = row?.name ?? folderTree.uniqueName('新建文件夹', visibleLibraryFolders());
+  $('#material-folder-error').hidden = true;
+  dialog.showModal();
+  input.focus();
+  input.select();
+}
+function createMaterialFolder() { if (!operation) openFolderNameDialog(); }
+function renameLibraryFolder(row) { if (!operation) openFolderNameDialog(row); }
+$('#material-folder-cancel').addEventListener('click', () => $('#material-folder-dialog').close());
+$('#material-folder-form').addEventListener('submit', async event => {
+  event.preventDefault();
+  if (!folderNaming || operation) return;
+  const state = folderNaming;
+  const value = $('#material-folder-name').value.trim();
+  operation = 'organize';
+  try {
+    const parent = await managedFolder(currentLibraryFolder());
+    const old = await managedFolder(state.row);
+    const siblings = visibleLibraryFolders();
+    const folder = old ?? folderTree.create(libraryScope(), parent?.id ?? null, value, siblings);
+    if (old) folderTree.rename(old, value, siblings);
+    $('#material-folder-dialog').close();
+    $('#material-search').value = '';
+    renderMaterials();
+    $('#material-folders [data-folder-id="' + CSS.escape(folder.id) + '"]')?.focus();
+    materialMessage();
+  } catch (error) {
+    const label = $('#material-folder-error');
+    label.textContent = error.message;
+    label.hidden = false;
+    $('#material-folder-name').focus();
+  } finally { operation = ''; updateControls(); }
+});
 
 async function addMaterialFolder() {
   if (operation) return;
@@ -1874,13 +2025,12 @@ async function addMaterialFolder() {
   try {
     const folder = await api.pickMaterialFolder();
     if (!folder) return;
+    const parent = await managedFolder(currentLibraryFolder());
+    const {row, warnings} = await attachSourceDirectory(folder, parent);
     materialBrowseRequest += 1;
-    materialFolderPath = [];
-    rememberLibraryFolder(folder);
-    currentMaterialBin().hidden.delete(folder.sourceKey);
     $('#material-search').value = '';
     renderMaterials();
-    materialMessage(`已添加「${folder.name}」，双击文件夹或按 Enter 查看素材。`);
+    materialMessage(warnings.join(' · ') || `已导入「${row.name}」。`);
   } catch (error) {
     materialMessage(error.message);
   } finally {
@@ -2355,10 +2505,9 @@ function updateControls(group, keepDraftPlayback = false) {
   $('#montage-settings').disabled = busy;
   $('#background-color-row').hidden = $('#fit').value !== 'fit';
   for (const control of document.querySelectorAll('.shot-transition select, .shot-transition input')) control.disabled = busy;
-  $('#material-import').disabled = busy || shots.length >= maxShots;
-  $('#empty-import-visual').disabled = $('#material-import').disabled;
+  $('#material-import').disabled = busy;
+  $('#empty-import-visual').disabled = busy || shots.length >= maxShots;
   $('#subproject-select').disabled = busy;
-  $('#subproject-new').disabled = busy;
   $('#subproject-batch').disabled = busy;
   $('#subproject-materials').disabled = busy || !shots.length;
   $('#material-folder-import').disabled = busy;
@@ -2934,6 +3083,33 @@ function importMaterials() {
   });
 }
 
+async function importLibraryFiles() {
+  const current = currentLibraryFolder();
+  if (operation) return;
+  operation = 'import';
+  updateControls();
+  try {
+    const picked = await api.pick('library', maxExports);
+    if (!picked?.assets.length) return;
+    const parent = await managedFolder(current);
+    assignLibraryAssets(picked.assets, parent);
+    if (!parent) {
+      const visual = picked.assets.filter(asset => asset.kind !== 'audio');
+      const added = visual.slice(0, maxShots - shots.length).map(asset => {
+        const shot = [];
+        appendVideoClips(shot, [candidate(asset)]);
+        return shot;
+      });
+      shots.push(...added);
+      if (!selected && added.length) preview(added[0][0]);
+      if (added.length < visual.length) picked.warnings.push('分镜数已达上限，剩余素材已收入素材库。');
+    }
+    $('#material-search').value = '';
+    materialMessage(picked.warnings.join(' · ') || '已导入「' + (parent?.name ?? '素材库') + '」。');
+  } catch (error) { materialMessage(error.message); }
+  finally { operation = ''; renderLists(); }
+}
+
 function renderMusic() {
   const list = $('#music-list');
   $('#music-summary').textContent = music.length ? `${music.length} 首 · 每条成片随机选一首` : '未添加';
@@ -3471,12 +3647,16 @@ function montageConfig() {
   const segments = shots.map((shot) => (segmentNarrations.get(shot) ?? []).map((asset) => asset?.id ?? null));
   const extras = extraWholeTracks.map(({ narration, subtitles },i) => ({ narrationId: narration?.id ?? null, subtitles,
     ...(voiceSpeed(narration,null,i+1)!==1 && {narrationSpeed:voiceSpeed(narration,null,i+1)}) }));
-  const folderKeys = [...materialFolders.values()].filter((folder) => folder.persistent).map((folder) => folder.sourceKey);
+  const libraryFolders = [...folderTree.rows.values()];
+  const linkedSources = new Set(libraryFolders.map(row => row.sourceKey));
+  const folderKeys = [...new Set([...materialFolders.values()].filter(folder => folder.persistent).map(folder => folder.sourceKey)
+    .concat([...folderTree.grants].filter(key => linkedSources.has(key))))];
   const captionIds = new Set([narration?.id, ...extras.map((track) => track.narrationId), ...segments.flat()]);
   return {
     proxyEnabled:projectProxyEnabled,
     shots: shots.map((shot) => shot.map(serializeClip)),
     ...(folderKeys.length && { materialFolderKeys: folderKeys }),
+    ...(libraryFolders.length && {libraryFolders:structuredClone(libraryFolders)}),
     ...([...materialBins.values()].some((bin)=>bin.ids.size || bin.hidden.size) && {
       materialBins:[...materialBins].filter(([,bin])=>bin.ids.size || bin.hidden.size).map(([scope,bin])=>({scope,ids:[...bin.ids],hidden:[...bin.hidden]})),
     }),
@@ -3773,12 +3953,18 @@ function restoreProject({ name, config, assets = [], folders = [] }, { retainHis
     editAssets.clear();
     for (const [id, asset] of byId) editAssets.set(id, asset);
   }
+  folderTree.restore(config.libraryFolders ?? [], !retainHistory, folders, config.materialFolderKeys ?? []);
+  const organizedKeys = new Set([...folderTree.rows.values()].map(row => row.sourceKey));
   for (const [id, folder] of materialFolders) if (folder.persistent) materialFolders.delete(id);
   for (const key of config.materialFolderKeys ?? []) {
     const folder = knownMaterialFolders.get(key);
-    if (folder) materialFolders.set(folder.id, folder);
+    if (folder && !organizedKeys.has(key)) materialFolders.set(folder.id, folder);
   }
-  if (materialFolderPath.length && !materialFolders.has(materialFolderPath[0].id)) materialFolderPath = [];
+  if (materialFolderPath.length && !materialFolders.has(materialFolderPath[0].id)) {
+    materialFolderPath = materialFolderPath.map(item => folderTree.rows.get(item.id));
+    const missing = materialFolderPath.indexOf(undefined);
+    if (missing >= 0) materialFolderPath.splice(missing);
+  }
   applyingEdit = true;
   shots.splice(0, shots.length, ...restoredShots);
   processedMaterials.splice(0,processedMaterials.length,...(config.processedLibrary??[]).map(({id})=>findAsset(id)));
@@ -4100,6 +4286,7 @@ $('#tab-drafts').addEventListener('click', async () => {
 $('#home-create').addEventListener('click', newProject);
 $('#title-home').addEventListener('click', showHome);
 $('#app-settings').addEventListener('click', () => openCloudTtsSettings({ showAppearance: true }));
+$('#cut-shortcuts-entry').addEventListener('click', event => window.cutShortcuts.openSettings(event.currentTarget));
 window.bindSoftwareUpdates(api);
 const creativeWorkspace = window.createCreativeWorkspace({
   api,
@@ -4159,7 +4346,43 @@ $('#scene-pick-folder').addEventListener('click', () => pickSceneInputs('folder'
 $('#scene-pick-output').addEventListener('click', pickSceneOutput);
 $('#scene-split-submit').addEventListener('click', runSceneSplit);
 $('#scene-split-cancel').addEventListener('click', () => api.cancel());
-$('#material-import').addEventListener('click', importMaterials);
+const importMenu = $('#material-import-menu');
+const importTrigger = $('#material-import');
+const fileChoice = $('#material-import-files');
+const folderChoice = $('#material-import-directory');
+importMenu.addEventListener('toggle', () => {
+  if (importMenu.matches(':popover-open') && !importMenu.contains(document.activeElement)) {
+    fileChoice.focus({preventScroll: true});
+  }
+});
+importTrigger.addEventListener('keydown', event => {
+  if (event.key !== 'ArrowDown' && event.key !== 'ArrowUp') return;
+  event.preventDefault();
+  importMenu.showPopover({source: importTrigger});
+  (event.key === 'ArrowUp' ? folderChoice : fileChoice).focus({preventScroll: true});
+});
+importMenu.addEventListener('keydown', event => {
+  if (event.key === 'Escape') {
+    event.preventDefault();
+    event.stopPropagation();
+    importMenu.hidePopover();
+    importTrigger.focus({preventScroll: true});
+    return;
+  }
+  if (!['ArrowDown', 'ArrowUp', 'Home', 'End'].includes(event.key)) return;
+  event.preventDefault();
+  event.stopPropagation();
+  const first = event.key === 'Home' || (event.key !== 'End' && document.activeElement === folderChoice);
+  (first ? fileChoice : folderChoice).focus({preventScroll: true});
+});
+importMenu.addEventListener('click', event => {
+  const choice = event.target.closest('[role=menuitem]');
+  if (!choice || operation) return;
+  importMenu.hidePopover();
+  importTrigger.focus({preventScroll: true});
+  if (choice === folderChoice) addMaterialFolder();
+  else importLibraryFiles();
+});
 $('#empty-import-visual').addEventListener('click', async (event) => {
   const button = event.currentTarget;
   const heldFocus = document.activeElement === button;
@@ -4170,7 +4393,7 @@ $('#empty-import-visual').addEventListener('click', async (event) => {
   }
 });
 $('#empty-split-narration').addEventListener('click', splitNarrationWithSubs2srs);
-$('#material-folder-import').addEventListener('click', addMaterialFolder);
+$('#material-folder-import').addEventListener('click', createMaterialFolder);
 $('#material-search').addEventListener('input', renderMaterials);
 document.addEventListener('keydown', handlePreviewKey);
 const materialAudio = window.mountAudioTools({
@@ -4249,7 +4472,7 @@ document.addEventListener('dragover',(event)=>{
     event.preventDefault();event.dataTransfer.dropEffect='copy';
   }
 });
-document.addEventListener('drop',(event)=>{
+document.addEventListener('drop',async (event)=>{
   const inspector = inspectorFileDrop(event);
   if (inspector) {
     event.preventDefault();
@@ -4258,11 +4481,16 @@ document.addEventListener('drop',(event)=>{
   }
   if(operation || !event.dataTransfer?.types.includes(processedAudioDrag)) return;
   const target=processedDropTarget(event.target);
-  const asset=processedMaterials.find((a)=>a.id===event.dataTransfer.getData(processedAudioDrag));
-  if(!target || asset?.kind!=='audio')return;
+  if (!target) return;
+  const id = event.dataTransfer.getData(processedAudioDrag);
   event.preventDefault();
   const place = audioDropPlace(target);
-  applyProcessedAudio(asset, place.audioRole, place.shot, place.track);
+  try {
+    const asset = editAssets.get(id) ?? processedMaterials.find(item => item.id === id) ?? await api.loadMaterialFile(id);
+    if (asset.kind !== 'audio') return;
+    editAssets.set(asset.id, asset);
+    applyProcessedAudio(asset, place.audioRole, place.shot, place.track);
+  } catch (error) { materialMessage(error.message); }
 });
 let processedListKey;
 function updateProcessedUsage(used) {
@@ -4278,10 +4506,11 @@ function updateProcessedUsage(used) {
     } else row.querySelector('.processed-used')?.remove();
   }
 }
-function renderProcessedMaterials(usage) {
+function renderProcessedMaterials(usage, assigned) {
   const section=$('#processed-materials');
   const filter=$('#material-search').value.trim().toLocaleLowerCase();
-  const matches=processedMaterials.filter((asset)=>!currentMaterialBin().hidden.has(asset.sourceKey) && asset.name.toLocaleLowerCase().includes(filter));
+  const matches=currentLibraryFolder() ? [] : processedMaterials.filter((asset)=>!assigned.has(asset.id) &&
+    !currentMaterialBin().hidden.has(asset.sourceKey) && asset.name.toLocaleLowerCase().includes(filter));
   const key = JSON.stringify(matches.map((asset) => [asset.id, asset.name]));
   if (processedListKey === key) { updateProcessedUsage(usage); return; }
   processedListKey = key;
@@ -4376,12 +4605,12 @@ async function importDroppedMaterials(files, place) {
   try {
     const destination = library ? 'library' : place.audioRole ? 'audio' : 'visual';
     const { assets, folders, warnings } = await api.importDroppedMaterials(files, destination);
+    const parent = library && await managedFolder(currentLibraryFolder());
     for (const folder of folders) {
-      rememberLibraryFolder(folder, true);
-      currentMaterialBin().hidden.delete(folder.sourceKey);
+      const result = await attachSourceDirectory(folder, parent);
+      warnings.push(...result.warnings);
     }
     if (library && (assets.length || folders.length)) {
-      materialFolderPath = [];
       materialBrowseRequest++;
       $('#material-search').value = '';
     }
@@ -4396,6 +4625,7 @@ async function importDroppedMaterials(files, place) {
       }
       editAssets.set(asset.id, asset);
       currentMaterialBin().hidden.delete(asset.sourceKey);
+      if (parent) { assignLibraryAssets([asset], parent); continue; }
       if (asset.kind === 'audio') {
         if (place?.audioRole) {
           const warning = placeAudioAsset(asset, place.audioRole, shot, audioTrack);
@@ -4840,7 +5070,7 @@ window.mountBatchEdit({
     for(const [i,asset] of assets.entries()){
       if(!sourceNames.has(asset.id))sourceNames.set(asset.id,asset.name);
       if(!editAssets.has(asset.id))editAssets.set(asset.id,asset);
-      for(const folder of materialFolderPath){const file=folder.files.find(f=>f.id===items[i].id);if(file)file.assetId=asset.id;}
+      for(const folder of materialFolderPath){const file=(folder.files ?? folderTree.files.get(folder.id))?.find(f=>f.id===items[i].id);if(file)file.assetId=asset.id;}
     }
     return [...new Set(assets.map(a=>a.id))].map(id=>editAssets.get(id));
   },

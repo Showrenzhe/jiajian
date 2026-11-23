@@ -56,11 +56,9 @@ async function check(dir) {
     }
   }
   const openSettings = async () => {
-    await click('#app-settings');
-    await wait('document.querySelector("#cloud-settings-dialog:modal")');
-    await read('Promise.allSettled(document.querySelector("#cloud-settings-dialog").getAnimations().map(animation=>animation.finished))');
     await click('#cut-shortcuts-entry');
     await wait('document.querySelector("#cut-shortcuts-dialog:modal")');
+    assert.equal(await read('!!document.querySelector("#cloud-settings-dialog:modal")'),false);
     await read('Promise.allSettled(document.querySelector("#cut-shortcuts-dialog").getAnimations().map(animation=>animation.finished))');
   };
   const label = id => read('window.cutShortcuts.labelFor('+JSON.stringify(id)+')');
@@ -71,6 +69,19 @@ async function check(dir) {
     await wait('typeof window.cutShortcuts?.actionFor === "function"');
   }
   try {
+    for (const [scheme,width] of [['light',1320],['dark',850]]) {
+      win.setContentSize(width,900);
+      await wc.debugger.sendCommand('Emulation.setEmulatedMedia',{features:[{name:'prefers-color-scheme',value:scheme}]});
+      await wait(`document.documentElement.dataset.theme==="${scheme}"`);
+      assert.ok(await read(`(()=>{const buttons=['software-update-entry','cut-shortcuts-entry','app-settings'].map(id=>document.getElementById(id));
+        const [update,shortcuts,settings]=buttons.map(el=>el.getBoundingClientRect());
+        return buttons.every(el=>el.checkVisibility()) && update.right<=shortcuts.left && shortcuts.right<=settings.left &&
+          settings.right<innerWidth && buttons[1].querySelector('use').getAttribute('href')==='#icon-keyboard';})()`));
+      await openSettings();
+      await click('#cut-shortcuts-close');
+      await wait('document.activeElement.id==="cut-shortcuts-entry" && !document.querySelector("dialog:modal")');
+    }
+    win.setContentSize(1320,900);
     await click('#home-open-project');
     const clip = '.sequence-video [data-move-candidate]';
     await wait('!!document.querySelector('+JSON.stringify(clip)+')');
@@ -104,7 +115,6 @@ async function check(dir) {
     assert.equal(await label('split'),'K');
     await key('Escape');
     await wait('!document.querySelector("#cut-shortcuts-dialog[open]") && document.activeElement.id==="cut-shortcuts-entry"');
-    await click('#cloud-settings-cancel');
     await mouseClick(host+' .video-cut-ruler',.34);
     assert.match(await read('document.querySelector('+JSON.stringify(button('split'))+').title'),/K/);
     await key('w');
@@ -136,7 +146,6 @@ async function check(dir) {
     assert.equal(await label('mirror'),'Ctrl+Z');
     await key('Escape');
     await wait('!document.querySelector("#cut-shortcuts-dialog[open]")');
-    await click('#cloud-settings-cancel');
     await click('#material-search');
     await key('z',2);
     assert.equal(await read('document.querySelector('+JSON.stringify(button('mirror'))+').getAttribute("aria-pressed")'),'true');
