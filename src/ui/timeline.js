@@ -853,7 +853,7 @@ window.mountEditTimeline = function (host, ctx) {
     s.shots.forEach((shot,i)=>shot.forEach((clip,j)=>layerRow({key:'local',label:'候选 '+(i+1)+'-'+(j+1)},clip.layers,shotTimes[i],widths[i])));
     if(s.segmented) p.segmentNarration.forEach((tracks,i)=>tracks.forEach((items,j)=>layerRow({key:'voice',label:'口播 '+(i+1)+'-'+(j+1)},items,shotTimes[i] ?? 0,widths[i] ?? 0)));
     else p.wholeNarration.forEach((items,i)=>layerRow({key:'voice',label:'整段口播 '+(i+1)},items,0,totalTime));
-    const cursor=el('i','sequence-cursor');cursor.hidden=!ctx.showAxis();canvas.append(cursor);
+    const cursor=el('i','sequence-cursor');canvas.append(cursor);
     const hover=el('i','sequence-hover');hover.hidden=true;canvas.append(hover);
     function eventTime(e) {return Math.max(0,Math.min(totalTime,(e.clientX-ruler.getBoundingClientRect().left)/timeScale));}
     canvas.onpointermove=(e)=>{hover.hidden=shotDrag?.active || scrubPointer!=null || resizeDrag!=null || !ctx.showAxis();hover.style.left=(96+eventTime(e)*timeScale)+'px';};
@@ -905,8 +905,12 @@ window.mountEditTimeline = function (host, ctx) {
   }
   function syncCursor() {
     const cursor=host.querySelector('.sequence-cursor');
-    if(cursor) cursor.style.left=(96+Math.min(totalTime,playTime)*timeScale)+'px';
+    if(!cursor) return;
+    const time=Math.min(totalTime,playTime);
+    cursor.hidden=!ctx.showAxis() || time<host.scrollLeft/timeScale;
+    cursor.style.left=(96+time*timeScale)+'px';
   }
+  host.addEventListener('scroll',syncCursor,{passive:true});
   function setFold(node,key,value,animate=false) {
     if(value) folded.add(key); else folded.delete(key);
     node.classList.toggle('animate-lane-fold',animate);
