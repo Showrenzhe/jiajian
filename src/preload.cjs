@@ -49,6 +49,7 @@ contextBridge.exposeInMainWorld('workbench', {
   runCreative: (value) => invoke('workbench:creative-run', value),
   projects: () => invoke('workbench:projects'),
   listDrafts: () => invoke('workbench:list-drafts'),
+  deleteDraft: (value) => invoke('workbench:delete-draft', value),
   createDraft: (value) => invoke('workbench:create-draft', value),
   saveDraft: (value) => invoke('workbench:save-draft', value),
   openDraft: (id) => invoke('workbench:open-draft', id),

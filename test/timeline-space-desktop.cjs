@@ -51,8 +51,8 @@ async function check() {
   win.webContents.debugger.attach();
   const read = (expression) => win.webContents.executeJavaScript(expression, true);
   const q = (selector) => 'document.querySelector(' + JSON.stringify(selector) + ')';
-  const time = '((parseFloat(' + q('.sequence-cursor') + '.style.left)-' + q('.sequence-ruler .sequence-content')
-    + '.offsetLeft)*1.5/parseFloat(' + q('.sequence-video [data-drop-shot="1"]') + '.style.left))';
+  const time = '(((' + q('.sequence-cursor') + '.getBoundingClientRect().left+' + q('.sequence-cursor') + '.offsetWidth/2)-'
+    + q('.sequence-ruler .sequence-content') + '.getBoundingClientRect().left)*1.5/parseFloat(' + q('.sequence-video [data-drop-shot="1"]') + '.style.left))';
   const live = q('.draft-transport-preview:not([hidden]) video');
   const preview = q('#preview');
   const focus = q('#timeline-clock') + '.contains(document.activeElement)';

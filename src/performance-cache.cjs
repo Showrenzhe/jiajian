@@ -11,7 +11,7 @@ function readPerformance(directory) {
   let data;
   try { data = JSON.parse(readFileSync(path.join(directory, filename), 'utf8')); } catch {}
   return {
-    gpu: data?.gpu !== false, defaultProxy: data?.defaultProxy !== false,
+    defaultProxy: data?.defaultProxy !== false,
     optimization: ['smooth','quality'].includes(data?.optimization) ? data.optimization : 'smart',
     location: typeof data?.location === 'string' && path.isAbsolute(data.location)
       ? data.location : path.join(directory, '佳剪代理'),
@@ -62,8 +62,9 @@ function createPerformanceCache(directory, {inspect,thumbnail,encode,bootTime=re
   }
   function change(patch) {
     return serializeChange(async()=>{
+      if (!patch || Object.keys(patch).some(key => !Object.hasOwn(state, key))) throw new Error('性能设置无效。');
       const next={...state,...patch};
-      if (typeof next.gpu !== 'boolean' || typeof next.defaultProxy !== 'boolean' ||
+      if (typeof next.defaultProxy !== 'boolean' ||
           !['smooth','quality','smart'].includes(next.optimization) || !path.isAbsolute(next.location)) throw new Error('性能设置无效。');
       if (next.location !== state.location) await fs.mkdir(next.location,{recursive:true});
       await atomicWrite(path.join(directory,filename),JSON.stringify(next));

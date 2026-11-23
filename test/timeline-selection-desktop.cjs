@@ -73,20 +73,22 @@ async function check() {
   }
   const videoMenu = '#video-track-menu[role="menu"]:popover-open';
   const commands = ['删除','静音片段','本轨向左插入空位','本轨向右插入空位'];
-  async function rightClickVideo(point) {
+  async function rightClickTrack(point) {
     await read('window.videoRightClickCancelled=false;'
       +'window.addEventListener("contextmenu",e=>{window.videoRightClickCancelled=e.isTrusted && e.defaultPrevented},{once:true})');
     for (const type of ['mousePressed','mouseReleased']) {
       await send('dispatchMouseEvent',{type,...point,button:'right',buttons:type==='mousePressed'?2:0,clickCount:1});
     }
-    assert.ok(await read('window.videoRightClickCancelled'),'视频轨右键应接管系统菜单');
+    assert.ok(await read('window.videoRightClickCancelled'),'轨道应接管系统右键菜单');
   }
   async function openVideoMenu(point, disabled = [], muted = false) {
-    await rightClickVideo(point);
+    await rightClickTrack(point);
     await wait('!!'+query(videoMenu),'在视频轨打开菜单');
     assert.ok(await read('document.activeElement==='+query(videoMenu)),'鼠标打开时焦点留在菜单本身');
     const items = await read('[...'+query(videoMenu)+'.querySelectorAll(\'[role="menuitem"]\')].map(b=>[b.textContent.trim(),b.disabled])');
     assert.deepEqual(items, commands.map(label => [muted && label==='静音片段' ? '取消静音' : label, disabled.includes(label)]));
+    assert.deepEqual(await read('[...'+query(videoMenu)+'.querySelectorAll("button use")].map(use=>use.getAttribute("href"))'),
+      ['#icon-track-delete',muted?'#icon-track-sound':'#icon-track-mute','#icon-track-insert-left','#icon-track-insert-left']);
     await wait(`(() => {
       const r=${query(videoMenu)}.getBoundingClientRect(), x=${point.x}, y=${point.y};
       return r.left>=-1 && r.right<=innerWidth+1 && r.top>=-1 && r.bottom<=innerHeight+1
@@ -98,7 +100,7 @@ async function check() {
     await wait('!'+query(videoMenu),'执行命令后关闭菜单');
   }
   async function checkSilentVideoPoint(point) {
-    await rightClickVideo(point);
+    await rightClickTrack(point);
     assert.ok(await read('!document.querySelector("dialog[open],:popover-open")'),'轨头、行间空白和锁定视频轨应保持菜单关闭');
   }
   const undo = () => click('#track-undo');
@@ -148,6 +150,7 @@ async function check() {
     await wait(count(video)+'===3 && '+query(tile(files.red))+'.dataset.used==="true"','撤销应恢复视频及使用标志');
     await setVoiceMode('segmented');
     await wait('!!'+query(segmentSlot),'分镜应显示自己的空口播落点');
+    await checkSilentVideoPoint(await pointerPoint(segmentSlot));
     await actualClick(video);
     await clickBlank(segmentSlot);
     assert.equal(await read(count(video+'.sequence-marked')),0,'点击空口播格清除选区');
@@ -200,6 +203,12 @@ async function check() {
     await read('[...document.querySelectorAll(".sequence-dialog[open] button")].find(button=>button.textContent==="候选包装").click()');
     await read('(() => {const d=document.querySelector(".sequence-dialog[open]");d.querySelector("textarea").value="删除验收";d.querySelector("form").requestSubmit()})()');
     await wait(count(layer)+'===1','添加包装文字');
+    for(const row of ['.sequence-shots','.sequence-music','.sequence-voice','.sequence-layer.kind-text']) {
+      for(const part of [' .sequence-head .track-kind',' .sequence-block']) {
+        await rightClickTrack(await pointerPoint(row+part));
+        assert.ok(await read('!document.querySelector("dialog[open],:popover-open")'),row+part+' 的右键应保持空闲');
+      }
+    }
     await actualClick(packedVideo);
     await click('#timeline-play');
     const monitor='.draft-transport-preview:not([hidden])', title=monitor+' .draft-text-overlay';
@@ -248,6 +257,22 @@ async function check() {
     const undoKey=()=>pressKey('z',90,2), redoKey=()=>pressKey('y',89,2);
     const originalOrder=shotCount+'===3 && '+owns(cell(0,0),redName)+' && '+owns(secondUpper,greenName)+' && '+owns(secondLower,redName);
     await wait(originalOrder,'第二镜上下轨应分别为绿色和红色候选');
+    for(const [theme,name] of [['light','浅色'],['dark','深色']]) {
+      await win.webContents.debugger.sendCommand('Emulation.setEmulatedMedia',{features:[
+        {name:'prefers-color-scheme',value:theme},{name:'prefers-reduced-motion',value:'reduce'}]});
+      await wait('document.documentElement.dataset.theme==='+JSON.stringify(theme),'切换右键菜单主题');
+      await openVideoMenu(await pointerPoint(cell(0,0)));
+      assert.match(await read('getComputedStyle('+query(videoMenu)+').backdropFilter'),/blur\(/,'视频菜单使用磨砂材质');
+      const rect=await read(`(()=>{
+        const clip=${query(cell(0,0))}.getBoundingClientRect(), menu=${query(videoMenu)}.getBoundingClientRect();
+        const x=Math.max(0,Math.floor(Math.min(clip.x-95,menu.x-32))), y=Math.max(0,Math.floor(Math.min(clip.y-75,menu.y-32)));
+        return {x,y,width:Math.min(innerWidth-x,Math.ceil(Math.max(640,menu.right+72-x))),
+          height:Math.min(innerHeight-y,Math.ceil(Math.max(260,menu.bottom+36-y)))};
+      })()`);
+      await fs.writeFile(path.join(root,'视频轨道菜单-'+name+'.png'),(await win.webContents.capturePage(rect)).toPNG());
+      await pressKey('Escape',27);
+    }
+    await win.webContents.debugger.sendCommand('Emulation.setEmulatedMedia',{features:[]});
     await openVideoMenu(await pointerPoint(secondRow),commands);
     await pressKey('Escape',27);
     await wait('!'+query(videoMenu)+' && document.activeElement.id==="timeline-clock"','从空格取消菜单后焦点返回时间线');

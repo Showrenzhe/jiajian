@@ -399,6 +399,58 @@ test('draft folders follow nested renames and deletions without touching externa
   assert.equal(await fs.readFile(path.join(external,'原始文件'),'utf8'),'original');
 });
 
+test('deleting a draft survives restart, rejects stale writes and preserves shared media', async t => {
+  const { createDraftStore } = require('../src/draft-store.cjs');
+  const root = await testDirectory(t), directory = path.join(root, 'drafts');
+  const store = createDraftStore(directory);
+  const image = path.join(root, 'original.png');
+  await ffmpeg(['-f', 'lavfi', '-i', 'color=red:s=32x32', '-frames:v', '1', '-threads', '1', '-update', '1', image]);
+  const bytes = await fs.readFile(image);
+  const catalog = new Map([['image', await inspectAsset(image, 'image')]]);
+  const config = editingConfig({ shots: [[{ id: 'image', start: 0, end: 1 }]], libraryFolders: [
+    { id: 'group', name: '素材', scope: null, parentId: null, assetIds: ['image'] },
+  ] });
+  const first = await store.create({ name: '同名', config }, catalog);
+  const second = await store.create({ name: '同名', config }, catalog);
+  const request = { id: first.id, expectedRevision: first.revision };
+  const file = path.join(directory, first.id + '.sdworkbench');
+  const external = path.join(root, first.id + '.sdworkbench');
+  await saveProject(external, config, catalog);
+  const projectBytes = await fs.readFile(external);
+  await assert.rejects(store.remove({ ...request, id: external }), /找不到/);
+  await assert.rejects(store.remove({ ...request, expectedRevision: 0 }), /刷新/);
+  await fs.appendFile(file, ' ');
+  await assert.rejects(store.remove(request), /刷新/);
+  await store.list();
+  const mirror = path.join(directory, first.id + '.素材库');
+  const unlink = fs.unlink;
+  const locked = t.mock.method(fs, 'unlink', async target => {
+    if (target === file) throw Object.assign(new Error('locked'), { code: 'EBUSY' });
+    return unlink(target);
+  });
+  await assert.rejects(store.remove(request), /被占用/);
+  locked.mock.restore();
+  assert.equal((await store.open(first.id)).revision, first.revision);
+  assert.ok((await fs.stat(mirror)).isDirectory());
+  const outcomes = await Promise.allSettled([store.remove(request), store.save({ ...request, config }, catalog)]);
+  assert.deepEqual(outcomes[0], { status: 'fulfilled', value: true });
+  assert.match(outcomes[1].reason.message, /找不到/);
+  for (const removed of [file, mirror, path.join(directory, '.list-cache', first.id + '.jpg')]) {
+    await assert.rejects(fs.stat(removed), { code: 'ENOENT' });
+  }
+  const cold = createDraftStore(directory);
+  assert.deepEqual(await cold.list(), [second]);
+  await assert.rejects(cold.open(first.id), /找不到/);
+  assert.equal((await cold.open(second.id)).assets.get('image').path, image);
+  const manual = path.join(directory, second.id + '.素材库', '素材', '个人笔记');
+  await fs.writeFile(manual, 'keep');
+  await cold.remove({ id: second.id, expectedRevision: second.revision });
+  assert.deepEqual(await createDraftStore(directory).list(), []);
+  assert.equal(await fs.readFile(manual, 'utf8'), 'keep');
+  assert.deepEqual(await fs.readFile(image), bytes);
+  assert.deepEqual(await fs.readFile(external), projectBytes);
+});
+
 test('folder-only audio and visual assets persist without a timeline reference', async t=>{
   const root=await testDirectory(t), files=await fixtures(root), file=path.join(root,'素材目录.sdworkbench');
   const libraryFolders=[{id:'group',parentId:null,scope:null,name:'声画',assetIds:['still','music'],

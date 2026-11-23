@@ -21,17 +21,7 @@
   background: var(--selected-surface);
   color: var(--system-blue);
 }
-.app-frame[data-mode="montage"] .track-toolbar :is(.track-choice, .track-interval) {
-  display: inline-flex;
-  align-items: center;
-  gap: 4px;
-  color: var(--muted);
-  white-space: nowrap;
-  font-size: 12px;
-}
 .app-frame[data-mode="montage"] .track-toolbar :is(input[type="number"], select) { padding: 3px 4px; }
-.app-frame[data-mode="montage"] .track-interval input { width: 50px; }
-.app-frame[data-mode="montage"] #track-zoom { width: 78px; accent-color: var(--accent); }
 
 .app-frame[data-mode="montage"] #track-playhead-row {
   display: grid;
@@ -104,7 +94,6 @@
 .app-frame[data-mode="montage"] .track-toolbar button.secondary:not([aria-pressed="true"]) { border-color: transparent; background: transparent; }
 .app-frame[data-mode="montage"] .track-toolbar button.secondary:hover:enabled { background: var(--control); }
 .app-frame[data-mode="montage"] .track-toolbar :is(#track-undo, #track-redo) { min-width: 28px; padding-inline: 5px; }
-.app-frame[data-mode="montage"] .track-toolbar .track-interval { margin-inline-start: 4px; }
 .app-frame[data-mode="montage"] :is(#track-playhead, #track-zoom) { cursor: pointer; }
 .app-frame[data-mode="montage"] #timeline-tracks-panel:has(#shots-empty:not([hidden])) {
   display: flex;
@@ -126,24 +115,75 @@
 .app-frame[data-mode="montage"] #track-more-options[popover] {
   position: fixed;
   position-anchor: --track-more-button;
-  position-area: block-end span-inline-start;
+  position-area: block-end span-inline-end;
   position-try-fallbacks: flip-block, flip-inline, flip-block flip-inline;
   align-self: start;
-  justify-self: end;
+  justify-self: start;
   inset: auto;
-  margin: 6px 0;
-  gap: 9px;
-  width: min(290px, 85vw);
-  max-height: 80dvh;
+  margin: 5px 0;
+  box-sizing: border-box;
+  width: min(260px, calc(100dvw - 16px));
+  /* Prefer the space below the button. Try the opposite edge before scrolling. */
+  max-height: max(calc(100% - 10px), calc(50dvh - 24px));
   overflow: auto;
-  padding: 12px;
+  overscroll-behavior: contain;
+  padding: 6px;
   border: 1px solid var(--glass-edge);
-  border-radius: 16px;
+  border-radius: 12px;
   background: var(--glass-surface);
   backdrop-filter: var(--glass-filter);
   box-shadow: var(--glass-shadow), 0 9px 24px color-mix(in srgb, var(--ink) 13%, transparent);
   color: var(--ink);
+  font-size: 12px;
+  line-height: 1.4;
 }
 .app-frame[data-mode="montage"] #track-more-options:popover-open { display: grid; }
-.app-frame[data-mode="montage"] #track-more-options[popover] .track-view-options { padding-top: 6px; border-top: 1px solid var(--hairline); }
+#track-more-options :is(.track-tools-command, .track-tools-commands button) {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  width: 100%;
+  padding-inline: 9px;
+  border-radius: 6px;
+  text-align: start;
+}
+#track-more-options .track-tools-command .ui-icon { width: 12px; height: 12px; color: var(--secondary-ink); }
+#track-more-options .track-tools-commands { display: grid; }
+#track-more-options :is(.track-tools-slice, .track-tools-view) {
+  display: grid;
+  grid-template-columns: minmax(70px, 1fr) minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 3px 8px;
+  padding: 5px 8px;
+}
+#track-more-options .track-tools-view {
+  margin: 4px 1px 0;
+  padding-top: 7px;
+  border-top: 1px solid var(--hairline);
+  grid-auto-rows: minmax(28px, auto);
+}
+#track-more-options label { margin: 0; white-space: nowrap; color: var(--ink); font-size: inherit; font-weight: normal; }
+#track-more-options .track-tools-duration { display: flex; align-items: center; gap: 4px; color: var(--secondary-ink); }
+#track-more-options .track-tools-duration input, #track-more-options #track-height {
+  box-sizing: border-box;
+  min-width: 0;
+  height: 25px;
+  padding: 2px 6px;
+  border: 1px solid var(--hairline);
+  border-radius: 5px;
+  background: var(--field-fill);
+  color: var(--ink);
+  font-variant-numeric: tabular-nums;
+}
+#track-more-options .track-tools-duration input { width: 100%; }
+#track-more-options #track-height { grid-column: 2 / -1; justify-self: end; width: 68px; }
+#track-more-options #track-zoom { width: 100%; min-width: 0; margin: 0; accent-color: var(--system-blue); }
+#track-more-options :is(#track-slice, #timeline-fit) {
+  padding: 3px 7px;
+  border-radius: 6px;
+  color: var(--system-blue);
+  font-size: 12px;
+  white-space: nowrap;
+}
+#track-more-options .p-switch { grid-column: 1 / -1; min-height: 28px; }
 .app-frame[data-mode="montage"] #montage-pane:has(#shots-empty:not([hidden])) .track-toolbar:has(#track-reset:disabled) #track-more { display: none; }

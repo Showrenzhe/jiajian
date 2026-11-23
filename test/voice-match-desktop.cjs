@@ -80,14 +80,14 @@ async function run() {
     }
     throw new Error(label + ' / ' + await read(node('#notice') + '.textContent'));
   }
-  async function click(expr, button = 'left') {
+  async function click(expr, button = 'left',clickCount=1) {
     const position = await read('(async () => {let el=' + expr
       + '; if (!el?.checkVisibility() || el.disabled) return null; el.scrollIntoView({block:"nearest",inline:"nearest",behavior:"instant"});'
       + 'await new Promise(requestAnimationFrame);el='+expr+';if(!el?.checkVisibility() || el.disabled) return null;const r=el.getBoundingClientRect(),x=r.x+r.width/2,y=r.y+r.height/2;'
       + 'return el.contains(document.elementFromPoint(x,y)) ? {x,y} : null;})()');
     assert.ok(position, '无法点击 ' + expr);
     for (const type of ['mousePressed', 'mouseReleased']) {
-      await wc.debugger.sendCommand('Input.dispatchMouseEvent', { type, ...position, button, clickCount: 1,
+      await wc.debugger.sendCommand('Input.dispatchMouseEvent', { type, ...position, button, clickCount,
         buttons: type === 'mouseReleased' ? 0 : button === 'right' ? 2 : 1 });
     }
   }
@@ -175,8 +175,10 @@ async function run() {
     await click(node('#track-undo'));
     await verify(before, '撤销候选匹配');
     await click(shotHeader(0), 'right');
+    assert.ok(await read('!document.querySelector("dialog[open],:popover-open")'),'分镜右键保留为空');
+    await click(shotHeader(0), 'left', 2);
     await click(menu(group));
-    await verify([[1, 1], [4, 2.5], [3.5]], '分镜右键应匹配本镜内两条候选');
+    await verify([[1, 1], [4, 2.5], [3.5]], '分镜属性应匹配本镜内两条候选');
     await click(node('#track-undo'));
     await verify(before, '一次撤销应恢复整个分镜');
     await click(node('#match-all-voice-duration'));

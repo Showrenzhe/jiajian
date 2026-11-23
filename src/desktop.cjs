@@ -32,7 +32,7 @@ const { prepareSourceEdit } = require('./source-edit.cjs');
 const { detectPauses, processAudio, retimeCaptions } = require('./audio-tools.cjs');
 const { createCreativeSettings, runCreative } = require('./creative-service.cjs');
 const { createWaveformCache } = require('./waveform-cache.cjs');
-const { createPerformanceCache, readPerformance } = require('./performance-cache.cjs');
+const { createPerformanceCache } = require('./performance-cache.cjs');
 const { createAppUpdates } = require('./app-updates.cjs');
 
 const scheme = 'sd-workbench';
@@ -179,7 +179,6 @@ async function launchDesktop({
   app.setName('佳剪');
   mkdirSync(dataDirectory, { recursive: true });
   app.setPath('userData', dataDirectory);
-  if (!app.isReady() && !readPerformance(dataDirectory).gpu) app.disableHardwareAcceleration();
   if (show && !app.requestSingleInstanceLock()) {
     app.quit();
     return null;
@@ -839,7 +838,7 @@ async function launchDesktop({
   handle('workbench:proxy-default', () => performanceCache.settings.defaultProxy);
   handle('workbench:performance-settings', () => performanceCache.view());
   handle('workbench:performance-save', (patch) => {
-    if (!patch || Object.keys(patch).some(key => !['gpu','optimization','defaultProxy'].includes(key))) throw new Error('性能设置无效。');
+    if (!patch || Object.keys(patch).some(key => !['optimization','defaultProxy'].includes(key))) throw new Error('性能设置无效。');
     if (patch.optimization && patch.optimization !== performanceCache.settings.optimization) clearTrackProxies();
     return performanceCache.change(patch);
   });
@@ -858,6 +857,7 @@ async function launchDesktop({
   });
   handle('workbench:subtitle-style-preview', previewSubtitleStyle);
   handle('workbench:list-drafts', async () => (await drafts.list()).map(publicDraft));
+  handle('workbench:delete-draft', (value) => drafts.remove(value));
   handle('workbench:create-draft', async (value) => {
     if (!value || typeof value !== 'object' || Array.isArray(value)) throw new Error('草稿请求无效。');
     return publicDraft(await drafts.create(value, new Map(catalog)));

@@ -85,7 +85,7 @@ async function check() {
         const cursor=document.querySelector('.sequence-cursor');
         const rulerContent=document.querySelector('.sequence-ruler .sequence-content');
         const unit=parseFloat(document.querySelector('.sequence-video [data-drop-shot="1"]')?.style.left);
-        const seconds=cursor && unit ? (parseFloat(cursor.style.left)-rulerContent.offsetLeft)/unit : 0;
+        const seconds=cursor && unit ? (cursor.getBoundingClientRect().left+cursor.offsetWidth/2-rulerContent.getBoundingClientRect().left)/unit : 0;
         const player=document.querySelector('#preview');
         const flags=(document.querySelector('.preview-frame-hold') ? 1 : 0)
           + (player.seeking ? 2 : 0) + player.readyState*4;

@@ -176,15 +176,17 @@ async function check() {
     await mouse('mousePressed',last);await mouse('mouseMoved',beginning);
     await wait(host+'.scrollLeft===0','拖动至左边缘应持续滚到片头');
     await mouse('mouseReleased',beginning);await wait(order+'[0]==="C"','尾镜跨屏移到最前面');
-    const context=selector=>read(query(selector)+'.dispatchEvent(new MouseEvent("contextmenu",{bubbles:true,cancelable:true}))');
     const action=text=>read('[...document.querySelectorAll("dialog[open] button")].find(b=>b.textContent==='+JSON.stringify(text)+').click()');
     const shotCell=i=>'.sequence-shots [data-drop-shot="'+i+'"]';
+    async function clipboardKey(selector,letter) {
+      await click(selector);await read(query(selector)+'.focus()');await key(letter,letter.toUpperCase().charCodeAt(0),2);
+    }
     const firstVoice='[data-voice-shot="0"][data-voice-row="0"]';
-    await context(firstVoice);
+    await click(firstVoice);await click('#selected-voice-settings');
     await read('document.querySelector("dialog[open] input[type=number]").value="2"');
     await action('保存');
     await wait('!document.querySelector("dialog[open]")','保存口播速度');
-    await context('.sequence-music .sequence-block');
+    await read(query('.sequence-music .sequence-block')+'.dispatchEvent(new MouseEvent("dblclick",{bubbles:true}))');
     await read('document.querySelector("dialog[open] input[type=number]").value=".75"');
     await action('保存');
 
@@ -192,17 +194,23 @@ async function check() {
     await drag(9,0,.2);await wait(order+'[1]==="C"','将空镜移到 C 前');
     await drag(9,2,.2);await wait(order+'[3]==="A"','将空镜移到 A 前');
     const srcVoice='[data-voice-shot="1"][data-voice-row="0"]';
-    await context(srcVoice);await action('复制口播');
-    await context(shotCell(0));await action('粘贴口播');
+    await clipboardKey(srcVoice,'c');
+    await clipboardKey(shotCell(0),'v');
     await wait('!'+query(firstVoice)+'.classList.contains("sequence-empty")','口播粘贴到目标分镜');
 
     const srcVideo='[data-candidate-index="0"][data-drop-shot="1"]';
     await click(srcVideo);await read(query(srcVideo)+'.focus()');await key('c',67,2);
     await click(shotCell(2));await read(query(shotCell(2))+'.focus()');await key('v',86,2);
     await wait('!'+query('[data-candidate-index="0"][data-drop-shot="2"]')+'.classList.contains("sequence-empty")','快捷键粘贴完整视频');
-    await context('[data-lane-key="caption0"] .sequence-block');await action('复制字幕');
+    await clipboardKey('[data-lane-key="caption0"] .sequence-block','c');
     await click(shotCell(2));await read(query(shotCell(2))+'.focus()');await key('v',86,2);
     await wait('!!'+query('[data-lane-key="pasted-captions"] .sequence-block'),'独立时间轴字幕');
+    for(const lane of ['caption0','pasted-captions']) {
+      for(const part of ['.sequence-head','.sequence-content','.sequence-block']) {
+        const target=query('[data-lane-key="'+lane+'"] '+part);
+        assert.ok(await read('!'+target+'.dispatchEvent(new MouseEvent("contextmenu",{bubbles:true,cancelable:true})) && !document.querySelector("dialog[open],:popover-open")'),'字幕右键不打开菜单 '+lane+' '+part);
+      }
+    }
     await click('#track-undo');await wait('!'+query('[data-lane-key="pasted-captions"]'),'撤销粘贴字幕');
     await click('#track-redo');await wait('!!'+query('[data-lane-key="pasted-captions"]'),'重做粘贴字幕');
     const afterPaste=path.join(root,'粘贴与倍速.sdworkbench');
@@ -216,7 +224,7 @@ async function check() {
     assert.equal(revised.timelineCaptions.cues[0].text,'出锅');
     assert.equal(revised.timelineCaptions.cues[0].end-revised.timelineCaptions.cues[0].start,90);
     await click('#open-project');await wait(query('#notice')+'.textContent.includes("已打开工程")','重开粘贴工程');
-    await context(firstVoice);
+    await click(firstVoice);await click('#selected-voice-settings');
     assert.equal(await read('document.querySelector("dialog[open] input[type=number]").valueAsNumber'),2);
     await action('关闭');
     const cell=(shot,row)=>'[data-drop-shot="'+shot+'"][data-candidate-index="'+row+'"]';
@@ -224,7 +232,7 @@ async function check() {
     await click(cell(2,0));await read(query(cell(2,0))+'.focus()');await key('c',67,2);
     await click(cell(3,0));await read(query(cell(3,0))+'.focus()');await key('v',86,2);
     await wait('!!'+filled(3,1),'粘贴到已有候选的分镜应追加视频');
-    await context(shotCell(3));await action('粘贴视频');
+    await clipboardKey(shotCell(3),'v');
     await wait('!!'+filled(3,2),'再次粘贴同源视频应追加一个独立候选');
     await click('#track-undo');await wait('!'+filled(3,2)+' && !!'+filled(3,1),'撤销只移除本次粘贴');
 
@@ -287,16 +295,19 @@ async function check() {
     }
 
     async function previewSwap() {
-      await mouse('mousePressed',sourcePoint);
+      // A notice above the panel can move the lanes between separate gestures.
+      const from=await center(source), to=await center(target), home=await bounds(source);
+      await mouse('mousePressed',from);
       await wait('!!'+query('.candidate-moving'),'按下时提起视频');
-      await mouse('mouseMoved',targetPoint);
-      await wait(atSlot('.candidate-displaced',sourceBounds),'松手前目标视频应填入源候选行，并适配其宽度');
+      await mouse('mouseMoved',to);
+      await wait(atSlot('.candidate-displaced',home),'松手前目标视频应填入源候选行，并适配其宽度');
       await wait(clipNamed('.candidate-displaced',files.green)+' && '+clipNamed('.candidate-moving',files.blue),'预览应显示原片段');
       const lifted=await bounds('.candidate-moving');
-      assert.ok(Math.abs(lifted.x+lifted.width/2-targetPoint.x)<5 && Math.abs(lifted.y+lifted.height/2-targetPoint.y)<5,'提起的视频应跟随指针');
-      const moved={x:targetPoint.x+14,y:targetPoint.y+2};
+      assert.ok(Math.abs(lifted.x+lifted.width/2-to.x)<5 && Math.abs(lifted.y+lifted.height/2-to.y)<5,'提起的视频应跟随指针');
+      const moved={x:to.x+14,y:to.y+2};
       await mouse('mouseMoved',moved);
       await wait('Math.abs('+query('.candidate-moving')+'.getBoundingClientRect().x-'+(lifted.x+14)+')<3','目标格内继续移动时视频跟随指针');
+      return moved;
     }
     await previewSwap();
     await mouse('mouseMoved',emptyPoint);
@@ -311,7 +322,7 @@ async function check() {
     await wait(clipNamed(cell(0,0)+'[title*="'+path.basename(files.blue)+'"]',files.blue)+' && !'+filled(0,1),'空白处按鼠标时间接收视频，源分镜可以在同轨分时放置候选');
     await click('#track-undo');await wait(clipNamed(source,files.blue)+' && !'+filled(3,0),'撤销空分镜移动');
     await restored();
-    await previewSwap();await mouse('mouseReleased',targetPoint);await restored();
+    await mouse('mouseReleased',await previewSwap());await restored();
     const exchanged=clipNamed(target,files.blue)+' && '+clipNamed(source,files.green);
     await wait(exchanged,'松手后只交换指定的两个槽位');
     await click('#track-undo');await wait(clipNamed(source,files.blue),'一次撤销互换');
@@ -818,7 +829,10 @@ async function check() {
     }
 
     opens.push(singleFile);await click('#open-project');await wait(rows+'===1 && '+clipNamed(cell(1,0),files.green),'重开单轨原稿');
-    const switchProject=id=>read(`(()=>{const e=${query('#subproject-select')};e.value=${JSON.stringify(id)};e.dispatchEvent(new Event("change"))})()`);
+    async function switchProject(id) {
+      await wait('!'+query('#subproject-select')+'.disabled','工程打开完成后可以切换子工程');
+      await read(`(()=>{const e=${query('#subproject-select')};e.value=${JSON.stringify(id)};e.dispatchEvent(new Event("change"))})()`);
+    }
     await switchProject('alt');await fitTimeline();await commitNewLane(0);
     const branchFile=await saveAs('子工程新增轨');
     opens.push(branchFile);await click('#open-project');

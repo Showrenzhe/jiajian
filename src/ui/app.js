@@ -103,7 +103,22 @@ const countField = $('#count');
 // Discrete wheel notches and precision touchpad deltas drive the same zoom controls.
 function bindWheelZoom(element, onZoom) {
   const isMac = navigator.platform.startsWith('Mac');
-  let pending = 0, previousTime = -Infinity;
+  let pending = 0, previousTime = -Infinity, frame;
+  let steps = [], pointer;
+  function queue(amount,event) {
+    steps.push(amount);
+    pointer={clientX:event.clientX,clientY:event.clientY};
+    if(frame!==undefined) return;
+    frame=requestAnimationFrame(()=>{
+      frame=undefined;
+      const batch=steps;
+      steps=[];
+      // Clamp each notch in order so reversing at a limit still moves one step.
+      const levelAfter=(current,min,max,direction=1)=>batch.reduce(
+        (level,amount)=>Math.max(min,Math.min(max,level+direction*amount)),current);
+      if(element.clientWidth) onZoom(levelAfter,pointer);
+    });
+  }
   element.addEventListener('wheel', (event) => {
     const mode = event.deltaMode;
     if (!(event.ctrlKey || (isMac && event.metaKey)) || event.altKey || event.shiftKey
@@ -116,14 +131,14 @@ function bindWheelZoom(element, onZoom) {
     const distance = -event.deltaY * unit;
     if (Math.abs(distance) >= 80 || (mode !== WheelEvent.DOM_DELTA_PIXEL && Math.abs(event.deltaY) >= 1)) {
       pending = 0;
-      onZoom(Math.sign(distance) * Math.max(1, Math.round(Math.abs(distance) / 100)), event);
+      queue(Math.sign(distance) * Math.max(1, Math.round(Math.abs(distance) / 100)), event);
     } else {
       if (event.timeStamp - previousTime > 220 || pending * distance < 0) pending = 0;
       pending += distance;
       const steps = Math.trunc(pending / 48);
       if (steps) {
         pending -= steps * 48;
-        onZoom(steps, event);
+        queue(steps, event);
       }
     }
     previousTime = event.timeStamp;
@@ -229,17 +244,29 @@ function onTrackScroll(source, target) {
   if (!trackScrollbar.hidden && source.scrollLeft !== mirrored) mirrorScroll(source, target);
 }
 
-function updateTrackScrollbar() {
-  const viewport = activeTrackViewport();
-  const overflow = viewport.scrollWidth - viewport.clientWidth;
-  trackScrollbar.hidden = $('#timeline-tracks-panel').hidden || overflow <= 0;
-  trackScrollbar.setAttribute('aria-controls', viewport.id);
+function setTrackScrollbarRange(viewport,overflow) {
+  const hidden=$('#timeline-tracks-panel').hidden || overflow<=0;
+  if(trackScrollbar.hidden!==hidden) trackScrollbar.hidden=hidden;
+  if(trackScrollbar.getAttribute('aria-controls')!==viewport.id) trackScrollbar.setAttribute('aria-controls', viewport.id);
   if (trackScrollbar.hidden) return;
   const size = `${overflow}px`;
   if (trackScrollbar.style.getPropertyValue('--track-horizontal-overflow') !== size) {
     trackScrollbar.style.setProperty('--track-horizontal-overflow', size);
   }
-  mirrorScroll(viewport, trackScrollbar);
+}
+
+function updateTrackScrollbar() {
+  const viewport = activeTrackViewport();
+  setTrackScrollbarRange(viewport,viewport.scrollWidth-viewport.clientWidth);
+  if(!trackScrollbar.hidden) mirrorScroll(viewport, trackScrollbar);
+}
+
+function zoomTrackScrollbar(viewport,overflow,left) {
+  setTrackScrollbarRange(viewport,overflow);
+  if(trackScrollbar.hidden) return;
+  trackScrollbar.scrollLeft=left;
+  mirroredScroll.set(trackScrollbar,left);
+  mirroredScroll.set(viewport,left);
 }
 
 function activeTrackViewport() {
@@ -262,6 +289,11 @@ async function openEditorForImport() {
 
 const draftLibrary = window.mountDraftLibrary($('#draft-library'), {
   load: api.listDrafts, open: openDraft, importMaterials: openEditorForImport,
+  async remove({ id, revision }) {
+    await api.deleteDraft({ id, expectedRevision: revision });
+    draftAutosave.forget(id);
+  },
+  notify: sayProject,
   showEmptyImport: () => mode === 'drafts',
 });
 const draftAutosave = window.createDraftAutosave({
@@ -312,7 +344,7 @@ const reviewWaveform = window.attachPlayerWaveform($('#narration-review-audio'))
 const materialList = $('#material-list');
 const materialMenu = $('#material-context-menu');
 let materialMenuTarget;
-bindWheelZoom(materialPanel, (steps, event) => {
+bindWheelZoom(materialPanel, (levelAfter, event) => {
   const style = getComputedStyle(materialList);
   const width = materialList.clientWidth;
   if (!width) return;
@@ -320,7 +352,7 @@ bindWheelZoom(materialPanel, (steps, event) => {
   const columns = style.gridTemplateColumns.split(' ').length;
   const minimum = parseFloat(style.getPropertyValue('--material-min-width'));
   const maxColumns = Math.max(1, Math.floor((width + gap) / (minimum + gap)));
-  const next = Math.max(1, Math.min(maxColumns, columns - steps));
+  const next = levelAfter(columns,1,maxColumns,-1);
   if (next === columns) return;
 
   const tile = document.elementFromPoint(event.clientX, event.clientY)?.closest('#material-list > li, #material-folders > li');
@@ -434,6 +466,11 @@ function seekPreview() {
 function seekTimelineVideo(clip, time) {
   const target=Math.max(clip.start,Math.min(clip.end,time));
   if(proxyResume?.clip===clip) proxyResume.time=target;
+  if(player.seeking) {
+    // Keep the latest pointer position while the decoder finishes its in-flight seek.
+    pendingTimelineSeek={clip,time:target};
+    return;
+  }
   if(player.readyState && player.currentSrc===player.getAttribute('src')) {
     pendingTimelineSeek=undefined;
     if(Math.abs(player.currentTime-target)>1e-6) {
@@ -527,24 +564,27 @@ function preview(clip, heading, materialId) {
   $('#preview-name').hidden = false;
   $('.preview-readout-name').textContent = clip.asset.name;
   updatePreviewTimecode(isImage ? 0 : clip.start);
-  if (mode === 'montage' && heading !== '成片预览') activateInspectorTab($('#inspector-tab-visual'));
+  if (mode === 'montage' && heading !== '成片预览' && $('#inspector-tab-visual').ariaSelected!=='true') activateInspectorTab($('#inspector-tab-visual'));
   playerTools.reset();
   timeline?.selectClip(clip);
+  const previousMaterial=locatedMaterial;
   locatedMaterial = heading === '素材预览' ? clip.asset.sourceKey ?? clip.asset.id : undefined;
-  timeline?.locateMaterial(locatedMaterial, Boolean(locatedMaterial));
-  for (const row of visualTrackLane.querySelectorAll('[data-clip-source]')) {
-    row.classList.toggle('material-instance', row.dataset.clipSource === locatedMaterial);
-  }
-  let firstShot;
-  for (const card of visualTrackLane.querySelectorAll('.shot')) {
-    const shot = shots[Number(card.dataset.shotIndex)];
-    const match = locatedMaterial && shot?.some(item => originalMaterialKey(item) === locatedMaterial);
-    card?.classList.toggle('material-shot', Boolean(match));
-    if (match && !firstShot) firstShot = card;
-  }
-  if (firstShot && shotViewport.clientWidth) {
-    const area = shotViewport.getBoundingClientRect(), rect = firstShot.getBoundingClientRect();
-    if (rect.left < area.left || rect.left >= area.right) shotViewport.scrollLeft += rect.left - area.left;
+  if(locatedMaterial || previousMaterial) {
+    timeline?.locateMaterial(locatedMaterial, Boolean(locatedMaterial));
+    for (const row of visualTrackLane.querySelectorAll('[data-clip-source]')) {
+      row.classList.toggle('material-instance', row.dataset.clipSource === locatedMaterial);
+    }
+    let firstShot;
+    for (const card of visualTrackLane.querySelectorAll('.shot')) {
+      const shot = shots[Number(card.dataset.shotIndex)];
+      const match = locatedMaterial && shot?.some(item => originalMaterialKey(item) === locatedMaterial);
+      card.classList.toggle('material-shot', Boolean(match));
+      if (match && !firstShot) firstShot = card;
+    }
+    if (firstShot && shotViewport.clientWidth) {
+      const area = shotViewport.getBoundingClientRect(), rect = firstShot.getBoundingClientRect();
+      if (rect.left < area.left || rect.left >= area.right) shotViewport.scrollLeft += rect.left - area.left;
+    }
   }
   updateMaterialSelection();
   updateTrackSelection();
@@ -601,7 +641,12 @@ function setPreviewAspect(width, height) {
 still.addEventListener('load', () => {
   if (!still.hidden) setPreviewAspect(still.naturalWidth, still.naturalHeight);
 });
-player.addEventListener('seeked', updateTrackSelection);
+player.addEventListener('seeked', () => {
+  if(pendingTimelineSeek && pendingTimelineSeek.clip===selected && player.currentSrc===player.getAttribute('src')) {
+    seekTimelineVideo(selected,pendingTimelineSeek.time);
+  }
+  updateTrackPlayhead();
+});
 player.addEventListener('play', () => {
   if (selected && (player.currentTime < selected.start || player.currentTime >= selected.end)) seekPreview();
 });
@@ -611,7 +656,7 @@ player.addEventListener('timeupdate', () => {
     if (validClip(selected) && player.currentTime > selected.end) player.currentTime = selected.end;
   }
   if (selected && !player.hidden) updatePreviewTimecode(player.currentTime);
-  updateTrackSelection();
+  updateTrackPlayhead();
 });
 function updatePreviewTimecode(seconds) {
   const milliseconds = Math.max(0, Math.round((seconds || 0) * 1000));
@@ -1493,8 +1538,10 @@ function renderMaterials() {
 }
 
 function updateMaterialSelection() {
+  const activeId=previewedMaterial ?? (selected && originalMaterial(selected).id);
   for (const tile of document.querySelectorAll('.material-tile')) {
-    tile.setAttribute('aria-pressed', String(tile.dataset.materialId === (previewedMaterial ?? (selected && originalMaterial(selected).id))));
+    const pressed=String(tile.dataset.materialId===activeId);
+    if(tile.ariaPressed!==pressed) tile.ariaPressed=pressed;
   }
 }
 
@@ -2327,6 +2374,13 @@ function canRemoveEmptyShot(shot) {
   return !shot.length && !(segmentNarrations.get(shot) ?? []).some(Boolean);
 }
 
+function updateTrackPlayhead(ready=selected?.asset.kind==='video' && player.readyState>=1 && !player.error && validClip(selected) && trackShot()) {
+  const time=ready ? Math.max(selected.start,Math.min(selected.end,player.currentTime)) : 0;
+  if(ready) $('#track-playhead').value=time;
+  const value=time.toFixed(3)+' 秒', label=$('#track-playhead-time');
+  if(label.textContent!==value) label.textContent=value;
+}
+
 function updateTrackSelection() {
   const shot = trackShot();
   const row = shot ? clipRows.get(selected) : undefined;
@@ -2341,15 +2395,13 @@ function updateTrackSelection() {
   const locked=videoLocked(shot,selected);
   const canSlice = video && !locked && shot.length === 1 && shots.length < maxShots;
   const playhead = $('#track-playhead');
-  const time = ready ? Math.max(selected.start, Math.min(selected.end, player.currentTime)) : 0;
   $('#track-playhead-row').hidden = !video || !$('#track-preview-axis').checked;
   playhead.disabled = busy || !ready;
   if (ready) {
     playhead.min = selected.start;
     playhead.max = selected.end;
-    playhead.value = time;
   }
-  $('#track-playhead-time').textContent = `${time.toFixed(3)} 秒`;
+  updateTrackPlayhead(Boolean(ready));
   const interval = $('#track-slice-interval').valueAsNumber;
   $('#track-slice').disabled = busy || !canSlice || !(interval >= minClipSeconds && selected.end - selected.start > interval + 1e-9);
   $('#track-delete').disabled = busy || ((!shot || locked) && !timeline?.selectionCount);
@@ -5437,7 +5489,7 @@ timeline = window.mountEditTimeline($('#timeline-clock'), {
   recognize:(asset)=>api.recognizeSpeech(asset.id),importSrt:()=>api.pickSubtitles(),cancelRecognition:()=>api.cancel(),
   captions:editVideoCaptions,slices:(asset)=>cutEditor.openSlices(asset),
   state:timelineState, busy:()=>Boolean(operation), thumbnail:(id,time)=>api.clipThumbnail(id,time), asset:(id)=>editAssets.get(id),
-  change:renderLists, scroll:updateTrackScrollbar, showZoom:showTrackZoom, setCardZoom,
+  change:renderLists, scroll:updateTrackScrollbar, zoomScroll:zoomTrackScrollbar, showZoom:showTrackZoom, setCardZoom,
   showAxis:()=>$('#track-preview-axis').checked,
   shotSettings:(shot,value)=>shotProperties.set(shot,value), newShot:()=>$('#add-shot').click(),
   createAt:(i)=>{if(!operation && i>=0 && i<maxShots){while(shots.length<=i) shots.push([]);renderLists();}},
@@ -5602,8 +5654,8 @@ trackZoom.addEventListener('input', () => {
   updateTrackScrollbar();
 });
 for (const viewport of [$('#timeline-clock'), shotViewport]) {
-  bindWheelZoom(viewport, (steps, event) => {
-    const level = Math.max(Number(trackZoom.min), Math.min(Number(trackZoom.max), trackZoom.valueAsNumber + steps));
+  bindWheelZoom(viewport, (levelAfter, event) => {
+    const level = levelAfter(trackZoom.valueAsNumber,Number(trackZoom.min),Number(trackZoom.max));
     if (level === trackZoom.valueAsNumber) return;
     const cards = viewport === shotViewport;
     let anchorCard, anchorX, fraction;
@@ -5619,7 +5671,7 @@ for (const viewport of [$('#timeline-clock'), shotViewport]) {
     }
     trackZoom.valueAsNumber = level;
     if (cards) timeline.zoomFromCards(level);
-    else timeline.zoom(level, event.clientX);
+    else timeline.zoom(level, event.clientX,true);
     if (anchorCard) {
       const box = anchorCard.getBoundingClientRect();
       viewport.scrollLeft += box.left + fraction * box.width - anchorX;

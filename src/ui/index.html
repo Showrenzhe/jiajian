@@ -118,6 +118,8 @@
         <symbol id="icon-track-eye-off" viewBox="0 0 20 20"><path d="M2 2l16 16M7.5 5a9 9 0 0 1 2.5-.4c5.5 0 8.5 5.4 8.5 5.4s-.8 1.5-2.3 2.9M4.2 6.7A14 14 0 0 0 1.5 10s3 5.4 8.5 5.4c1.2 0 2.4-.3 3.5-.7"/></symbol>
         <symbol id="icon-track-sound" viewBox="0 0 20 20"><path d="M2 8h3.2L10 4v12l-4.8-4H2zM13 7a4 4 0 0 1 0 6m2.5-8.5a7.5 7.5 0 0 1 0 11"/></symbol>
         <symbol id="icon-track-mute" viewBox="0 0 20 20"><path d="M2 8h3.2L10 4v12l-4.8-4H2zM13.3 8l4.2 4.2m0-4.2-4.2 4.2"/></symbol>
+        <symbol id="icon-track-delete" viewBox="0 0 20 20"><path d="M3 5.5h14M7 5.5V4A1.5 1.5 0 0 1 8.5 2.5h3A1.5 1.5 0 0 1 13 4v1.5M5 6l.8 10a1.5 1.5 0 0 0 1.5 1.5h5.4a1.5 1.5 0 0 0 1.5-1.5L15 6m-6.7 2.5.3 6m3.1-6-.3 6"/></symbol>
+        <symbol id="icon-track-insert-left" viewBox="0 0 20 20"><path d="M3 3v14m1.5-7H11M7.5 6.8 4.3 10l3.2 3.2"/><rect x="12.5" y="4.5" width="5" height="11" rx="1.3"/></symbol>
               <symbol id="icon-save-project" viewBox="0 0 24 24"><path d="M5 3h11l4 4v13H4V3zM7 3v6h9V3M8 20v-7h8v7"/></symbol>
         <symbol id="icon-undo-edit" viewBox="0 0 24 24"><path d="m8 5-5 5 5 5m-5-5h10a7 7 0 0 1 7 7"/></symbol>
         <symbol id="icon-redo-edit" viewBox="0 0 24 24"><path d="m16 5 5 5-5 5m5-5H11a7 7 0 0 0-7 7"/></symbol>
@@ -192,6 +194,17 @@
                 <button type="button" id="draft-status-action" class="home-link" hidden></button>
               </div>
               <ul id="draft-list" class="draft-list" data-view="grid" aria-label="本地草稿"></ul>
+              <div id="draft-context-menu" popover="auto" role="menu" aria-label="草稿操作">
+                <button type="button" role="menuitem" id="draft-context-delete"><svg class="ui-icon" aria-hidden="true"><use href="#icon-track-delete"></use></svg>删除</button>
+              </div>
+              <dialog id="draft-delete-dialog" class="narration-review" aria-labelledby="draft-delete-title" aria-describedby="draft-delete-detail">
+                <h2 id="draft-delete-title"></h2>
+                <p id="draft-delete-detail" class="muted compact">删除草稿后无法撤销。原始素材和另存的工程文件会保留。</p>
+                <div class="narration-review-actions">
+                  <button type="button" id="draft-delete-cancel" class="secondary" autofocus>取消</button>
+                  <button type="button" id="draft-delete-confirm" class="secondary">删除</button>
+                </div>
+              </dialog>
             </div>
             <section id="home-local-tools" class="home-local-tools" aria-labelledby="local-tools-heading">
               <h2 id="local-tools-heading">本地创作</h2>
@@ -301,18 +314,18 @@
       <div id="montage-pane">
         <div class="timeline-header">
           <div role="tablist" aria-label="混剪轨道与预览">
-            <button type="button" class="timeline-tab" id="timeline-tracks-tab" role="tab" aria-selected="true" aria-controls="timeline-tracks-panel"><svg class="ui-icon" aria-hidden="true"><use href="#icon-tracks"></use></svg>分镜轨道</button>
-            <button type="button" class="timeline-tab" id="timeline-batch-tab" role="tab" aria-selected="false" aria-controls="preview-batch" tabindex="-1" disabled><svg class="ui-icon" aria-hidden="true"><use href="#icon-layers"></use></svg>批量预览</button>
+            <button type="button" class="timeline-tab" id="timeline-tracks-tab" role="tab" aria-selected="true" aria-controls="timeline-tracks-panel" aria-label="分镜轨道" title="分镜轨道"><svg class="ui-icon" aria-hidden="true"><use href="#icon-tracks"></use></svg><span>分镜轨道</span></button>
+            <button type="button" class="timeline-tab" id="timeline-batch-tab" role="tab" aria-selected="false" aria-controls="preview-batch" aria-label="批量预览" title="批量预览" tabindex="-1" disabled><svg class="ui-icon" aria-hidden="true"><use href="#icon-layers"></use></svg><span>批量预览</span></button>
           </div>
           <div class="track-toolbar" role="group" aria-label="分镜轨道工具">
             <div class="track-edit-actions" role="group" aria-label="编辑分镜">
-              <select id="timeline-view" aria-label="轨道视图"><option value="time">时间线</option><option value="cards">分镜卡片</option></select>
+              <span class="timeline-view-picker"><select id="timeline-view" aria-label="轨道视图"><option value="time">时间线</option><option value="cards">分镜卡片</option></select><svg class="ui-icon" aria-hidden="true"><use href="#icon-chevron"></use></svg></span>
               <button type="button" class="secondary" id="timeline-play" aria-keyshortcuts="Space" aria-label="播放时间线" aria-pressed="false" title="播放时间线（空格）"><svg class="ui-icon" viewBox="0 0 16 16" aria-hidden="true"><path class="play-shape" d="M4 2.8a.6.6 0 0 1 .9-.5l8.1 5.2a.6.6 0 0 1 0 1l-8.1 5.2a.6.6 0 0 1-.9-.5z"/><path class="pause-shape" d="M4 2.7h2.6v10.6H4zm5.4 0H12v10.6H9.4z"/></svg></button>
               <button type="button" class="secondary" id="add-shot" aria-label="新增分镜" title="新增空分镜，再向其中添加一条或多条候选"><svg class="ui-icon" aria-hidden="true"><use href="#icon-plus"></use></svg><span>新增分镜</span></button>
               <button type="button" class="secondary" id="track-undo" aria-label="撤销" title="撤销（Ctrl+Z）"><svg class="ui-icon" aria-hidden="true"><use href="#icon-undo-edit"></use></svg></button>
               <button type="button" class="secondary" id="track-redo" aria-label="恢复" title="恢复（Ctrl+Y）"><svg class="ui-icon" aria-hidden="true"><use href="#icon-redo-edit"></use></svg></button>
             </div>
-            <button type="button" class="secondary" id="timeline-more" popovertarget="timeline-more-menu">制作工具</button>
+            <button type="button" class="secondary" id="timeline-more" popovertarget="timeline-more-menu" aria-label="制作工具" title="制作工具"><svg class="ui-icon" aria-hidden="true"><use href="#icon-spark"></use></svg><span>制作工具</span></button>
             <div popover="auto" id="timeline-more-menu" role="group" aria-label="制作工具">
               <button type="button" class="secondary" id="timeline-scenes">AI 拆分</button>
               <button type="button" class="secondary" id="timeline-cover">设置封面</button>
@@ -324,23 +337,28 @@
               <button type="button" class="secondary" id="timeline-text-tools">批量编辑文字</button>
             </div>
             <div class="track-match-actions">
-              <button type="button" id="track-more" class="secondary" popovertarget="track-more-options"><svg class="ui-icon" aria-hidden="true"><use href="#icon-more"></use></svg>编辑工具</button>
-              <button type="button" id="match-all-voice-duration" class="secondary" title="分段式口播中，按各分镜第一条有音频的口播轨匹配全部候选时长">一键匹配口播</button>
+              <button type="button" id="track-more" class="secondary" popovertarget="track-more-options" aria-label="编辑工具" title="编辑工具"><svg class="ui-icon" aria-hidden="true"><use href="#icon-settings"></use></svg><span>编辑工具</span></button>
+              <button type="button" id="match-all-voice-duration" class="secondary" aria-label="一键匹配口播" title="一键匹配口播 · 按各分镜第一条有音频的口播轨匹配全部候选时长"><svg class="ui-icon" aria-hidden="true"><use href="#icon-audio"></use></svg><span>一键匹配口播</span></button>
             </div>
-            <div id="track-more-options" popover="auto" role="group" aria-label="更多轨道工具">
-              <button type="button" class="secondary" id="clip-actions" aria-haspopup="dialog" disabled>候选操作</button>
-              <div class="track-edit-actions" role="group" aria-label="切片与清理">
-                <label class="track-interval">每段 <input type="number" id="track-slice-interval" min="0.1" step="0.1" value="1" aria-label="原素材切片间隔秒数"> 秒</label>
+            <div id="track-more-options" popover="auto" role="group" aria-label="编辑工具">
+              <button type="button" class="secondary track-tools-command" id="clip-actions" aria-haspopup="dialog" disabled>候选操作<svg class="ui-icon" aria-hidden="true"><use href="#icon-chevron"></use></svg></button>
+              <div class="track-tools-slice">
+                <label for="track-slice-interval">每段时长</label>
+                <span class="track-tools-duration"><input type="number" id="track-slice-interval" min="0.1" step="0.1" value="1" aria-label="原素材切片间隔秒数"><span aria-hidden="true">秒</span></span>
                 <button type="button" class="secondary" id="track-slice" title="按时长切成连续分镜">自动切片</button>
+              </div>
+              <div class="track-tools-commands" role="group" aria-label="清理与重置">
                 <button type="button" class="secondary" id="track-delete">删除素材</button>
                 <button type="button" class="secondary" id="track-clean">清理空分镜</button>
                 <button type="button" class="secondary" id="track-reset">重置</button>
               </div>
-              <div class="track-view-options" role="group" aria-label="轨道显示">
-                <label class="track-choice">轨道高<select id="track-height"><option value="large">大</option><option value="medium">中</option><option value="small">小</option></select></label>
-                <label class="track-choice" title="在轨道上按住 Ctrl（Mac 也可用 ⌘）并滚动鼠标滚轮来缩放">缩放<input type="range" id="track-zoom" min="1" max="5" value="3" aria-label="分镜轨道缩放"></label>
+              <div class="track-tools-view" role="group" aria-label="轨道显示">
+                <label for="track-height">轨道高度</label>
+                <select id="track-height"><option value="large">大</option><option value="medium">中</option><option value="small">小</option></select>
+                <label for="track-zoom" title="在轨道上按住 Ctrl（Mac 也可用 ⌘）并滚动鼠标滚轮来缩放">时间线缩放</label>
+                <input type="range" id="track-zoom" min="1" max="5" value="3" aria-label="分镜轨道缩放">
                 <button type="button" class="secondary" id="timeline-fit">适配</button>
-                <label class="track-choice"><input type="checkbox" id="track-preview-axis" checked>显示播放头</label>
+                <label class="p-switch">显示播放头<input type="checkbox" id="track-preview-axis" role="switch" checked><span aria-hidden="true"></span></label>
               </div>
             </div>
           </div>
@@ -357,10 +375,11 @@
           <button type="button" id="cancel-preview" class="secondary">取消预览</button>
         </div>
         <div id="video-track-menu" popover="auto" role="menu" aria-label="视频轨道操作" tabindex="-1">
-          <button type="button" role="menuitem" data-action="delete">删除</button>
-          <button type="button" role="menuitem" data-action="mute">静音片段</button>
-          <button type="button" role="menuitem" data-action="left">本轨向左插入空位</button>
-          <button type="button" role="menuitem" data-action="right">本轨向右插入空位</button>
+          <button type="button" role="menuitem" data-action="delete"><svg class="ui-icon" aria-hidden="true"><use href="#icon-track-delete"></use></svg>删除</button>
+          <button type="button" role="menuitem" data-action="mute"><svg class="ui-icon" aria-hidden="true"><use href="#icon-track-mute"></use></svg><span>静音片段</span></button>
+          <hr role="separator">
+          <button type="button" role="menuitem" data-action="left"><svg class="ui-icon" aria-hidden="true"><use href="#icon-track-insert-left"></use></svg>本轨向左插入空位</button>
+          <button type="button" role="menuitem" data-action="right"><svg class="ui-icon" aria-hidden="true"><use href="#icon-track-insert-left"></use></svg>本轨向右插入空位</button>
         </div>
         <div id="timeline-tracks-panel" role="tabpanel" aria-labelledby="timeline-tracks-tab" tabindex="0">
           <div id="shots-empty" class="empty">
@@ -559,6 +578,7 @@
               </fieldset>
             </div>
             <div id="inspector-panel-narration" data-inspector-panel role="tabpanel" aria-labelledby="inspector-tab-narration" tabindex="0" hidden>
+              <button type="button" class="secondary" id="selected-voice-settings" hidden>所选口播设置</button>
               <div class="narration-section">
                 <h3 class="inspector-section-title">口播来源</h3>
                 <label class="line-field">口播模式

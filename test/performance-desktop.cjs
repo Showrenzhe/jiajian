@@ -2,24 +2,27 @@
 
 const assert = require('node:assert/strict');
 const fs = require('node:fs/promises');
+const { mkdirSync, mkdtempSync, writeFileSync } = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
+const { mock } = require('node:test');
 const { setTimeout: delay } = require('node:timers/promises');
 const { app } = require('electron');
 const { launchDesktop } = require('../src/desktop.cjs');
 const { clickVisible } = require('./desktop-input.cjs');
 const { ffmpeg } = require('./fixtures.cjs');
 
-app.disableHardwareAcceleration();
 async function run() {
-  const root = await fs.mkdtemp(path.join(os.tmpdir(), 'jiajian-performance-'));
-  app.setPath('userData', path.join(root, 'electron'));
+  // Seed the old preference and enter the real startup path before Electron is ready.
+  const root = mkdtempSync(path.join(os.tmpdir(), 'jiajian-performance-'));
+  const profile = path.join(root, 'profile');
+  mkdirSync(profile);
+  writeFileSync(path.join(profile, 'performance.json'), JSON.stringify({ gpu: false }));
+  const disableAcceleration = mock.method(app, 'disableHardwareAcceleration');
   const video = path.join(root, '样本.mp4');
   const chosen = path.join(root, '选择的目录');
-  await fs.mkdir(chosen);
-  await ffmpeg(['-f', 'lavfi', '-i', 'color=teal:s=960x540:r=24:d=2', '-c:v', 'libx264', '-threads', '2', video]);
   let folderRequests = 0;
-  const win = await launchDesktop({ show: false, dataDirectory: path.join(root, 'profile'), dialogs: {
+  const win = await launchDesktop({ show: false, dataDirectory: profile, dialogs: {
     async showOpenDialog(_win, options) {
       if (!options.properties.includes('openDirectory')) return { canceled: false, filePaths: [video] };
       folderRequests++;
@@ -42,11 +45,16 @@ async function run() {
     await js('Promise.all(document.querySelector("#cloud-settings-dialog").getAnimations({subtree:true}).map(a=>a.finished.catch(()=>{})))');
   };
   try {
+    assert.equal(disableAcceleration.mock.callCount(), 0, '旧设置升级后应由 Electron 选择可用的合成方式');
+    disableAcceleration.mock.restore();
+    await fs.mkdir(chosen);
+    await ffmpeg(['-f', 'lavfi', '-i', 'color=teal:s=960x540:r=24:d=2', '-c:v', 'libx264', '-threads', '2', video]);
     win.setContentSize(1100, 740);
     await open();
     const before = await read();
-    await click('#performance-gpu');
-    await wait(async () => (await read()).gpu === !before.gpu, 'GPU 选择应保存');
+    assert.equal(await js('Boolean(document.querySelector("#performance-gpu"))'), false);
+    await assert.rejects(js('window.workbench.savePerformanceSettings({gpu:false})'), /性能设置无效/);
+    assert.deepEqual(await read(), before);
     await click('#performance-default-proxy');
     await wait(async () => (await read()).defaultProxy === !before.defaultProxy, '新草稿代理默认值应保存');
     await js("const select=document.querySelector('#performance-optimization'); select.value='smooth'; select.dispatchEvent(new Event('change',{bubbles:true}))");
@@ -62,7 +70,6 @@ async function run() {
     await open();
     const cached = await read();
     assert.ok(cached.bytes > 0);
-    assert.equal(await js('document.querySelector("#performance-gpu").checked'), !before.gpu);
     assert.equal(await js('document.querySelector("#performance-default-proxy").checked'), !before.defaultProxy);
     assert.equal(await js('document.querySelector("#performance-optimization").value'), 'smooth');
     assert.equal(await js('document.querySelector("#performance-location").textContent'), cached.location);

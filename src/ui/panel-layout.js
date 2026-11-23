@@ -272,9 +272,8 @@
       return x >= rect.left && x < rect.right && y >= rect.top && y < rect.bottom;
     }
 
-    function measureTargets(source) {
-      return [...panes.values()].filter(pane => pane !== source)
-        .map(pane => ({ pane, rect: pane.overlay.getBoundingClientRect() }));
+    function measureSlots() {
+      return new Map([...panes.values()].map(pane => [pane, pane.overlay.getBoundingClientRect()]));
     }
 
     function neighbor(pane, dx, dy) {
@@ -328,9 +327,9 @@
       for (const pane of panes.values()) stopArrival(pane);
     }
 
-    function animateArrival(pane, from, { destination = pane.overlay, foreground = false } = {}) {
+    function animateArrival(pane, from, { box, foreground = false } = {}) {
       if (reducedMotion.matches) return;
-      const to = destination.getBoundingClientRect();
+      const to = box ?? pane.overlay.getBoundingClientRect();
       if (!to.width || !to.height) return;
       floatAt(pane, to);
       if (foreground) pane.element.dataset.floating = 'front';
@@ -349,23 +348,25 @@
 
     // Overlays remain in their committed slots until release, so sliding panes
     // cannot change which physical slot is under a stationary pointer.
-    function previewPaneAt(pane, destination) {
-      const from = pane.element.getBoundingClientRect();
+    function previewPaneAt(pane, destination, from) {
       stopArrival(pane);
-      pane.element.style.setProperty('--panel-grid-area', destination.style.getPropertyValue('--panel-grid-area'));
-      animateArrival(pane, from, { destination });
+      pane.element.style.setProperty('--panel-grid-area', destination.overlay.style.getPropertyValue('--panel-grid-area'));
+      animateArrival(pane, from, { box: drag.boxes.get(destination) });
     }
 
     function previewTarget(target) {
       if (target === drag.target) return;
       const previous = drag.target;
+      // Sample both interrupted animations before moving either pane.
+      const previousBox = !reducedMotion.matches && previous?.element.getBoundingClientRect();
+      const targetBox = !reducedMotion.matches && target?.element.getBoundingClientRect();
       if (previous) {
         delete previous.overlay.dataset.dropTarget;
-        previewPaneAt(previous, previous.overlay);
+        previewPaneAt(previous, previous, previousBox);
       }
       if (target) {
         target.overlay.dataset.dropTarget = '';
-        previewPaneAt(target, drag.pane.overlay);
+        previewPaneAt(target, drag.pane, targetBox);
       }
       drag.target = target;
       const emptySlot = (target ?? drag.pane).overlay;
@@ -426,7 +427,8 @@
       active = pane.id;
       drag = { pane, edge, handle, pointerId: event.pointerId, x: event.clientX, y: event.clientY, changed: false };
       if (edge === 'move') {
-        const box = pane.overlay.getBoundingClientRect();
+        drag.boxes = measureSlots();
+        const box = drag.boxes.get(pane);
         const visual = visibleBox ?? box;
         const scaleX = visual.width / box.width, scaleY = visual.height / box.height;
         const grabX = (event.clientX - visual.left) / scaleX, grabY = (event.clientY - visual.top) / scaleY;
@@ -436,7 +438,6 @@
         const expansion = Math.min(.014, 3 / Math.max(1, box.width, box.height));
         pane.element.style.setProperty('--panel-lift-scale', String(1 + expansion));
         pane.element.style.transformOrigin = `${grabX}px ${grabY}px`;
-        drag.targets = measureTargets(pane);
         vacancy.style.setProperty('--panel-grid-area', pane.overlay.style.getPropertyValue('--panel-grid-area'));
         vacancy.hidden = false;
         pane.element.dataset.lifted = '';
@@ -457,25 +458,33 @@
       const dx = x - drag.x, dy = y - drag.y;
       if (drag.edge === 'move') {
         // The threshold gates slot exchange, never the actual pointer tracking.
+        if (drag.scrolled) {
+          drag.boxes = measureSlots();
+          drag.scrolled = false;
+        }
+        if (drag.changed || Math.hypot(dx, dy) >= 4) {
+          let target;
+          for (const [candidate, rect] of drag.boxes) {
+            if (candidate !== drag.pane && containsPoint(rect, x, y)) { target = candidate; break; }
+          }
+          previewTarget(target);
+          drag.changed = true;
+        }
         drag.pane.element.style.translate = `${dx}px ${dy}px`;
-        drag.lastX = x;
-        drag.lastY = y;
-        if (!drag.changed && Math.hypot(dx, dy) < 4) return;
-        const target = drag.targets.find(({ rect }) => containsPoint(rect, x, y))?.pane;
-        previewTarget(target);
       } else {
         if (!drag.changed && !dx && !dy) return;
+        const wasModified = splitView.modified;
         drag.resize(x, y);
-        sync();
+        if (wasModified !== splitView.modified) refreshControls();
+        drag.changed = true;
       }
-      drag.changed = true;
     }
 
     function move(event) {
       if (!drag || drag.pointerId !== event.pointerId) return;
       if (!(event.buttons & 1)) return releaseDrag();
       event.preventDefault();
-      updateDrag(event.clientX, event.clientY);
+      splitView.queuePointer(drag, event.clientX, event.clientY, updateDrag);
     }
 
     function finish(event) {
@@ -495,6 +504,7 @@
     function releaseDrag(commit = false) {
       if (!drag) return;
       const { pane, target, handle, pointerId, before, changed } = drag;
+      cancelAnimationFrame(drag.frame);
       splitView.clearGuides();
       if (target && !commit) previewTarget(undefined);
       drag = undefined;
@@ -608,8 +618,8 @@
       if (event.target !== document && !event.target.contains?.(workspace)) return;
       stopArrivals();
       if (drag?.edge !== 'move') return;
-      drag.targets = measureTargets(drag.pane);
-      updateDrag(drag.lastX ?? drag.x, drag.lastY ?? drag.y);
+      drag.scrolled = true;
+      splitView.queuePointer(drag, drag.xPending ?? drag.x, drag.yPending ?? drag.y, updateDrag);
     }, true);
     reducedMotion.addEventListener('change', stopArrivals);
     applySlots();

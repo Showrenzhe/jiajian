@@ -248,8 +248,9 @@ function createDraftStore(directory,resolvePath,inspect,sourceEditDirectory) {
 
   function open(id) {
     return serialize(async () => {
+      const record = find(id);
       const file = snapshotPath(id);
-      if (await fileStamp(file)!==find(id).stamp) await scan();
+      if (await fileStamp(file)!==record.stamp) await scan();
       const {meta}=find(id);
       const project = await loadProject(file,resolvePath,inspect,sourceEditDirectory);
       // Reconcile the source of truth after an interrupted rename or save.
@@ -257,6 +258,33 @@ function createDraftStore(directory,resolvePath,inspect,sourceEditDirectory) {
       try { await mirror(id,project.config,() => undefined); }
       catch { /* The snapshot remains readable; saving will report any disk conflict. */ }
       return { ...meta, ...project };
+    });
+  }
+
+  function remove(request) {
+    return serialize(async () => {
+      const { id, expectedRevision } = request ?? {};
+      const record = find(id);
+      const file = snapshotPath(id);
+      try {
+        if (expectedRevision !== record.meta.revision || await fileStamp(file) !== record.stamp) {
+          throw new Error('草稿已发生变化，请刷新列表后再删除。');
+        }
+        await fs.unlink(file);
+      } catch (error) {
+        if (error.code === 'ENOENT') throw new Error('找不到这个本地草稿，请刷新列表。');
+        if (['EACCES', 'EPERM', 'EBUSY'].includes(error.code)) {
+          throw new Error('无法删除草稿，请检查文件是否被占用或是否有写入权限，然后重试。');
+        }
+        throw error;
+      }
+      records.delete(id);
+      mirrored.delete(id);
+      // The snapshot is authoritative. A mirror containing user files stays on disk.
+      await withDraftFolderMirror(directory, id, [], () => {}).catch(() => {});
+      await fs.rm(coverPath(id), { force: true }).catch(() => {});
+      await persistIndex();
+      return true;
     });
   }
 
@@ -281,8 +309,11 @@ function createDraftStore(directory,resolvePath,inspect,sourceEditDirectory) {
       } catch {}
       const jpeg=embeddedThumbnail(await readProject(file));
       if(!jpeg || digest(jpeg)!==record.hash) return null;
-      await cacheWrite(coverPath(id),jpeg);
-      return jpeg;
+      return serialize(async () => {
+        if (records.get(id) !== record) return null;
+        await cacheWrite(coverPath(id),jpeg);
+        return jpeg;
+      });
     })();
     pendingThumbnails.set(record,task);
     try {return await task;} finally {pendingThumbnails.delete(record);}
@@ -296,7 +327,7 @@ function createDraftStore(directory,resolvePath,inspect,sourceEditDirectory) {
       for (const row of project.rows) yield {...row, proxyEnabled:project.config.proxyEnabled};
     }
   }
-  return { list, create, save, open, cover, thumbnail, assetReferences };
+  return { list, create, save, open, remove, cover, thumbnail, assetReferences };
 }
 
 module.exports = { createDraftStore };

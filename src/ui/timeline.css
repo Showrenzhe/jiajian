@@ -11,8 +11,8 @@
   content:""; position:absolute; inset-inline-end:1px; height:12px; border-inline-end:2px solid var(--focus-ring);
 }
 #timeline-clock[hidden],.sequence-dialog [hidden] { display:none; }
-#timeline-clock .sequence-canvas { width:calc(var(--sequence-width) + var(--track-head-width)); min-width:100%; position:relative; isolation:isolate; background:#202225; padding-bottom:12px; }
-.sequence-row { display:grid; grid-template-columns:var(--track-head-width) var(--sequence-width); height:var(--lane-height,var(--default-lane-height,28px)); min-height:0; border-bottom:1px solid #35383b; transition-property:none; }
+#timeline-clock .sequence-canvas { min-width:100%; position:relative; isolation:isolate; contain:layout; background:#202225; padding-bottom:12px; }
+.sequence-row { display:grid; grid-template-columns:var(--track-head-width) minmax(0,1fr); height:var(--lane-height,var(--default-lane-height,28px)); min-height:0; border-bottom:1px solid #35383b; transition-property:none; }
 .sequence-row .sequence-head { box-sizing:border-box; display:flex; align-items:center; gap:2px; overflow:hidden; position:sticky; left:0; z-index:3; background:#282b2e; color:#bfc6cb; border-right:1px solid #42464c; padding:2px 5px; }
 #timeline-clock .sequence-head button { appearance:none; background:transparent; color:inherit; font-size:11px; line-height:1.2; border:0; border-radius:3px; padding:4px 2px; min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
 .sequence-head button:first-child { flex:1; text-align:left; }
@@ -220,10 +220,11 @@
 #timeline-clock .sequence-music .sequence-block,#timeline-clock .kind-sound .sequence-block {background:#315573;border-color:#486d91;}
 #timeline-clock .sequence-layer:not(.kind-sound) .sequence-block {background:#5a526f;border-color:#857b9c;}
 .sequence-cursor {
-  position:absolute;top:0;bottom:0;
+  position:absolute;top:0;bottom:0;left:0;
   --grip-height:14px;
   width:9px;
-  transform:translateX(-4px);
+  transform:translateX(-50%);
+  will-change:translate;
   z-index:3;
   touch-action:none;
   cursor:ew-resize;

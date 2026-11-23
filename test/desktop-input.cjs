@@ -30,7 +30,7 @@ async function dragLibraryItem(contents, source, target, mimeType, hover, cancel
 }
 
 // Use Chromium's input pipeline so a hidden, disabled or covered control cannot pass a navigation test.
-async function clickVisible(contents, selector) {
+async function clickVisible(contents, selector, button = 'left') {
   const point = await contents.executeJavaScript(`(async () => {
     const button = document.querySelector(${JSON.stringify(selector)});
     if (!button?.checkVisibility() || button.matches(':disabled') || button.closest('[inert]')) return null;
@@ -46,7 +46,7 @@ async function clickVisible(contents, selector) {
   if (!alreadyAttached) client.attach();
   try {
     for (const type of ['mousePressed', 'mouseReleased']) {
-      await client.sendCommand('Input.dispatchMouseEvent', { type, ...point, button: 'left', clickCount: 1 });
+      await client.sendCommand('Input.dispatchMouseEvent', { type, ...point, button, clickCount: 1 });
     }
   } finally {
     if (!alreadyAttached) client.detach();
