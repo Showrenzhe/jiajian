@@ -199,6 +199,41 @@ test('free video placements keep narration anchored and extend the canvas beyond
   assert.ok(Math.abs(await toneAt(file,'1.01')-440)<60,'original sound follows the new picture time');
 });
 
+test('timeline tail trims cut source sound and picture at their original rate and keep the shot clock',async(t)=>{
+  const {catalog,output}=await fixtureDirectory(t);
+  const source=path.join(output,'双段有声.mp4');
+  await ffmpeg(['-f','lavfi','-i',"color=blue:s=160x90:r=24:d=1.5,drawbox=color=red:t=fill:enable='lt(t,0.82)'",
+    '-f','lavfi','-i','sine=frequency=440:duration=1.5','-c:v','libx264','-threads','1','-c:a','aac',source]);
+  catalog.set('color-change',await inspectAsset(source,'video'));
+  const clip={id:'color-change',start:.25,end:1.25,speed:2,videoDuration:.375,
+    videoSubtitles:{name:'原声字幕',cues:[{start:500,end:1200,text:'源字幕'}]},
+    layers:[{kind:'text',text:'候选文字',start:0,end:1}]};
+  const config={...montage,count:1,keepAudio:true,musicIds:[],ratio:'16:9',
+    shots:[[clip],[{id:'green',start:0,end:.75}]],
+    timelineCaptions:{name:'固定字幕',cues:[{start:520,end:700,text:'固定'}]}};
+  const [plan]=planMontage(config,catalog);
+  assert.equal(plan.duration,1.25);
+  assert.equal(plan.videoSubtitles.cues[0].end,375);
+  assert.equal(plan.layers[0].end,.375);
+  assert.equal(plan.subtitles.cues[0].start,520);
+  const {failures,results}=await exportBatch([plan],output);
+  assert.deepEqual(failures,[]);
+  const rendered=results[0].path;
+  const [red,blue,black,green]=await Promise.all([.22,.32,.44,.75].map(t=>frameColor(rendered,t)));
+  assert.ok(red.red>red.blue*2 && blue.blue>blue.red*2,'裁去片尾不额外加速');
+  assert.ok(Math.max(...Object.values(black))<15 && green.green>green.red*2,'裁切形成留空，下一分镜按原时钟播放');
+  assert.ok(Math.abs(await toneAt(rendered,'0.15')-440)<50);
+  assert.equal(await toneAt(rendered,'0.40'),0);
+  const [moved]=planMontage({...config,shots:[[{...clip,videoStart:1.25}],config.shots[1]]},catalog);
+  assert.equal(moved.duration,1.625,'时间线结尾只延长到可见片尾');
+  const [sliced]=planMontage({...config,shots:[[{...clip,speed:1,videoDuration:.5,
+    ranges:[{start:.25,end:.5},{start:.875,end:1.25}]}],config.shots[1]]},catalog);
+  const partial=await exportBatch([sliced],output);
+  assert.deepEqual(partial.failures,[]);
+  const [secondRange,tail]=await Promise.all([.39,.55].map(t=>frameColor(partial.results[0].path,t)));
+  assert.ok(secondRange.blue>secondRange.red*2 && Math.max(...Object.values(tail))<15,'多段源区间合成后，保留第二段开头并只裁一次尾部');
+});
+
 test('track controls keep visibility independent of source and picture-in-picture sound',async(t)=>{
   const {catalog,output}=await fixtureDirectory(t);
   const config={...montage,ratio:'16:9',shots:[[{id:'red',start:0,end:.6}]],keepAudio:true,musicIds:[],count:1};

@@ -31,6 +31,19 @@ test('the five organizer operations keep occupied rows and move only out-of-boun
 });
 const { splitRanges } = require('../src/ui/track-tools.js');
 
+test('timeline picture tail trims keep draft playback speed and trailing silence',()=>{
+  const {timing,makePlan}=require('../src/ui/draft-transport.js');
+  const {waveformSource}=require('../src/ui/waveform.js');
+  const clip={asset:{kind:'video',url:'test://video'},start:0,end:2,speed:2,videoDuration:.75,
+    layers:[{kind:'text',text:'局部',start:.5,end:2}]};
+  const state={shots:[[clip]],settings:[{duration:1}],whole:[],segments:[[]],segmented:true,priority:'picture',
+    keepAudio:true,muted:new Set(),music:[],pack:{global:[],composites:[],segmentNarration:[],wholeNarration:[]}};
+  const read=()=>makePlan(state,timing(state,()=>1,()=>null),()=>null,waveformSource);
+  assert.deepEqual(read().map(e=>[e.start,e.end,e.rate??e.text??'留空']),[[0,.75,2],[.25,.75,'局部'],[.75,1,'留空']]);
+  clip.videoStart=1;
+  assert.deepEqual(read().map(e=>[e.start,e.end]),[[1,1.75],[1.25,1.75]]);
+});
+
 test('only current rows participate in visual and audio solo, and locking does not mute', () => {
   const {normalize,forLayout,allows}=require('../src/ui/track-controls.js');
   const state=normalize({vis1:{hidden:true},whole1:{solo:true},music2:{solo:true},voice1:{locked:true}});

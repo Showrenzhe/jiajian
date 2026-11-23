@@ -448,7 +448,11 @@ async function check() {
 
     await read(query('#timeline-tracks-panel')+'.scrollTop=0');
     const fromThird=await center(cell(0,2)), firstEmpty=await center(cell(0,0));
-    await mouse('mousePressed',fromThird);await mouse('mouseMoved',firstEmpty);await mouse('mouseReleased',firstEmpty);
+    firstEmpty.x+=5;
+    await mouse('mousePressed',fromThird);await mouse('mouseMoved',firstEmpty);
+    await wait('!!'+query(placement)+' && !'+host+'.hasAttribute("data-drag-rejected")','偏离原槽中心 5 像素仍应预览贴回首个分镜');
+    assert.ok(Math.abs((await bounds(placement)).left-(await bounds(ruler)).left)<2,'完整空槽对齐分镜起点');
+    await mouse('mouseReleased',firstEmpty);
     await wait(clipNamed(cell(0,0),files.red),'同一分镜的片段可移回原空行');
     assert.deepEqual(await read(clips),expectedClips);
     await click('#track-undo');await wait(clipNamed(cell(0,2),files.red),'撤销回移应恢复稀疏行');
@@ -463,6 +467,48 @@ async function check() {
     await wait('!document.getAnimations().some(a=>a.id==="candidate-arrival")','交换的片段应归位');
     const swapped=await loadProject(await saveAs('错时换轨'));
     assert.ok(Math.abs(swapped.config.shots[0][0].videoStart-expectedTime)<.012,'互换已移动片段时，新片段应接管目标的绝对时间');
+
+    // The red clip is the only video on row two. The green clip on row one
+    // overlaps the dragged footprint, but the voice ending and caption start define a cut.
+    const cutFixture=path.join(root,'字幕与声音切点.sdworkbench');
+    await saveProject(cutFixture,{...config,
+      shots:[[{...red,start:.1,end:1.3,videoLane:1,videoStart:.25}],[green],[blue]],
+      segmentNarrationIds:[['music'],[],['music']],segmentVoiceCuts:[[{offset:.3,ranges:[{start:0,end:.4}]}],[],[null]],
+      timelineCaptions:{name:'独立字幕',cues:[{start:980,end:1120,text:'保留字幕位置'}]},
+    },catalog);
+    opens.push(cutFixture);await click('#open-project');
+    await wait(clipNamed(cell(0,1),files.red)+' && !!'+query('[data-lane-key="pasted-captions"]'),'打开带独立参考切点的工程');
+    await fitTimeline();
+    const cutBaseline=await loadProject(await saveAs('参考轨道对照'));
+    const beforeCut=await center(cell(0,1)), slotA=await bounds(cell(0,0)), timingAxis=await bounds(ruler);
+    const cutScale=parseFloat(await read(query(shotCell(1))+'.style.left'))/1.2;
+    const land={x:timingAxis.left+.84*cutScale,y:slotA.y+slotA.height/2};
+    await mouse('mousePressed',beforeCut);await mouse('mouseMoved',land);
+    await wait('!!'+query(placement)+' && !'+host+'.hasAttribute("data-drag-rejected")','视频拖回时可以按填好的口播结尾和字幕起点裁切');
+    await mouse('mouseReleased',land);await restored();
+    await wait(clipNamed(cell(0,0),files.red),'裁切后只移动红片到原轨');
+    const cutFile=await saveAs('按参考边界裁切后');
+    const cutSaved=await loadProject(cutFile), cut=cutSaved.config.shots[0][0];
+    assert.ok(Math.abs(cut.videoStart-.7)<.001 && Math.abs(cut.videoDuration-.28)<.001,'裁到 0.70–0.98 秒');
+    assert.deepEqual([cut.start,cut.end],[.1,1.3],'保留原素材入出点');
+    const {shots:oldShots,...oldReference}=cutBaseline.config,{shots:newShots,...newReference}=cutSaved.config;
+    assert.deepEqual(newReference,oldReference,'裁切保持分镜、口播、字幕和其他轨道数据');
+    assert.deepEqual(newShots.slice(1),oldShots.slice(1),'未触碰相邻视频片段');
+    await click('#track-undo');await wait(clipNamed(cell(0,1),files.red),'撤销一次恢复视频原轨与长度');
+    await click('#track-redo');await wait(clipNamed(cell(0,0),files.red),'重做恢复裁切后的原轨');
+    opens.push(cutFile);await click('#open-project');
+    await wait(query('#notice')+'.textContent.includes("已打开工程") && '+clipNamed(cell(0,0),files.red),'重开后保留时间线裁切');
+    const cutPlan=createPreviewBatch(cutSaved.config,cutSaved.assets).plans[0];
+    assert.equal(cutPlan.duration,createPreviewBatch(cutBaseline.config,cutBaseline.assets).plans[0].duration);
+    const cutExport=await exportBatch([cutPlan],root);
+    assert.deepEqual(cutExport.failures,[]);
+    for(const [seconds,channel] of [[.54,-1],[.83,0],[1.08,-1],[1.4,1]]) {
+      const pixel=await ffmpeg(['-ss',String(seconds),'-i',cutExport.results[0].path,'-frames:v','1','-an',
+        '-vf','crop=8:8:iw/2:ih/3,scale=1:1','-pix_fmt','rgb24','-f','rawvideo','pipe:1']);
+      assert.equal(pixel.length,3);
+      if(channel<0) assert.ok(Math.max(...pixel)<20,'裁切区间外应是空画面 '+seconds);
+      else assert.ok(pixel[channel]>100 && pixel[channel]===Math.max(...pixel),'输出应在指定时间播放正确视频 '+seconds);
+    }
 
     opens.push(singleFile);await click('#open-project');await wait(rows+'===1 && '+clipNamed(cell(1,0),files.green),'重开单轨原稿');
     const switchProject=id=>read(`(()=>{const e=${query('#subproject-select')};e.value=${JSON.stringify(id)};e.dispatchEvent(new Event("change"))})()`);
@@ -500,8 +546,9 @@ async function check() {
       const file=path.join(root,name+'.sdworkbench');
       const shots=[...config.shots.slice(0,2),[{...config.shots[2][0],videoLane:1,videoStart}]];
       await saveProject(file,{...config,shots},catalog);
+      await wait('!'+query('#open-project')+'.disabled','等待工程切换完成');
       opens.push(file);await click('#open-project');
-      await wait(query('#notice')+'.textContent.includes("已打开工程") && '+clipNamed(cell(2,1),files.blue),'打开超长时间轴');
+      await wait(query('#notice')+'.textContent.includes('+JSON.stringify('已打开工程：'+name)+') && '+clipNamed(cell(2,1),files.blue),'打开'+name+'时间轴');
     }
     await openLongTimeline('超过一天',90000);
     await read(query('#track-zoom')+'.value='+query('#track-zoom')+'.max;'+query('#track-zoom')+'.dispatchEvent(new Event("input"))');

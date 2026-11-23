@@ -3,7 +3,7 @@
 (() => {
   const alignment = typeof module === 'object' && module.exports ? require('./voice-alignment.js') : window.voiceAlignment;
   const waveformSource = typeof module === 'object' && module.exports ? require('./waveform.js').waveformSource : window.waveformSource;
-  const { candidateVideoLanes } = typeof module === 'object' && module.exports ? require('./track-tools.js') : window;
+  const { candidateVideoLanes, pictureSpan } = typeof module === 'object' && module.exports ? require('./track-tools.js') : window;
   const controls = typeof module === 'object' && module.exports ? require('./track-controls.js') : window.trackControls;
 
   function chosen(shot,focus,state) {
@@ -101,13 +101,14 @@
     let total=0;
     const starts=widths.map((width)=>{const from=total;total+=width;return from;});
     shots.forEach((shot,i)=>{
-      for(const clip of shot) if(clip.videoStart!==undefined) total=Math.max(total,clip.videoStart+widths[i]);
+      for(const clip of shot) if(clip.videoStart!==undefined) total=Math.max(total,clip.videoStart+pictureSpan(clip,widths[i]));
     });
     return aligned ? {widths,starts,total,aligned} : {widths,starts,total};
   }
 
   function makePlan(s,{starts,widths,total,aligned},assetFor,sourceRanges,focus) {
     const entries=[];
+    let trimmedShotEnd=0;
     const freePictures=s.shots.some(shot=>shot.some(clip=>clip.videoStart!==undefined));
     if(!freePictures && aligned && !s.segmented && s.priority==='voice') {
       const whole=s.whole[audioRow(s.whole,'whole',s)];
@@ -117,7 +118,7 @@
       if(!text || end<=start || start>=total || !controls.allows(s.trackControls,key,'visual')) return;
       entries.push({text,start,end:Math.min(end,total),appearance,highlights,visual:true});
     }
-    function add(lane,asset,start,span,{ranges,head,tail,volume=100,visual=false,fit=false,loop=false,layer,speed=1,cycle,trackKey}={}) {
+    function add(lane,asset,start,span,{ranges,head,tail,volume=100,visual=false,loop=false,layer,speed=1,cycle,trackKey}={}) {
       if(!asset?.url || !(span>0) || start>=total || (!visual && !(volume>0))) return;
       const key=trackKey ?? controls.layerKey(layer);
       if (!controls.allows(s.trackControls,key,'visual')) visual=false;
@@ -132,11 +133,10 @@
       const source=sourceRanges(ranges ?? [{start:0,end:asset.duration}],head,tail);
       if(!(source.duration>0)) return;
       if(loop) {entries.push({...base,start,end:stop,source:0,rate:speed,loop:true});return;}
-      const rate=fit ? source.duration/span : speed;
       let at=start;
       source.visit(0,source.duration,false,(begin,end)=>{
-        const next=at+(end-begin)/rate;
-        if(at<stop) entries.push({...base,start:at,end:Math.min(stop,next),source:begin,rate});
+        const next=at+(end-begin)/speed;
+        if(at<stop) entries.push({...base,start:at,end:Math.min(stop,next),source:begin,rate:speed});
         at=next;
       });
     }
@@ -174,6 +174,8 @@
       const clip=chosen(shot,focus,s);
       const lanes=candidateVideoLanes(shot);
       const pictureAt=clip?.videoStart ?? at;
+      const visibleSpan=pictureSpan(clip,span);
+      if(visibleSpan<span) trimmedShotEnd=Math.max(trimmedShotEnd,Math.min(total,at+span));
       // Independently placed pictures can overlap. Keep a separate media element per physical row.
       const pictureLane=freePictures ? 'picture:'+lanes[shot.indexOf(clip)]+':'+i : 'picture';
       const timed=aligned?.[i];
@@ -183,7 +185,7 @@
         let offset=pictureAt;
         for(const part of parts) {
           const owner=part.clip;
-          const length=Math.min(pictureAt+span-offset,part.outputDuration);
+          const length=Math.min(pictureAt+visibleSpan-offset,part.outputDuration);
           if(!owner || !(length>0)) continue;
           const speed=part.speed || 1, repeats=part.repeat || 1;
           const source=part.sourceDuration ?? part.duration*speed;
@@ -204,13 +206,13 @@
         }
       } else if(clip) {
         const volume=s.keepAudio && !s.muted.has(lanes[shot.indexOf(clip)]) ? (clip.volume ?? 100) : 0;
-        add(pictureLane,clip.asset,pictureAt,span,{ranges:clip.ranges ?? [{start:clip.start,end:clip.end}],
-          head:clip.look?.head,tail:clip.look?.tail,visual:true,volume,trackKey:'vis'+lanes[shot.indexOf(clip)],fit:true});
         const ranges=clip.ranges ?? [{start:clip.start,end:clip.end}];
         const source=sourceRanges(ranges,clip.look?.head,clip.look?.tail);
         const speed=source.duration/span;
+        add(pictureLane,clip.asset,pictureAt,visibleSpan,{ranges,head:clip.look?.head,tail:clip.look?.tail,
+          visual:true,volume,trackKey:'vis'+lanes[shot.indexOf(clip)],speed});
         let offset=pictureAt;
-        source.visit(0,source.duration,false,(begin,end)=>{
+        source.visit(0,Math.min(source.duration,visibleSpan*speed),false,(begin,end)=>{
           const length=(end-begin)/speed;
           layers(clip.layers,offset,length,begin-(clip.start ?? 0),speed);
           pictureCaptions(clip,offset,length,begin,speed);
@@ -264,6 +266,10 @@
         addText(caption.name,Math.max(offset,at),Math.min(limit,at+caption.duration),style,'caption'+caption.row,caption.highlights);
       }
       for(const cue of s.timelineCaptions ?? []) addText(cue.text,cue.start/1000,cue.end/1000,style,'pasted-captions',cue.highlights);
+    }
+    if (trimmedShotEnd) {
+      const lastEnd=entries.reduce((end,entry)=>Math.max(end,entry.end),0);
+      if(lastEnd>0 && lastEnd<trimmedShotEnd) entries.push({gap:true,start:lastEnd,end:trimmedShotEnd});
     }
     return entries.sort((a,b)=>a.start-b.start);
   }
@@ -335,7 +341,7 @@
       const at=Math.max(0,Math.min(time,end-1e-6));
       active=active.filter((entry)=>entry.end>at);
       while(next<entries.length && entries[next].start<=at) {
-        const entry=entries[next++];if(entry.end>at)active.push(entry);
+        const entry=entries[next++];if(!entry.gap && entry.end>at)active.push(entry);
       }
       const live=new Set();let ready=true;
       for(const entry of active) {
@@ -403,7 +409,7 @@
       if(!playing) return;
       if(render())time=Math.min(end,time+Math.min(.1,(now-stamp)/1000));
       stamp=now;tick(time);
-      if(time>=end || (failed.size && entries.every((e)=>failed.has(e.asset)))) {halt(true);return;}
+      if(time>=end || (failed.size && entries.every((e)=>e.gap || failed.has(e.asset)))) {halt(true);return;}
       frame=requestAnimationFrame(step);
     }
     function setPlan(plan) {

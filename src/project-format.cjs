@@ -121,6 +121,9 @@ function cleanConfig(config) {
       if (clip.videoStart !== undefined && (!Number.isFinite(clip.videoStart) || clip.videoStart < 0 || clip.videoStart > Number.MAX_SAFE_INTEGER)) {
         throw new Error('视频片段的时间轴落点无效。');
       }
+      if (clip.videoDuration !== undefined && (!Number.isFinite(clip.videoDuration) || clip.videoDuration <= 0 || clip.videoDuration > Number.MAX_SAFE_INTEGER)) {
+        throw new Error('视频片段的时间轴裁切时长无效。');
+      }
       const ranges = clip.ranges === undefined ? undefined : normalizeRanges(clip.ranges, clip.start, clip.end);
       const key = candidateKey({ ...clip, ranges });
       if (seen.has(key)) throw new Error(`第 ${index + 1} 组分镜有重复素材。`);
@@ -129,6 +132,7 @@ function cleanConfig(config) {
         id, start: clip.start, end: clip.end,
         ...(clip.videoLane !== undefined && { videoLane: clip.videoLane }),
         ...(clip.videoStart !== undefined && { videoStart: clip.videoStart }),
+        ...(clip.videoDuration !== undefined && { videoDuration: clip.videoDuration }),
         ...(clip.enabled !== undefined && { enabled: clip.enabled }),
         ...(clip.layers !== undefined && { layers: normalizeLayers(clip.layers, recordLayer) }),
         ...(clip.transform !== undefined && { transform: normalizeTransform(clip.transform) }),

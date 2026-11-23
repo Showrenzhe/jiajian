@@ -3,6 +3,7 @@
 const { sliceSource } = require('./shot-timing.cjs');
 const { normalizeTextStyle } = require('./text-style.cjs');
 const { normalizeLook } = require('./visual-style.cjs');
+const { pictureSpan } = require('./ui/track-tools.js');
 
 const limits = { pip: 3, text: 3, sticker: 2, sound: 2 };
 const motionBounds = { x: [0, 1], y: [0, 1], scale: [.05, 1], rotation: [-3600, 3600], opacity: [0, 1] };
@@ -159,12 +160,18 @@ function scheduleLayers({ pack, selection, catalog, clips, duration, wholeIndex,
   for (const clip of clips) {
     let visualTime = clip.videoStart ?? pictureTime;
     const span = clip.outputDuration ?? clip.duration;
+    const pictureEnd = visualTime + pictureSpan(clip,span);
     for (const part of clip.visuals ?? [clip]) {
+      if (visualTime >= pictureEnd) break;
       const count = part.repeat ?? 1;
       const length = (part.outputDuration ?? part.duration) / count;
       if (part.layers?.length) {
         const tempo = part.speed ?? 1;
-        for (let index = 0; index < count; index++) add(part.layers, visualTime + index * length, length, part.layerStart ?? 0, tempo);
+        for (let index = 0; index < count; index++) {
+          const start = visualTime + index * length;
+          if (start >= pictureEnd) break;
+          add(part.layers, start, Math.min(length, pictureEnd-start), part.layerStart ?? 0, tempo);
+        }
       }
       visualTime += count * length;
     }

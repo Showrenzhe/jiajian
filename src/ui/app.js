@@ -3333,9 +3333,10 @@ function renderResults({ results, failures }, complete) {
   $('#results').replaceChildren(...items);
 }
 
-function serializeClip({ asset, start, end, volume, speed, matchedDuration, enabled, ranges, layers, transform, videoSubtitles, look, videoLane, videoStart }) {
+function serializeClip({ asset, start, end, volume, speed, matchedDuration, enabled, ranges, layers, transform, videoSubtitles, look, videoLane, videoStart, videoDuration }) {
   return { id: asset.id, start, end, volume, speed, ...(matchedDuration!==undefined && {matchedDuration}), ...(enabled === false && { enabled: false }),
     ...(videoLane !== undefined && {videoLane}), ...(videoStart !== undefined && {videoStart}),
+    ...(videoDuration !== undefined && {videoDuration}),
     ...(ranges && { ranges }), ...(layers?.length && { layers }), ...(transform && { transform }), ...(videoSubtitles && {videoSubtitles}), ...(look && {look}) };
 }
 
@@ -3368,11 +3369,12 @@ function candidatePlacementError(clip, target, source, targetClip, targetLane, v
   return '';
 }
 
-function reviveClip({ id, start, end, volume, speed, matchedDuration, enabled, ranges, layers, transform, videoSubtitles, look, videoLane, videoStart }, assets) {
+function reviveClip({ id, start, end, volume, speed, matchedDuration, enabled, ranges, layers, transform, videoSubtitles, look, videoLane, videoStart, videoDuration }, assets) {
   const asset = assets.get(id);
   if (!asset) throw new Error('打开的工程缺少画面素材。');
   return { asset, start: start ?? NaN, end: end ?? NaN, volume: volume ?? 100, ...(matchedDuration!==undefined && {matchedDuration}),
     ...(videoLane !== undefined && {videoLane}), ...(videoStart !== undefined && {videoStart}),
+    ...(videoDuration !== undefined && {videoDuration}),
     ...(enabled === false && { enabled: false }), ...(ranges && { ranges: structuredClone(ranges) }),
     ...(layers?.length && { layers: structuredClone(layers) }), ...(transform && { transform: structuredClone(transform) }),
     ...(videoSubtitles && {videoSubtitles:structuredClone(videoSubtitles)}),
@@ -4863,17 +4865,21 @@ timeline = window.mountEditTimeline($('#timeline-clock'), {
     return copy;
   }, pasteClip:(data)=>reviveClip(data,editAssets),
   candidatePlacementError,
-  placeCandidate(clip, target, source, targetClip, targetLane, videoStart) {
+  placeCandidate(clip, target, source, targetClip, targetLane, videoStart, videoDuration) {
     if (operation) return false;
     const error = candidatePlacementError(clip, target, source, targetClip, targetLane, videoStart);
     if (error) throw Error(error);
     if (source === target) window.pinCandidateLanes(source);
-    if (targetClip) [clip.videoStart, targetClip.videoStart] = [targetClip.videoStart, clip.videoStart];
+    if (targetClip) {
+      [clip.videoStart, targetClip.videoStart] = [targetClip.videoStart, clip.videoStart];
+      [clip.videoDuration, targetClip.videoDuration] = [targetClip.videoDuration, clip.videoDuration];
+    }
     if (source === target) {
       if (targetClip) [clip.videoLane, targetClip.videoLane] = [targetClip.videoLane, clip.videoLane];
       else {
         clip.videoLane = targetLane;
         if (videoStart !== undefined) clip.videoStart = videoStart;
+        if (videoDuration !== undefined) clip.videoDuration = videoDuration;
       }
       if (source.every((item, index) => item.videoLane === index)) {
         for (const item of source) delete item.videoLane;

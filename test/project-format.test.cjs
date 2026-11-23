@@ -71,12 +71,13 @@ test('a draft with every visual excluded keeps muted tracks, clips and original 
   const files = await fixtures(root);
   const catalog = new Map([['red', await inspectAsset(files.red, 'video')]]);
   const config = editingConfig({ shots: [[
-    { id: 'red', start: .1, end: .8, videoLane:0, videoStart:2.125, volume: 42, enabled: false },
+    { id: 'red', start: .1, end: .8, videoLane:0, videoStart:2.125, videoDuration:.35, volume: 42, enabled: false },
     { id: 'red', start: .8, end: 1, videoLane:0, videoStart:5.25, enabled:false },
   ]], mutedVideoTracks: [0], trackControls:{vis0:{locked:true,hidden:true}} });
   await saveProject(file, config, catalog);
   assert.deepEqual((await loadProject(file)).config, config);
   await assert.rejects(saveProject(file, {...config, shots:[[{...config.shots[0][0],videoStart:-1}]]}, catalog), /落点/);
+  await assert.rejects(saveProject(file, {...config, shots:[[{...config.shots[0][0],videoDuration:0}]]}, catalog), /裁切时长/);
   await assert.rejects(saveProject(file, { ...config, mutedVideoTracks: [-1] }, catalog), /静音/);
 });
 

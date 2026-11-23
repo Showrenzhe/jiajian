@@ -73,7 +73,11 @@
     shot.forEach((clip, i) => { clip.videoLane = lanes[i]; });
   }
 
-  const tools = { splitRanges, candidateKey, candidateVideoLanes, pinCandidateLanes };
+  // A timeline tail trim limits the edited picture without changing its shot or playback rate.
+  function pictureSpan(clip, shotSpan) {
+    return Math.min(shotSpan, clip?.videoDuration ?? shotSpan);
+  }
+  const tools = { splitRanges, candidateKey, candidateVideoLanes, pinCandidateLanes, pictureSpan };
   if (typeof module === 'object' && module.exports) module.exports = tools;
   else Object.assign(window, tools);
 })();

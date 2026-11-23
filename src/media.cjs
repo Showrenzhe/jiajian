@@ -8,7 +8,7 @@ const { createInterface } = require('node:readline');
 const { promisify } = require('node:util');
 const { formatSubtitles, normalizeSubtitles, parseSubtitles } = require('./subtitles.cjs');
 const { normalizeShotSettings, normalizeRanges, candidateKey, normalizeSegmentVoiceCuts, sliceSource } = require('./shot-timing.cjs');
-const { candidateVideoLanes } = require('./ui/track-tools.js');
+const { candidateVideoLanes, pictureSpan } = require('./ui/track-tools.js');
 const trackControls = require('./ui/track-controls.js');
 const { preferSolo } = trackControls;
 const { normalizeCover, selectCover, publishCover } = require('./cover.cjs');
@@ -536,6 +536,7 @@ function planMontage(config, catalog, random = Math.random, batchLimit = maxMont
       const laneKey = 'vis'+layers.videoLane;
       if (!visible(laneKey)) layers.hiddenVideo = true;
       if (clip.videoStart !== undefined) layers.videoStart = requireNumber(clip.videoStart, 0, Number.MAX_SAFE_INTEGER, '视频片段的时间轴落点');
+      if (clip.videoDuration !== undefined) layers.videoDuration = requireNumber(clip.videoDuration, Number.MIN_VALUE, Number.MAX_SAFE_INTEGER, '视频片段的时间轴裁切时长');
       if (clip.transform !== undefined) layers.transform = normalizeTransform(clip.transform);
       if (clip.look !== undefined) layers.look = normalizeLook(clip.look,(id,role)=>{requireAsset(catalog,id,...(role==='lut'?['lut']:['image','video']));return id;});
       const matchedDuration = clip.matchedDuration === undefined ? undefined
@@ -709,7 +710,7 @@ function planMontage(config, catalog, random = Math.random, batchLimit = maxMont
       ? clips.reduce((samples, clip) => samples + Math.round(clip.timelineDuration * audioRate), 0) / audioRate
       : (narration && voicePriority ? wholeDuration : pictureDuration);
     const duration = clips.reduce((end, clip) => clip.videoStart === undefined ? end :
-      Math.max(end, clip.videoStart + (clip.outputDuration ?? clip.duration)), sequenceDuration);
+      Math.max(end, clip.videoStart + pictureSpan(clip, clip.outputDuration ?? clip.duration)), sequenceDuration);
     const leading = clips.slice(0, musicStartIndex);
     const musicStart = frameAligned ? leading.reduce((frames, clip) => frames + clip.outputFrames, 0) / config.fps
       : leading.reduce((seconds, clip) => seconds + clip.duration, 0);
@@ -885,7 +886,7 @@ async function previewSubtitleStyle({ style, ratio, cue }) {
 function montageArgs(plan, { intermediate = false } = {}) {
   const { size: [width, height], fps, fit, keepAudio, music, musicVolume, musicStart = 0, narration, narrationVolume, duration } = plan;
   const clips = plan.clips.filter((clip) => clip.outputFrames !== 0);
-  const positioned = clips.some(clip => clip.videoStart !== undefined || clip.hiddenVideo || clip.visibleSpans);
+  const positioned = clips.some(clip => clip.videoStart !== undefined || clip.videoDuration !== undefined || clip.hiddenVideo || clip.visibleSpans);
   const segmented = plan.narrationMode === 'segmented';
   const alignVoices = segmented && plan.priority === 'voice' && clips.some((clip) => clip.narration);
   const frameAligned = clips[0].outputFrames !== undefined;
@@ -986,7 +987,7 @@ function montageArgs(plan, { intermediate = false } = {}) {
     if (positioned) {
       const start = clip.videoStart ?? pictureTime;
       const span = outputDuration ?? clip.duration;
-      pictureRows.push({ index, start, span, video, lane:clip.videoLane ?? 0, hidden:clip.hiddenVideo, visibleSpans:clip.visibleSpans });
+      pictureRows.push({ index, start, span:pictureSpan(clip,span), video, lane:clip.videoLane ?? 0, hidden:clip.hiddenVideo, visibleSpans:clip.visibleSpans });
       pictureTime += span;
       speechTime += clip.timelineDuration ?? span;
     } else segments.push(`${video}[a${index}]`);
@@ -1003,15 +1004,15 @@ function montageArgs(plan, { intermediate = false } = {}) {
     audioTracks = ['[silence]', ...voices];
     for (const row of pictureRows.sort((a,b) => b.lane-a.lane || a.index-b.index)) {
       const { index, start, span, video, hidden, visibleSpans } = row;
-      if (hidden) filters.push(video+'nullsink');
+      const intervals = visibleSpans ? visibleSpans.filter(range=>range.start<span) : [{start:0,end:span}];
+      if (hidden || !intervals.length) filters.push(video+'nullsink');
       else {
-        const intervals = visibleSpans ?? [{start:0,end:span}];
-        const active = intervals.map(range=>`gte(t,${time(start+range.start)})*lt(t,${time(start+range.end)})`).join('+');
+        const active = intervals.map(range=>`gte(t,${time(start+range.start)})*lt(t,${time(start+Math.min(span,range.end))})`).join('+');
         filters.push(`${video}setpts=PTS-STARTPTS+${time(start)}/TB[placed${index}]`,
           `${canvas}[placed${index}]overlay=eof_action=pass:repeatlast=0:enable='${active}'[placedCanvas${index}]`);
         canvas = `[placedCanvas${index}]`;
       }
-      filters.push(`[a${index}]adelay=${Math.round(start*audioRate)}S:all=1[placedSound${index}]`);
+      filters.push(`[a${index}]atrim=duration=${time(span)},adelay=${Math.round(start*audioRate)}S:all=1[placedSound${index}]`);
       audioTracks.push(`[placedSound${index}]`);
     }
     filters.push(canvas+'null[video]');
@@ -1121,7 +1122,7 @@ async function prepareVisualTracks(plan, temporaryDirectory, temporaryFiles, { s
     temporaryFiles.push(output);
     // These intermediate files contain a candidate's source pieces in local time.
     const track = {
-      ...plan, clips:parts.map(({videoStart,hiddenVideo,...part})=>part), duration, music:null, narration:null,
+      ...plan, clips:parts.map(({videoStart,videoDuration,hiddenVideo,...part})=>part), duration, music:null, narration:null,
       narrationMode:'whole', subtitles:null, videoSubtitles:null, layers:[],
     };
     await renderFile(track, output, temporaryDirectory, temporaryFiles, {

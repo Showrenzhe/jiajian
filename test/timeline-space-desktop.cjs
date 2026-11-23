@@ -167,11 +167,16 @@ async function check() {
     const clock = q('#timeline-clock'), rulerLabel = q('.sequence-ruler .sequence-head > span');
     assert.ok(await read(clock + '.matches(":focus-visible")'), '点击标尺后按空格，时间线获得键盘焦点');
     assert.equal(await read('getComputedStyle(' + clock + ').outlineStyle'), 'none', '播放后时间线上下不应显示整幅焦点边框');
-    assert.equal(await read('getComputedStyle(' + rulerLabel + ').outlineStyle'), 'solid', '标尺的时间标签应标示键盘焦点');
+    const rulerFocus = 'getComputedStyle('+q('.sequence-ruler .sequence-head')+', "::after").content';
+    assert.equal(await read('getComputedStyle(' + rulerLabel + ').outlineStyle'), 'none', '空格播放时不描边时间文字');
+    assert.equal(await read(rulerFocus),'none','播放中隐藏时间线的导航焦点提示');
     await space();
+    assert.notEqual(await read(rulerFocus),'none','暂停后键盘焦点可以在轨头分界处辨认');
+    assert.equal(await read('getComputedStyle(' + rulerLabel + ').outlineStyle'), 'none', '暂停时的时间文字同样保持普通标签样式');
     await click('#timeline-play');
     await wait('!!' + live + ' && !' + live + '.paused', '工具栏播放按钮可从暂停位置续播');
     assert.equal(await read('getComputedStyle(' + clock + ').outlineStyle'), 'none', '点击播放按钮不会描边整个时间线');
+    assert.equal(await read('getComputedStyle(' + rulerLabel + ').outlineStyle'), 'none', '工具栏播放不会给时间文字加框');
     await click('#player-play');
     await wait(live + '.paused', '播放器中央按钮应暂停时间线正在播出的画面');
     await click('#material-search');
