@@ -7,8 +7,8 @@ const path = require('node:path');
 const { createInterface } = require('node:readline');
 const { promisify } = require('node:util');
 const { formatSubtitles, normalizeSubtitles, parseSubtitles } = require('./subtitles.cjs');
-const { normalizeShotSettings, normalizeRanges, candidateKey, normalizeSegmentVoiceCuts, sliceSource } = require('./shot-timing.cjs');
-const { candidateVideoLanes, pictureSpan, usesPlacedVideoSource } = require('./ui/track-tools.js');
+const { normalizeShotSettings, normalizeRanges, normalizeSegmentVoiceCuts, sliceSource } = require('./shot-timing.cjs');
+const { candidateVideoLanes, pictureSpan, usesPlacedVideoSource, soloLaneSequence, recordCandidate } = require('./ui/track-tools.js');
 const trackControls = require('./ui/track-controls.js');
 const { preferSolo } = trackControls;
 const { normalizeCover, selectCover, publishCover } = require('./cover.cjs');
@@ -518,7 +518,7 @@ function planMontage(config, catalog, random = Math.random, batchLimit = maxMont
     if (!Array.isArray(shot) || !shot.length || shot.length > maxCandidates) {
       throw new Error(`第 ${index + 1} 组需要 1 至 ${maxCandidates} 条候选视频。`);
     }
-    const ids = new Set();
+    const seen = new Map();
     const fullSources = new Map();
     const lanes = candidateVideoLanes(shot, maxCandidates);
     const originals = shot.flatMap((clip, candidateIndex) => {
@@ -528,20 +528,23 @@ function planMontage(config, catalog, random = Math.random, batchLimit = maxMont
       const volume = clip.volume === undefined ? 1 : requireNumber(clip.volume, 0, 100, `${asset.name} 的原声音量`) / 100;
       const speed = clip.speed === undefined ? 1 : requireNumber(clip.speed, 0.5, Number.MAX_SAFE_INTEGER, `${asset.name} 的播放速度`);
       const ranges = clip.ranges === undefined ? undefined : normalizeRanges(clip.ranges, clip.start, clip.end);
-      const key = candidateKey({ ...clip, ranges });
-      if (ids.has(key)) throw new Error(`第 ${index + 1} 组有重复素材。`);
-      ids.add(key);
+      if (!recordCandidate(seen, { ...clip, ranges })) throw new Error(`第 ${index + 1} 组有重复素材。`);
       const layers = clip.layers === undefined ? {} : { layers: normalizeLayers(clip.layers, checkLayerAsset) };
       layers.videoLane = lanes[candidateIndex];
       const laneKey = 'vis'+layers.videoLane;
       if (!visible(laneKey)) layers.hiddenVideo = true;
       if (clip.videoStart !== undefined) layers.videoStart = requireNumber(clip.videoStart, 0, Number.MAX_SAFE_INTEGER, '视频片段的时间轴落点');
       if (clip.videoDuration !== undefined) layers.videoDuration = requireNumber(clip.videoDuration, Number.MIN_VALUE, Number.MAX_SAFE_INTEGER, '视频片段的时间轴裁切时长');
+      if (clip.videoFit !== undefined) {
+        if (clip.videoFit !== 'hold' || layers.videoStart === undefined || layers.videoDuration === undefined) throw new Error('视频片段的切点窗口无效。');
+        layers.videoFit=clip.videoFit;
+      }
       if (clip.transform !== undefined) layers.transform = normalizeTransform(clip.transform);
       if (clip.look !== undefined) layers.look = normalizeLook(clip.look,(id,role)=>{requireAsset(catalog,id,...(role==='lut'?['lut']:['image','video']));return id;});
       const matchedDuration = clip.matchedDuration === undefined ? undefined
         : requireNumber(clip.matchedDuration, 0.000001, 86400, '候选匹配时长');
-      const shotDuration = matchedDuration ?? settings?.[index]?.duration;
+      const fixed=settings?.[index]?.duration;
+      const shotDuration = clip.videoFit==='hold' ? fixed ?? matchedDuration : matchedDuration ?? fixed;
       if (asset.kind === 'image') {
         if (ranges) throw new Error('图片不支持视频区间裁剪。');
         const duration = requireNumber(clip.end, minClipSeconds, maxStillSeconds, `${asset.name} 的播放时长`);
@@ -705,6 +708,38 @@ function planMontage(config, catalog, random = Math.random, batchLimit = maxMont
     }
     if (clips.at(-1).transition) clips.at(-1).transition = null;
     const baseDuration = clips.reduce((seconds, clip) => seconds + (clip.visuals ? visualDuration(clip.visuals) : clip.duration), 0);
+    // Reference narration can finish before a later shot. Its explicitly
+    // positioned picture still belongs at the requested absolute time.
+    if (clips.length < scenes.length) {
+      const scheduled=new Set(clips.map(clip=>clip.shotIndex));
+      for(const {clip} of scenes) {
+        if(scheduled.has(clip.shotIndex)) continue;
+        const pool=fullSourceShots[clip.shotIndex],full=pool[indices[clip.shotIndex]];
+        if(clip.videoFit==='hold' || soloLaneSequence(pool,full,controls,clip.shotDuration ?? clip.duration).length) {
+          clips.push({...clip,outputFrames:0,outputDuration:0,timelineDuration:0});
+        }
+      }
+    }
+    // Only the primary clip owns the shot clock and its narration. Additional
+    // pictures on a soloed lane carry just their own source sound and edits.
+    const extraPictures=[];
+    clips = clips.map(clip=>{
+      const pool=fullSourceShots[clip.shotIndex];
+      const full=pool[indices[clip.shotIndex]];
+      const shotSpan=clip.outputDuration || clip.shotDuration || clip.duration;
+      const sequence=soloLaneSequence(pool,full,controls,shotSpan);
+      if(!sequence.length && clip.videoFit!=='hold') return clip;
+      function fitPicture(source,owner) {
+        const videoDuration=pictureSpan(source,shotSpan);
+        const {outputFrames}=withOutputFrames(source,videoDuration,config.fps);
+        const {visuals}=fitVisuals(source,pieces(source),1,outputFrames,config.fps);
+        return {...owner,videoFit:'hold',videoDuration,visuals};
+      }
+      for(const other of sequence) {
+        if(other!==full) extraPictures.push(fitPicture(other,{...other,shotIndex:clip.shotIndex,outputFrames:0,outputDuration:0,timelineDuration:0}));
+      }
+      return fitPicture(full,clip);
+    }).concat(extraPictures);
     clips = chooseLooks(clips,catalog,random,effectUseCounts);
     const pictureDuration = frameAligned ? clips.reduce((frames, clip) => frames + clip.outputFrames, 0) / config.fps : baseDuration;
     const sourceVisualDuration = segmented || voicePriority ? baseDuration : pictureDuration;
@@ -887,7 +922,7 @@ async function previewSubtitleStyle({ style, ratio, cue }) {
 
 function montageArgs(plan, { intermediate = false } = {}) {
   const { size: [width, height], fps, fit, keepAudio, music, musicVolume, musicStart = 0, narration, narrationVolume, duration } = plan;
-  const clips = plan.clips.filter((clip) => clip.outputFrames !== 0);
+  const clips = plan.clips.filter((clip) => clip.outputFrames !== 0 || clip.videoFit === 'hold');
   const positioned = clips.some(clip => clip.videoStart !== undefined || clip.videoDuration !== undefined || clip.hiddenVideo || clip.visibleSpans);
   const segmented = plan.narrationMode === 'segmented';
   const alignVoices = segmented && plan.priority === 'voice' && clips.some((clip) => clip.narration);
@@ -906,7 +941,9 @@ function montageArgs(plan, { intermediate = false } = {}) {
 
   clips.forEach((clip, index) => {
     const { asset, start, duration, sourceDuration = duration, speed = 1, volume, mirror, looped } = clip.visuals?.[0] ?? clip;
-    const { narration: voice, outputFrames, outputDuration } = clip;
+    const voice=clip.narration;
+    const renderClock=clip.videoFit==='hold' ? clip.visuals[0] : clip;
+    const {outputFrames,outputDuration}=renderClock;
     const seconds = time(sourceDuration);
     const visualInput = inputCount++;
     if (asset.kind === 'image') {
@@ -927,7 +964,7 @@ function montageArgs(plan, { intermediate = false } = {}) {
       ? `[${visualInput}:${asset.audioIndex}]asetpts=PTS-STARTPTS,aresample=48000,aformat=channel_layouts=stereo${volumeFilter(volume)},apad`
       : 'anullsrc=r=48000:cl=stereo';
     const shape = `${fitFilter}${mirror ? ',hflip' : ''},format=${asset.alpha ? 'rgba' : 'yuv420p'}`;
-    if (frameAligned) {
+    if (frameAligned || clip.videoFit==='hold') {
       const outputSeconds = time(outputDuration);
       filters.push(`${source}settb=AVTB,setpts=(PTS-STARTPTS)/${speed},fps=${fps},${shape},tpad=stop_mode=clone:stop=${outputFrames},trim=end_frame=${outputFrames}[v${index}]`);
       const tempo = originalAudible ? audioTempo(speed) : [];
@@ -988,8 +1025,9 @@ function montageArgs(plan, { intermediate = false } = {}) {
     }
     if (positioned) {
       const start = clip.videoStart ?? pictureTime;
-      const span = outputDuration ?? clip.duration;
-      pictureRows.push({ index, start, span:pictureSpan(clip,span), video, lane:clip.videoLane ?? 0, hidden:clip.hiddenVideo, visibleSpans:clip.visibleSpans });
+      const span = clip.outputDuration ?? clip.duration;
+      pictureRows.push({ index, start, span:pictureSpan(clip,span), video, lane:clip.videoLane ?? 0, hidden:clip.hiddenVideo,
+        hold:clip.videoFit==='hold', visibleSpans:clip.visibleSpans });
       pictureTime += span;
       speechTime += clip.timelineDuration ?? span;
     } else segments.push(`${video}[a${index}]`);
@@ -1010,8 +1048,9 @@ function montageArgs(plan, { intermediate = false } = {}) {
       if (hidden || !intervals.length) filters.push(video+'nullsink');
       else {
         const active = intervals.map(range=>`gte(t,${time(start+range.start)})*lt(t,${time(start+Math.min(span,range.end))})`).join('+');
-        filters.push(`${video}setpts=PTS-STARTPTS+${time(start)}/TB[placed${index}]`,
-          `${canvas}[placed${index}]overlay=eof_action=pass:repeatlast=0:enable='${active}'[placedCanvas${index}]`);
+        const position=row.hold ? `settb=1/${fps},setpts=N+${Math.ceil(start*fps-1e-7)}` : `setpts=PTS-STARTPTS+${time(start)}/TB`;
+        filters.push(`${video}${position}[placed${index}]`,
+          `${canvas}[placed${index}]overlay=eof_action=${row.hold?'repeat:repeatlast=1':'pass:repeatlast=0'}:enable='${active}'[placedCanvas${index}]`);
         canvas = `[placedCanvas${index}]`;
       }
       filters.push(`[a${index}]atrim=duration=${time(span)},adelay=${Math.round(start*audioRate)}S:all=1[placedSound${index}]`);
@@ -1124,7 +1163,7 @@ async function prepareVisualTracks(plan, temporaryDirectory, temporaryFiles, { s
     temporaryFiles.push(output);
     // These intermediate files contain a candidate's source pieces in local time.
     const track = {
-      ...plan, clips:parts.map(({videoStart,videoDuration,hiddenVideo,...part})=>part), duration, music:null, narration:null,
+      ...plan, clips:parts.map(({videoStart,videoDuration,videoFit,hiddenVideo,...part})=>part), duration, music:null, narration:null,
       narrationMode:'whole', subtitles:null, videoSubtitles:null, layers:[],
     };
     await renderFile(track, output, temporaryDirectory, temporaryFiles, {

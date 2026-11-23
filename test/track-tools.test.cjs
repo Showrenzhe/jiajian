@@ -61,6 +61,14 @@ test('a positioned short candidate plays its retained sources at its own speed i
     assert.deepEqual(plan.filter(e=>e.asset).map(e=>[e.asset.url,e.source,e.start,e.end,e.rate]),[
       ['test://short',0,1,2,2],['test://short',4,2,3,2]]);
     assert.deepEqual(plan.filter(e=>e.text).map(e=>[e.text,e.start,e.end]),[['第二段',2.25,2.75]]);
+    const extended={...short,videoDuration:3.25,videoFit:'hold'};
+    const extendedState={...state,shots:[[long,extended]]};
+    const held=makePlan(extendedState,layout,()=>null,waveformSource,extended).filter(entry=>entry.asset).at(-1);
+    assert.deepEqual([held.asset.url,held.start,held.end,held.volume],['test://short',3,4.25,0]);
+    assert.ok(held.rate===0 && held.source>5.9 && held.source<6,'停在最后保留区间的尾帧，原声不延长');
+    const legacy={...short,videoDuration:3.25};
+    const legacyPlan=makePlan({...state,shots:[[long,legacy]]},layout,()=>null,waveformSource,legacy);
+    assert.equal(legacyPlan.filter(entry=>entry.asset).at(-1).end,3,'读取未标注保持尾帧的旧工程时沿用原来的片尾');
   }
 });
 

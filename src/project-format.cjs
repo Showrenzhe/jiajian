@@ -10,11 +10,11 @@ const {
 const { normalizeSubtitles } = require('./subtitles.cjs');
 const { normalizeSubprojects } = require('./subprojects.cjs');
 const { normalizeLayers, normalizeTransform, normalizePackaging } = require('./packaging.cjs');
-const { normalizeShotSettings, normalizeRanges, candidateKey, normalizeSegmentVoiceCuts, normalizeSceneCuts } = require('./shot-timing.cjs');
+const { normalizeShotSettings, normalizeRanges, normalizeSegmentVoiceCuts, normalizeSceneCuts } = require('./shot-timing.cjs');
 const { normalizeCover } = require('./cover.cjs');
 const { audioSpeed, normalizeMusicSpeeds, normalizeVolumeOverrides } = require('./shot-timing.cjs');
 const { normalizeLook, inspectLut } = require('./visual-style.cjs');
-const { candidateVideoLanes } = require('./ui/track-tools.js');
+const { candidateVideoLanes, recordCandidate } = require('./ui/track-tools.js');
 
 const format = 'sdworkbench';
 const version = 1;
@@ -102,7 +102,7 @@ function cleanConfig(config) {
   function cleanShot(shot, index) {
     if (!Array.isArray(shot) || shot.length > maxCandidates) throw new Error(`第 ${index + 1} 组分镜的候选素材数量无效。`);
     candidateVideoLanes(shot, maxCandidates);
-    const seen = new Set();
+    const seen = new Map();
     return Array.from(shot, (clip) => {
       const id = record(clip?.id, 'visual');
       if (![clip.start, clip.end].every(Number.isFinite) || clip.start < 0 || clip.end < clip.start) {
@@ -124,15 +124,17 @@ function cleanConfig(config) {
       if (clip.videoDuration !== undefined && (!Number.isFinite(clip.videoDuration) || clip.videoDuration <= 0 || clip.videoDuration > Number.MAX_SAFE_INTEGER)) {
         throw new Error('视频片段的时间轴裁切时长无效。');
       }
+      if (clip.videoFit !== undefined && (clip.videoFit !== 'hold' || clip.videoStart === undefined || clip.videoDuration === undefined)) {
+        throw new Error('视频片段的切点窗口无效。');
+      }
       const ranges = clip.ranges === undefined ? undefined : normalizeRanges(clip.ranges, clip.start, clip.end);
-      const key = candidateKey({ ...clip, ranges });
-      if (seen.has(key)) throw new Error(`第 ${index + 1} 组分镜有重复素材。`);
-      seen.add(key);
+      if (!recordCandidate(seen, { ...clip, ranges })) throw new Error(`第 ${index + 1} 组分镜有重复素材。`);
       return {
         id, start: clip.start, end: clip.end,
         ...(clip.videoLane !== undefined && { videoLane: clip.videoLane }),
         ...(clip.videoStart !== undefined && { videoStart: clip.videoStart }),
         ...(clip.videoDuration !== undefined && { videoDuration: clip.videoDuration }),
+        ...(clip.videoFit !== undefined && { videoFit: clip.videoFit }),
         ...(clip.enabled !== undefined && { enabled: clip.enabled }),
         ...(clip.layers !== undefined && { layers: normalizeLayers(clip.layers, recordLayer) }),
         ...(clip.transform !== undefined && { transform: normalizeTransform(clip.transform) }),

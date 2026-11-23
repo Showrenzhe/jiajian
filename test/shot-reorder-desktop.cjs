@@ -11,6 +11,7 @@ const { exportBatch, inspectAsset } = require('../src/media.cjs');
 const { loadProject, saveProject } = require('../src/project-format.cjs');
 const { createPreviewBatch, selectPreviewPlans } = require('../src/preview-plans.cjs');
 const { ffmpeg, fixtures } = require('./fixtures.cjs');
+const { dragLibraryItem } = require('./desktop-input.cjs');
 
 app.disableHardwareAcceleration();
 
@@ -340,9 +341,155 @@ async function check() {
     }
 
     const longVideo=path.join(root,'四秒片段.mp4');
-    await ffmpeg(['-f','lavfi','-i','color=red:s=160x90:r=24','-t','4','-c:v','libx264','-threads','2',longVideo]);
+    await ffmpeg(['-f','lavfi','-i','color=red:s=160x90:r=24','-f','lavfi','-i','sine=frequency=440',
+      '-t','4','-c:v','libx264','-c:a','aac','-threads','2',longVideo]);
     catalog.set('four',await inspectAsset(longVideo,'video'));
     catalog.set('still',await inspectAsset(files.still,'image'));
+    // Two real voice tracks and their captions define the first two cuts in the user's draft.
+    const durations=[4.358,4.063,4,4];
+    for(const [i,duration] of durations.slice(0,2).entries()) {
+      const file=path.join(root,'口播'+i+'.wav');
+      await ffmpeg(['-f','lavfi','-i','sine=frequency=660:sample_rate=48000:duration='+duration,file]);
+      catalog.set('voice'+i,await inspectAsset(file,'audio'));
+    }
+    const refillFixture=path.join(root,'双段口播回填.sdworkbench');
+    const twoCandidates=[{id:'four',start:0,end:4},{id:'still',start:0,end:4}];
+    await saveProject(refillFixture,{...config,shots:durations.map(()=>twoCandidates),
+      shotSettings:durations.map((_,i)=>({name:'ABCD'[i]})),priority:'voice',voiceAlignment:'fill',
+      segmentNarrationIds:[['voice0'],['voice1'],[],[]],segmentVoiceCuts:[[null],[null],[],[]],
+      generatedCaptions:Object.fromEntries(durations.slice(0,2).map((duration,i)=>['voice'+i,
+        {name:'台词',cues:[{start:0,end:Math.round(duration*1000),text:'口播'+i}]}])),
+      shotTransitions:[null,null,null,null],musicIds:[],volumeOverrides:[],packaging:undefined,subprojects:undefined},catalog);
+    opens.push(refillFixture);await click('#open-project');
+    await wait(query('#notice')+'.textContent.includes("已打开工程：双段口播回填") && '+rows+'===2','打开只有两条视频轨的口播工程');
+    await fitTimeline();
+    const refillGreen=path.join(root,'回填绿片.mp4');
+    await ffmpeg(['-f','lavfi','-i','color=lime:s=160x90:r=24','-f','lavfi','-i','sine=frequency=880',
+      '-t','1.5','-c:v','libx264','-c:a','aac','-threads','2',refillGreen]);
+    const greenTile='.material-tile[title='+JSON.stringify(path.basename(refillGreen))+']';
+    const libraryPoint=await center('#materials-heading');
+    const fileDrop={items:[],files:[refillGreen],dragOperationsMask:1};
+    for(const type of ['dragEnter','dragOver','drop']) await send('dispatchDragEvent',{type,x:libraryPoint.x,y:libraryPoint.y,data:fileDrop});
+    await wait('!!'+query(greenTile),'将新的绿色素材放入素材库');
+    const beforeMove=await center(cell(2,0));
+    await mouse('mousePressed',beforeMove);await mouse('mouseMoved',{x:beforeMove.x+9,y:beforeMove.y});
+    const newLaneY=(await center(zone)).y,secondShot=await bounds(shotCell(1));
+    const dropInSecond={x:secondShot.x+secondShot.width/2,y:newLaneY};
+    await mouse('mouseMoved',dropInSecond);
+    const ghostBounds=await bounds(placement);
+    await mouse('mouseReleased',dropInSecond);await restored();
+    const occupied=cell(2,2)+'[data-move-candidate]', vacancy=cell(2,2)+'.sequence-empty';
+    const thirdRow='[data-lane-key="vis2"] .sequence-content';
+    await wait('!!'+query(occupied)+' && '+rows+'===3 && !document.getAnimations().some(a=>a.id==="candidate-arrival")','第三轨应显示挪到第二镜的片段');
+    const secondBounds=await bounds(shotCell(1)),thirdBounds=await bounds(shotCell(2));
+    const placedBounds=await bounds(occupied);
+    const hasVacancy=await read('!!'+query(vacancy));
+    assert.ok(hasVacancy && Math.abs(placedBounds.right-secondBounds.right)<1 && Math.abs(ghostBounds.width-secondBounds.width)<1,
+      '应从 4.358 秒连续填至 8.421 秒，且第三镜第三轨留有可投放空位。'+JSON.stringify({hasVacancy,ghost:ghostBounds.width,placed:placedBounds.width,expected:secondBounds.width}));
+    const vacancyBounds=await bounds(vacancy);
+    assert.ok(Math.abs(placedBounds.left-secondBounds.left)<1 && Math.abs(vacancyBounds.left-thirdBounds.left)<1 &&
+      Math.abs(vacancyBounds.right-thirdBounds.right)<1,'片段与空位的两侧应分别对齐各自的分镜边界');
+    assert.equal(await read('Array.from(document.querySelectorAll('+JSON.stringify(thirdRow+' .sequence-empty')+')).some(e=>{const r=e.getBoundingClientRect();return r.left<'+placedBounds.right+' && r.right>'+placedBounds.left+'})'),false,
+      '已覆盖的第二镜不得再叠加空位');
+    await click('#track-undo');await wait(rows+'===2 && '+clipNamed(cell(2,0),longVideo),'一次撤销应恢复原轨');
+    await click('#track-redo');await wait('!!'+query(vacancy)+' && !!'+query(occupied),'重做后可继续回填');
+    const redTile='.material-tile[title='+JSON.stringify(path.basename(longVideo))+']';
+    const duplicateTargets='document.querySelectorAll('+JSON.stringify(cell(2,2)+'[data-move-candidate][title*="'+path.basename(longVideo)+'"]')+').length';
+    async function dragTileToVacancy(tile) {
+      const source=await center(tile),target=await center(vacancy);
+      await dragLibraryItem(wc,source,target,'application/x-sd-workbench-material',async()=>{
+        assert.equal(await read(query(vacancy)+'.dataset.materialDrop'),'active','原分镜第三轨空位应独立高亮');
+      });
+    }
+    await dragTileToVacancy(redTile);
+    await wait(duplicateTargets+'===2 && !'+query(vacancy),'同一素材可在同一轨道连续占用两个不同窗口');
+    const repeatedPath=await saveAs('同一红片回填原空位');
+    const repeated=await loadProject(repeatedPath);
+    const repeatedWindows=repeated.config.shots[2].filter(clip=>clip.videoLane===2);
+    assert.equal(repeatedWindows[0].id,repeatedWindows[1].id);
+    assert.deepEqual(repeatedWindows.map(clip=>[Number(clip.videoStart.toFixed(3)),Number(clip.videoDuration.toFixed(3))]),[[4.358,4.063],[8.421,4]]);
+    await click('#track-undo');await wait(duplicateTargets+'===1 && !!'+query(vacancy),'撤销只移除第二个红片实例');
+    await dragTileToVacancy(greenTile);
+    const refilled=cell(2,2)+'[data-move-candidate][title*="'+path.basename(refillGreen)+'"]';
+    await wait('!!'+query(refilled)+' && !'+query(vacancy),'绿色片段应接替原位空槽');
+    const afterFill=await bounds(refilled);
+    assert.ok(Math.abs(afterFill.left-thirdBounds.left)<1 && Math.abs(afterFill.right-thirdBounds.right)<1,'回填素材应占满第三镜');
+    await click('#track-undo');await wait('!!'+query(vacancy)+' && !'+query(refilled),'一次撤销应只移除回填素材');
+    await click('#track-redo');await wait('!!'+query(refilled)+' && !'+query(vacancy),'重做应恢复同轨回填素材');
+    const refillPath=await saveAs('两轨变三轨并回填');
+    const savedRefill=await loadProject(refillPath);
+    const laneThree=savedRefill.config.shots[2].filter(clip=>clip.videoLane===2);
+    assert.deepEqual(laneThree.map(clip=>[path.basename(savedRefill.assets.get(clip.id).path),
+      Number(clip.videoStart.toFixed(3)),Number(clip.videoDuration.toFixed(3))]),
+      [[path.basename(longVideo),4.358,4.063],[path.basename(refillGreen),8.421,4]]);
+    // Isolate this row in the rendered combination so underlying candidates cannot mask a missing tail frame.
+    const isolated=structuredClone(savedRefill.config);
+    isolated.trackControls={vis0:{hidden:true},vis1:{hidden:true}};
+    isolated.subtitleStyle={...isolated.subtitleStyle,enabled:false};
+    for(const shot of isolated.shots) shot.forEach((clip,i)=>{clip.enabled=shot===isolated.shots[2] ? clip.id===laneThree[0].id : i===0;});
+    const alternatives=structuredClone(isolated);
+    alternatives.count=2;
+    alternatives.shots[2].forEach(clip=>{clip.enabled=clip.videoLane===2;});
+    const normalPlans=createPreviewBatch(alternatives,savedRefill.assets).plans;
+    const ordinaryChoices=normalPlans.map(plan=>plan.clips.filter(clip=>clip.shotIndex===2).map(clip=>path.basename(clip.asset.path)));
+    assert.deepEqual(ordinaryChoices.sort(),[[path.basename(longVideo)],[path.basename(refillGreen)]].sort(),
+      '普通混剪保留两种独立组合，每个组合只抽取第三镜的一个候选');
+    const renderedWindow=await exportBatch(createPreviewBatch(isolated,savedRefill.assets).plans,root);
+    assert.deepEqual(renderedWindow.failures,[]);
+    const boundaryPixels=await ffmpeg(['-i',renderedWindow.results[0].path,'-an','-vf',
+      "select='eq(n,104)+eq(n,105)+eq(n,201)+eq(n,202)+eq(n,203)',scale=1:1",'-fps_mode','passthrough','-pix_fmt','rgb24','-f','rawvideo','pipe:1']);
+    assert.equal(boundaryPixels.length,15);
+    const redFrames=Array.from({length:5},(_,i)=>boundaryPixels[i*3]>180 && boundaryPixels[i*3+1]<40 && boundaryPixels[i*3+2]<40);
+    assert.deepEqual(redFrames,[false,true,true,true,false],'24fps 成片应从 4.375 到 8.4167 秒保留红片，前后相邻帧均应位于窗口外');
+    opens.push(refillPath);await click('#open-project');
+    await wait(query('#notice')+'.textContent.includes("已打开工程：两轨变三轨并回填") && !!'+query(refilled),'重开后仍在原分镜与物理轨道');
+    assert.equal(await read(rows),3);
+    assert.equal(await read('document.querySelectorAll(".sequence-shots [data-reorder-shot]").length'),4);
+    await click('[data-control-key="vis2"] [data-track-action="solo"]');
+    await click('[data-control-key="voice0"] [data-track-action="solo"]');
+    const soloProject=await loadProject(await saveAs('第三轨独显和口播独听'));
+    const soloPlan=createPreviewBatch(soloProject.config,soloProject.assets).plans[0];
+    const soloRender=await exportBatch([soloPlan],root);
+    assert.deepEqual(soloRender.failures,[]);
+    const soloVideo=soloRender.results[0].path;
+    const transition=await ffmpeg(['-i',soloVideo,'-an','-vf',
+      "select='eq(n,202)+eq(n,203)+eq(n,295)+eq(n,299)',scale=1:1",'-fps_mode','passthrough','-pix_fmt','rgb24','-f','rawvideo','pipe:1']);
+    assert.equal(transition.length,12);
+    const colorAt=i=>[...transition.subarray(i*3,i*3+3)].map(v=>v>130);
+    assert.deepEqual([0,1,2,3].map(colorAt),[[true,false,false],[false,true,false],[false,true,false],[false,false,false]],
+      '独显第三轨时，第二镜末仍是红片，第三镜第一帧切绿，第三镜末保留绿片尾帧');
+    const pcm=await ffmpeg(['-i',soloVideo,'-vn','-ac','1','-ar','8000','-f','s16le','pipe:1']);
+    function amplitude(at,hz) {
+      const length=800,first=Math.round(at*8000);let x=0,y=0;
+      for(let i=0;i<length;i++) {
+        const phase=2*Math.PI*hz*i/8000,value=pcm.readInt16LE(2*(first+i));
+        x+=Math.cos(phase)*value;y+=Math.sin(phase)*value;
+      }
+      return Math.hypot(x,y)*2/length;
+    }
+    const voiceReference=amplitude(.5,660),secondVoice=amplitude(5.5,660);
+    assert.ok(voiceReference>400 && Math.abs(secondVoice/voiceReference-1)<.2,'每个分镜独立口播按原音量只混入一次');
+    assert.ok(Math.abs(amplitude(5.5,440)/voiceReference-1)<.2 && amplitude(8.425,440)<50 &&
+      Math.abs(amplitude(8.6,880)/voiceReference-1)<.2 &&
+      amplitude(10.4,880)<50 && amplitude(9,660)<50,'两个原声音调只随各自的源片播放，冻结段静音，口播不重复');
+    await click('#timeline-play');
+    await wait('!!'+query('.draft-transport-preview:not([hidden])'),'播放已独显的视频轨');
+    await click('#timeline-play');
+    for(const [time,channel] of [[8.40,0],[8.60,1],[11.43,1]]) {
+      await read(query('#player-position')+'.value='+time+';'+query('#player-position')+'.dispatchEvent(new Event("input"))');
+      const pixelTest='(()=>{const v=document.querySelector(".draft-transport-preview:not([hidden]) video.draft-main:not([hidden])");'+
+        'if(!v || v.readyState<2 || v.seeking)return false;const c=document.createElement("canvas");c.width=c.height=1;const p=c.getContext("2d");'+
+        'p.drawImage(v,0,0,1,1);const rgb=p.getImageData(0,0,1,1).data;return rgb['+channel+']>180 && rgb['+(1-channel)+']<45;})()';
+      await wait(pixelTest,'真实轨道预览在 '+time+' 秒应解码已独显轨道的'+(channel?'绿色':'红色')+'画面');
+    }
+    opens.push(repeatedPath);await click('#open-project');
+    await wait(query('#notice')+'.textContent.includes("已打开工程：同一红片回填原空位") && '+duplicateTargets+'===2','重开后保留两段同源但不重叠的红片');
+    const firstCandidate=cell(0,0)+'[data-move-candidate]';
+    await dragLibraryItem(wc,await center(redTile),await center(firstCandidate),'application/x-sd-workbench-material',async()=>{
+      assert.equal(await read(query(firstCandidate)+'.dataset.materialDrop'),'active');
+    });
+    await wait(query('#notice')+'.textContent.includes("已在本组")','普通已用分镜仍应拒绝重复添加同源候选');
+    assert.equal(await read('document.querySelectorAll('+JSON.stringify('.sequence-video [data-drop-shot="0"][data-move-candidate]')+').length'),2);
     const boundedFile=path.join(root,'四秒片段与空轨.sdworkbench');
     await saveProject(boundedFile,{...config,
       shots:[[{id:'four',start:0,end:4,videoLane:2},{...red,videoLane:0}],[green],[{id:'still',start:0,end:4,videoStart:15}],[{...blue,end:.7,speed:2,videoSubtitles:undefined}]],
@@ -387,8 +534,8 @@ async function check() {
     await dragIntoCutWindow(0,2,longVideo,secondLane,9.9,8,4);
     await dragIntoCutWindow(0,2,longVideo,zone,5.9,5.8,.6);
     await dragIntoCutWindow(2,0,files.still,'#new-shot-drop',5.9,5.8,.6);
-    await dragIntoCutWindow(3,0,files.blue,secondLane,2.65,0,.35);
-    await dragIntoCutWindow(1,0,files.green,secondLane,2.65,0,.65);
+    await dragIntoCutWindow(3,0,files.blue,secondLane,2.65,0,4);
+    await dragIntoCutWindow(1,0,files.green,secondLane,2.65,0,4);
 
     const outSource=await center(cell(0,2));
     await mouse('mousePressed',outSource);await mouse('mouseMoved',{x:outSource.x+8,y:outSource.y});
@@ -444,7 +591,7 @@ async function check() {
       await checkPlacement(axis,scale,1.2,.65,'在同一个分镜内移动');
       const first={x:axis.x+.6*scale,y:end.y};
       await mouse('mouseMoved',first);
-      await checkPlacement(axis,scale,0,.9,'回到第一分镜，以原素材时长放置');
+      await checkPlacement(axis,scale,0,1.2,'回到第一分镜，覆盖到第一镜末端');
       return first;
     }
     let hover=await hoverNewLane(0);
@@ -508,8 +655,10 @@ async function check() {
     assert.equal(reopened.config.shots[0][0].videoLane,2);
     assert.ok(Math.abs(reopened.config.shots[0][0].videoStart-expectedTime)<.012 && Math.abs(expectedTime)<.012,'工程保存的落点与第一分镜起点一致');
     const comparison=structuredClone(reopened.config);
-    assert.ok(Math.abs(comparison.shots[0][0].videoDuration-.9)<.001,'短视频以原速保留 .9 秒');
+    assert.ok(Math.abs(comparison.shots[0][0].videoDuration-1.2)<.001,'短视频以原速播放并保持尾帧至 1.2 秒');
     delete comparison.shots[0][0].videoDuration;
+    assert.equal(comparison.shots[0][0].videoFit,'hold');
+    delete comparison.shots[0][0].videoFit;
     delete comparison.shots[0][0].videoLane;
     delete comparison.shots[0][0].videoStart;
     assert.deepEqual(comparison,singleBaseline,'仅当前候选的时间轴位置和显示时长发生改变');
@@ -518,6 +667,15 @@ async function check() {
     assert.equal(await read(rows),3);
     await click(cell(0,2));
     assert.equal(await read(query('#clip-track-muted')+'.checked'),false,'移出静音行的片段应恢复其原音量');
+    const draftVideo=query('.draft-transport-preview:not([hidden]) video.draft-main');
+    await click('#timeline-play');
+    await wait(draftVideo+'?.readyState>=2 && !'+draftVideo+'.paused','轨道预览应播放红色素材');
+    await click('#timeline-play');
+    await read(query('#player-position')+'.value=1.13;'+query('#player-position')+'.dispatchEvent(new Event("input"))');
+    await wait(draftVideo+'?.readyState>=2 && !'+draftVideo+'.seeking && '+draftVideo+'.muted && '+draftVideo+'.paused','源片结束后轨道预览应停在静音的最后一帧');
+    const heldPixel=await read('(()=>{const c=document.createElement("canvas");c.width=1;c.height=1;const p=c.getContext("2d");p.drawImage('+draftVideo+',0,0,1,1);return Array.from(p.getImageData(0,0,1,1).data)})()');
+    assert.ok(heldPixel[0]>180 && heldPixel[1]<45 && heldPixel[2]<45,'真实播放器的延时区应显示红色尾帧');
+    assert.ok(Math.abs(await read(draftVideo+'.currentTime')-1)<.045,'应停在裁选区间尾帧');
     const [lanePlan]=createPreviewBatch(reopened.config,reopened.assets).plans;
     assert.deepEqual(lanePlan.clips.map(c=>[path.basename(c.asset.path),c.volume]),
       [[files.red,.43],[files.green,0],[files.blue,0]].map(([file,volume])=>[path.basename(file),volume]));

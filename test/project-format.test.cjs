@@ -78,6 +78,11 @@ test('a draft with every visual excluded keeps muted tracks, clips and original 
   assert.deepEqual((await loadProject(file)).config, config);
   await assert.rejects(saveProject(file, {...config, shots:[[{...config.shots[0][0],videoStart:-1}]]}, catalog), /落点/);
   await assert.rejects(saveProject(file, {...config, shots:[[{...config.shots[0][0],videoDuration:0}]]}, catalog), /裁切时长/);
+  const placed={...config.shots[0][0],enabled:true,videoFit:'hold'};
+  const overlap={...config,shots:[[placed,{...placed,videoStart:2.30}]]};
+  await assert.rejects(saveProject(file,overlap,catalog,{overwrite:true}),/重复素材/);
+  assert.throws(()=>planMontage(overlap,catalog),/重复/);
+  assert.deepEqual((await loadProject(file)).config,config,'回绝重叠的同源片段后保留旧工程');
   await assert.rejects(saveProject(file, { ...config, mutedVideoTracks: [-1] }, catalog), /静音/);
 });
 

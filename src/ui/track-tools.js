@@ -47,6 +47,21 @@
     return JSON.stringify([clip.id, clip.start, clip.end, clip.ranges?.map(({ start, end }) => [start, end])]);
   }
 
+  function disjointVideoPlacements(a, b) {
+    if (a.videoFit !== 'hold' && b.videoFit !== 'hold') return false;
+    if (![a, b].every(clip => Number.isFinite(clip.videoStart) && Number.isFinite(clip.videoDuration) && clip.videoDuration > 0)) return false;
+    return a.videoStart + a.videoDuration <= b.videoStart + 1e-7 || b.videoStart + b.videoDuration <= a.videoStart + 1e-7;
+  }
+
+  function recordCandidate(seen, clip) {
+    const key = candidateKey(clip);
+    const copies = seen.get(key) ?? [];
+    if (copies.some(copy => !disjointVideoPlacements(copy, clip))) return false;
+    copies.push(clip);
+    seen.set(key, copies);
+    return true;
+  }
+
   // Candidate order drives montage choices. A physical lane may be empty above a candidate.
   function candidateVideoLanes(shot, limit = Infinity) {
     const reserved = new Map();
@@ -75,14 +90,65 @@
 
   // A timeline tail trim limits the edited picture without changing its shot or playback rate.
   function pictureSpan(clip, shotSpan) {
+    if (clip?.videoFit === 'hold') return clip.videoDuration;
     return Math.min(shotSpan, clip?.videoDuration ?? shotSpan);
+  }
+
+  function videoLaneCells(shots, starts, widths) {
+    const lanes = [];
+    shots.forEach((shot, index) => {
+      candidateVideoLanes(shot).forEach((lane, candidate) => {
+        const clip = shot[candidate];
+        (lanes[lane] ??= []).push({clip, index, start:clip.videoStart ?? starts[index], span:pictureSpan(clip, widths[index])});
+      });
+    });
+    return lanes;
+  }
+
+  // A placed clip keeps its montage owner, but covers time on the physical lane.
+  function emptyVideoCells(cells, starts, widths) {
+    const occupied = [...cells].sort((a, b) => a.start - b.start);
+    const gaps = [];
+    let next = 0, busyUntil = 0;
+    starts.forEach((start, index) => {
+      const end = start + widths[index];
+      let cursor = Math.max(start, busyUntil);
+      while (next < occupied.length && occupied[next].start < end - 1e-7) {
+        const cell = occupied[next++];
+        if (cell.start > cursor + 1e-7) gaps.push({index, start:cursor, span:cell.start - cursor});
+        busyUntil = Math.max(busyUntil, cell.start + cell.span);
+        cursor = Math.max(cursor, busyUntil);
+      }
+      if (cursor < end - 1e-7) gaps.push({index, start:cursor, span:end - cursor});
+    });
+    return gaps;
+  }
+
+  // Solo monitors a physical video track. Distinct placements on that track
+  // play in time order even when their montage alternatives share one owner.
+  function soloLaneSequence(shot, focus, controls, shotSpan) {
+    if (focus?.videoStart === undefined || !controls || (focus.videoLane !== undefined && !controls['vis' + focus.videoLane]?.solo)) return [];
+    const variants = shot.filter(clip => Boolean(clip.mirror) === Boolean(focus.mirror));
+    const lanes = candidateVideoLanes(variants);
+    const lane = lanes[variants.indexOf(focus)];
+    if (!controls['vis' + lane]?.solo) return [];
+    const sequence = variants.filter((clip, i) => lanes[i] === lane && clip.enabled !== false && clip.videoStart !== undefined)
+      .sort((a, b) => a.videoStart - b.videoStart);
+    if (sequence.length < 2 || !sequence.includes(focus) || !sequence.some(clip => clip.videoFit === 'hold')) return [];
+    let end = 0;
+    for (const clip of sequence) {
+      const span = pictureSpan(clip, shotSpan ?? clip.shotDuration ?? clip.videoDuration ?? clip.duration);
+      if (!(span > 0) || clip.videoStart < end - 1e-7) return [];
+      end = clip.videoStart + span;
+    }
+    return sequence;
   }
 
   function usesPlacedVideoSource(clip, voicePriority) {
     return !voicePriority && clip?.asset?.kind === 'video' && clip.videoStart !== undefined
       && clip.videoDuration !== undefined && clip.matchedDuration === undefined;
   }
-  const tools = { splitRanges, candidateKey, candidateVideoLanes, pinCandidateLanes, pictureSpan, usesPlacedVideoSource };
+  const tools = { splitRanges, candidateKey, disjointVideoPlacements, recordCandidate, candidateVideoLanes, pinCandidateLanes, pictureSpan, videoLaneCells, emptyVideoCells, soloLaneSequence, usesPlacedVideoSource };
   if (typeof module === 'object' && module.exports) module.exports = tools;
   else Object.assign(window, tools);
 })();

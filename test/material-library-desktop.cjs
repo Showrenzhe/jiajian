@@ -6,6 +6,7 @@ const path = require('node:path');
 const os = require('node:os');
 const { setTimeout: delay } = require('node:timers/promises');
 const { app } = require('electron');
+const { dragLibraryItem } = require('./desktop-input.cjs');
 const { launchDesktop } = require('../src/desktop.cjs');
 const { fixtures, ffmpeg } = require('./fixtures.cjs');
 
@@ -87,26 +88,9 @@ async function run() {
   }
   async function dragLibraryAudio(selector) {
     const source = await point('#processed-material-list li:first-child strong'), target = await point(selector);
-    let data;
-    const capture = (_event, method, params) => { if (method === 'Input.dragIntercepted') data = params.data; };
-    wc.debugger.on('message', capture);
-    await send('setInterceptDrags', { enabled: true });
-    try {
-      await send('dispatchMouseEvent', { type:'mouseMoved', ...source });
-      await send('dispatchMouseEvent', { type:'mousePressed', ...source, button:'left', buttons:1, clickCount:1 });
-      await send('dispatchMouseEvent', { type:'mouseMoved', x:source.x+9, y:source.y, button:'left',buttons:1 });
-      await send('dispatchMouseEvent', { type:'mouseMoved', ...target, button:'left',buttons:1 });
-      const end = Date.now() + 3000;
-      while (!data && Date.now() < end) await delay(20);
-      assert.ok(data?.items.some(item=>item.mimeType==='application/x-jiajian-processed-audio'), '素材库音频应发起原生拖放');
-      for (const type of ['dragEnter','dragOver']) await send('dispatchDragEvent', { type, ...target, data });
+    await dragLibraryItem(wc, source, target, 'application/x-jiajian-processed-audio', async () => {
       assert.equal(await read(el(selector)+'.dataset.materialDrop'), 'active', '鼠标所在的口播槽应显示接收状态');
-      await send('dispatchDragEvent', { type:'drop', ...target, data });
-    } finally {
-      wc.debugger.off('message', capture);
-      await send('dispatchMouseEvent', { type:'mouseReleased', ...target, button:'left', clickCount:1 });
-      await send('setInterceptDrags', { enabled: false });
-    }
+    });
   }
   async function pickFolder() {
     picks.push({ title: '选择素材文件夹', files: [library] });

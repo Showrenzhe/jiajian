@@ -234,7 +234,7 @@ test('timeline tail trims cut source sound and picture at their original rate an
   assert.ok(secondRange.blue>secondRange.red*2 && Math.max(...Object.values(tail))<15,'多段源区间合成后，保留第二段开头并只裁一次尾部');
 
   const placedConfig={...config,count:2,shotSettings:[{duration:1.5}],
-    shots:[[{id:'green',start:0,end:1.5},{...clip,videoStart:.25,videoDuration:.5}]]};
+    shots:[[{id:'green',start:0,end:1.5},{...clip,videoStart:.25,videoDuration:.9,videoFit:'hold'}]]};
   const placedPlans=planMontage(placedConfig,catalog);
   const placed=placedPlans.find(plan=>plan.clips[0].videoStart===.25);
   assert.equal(placed.duration,1.5);
@@ -242,13 +242,15 @@ test('timeline tail trims cut source sound and picture at their original rate an
   const placedBatch=await exportBatch([placed],output);
   assert.deepEqual(placedBatch.failures,[]);
   const file=placedBatch.results[0].path;
-  const [head,end,gap]=await Promise.all([.4,.70,.84].map(t=>frameColor(file,t)));
+  const [head,end,held,afterWindow]=await Promise.all([.4,.70,1.08,1.27].map(t=>frameColor(file,t)));
   assert.ok(head.red>head.blue*2 && end.blue>end.green*2,'落位短片按自身倍速播完，不混入同分镜的绿色候选');
-  assert.ok(Math.max(...Object.values(gap))<15);
+  assert.ok(held.blue>held.red*2 && held.blue>held.green*2,'在源片结束后至窗口末端保持蓝色尾帧');
+  assert.ok(Math.max(...Object.values(afterWindow))<15,'超出落位窗口才恢复空画面');
   assert.ok(Math.abs(await toneAt(file,'0.59')-440)<50);
   assert.equal(await toneAt(file,'0.83'),0);
+  const legacyClip={...clip,videoStart:.25,videoDuration:.5};
   const segmented=planMontage({...placedConfig,priority:'voice',narrationMode:'segmented',segmentNarrationIds:[[],['music']],
-    shotSettings:[...placedConfig.shotSettings,{}],shots:[...placedConfig.shots,[{id:'red',start:0,end:1}]]},catalog)
+    shotSettings:[...placedConfig.shotSettings,{}],shots:[[placedConfig.shots[0][0],legacyClip],[{id:'red',start:0,end:1}]]},catalog)
     .find(plan=>plan.clips[0].videoStart===.25);
   assert.equal(segmented.clips[0].visuals,undefined,'无跟镜口播时保留独立短片来源');
   assert.equal(segmented.clips[0].speed,2);

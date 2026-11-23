@@ -170,7 +170,8 @@ function scheduleLayers({ pack, selection, catalog, clips, duration, wholeIndex,
         for (let index = 0; index < count; index++) {
           const start = visualTime + index * length;
           if (start >= pictureEnd) break;
-          add(part.layers, start, Math.min(length, pictureEnd-start), part.layerStart ?? 0, tempo);
+          const sourceSpan=clip.videoFit==='hold' ? (part.sourceDuration ?? part.duration)/tempo : Infinity;
+          add(part.layers, start, Math.min(sourceSpan,length,pictureEnd-start), part.layerStart ?? 0, tempo);
         }
       }
       visualTime += count * length;

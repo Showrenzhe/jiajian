@@ -84,6 +84,12 @@
 .sequence-edge {z-index:1;}
 #timeline-clock .sequence-empty { border:1px dashed #4d5558; background:#292d2f; color:#a5afb1; }
 #timeline-clock .sequence-video .sequence-empty {align-content:center;user-select:none;}
+#timeline-clock .sequence-empty[data-material-interval] {outline:0;box-shadow:none;}
+#timeline-clock .sequence-empty[data-material-interval]::after {
+  content:"";position:absolute;inset-block:0;left:var(--drop-left);width:var(--drop-width);
+  box-sizing:border-box;border:2px solid var(--system-blue);border-radius:3px;
+  background:color-mix(in srgb,var(--system-blue) 16%,transparent);pointer-events:none;
+}
 #timeline-clock .sequence-shots .sequence-block {background:#59436e;border-color:#836099;}
 #timeline-clock .sequence-shots [data-reorder-shot], #timeline-clock [data-move-candidate] {cursor:grab;user-select:none;touch-action:none;}
 #timeline-clock .sequence-video [data-move-candidate] {touch-action:none;transform-origin:top left;}
