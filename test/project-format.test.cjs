@@ -343,6 +343,37 @@ test('restores script selections and plain text and rejects oversized script dat
   assert.throws(() => normalizeScriptModel({ ...script, whole: Array(22).fill(row) }), /256 KiB/);
 });
 
+test('opening a large draft renews the inspection deadline for each batch and still times out a stalled batch', async (t) => {
+  const root = await testDirectory(t);
+  const file = path.join(root, 'inspection.sdworkbench');
+  const ids = Array.from({ length: 8 }, (_, index) => 'audio-' + index);
+  const catalog = new Map(ids.map(id => [id, { kind: 'audio', path: path.join(root, id + '.mp3'), duration: 1 }]));
+  await saveProject(file, editingConfig({ musicIds: ids }), catalog);
+
+  let now = 0;
+  const timers = [];
+  t.mock.method(AbortSignal, 'timeout', milliseconds => {
+    const controller = new AbortController();
+    timers.push({ controller, expires: now + milliseconds });
+    return controller.signal;
+  });
+  function advance(milliseconds) {
+    now += milliseconds;
+    for (const timer of timers) if (timer.expires <= now) timer.controller.abort();
+  }
+  let inspected = 0;
+  const restored = await loadProject(file, undefined, async (source, kind, { signal }) => {
+    if (inspected++ % 4 === 0) advance(40_000);
+    signal.throwIfAborted();
+    return { kind, path: source, duration: 1 };
+  });
+  assert.deepEqual([...restored.assets.keys()], ids);
+  await assert.rejects(loadProject(file, undefined, async (_source, _kind, { signal }) => {
+    advance(60_001);
+    signal.throwIfAborted();
+  }), /读取工程素材超时/);
+});
+
 test('reports missing media and rejects incompatible or undeclared asset references', async (t) => {
   const root = await testDirectory(t);
   const file = path.join(root, 'broken.sdworkbench');

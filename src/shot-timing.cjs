@@ -1,6 +1,7 @@
 'use strict';
 
 const minimum = 0.1;
+const { candidateKey } = require('./ui/track-tools.js');
 
 function normalizeShotSettings(rows, length) {
   if (rows === undefined) return undefined;
@@ -33,10 +34,6 @@ function normalizeRanges(ranges, start, end) {
         || range.end > end + 1e-7 || range.end - range.start < minimum - 1e-7) throw new Error('裁剪片段超出素材范围或短于 0.1 秒。');
     return { start: range.start, end: range.end };
   });
-}
-
-function candidateKey(clip) {
-  return JSON.stringify([clip.id, clip.start, clip.end, clip.ranges?.map(({ start, end }) => [start, end])]);
 }
 
 function audioSpeed(value) {

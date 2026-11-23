@@ -43,6 +43,10 @@
     return ranges;
   }
 
-  if (typeof module === 'object' && module.exports) module.exports = { splitRanges };
-  else window.splitRanges = splitRanges;
+  function candidateKey(clip) {
+    return JSON.stringify([clip.id, clip.start, clip.end, clip.ranges?.map(({ start, end }) => [start, end])]);
+  }
+
+  if (typeof module === 'object' && module.exports) module.exports = { splitRanges, candidateKey };
+  else Object.assign(window, { splitRanges, candidateKey });
 })();

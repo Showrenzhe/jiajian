@@ -73,6 +73,11 @@ async function check() {
     await send('dispatchKeyEvent',{...event,type:'rawKeyDown'});
     await send('dispatchKeyEvent',{...event,type:'keyUp'});
   }
+  async function fitTimeline() {
+    // Fit applies its new clip positions in the next animation frame.
+    await read('new Promise(done=>{'+query('#timeline-fit')+'.click();requestAnimationFrame(()=>done(true));})');
+    await wait(host+'.scrollWidth<='+host+'.clientWidth+1','适配后的分镜应全部进入可视区');
+  }
   async function point(index,portion=.5) {
     const selector='.sequence-shots [data-drop-shot="'+index+'"]';
     const p=await read('(()=>{const e='+query(selector)+',r=e.getBoundingClientRect(),x=r.left+r.width*'+portion+',y=r.top+r.height/2;'
@@ -93,8 +98,14 @@ async function check() {
   }
   try {
     await click('#home-open-project');await verify(['A','B','C']);
+    await click('.sequence-shots [data-drop-shot="1"]');
+    await click('#insert-shot-left');await verify(['A','分镜 02','B','C']);
+    await click('#track-undo');await verify(['A','B','C']);
+    await click('[data-candidate-index="0"][data-drop-shot="1"]');
+    await click('#insert-shot-right');await verify(['A','B','分镜 03','C']);
+    await click('#track-undo');await verify(['A','B','C']);
     await click('#add-shot');await verify(['A','B','C','分镜 04']);
-    await click('#timeline-fit');await delay(80);
+    await fitTimeline();
     await drag(3,0,.2);await verify(['分镜 01','A','B','C']);
     await drag(0,3,.8,true);await verify(['分镜 01','A','B','C']);
     await drag(0,3,.8);await verify(['A','B','C','分镜 04']);
@@ -210,6 +221,38 @@ async function check() {
     await context(firstVoice);
     assert.equal(await read('document.querySelector("dialog[open] input[type=number]").valueAsNumber'),2);
     await action('关闭');
+    const cell=(shot,row)=>'[data-drop-shot="'+shot+'"][data-candidate-index="'+row+'"]';
+    const filled=(shot,row)=>query(cell(shot,row)+':not(.sequence-empty)');
+    const shotCount=await read(order+'.length');
+    await click(cell(2,0));await read(query(cell(2,0))+'.focus()');await key('c',67,2);
+    await click(cell(3,0));await read(query(cell(3,0))+'.focus()');await key('v',86,2);
+    await wait('!!'+filled(3,1),'粘贴到已有候选的分镜应追加视频');
+    assert.equal(await read(order+'.length'),shotCount,'粘贴应保持分镜数');
+    await context(shotCell(3));await action('粘贴视频');
+    await wait(query('#notice')+'.textContent.includes("已包含")','重复粘贴应提示且不修改工程');
+    await fitTimeline();
+    const geometry=await read('(()=>{const src='+query(cell(3,1))+',dst='+query(cell(4,0))+';src.scrollIntoView({block:"center",inline:"center"});'
+      +'return [src,dst].map(n=>{const r=n.getBoundingClientRect(),x=r.x+r.width/2,y=r.y+r.height/2;return {x,y,hit:n.contains(document.elementFromPoint(x,y))};});})()');
+    const [sourcePoint,dropPoint]=geometry;
+    assert.ok(sourcePoint.hit && dropPoint.hit,'候选及目标均应可见');
+    await mouse('mousePressed',sourcePoint);await mouse('mouseMoved',dropPoint);
+    await wait(query(cell(4,0))+'.dataset.materialDrop==="active"','拖动应标记目标分镜');
+    await key('Escape',27);await mouse('mouseReleased',dropPoint);
+    assert.ok(await read('!!'+filled(3,1)+' && !'+filled(4,1)),'Esc 应保留原候选');
+    await mouse('mousePressed',sourcePoint);await mouse('mouseMoved',dropPoint);
+    await wait(query(cell(4,0))+'.dataset.materialDrop==="active"','再次拖动应恢复目标反馈');
+    await mouse('mouseReleased',dropPoint);
+    await wait('!'+filled(3,1)+' && !!'+filled(4,1),'将第二条候选移动到其他分镜');
+    assert.equal(await read(order+'.length'),shotCount);
+    await click('#track-undo');await wait('!!'+filled(3,1)+' && !'+filled(4,1),'一次撤销跨分镜移动');
+    await click('#track-redo');await wait('!'+filled(3,1)+' && !!'+filled(4,1),'一次重做跨分镜移动');
+    const movedFile=path.join(root,'跨分镜候选.sdworkbench');
+    saves.push(movedFile);opens.push(movedFile);
+    await click('#save-project');await wait(query('#notice')+'.textContent.includes("工程已保存")','保存移动的候选');
+    const {config:movedConfig,assets:movedAssets}=await loadProject(movedFile);
+    assert.deepEqual(movedConfig.shots[4][1],movedConfig.shots[2][0],'移动复制的候选应保留裁剪、字幕和包装');
+    assert.deepEqual(movedConfig.shots[3].map(clip=>movedAssets.get(clip.id).path),[files.red],'移走候选应保留原有分镜内容');
+    await click('#open-project');await wait(query('#notice')+'.textContent.includes("已打开工程") && !!'+filled(4,1),'重开后保留候选位置');
     assert.deepEqual(opens,[]);assert.deepEqual(saves,[]);
     console.log('分镜拖动、左右插入、倍速、音频字幕视频复制粘贴、撤销重做、保存重开与成片排序通过。');
   } finally {

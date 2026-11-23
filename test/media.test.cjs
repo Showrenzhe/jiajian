@@ -1192,3 +1192,57 @@ test('cancels an in-progress output and keeps previously completed media', async
   assert.deepEqual([rendered.width, rendered.height], [720, 720]);
   assert.deepEqual(await fs.readdir(output), [batch.results[0].name]);
 });
+
+test('renders a complete four-second candidate in one matched second and fills a short matched candidate', async t => {
+  const { matchCandidateDuration } = require('../src/ui/voice-alignment.js');
+  const { catalog, output } = await fixtureDirectory(t);
+  const source = path.join(output,'双色素材.mp4');
+  await ffmpeg(['-f','lavfi','-i','color=red:s=160x90:r=24:d=2','-f','lavfi','-i','color=blue:s=160x90:r=24:d=2',
+    '-filter_complex','[0:v][1:v]concat=n=2:v=1:a=0','-threads','2',source]);
+  catalog.set('both', await inspectAsset(source,'video'));
+  const clip={id:'both',asset:catalog.get('both'),start:0,end:4,speed:1};
+  assert.equal(matchCandidateDuration(clip,1),true);
+  assert.equal(matchCandidateDuration(clip,1),false);
+  assert.equal(clip.speed,4);
+  const short={...clip,start:0,end:.4};
+  matchCandidateDuration(short,1);
+  const still={id:'still',asset:catalog.get('still'),start:0,end:3};
+  matchCandidateDuration(still,1);
+  const plans=[clip,short,still].map(candidate=>planMontage({...montage,shots:[[candidate]],fps:24,priority:'picture',musicIds:[],
+    count:1,shotSettings:[{duration:.25,smartTrim:true}]},catalog,()=>0)[0]);
+  assert.equal(plans[0].clips[0].speed,4);
+  assert.ok(plans[1].clips[0].visuals.some(v=>v.repeat>1 && v.speed>=1));
+  const batch=await exportBatch(plans,output);
+  assert.deepEqual(batch.failures,[]);
+  for(const {path:file} of batch.results) assert.ok(Math.abs((await inspectAsset(file,'video')).duration-1)<1/24);
+  assert.ok((await frameColor(batch.results[0].path,.1)).red>200);
+  assert.ok((await frameColor(batch.results[0].path,.85)).blue>200,'加速应保留原片尾部蓝色画面');
+});
+
+test('reopens a legacy fixed-length shot and accelerates its entire source to its narration', async t => {
+  const { loadProject } = require('../src/project-format.cjs');
+  const { output }=await fixtureDirectory(t);
+  const video=path.join(output,'老工程红蓝.mp4'), voice=path.join(output,'一秒口播.wav');
+  await Promise.all([
+    ffmpeg(['-f','lavfi','-i','color=red:s=160x90:r=24:d=2','-f','lavfi','-i','color=blue:s=160x90:r=24:d=2',
+      '-filter_complex','[0:v][1:v]concat=n=2:v=1:a=0','-threads','2',video]),
+    ffmpeg(['-f','lavfi','-i','sine=frequency=600:duration=1',voice]),
+  ]);
+  const project=path.join(output,'旧工程.sdworkbench');
+  const config={...montage,fps:24,musicIds:[],count:1,priority:'voice',narrationMode:'segmented',segmentNarrationIds:[['speech']],
+    shots:[[{id:'redblue',start:0,end:4}]],shotSettings:[{duration:1}]};
+  await fs.writeFile(project,JSON.stringify({format:'sdworkbench',version:1,config,assets:[
+    {id:'redblue',kind:'video',path:video},{id:'speech',kind:'audio',path:voice}]}));
+  const opened=await loadProject(project);
+  const plan=overrides=>planMontage({...opened.config,...overrides},opened.assets,()=>0)[0];
+  const accelerated=plan({}), whole=plan({narrationMode:'whole',narrationId:'speech'});
+  const batch=await exportBatch([accelerated],output);
+  assert.deepEqual(batch.failures,[]);
+  const file=batch.results[0].path;
+  assert.ok(Math.abs((await inspectAsset(file,'video')).duration-1)<1/24);
+  assert.ok((await frameColor(file,.12)).red>200);
+  assert.ok((await frameColor(file,.85)).blue>200,'旧草稿的蓝色尾帧应在一秒口播内出现');
+  for(const p of [accelerated,whole]) assert.deepEqual(p.clips[0].visuals.map(v=>[v.sourceDuration,v.speed]),[[4,4]]);
+  assert.equal(plan({priority:'picture'}).clips[0].sourceDuration,1);
+  assert.equal(plan({voiceAlignment:'reference'}).clips[0].visuals[0].sourceDuration,1);
+});

@@ -58,7 +58,8 @@
 .sequence-edge {z-index:1;}
 #timeline-clock .sequence-empty { border:1px dashed #4d5558; background:#292d2f; color:#a5afb1; }
 #timeline-clock .sequence-shots .sequence-block {background:#59436e;border-color:#836099;}
-#timeline-clock .sequence-shots [data-reorder-shot] {cursor:grab;user-select:none;touch-action:none;}
+#timeline-clock .sequence-shots [data-reorder-shot], #timeline-clock [data-move-candidate] {cursor:grab;user-select:none;touch-action:none;}
+#timeline-clock [data-move-candidate].candidate-moving {cursor:grabbing;opacity:.6;}
 #timeline-clock .reordering, #timeline-clock .reordering [data-reorder-shot] {cursor:grabbing;}
 #timeline-clock .shot-drag-source {opacity:.5;}
 .shot-insert-marker {position:absolute;top:0;bottom:0;width:3px;z-index:4;background:#d6b9ff;pointer-events:none;}

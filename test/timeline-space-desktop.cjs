@@ -17,8 +17,8 @@ async function check() {
   const root = await fs.mkdtemp(path.join(os.tmpdir(), 'jiajian-space-'));
   app.setPath('userData', path.join(root, 'electron'));
   const files = await fixtures(root);
-  const records = new Map(await Promise.all(['red', 'blue'].map(async (id) =>
-    [id, await inspectAsset(files[id], 'video')])));
+  const records = new Map(await Promise.all(['red', 'blue', 'music'].map(async (id) =>
+    [id, await inspectAsset(files[id], id==='music' ? 'audio' : 'video')])));
   const simple = path.join(root, '两个分镜.sdworkbench'), complex = path.join(root, '含包装.sdworkbench');
   const config = {
     shots: ['red', 'blue'].map((id) => [{ id, start: 0, end: 1.5 }]),
@@ -29,7 +29,11 @@ async function check() {
   await saveProject(complex, { ...config, packaging: { global: [
     { kind: 'text', start: 0, end: null, text: '成片试播', x: .5, y: .65, color: '#ffffff', fontSize: 40 },
   ] } }, records);
-  const projects = [simple, complex];
+  const narrated = path.join(root, '分段口播优先.sdworkbench');
+  await saveProject(narrated, { ...config, priority:'voice', narrationMode:'segmented', voiceAlignment:'fill',
+    shots:[[{id:'red',start:0,end:.2},{id:'blue',start:0,end:1.2}],[{id:'red',start:0,end:1.5}]],
+    segmentNarrationIds:[['music'],['music']],shotSettings:[{duration:.4},{duration:.4}] }, records);
+  const projects = [simple, complex, narrated];
   const win = await launchDesktop({ show: false, dataDirectory: path.join(root, 'profile'), dialogs: {
     async showOpenDialog(_win, options) {
       assert.equal(options.title, '打开工程');
@@ -68,7 +72,7 @@ async function check() {
     }
     const info = await read('({focus:document.activeElement.id || document.activeElement.className,'
       + 'heading:' + q('#preview-heading') + '.textContent,status:' + q('#notice') + '.textContent,'
-      + 'time:' + time + ',previewTime:' + preview + '.currentTime})');
+      + "cells:Array.from(document.querySelectorAll('.sequence-video [data-drop-shot]'),e=>e.dataset.candidateIndex),priority:document.getElementById('priority').value,time:" + time + ',previewTime:' + preview + '.currentTime})');
     throw new Error(message + ' ' + JSON.stringify(info));
   }
   async function click(selector, offset) {
@@ -142,20 +146,22 @@ async function check() {
     await read(q('#open-project') + '.click()');
     await wait('!!' + q('.sequence-layer.kind-text .sequence-block'), '打开带全局文字包装的工程');
     await seek(1.84);
-    await read(preview + '.addEventListener("playing",function onPlay(){if(' + q('#preview-heading')
-      + '.textContent==="成片预览"){window.firstCompositionTime=this.currentTime;this.removeEventListener("playing",onPlay);}})');
     await space();
-    await wait('Number.isFinite(window.firstCompositionTime) && !' + preview + '.paused', '空格应直接准备并播放含包装成片', 45000);
-    assert.ok(await read('window.firstCompositionTime>=1.76 && window.firstCompositionTime<2.18'), '成片从当前播放头开始播放');
-    assert.ok(await read(tracks + ' && ' + focus), '生成成片期间保留分镜轨道和键盘焦点');
+    await wait('!!' + live + ' && !' + live + '.paused && ' + time + '>1.84', '含包装且分镜已填满时空格播放时间线');
+    assert.equal(await read(q('#preview-batch-list') + '.childElementCount'), 0, '空格播放不生成批量预览');
+    assert.ok(await read(tracks + ' && ' + focus), '时间线试播保留轨道和键盘焦点');
     await space();
-    await wait(preview + '.paused', '成片按空格暂停');
-    const last = await read(preview + '.currentTime');
+    await read(q('#open-project') + '.click()');
+    const alternate = '.sequence-video [data-drop-shot="0"][data-candidate-index="1"]';
+    await wait('!!'+q(alternate)+' && '+q('#priority')+'.value==="voice"', '载入分段口播优先工程');
+    await click(alternate);
     await space();
-    assert.ok(Math.abs(await read(preview + '.currentTime') - last) < .15, '渲染成片续播时保留暂停帧位置');
-    await wait('!' + preview + '.paused && ' + preview + '.currentTime>' + (last + .1), '成片从暂停处继续');
+    const voice = q('.draft-transport-preview:not([hidden]) audio');
+    await wait('!!'+live+' && !'+live+'.paused && '+live+'.currentSrc==='+preview+'.currentSrc && Math.abs('+live+'.playbackRate-3)<.01 && !!'+voice+' && !'+voice+'.paused && '+voice+'.playbackRate===1',
+      '空格应使用选中的第二候选，三倍速画面对齐原速口播');
+    assert.equal(await read(q('#preview-batch-list')+'.childElementCount'),0);
     assert.deepEqual(projects, []);
-    console.log('时间线空格验收通过。实时跨分镜、渲染成片、定位、暂停续播、长按和文本输入均已验证。');
+    console.log('时间线空格验收通过。实时跨分镜、填满轨道、选中候选与口播变速、定位、暂停续播、长按和文本输入均已验证。');
   } finally {
     win.webContents.debugger.detach();
     win.destroy();

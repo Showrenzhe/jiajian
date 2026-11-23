@@ -127,7 +127,8 @@
 .app-frame[data-mode="montage"] .timeline-empty-actions button { border-radius: 999px; }
 
 .app-frame[data-mode="montage"] #track-more-options:not([popover]) { display: contents; }
-.app-frame[data-mode="montage"] #track-more { margin-inline-start: auto; anchor-name: --track-more-button; }
+.app-frame[data-mode="montage"] .track-match-actions { display: inline-flex; align-items: center; gap: 4px; margin-inline-start: auto; }
+.app-frame[data-mode="montage"] #track-more { anchor-name: --track-more-button; }
 .app-frame[data-mode="montage"] #track-more-options[popover] {
   position: fixed;
   position-anchor: --track-more-button;

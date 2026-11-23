@@ -7,7 +7,7 @@ const os = require('node:os');
 const { setTimeout: delay } = require('node:timers/promises');
 const { app } = require('electron');
 const { launchDesktop } = require('../src/desktop.cjs');
-const { fixtures } = require('./fixtures.cjs');
+const { fixtures, ffmpeg } = require('./fixtures.cjs');
 
 app.disableHardwareAcceleration();
 
@@ -17,6 +17,12 @@ async function run() {
   const nested = path.join(library, '补拍镜头');
   await fs.mkdir(nested, { recursive: true });
   const files = await fixtures(library);
+  const portraitVideo = path.join(nested, '9比16竖屏.mp4');
+  const portraitStill = path.join(nested, '9比16竖图.png');
+  await Promise.all([
+    ffmpeg(['-f','lavfi','-i','color=cornflowerblue:s=180x320:r=24:d=1','-c:v','libx264','-threads','1',portraitVideo]),
+    ffmpeg(['-f','lavfi','-i','color=coral:s=180x320','-frames:v','1','-threads','1',portraitStill]),
+  ]);
   const originals = await Promise.all([files.red, files.still].map(file => fs.readFile(file)));
   const savedProject = path.join(root, '拖入文件夹.sdworkbench');
   const picks = [];
@@ -42,7 +48,8 @@ async function run() {
   async function wait(condition, label) {
     const end = Date.now() + 10000;
     while (!await read(condition)) {
-      if (Date.now() > end) throw new Error(label + '；' + await read(el('#material-message') + '.textContent'));
+      if (Date.now() > end) throw new Error(label + '；' + await read('[' + el('#material-message') + '.textContent,'
+        + el('#preview-name') + '.textContent,' + el('#still-preview') + '.hidden,' + el('#still-preview') + '.naturalWidth,document.activeElement.title].join(" / ")'));
       await delay(40);
     }
   }
@@ -133,6 +140,13 @@ async function run() {
     await wait('!!' + el(folder), '撤销应恢复根目录图标');
     await mouseClick(folder, 'left', 2);
     await wait('!!' + el(child) + ' && ' + el(red + ' img') + '?.naturalWidth > 0 && ' + el(still + ' img') + '?.naturalWidth > 0', '应能打开目录并显示子目录、视频和图片缩略图');
+    const player = el('#preview');
+    const playing = '!' + player + '.paused && ' + player + '.currentTime > 0';
+    await mouseClick(red);
+    await wait(playing, '文件夹里的视频也应点击直接播放');
+    await mouseClick(still);
+    await wait('!' + el('#still-preview') + '.hidden && ' + el('#still-preview') + '.naturalWidth > 0 && ' + player + '.paused',
+      '选图片应立即显示图片并暂停当前视频');
     await rightClick(red);
     assert.equal(await read(el('#material-context-audio') + '.hidden'), false, '视频右键应能进入音频处理');
     if (process.env.JIAJIAN_LIBRARY_CAPTURE) {
@@ -166,6 +180,19 @@ async function run() {
     await mouseClick(child);
     await key('Enter', 13);
     await wait(el('#material-breadcrumb') + '.textContent.includes("补拍镜头")', '回车应打开选中的子目录');
+    for (const file of [portraitVideo, portraitStill]) {
+      const tile = item('material-tile', file);
+      await wait(el(tile + ' img') + '?.naturalWidth > 0', '竖屏素材应载入缩略图');
+      const ratio = await read('(() => {const r=' + el(tile + ' .material-thumbnail')
+        + '.getBoundingClientRect();return r.width / r.height})()');
+      assert.ok(Math.abs(ratio - 9/16) < .003, '竖屏缩略图应以 9:16 展示，实际为 ' + ratio);
+    }
+    if (process.env.JIAJIAN_LIBRARY_CAPTURE) {
+      const frame = await read('(() => {const r=' + el('#materials-pane') + '.getBoundingClientRect();return {x:r.x,y:r.y,width:r.width,height:r.height,scale:1}})()');
+      const shot = await wc.debugger.sendCommand('Page.captureScreenshot', { clip: frame });
+      const target = path.parse(process.env.JIAJIAN_LIBRARY_CAPTURE);
+      await fs.writeFile(path.join(target.dir, target.name + '-portrait.png'), Buffer.from(shot.data, 'base64'));
+    }
     await click('#material-breadcrumb .material-back');
     await wait('document.activeElement===' + el(child), '返回上一级应重新聚焦原目录');
     await click('#material-breadcrumb .material-back');
@@ -183,15 +210,32 @@ async function run() {
     await wait(el(red) + '?.dataset.used==="true" && ' + tracks + '===2', '重新导入同一文件应恢复素材，照常创建新分镜');
     await mouseClick(red);
     await wait(count('.sequence-video .material-instance') + '===2', '素材应高亮时间线中使用它的两个实例');
+    await wait(playing, '点选素材库视频应直接播放原片');
+    await read(player + '.pause()');
+    await mouseClick(red);
+    await wait(playing, '再次点击同一素材应重新播放');
+    const fold = '.sequence-video .sequence-head button[aria-expanded]';
+    await click(fold);
+    await wait(count('.sequence-video.sequence-folded .material-instance') + '===2', '折叠轨道应保留两个匹配片段');
+    const foldedRing = await read('getComputedStyle(' + el('.sequence-folded .material-instance') + ', "::after").borderTopColor');
+    assert.equal(foldedRing, await read('getComputedStyle(document.documentElement).getPropertyValue("--material-match-gold").trim()'));
+    await click(fold);
     const green = item('material-tile', files.green);
     await dropFiles('#materials-heading', [files.green, nested]);
     await wait('!!' + el(green) + ' && !!' + el(child) + ' && ' + tracks + '===2', '拖入文件和文件夹只应扩充素材库');
     await wait(el(green + ' img') + '?.naturalWidth > 0 && !!' + el(green + ' .material-duration') + '?.textContent', '素材卡片应有实帧和时长');
+    const usedRing = 'getComputedStyle(' + el(green) + ',"::after").boxShadow';
+    assert.equal(await read(usedRing), 'none', '未使用的素材不显示已用光圈');
     await wait(el(folder + ' .folder-preview img') + '?.naturalWidth > 0', '素材目录应有实帧封面');
     await read('window.savedTile=' + el(green) + '; window.savedImage=window.savedTile.querySelector("img")');
     await dropFiles('.sequence-video [data-drop-shot="0"]', [files.green]);
     await wait(tracks + '===3 && ' + count('.shot') + '===2', '文件拖到已有分镜应只增加候选');
     assert.ok(await read('window.savedTile===' + el(green) + ' && window.savedImage===' + el(green + ' img')), '添加候选应复用原素材卡片及已解码帧');
+    assert.notEqual(await read(usedRing), 'none', '使用后应立刻显示外发光');
+    await undo();
+    await wait(tracks + '===2 && ' + usedRing + '==="none"', '撤销使用后应立刻恢复原外框');
+    await dropFiles('.sequence-video [data-drop-shot="0"]', [files.green]);
+    await wait(tracks + '===3', '应可重新加入候选');
     await dropFiles('#new-shot-drop', [files.still, files.blue]);
     await wait(tracks + '===5 && ' + count('.shot') + '===4', '两个文件拖到空白区应建立两个分镜');
     await mouseClick(green);
@@ -202,6 +246,10 @@ async function run() {
         features: [{ name: 'prefers-color-scheme', value: theme }, { name: 'prefers-reduced-motion', value: 'reduce' }],
       });
       await wait('document.documentElement.dataset.theme===' + JSON.stringify(theme), '素材卡应能切换主题');
+      const glow = 'getComputedStyle(' + el('.sequence-video .material-instance') + ')';
+      assert.ok(await read(glow + '.outlineWidth === "3px" && ' + glow + '.boxShadow !== "none" && '
+        + glow + '.outlineColor === getComputedStyle(document.documentElement).getPropertyValue("--material-match-gold").trim()'),
+      '两种主题下都应有金色外框和外发光');
       if (process.env.JIAJIAN_LIBRARY_CAPTURE) {
         const frame = await read('(() => {const r=' + el('#materials-pane') + '.getBoundingClientRect(); return {x:r.x,y:r.y,width:r.width,height:r.height,scale:1};})()');
         const shot = await wc.debugger.sendCommand('Page.captureScreenshot', { clip: frame });
@@ -213,6 +261,16 @@ async function run() {
     await wait(el('.sequence-voice [data-voice-row="0"]') + '.textContent.includes(' + JSON.stringify(path.basename(files.music)) + ')', '本地音频应能直接放入口播轨');
     await dropFiles('#inspector-tab-music', [files.otherMusic]);
     await wait(el('.sequence-music .sequence-block') + '?.textContent.includes(' + JSON.stringify(path.basename(files.otherMusic)) + ')', '本地音频应能直接加入配乐');
+    await mouseClick('#processed-material-list li strong');
+    await wait(playing + ' && ' + el('#preview-name') + '.textContent===' + JSON.stringify(path.basename(files.music)),
+      '单击素材库音频应直接试听');
+    await wait(count('.sequence-voice .material-instance') + '===1', '口播轨里的同一音频应显示金色外框');
+    assert.notEqual(await read('getComputedStyle(' + el('#processed-material-list li[data-used]') + ',"::after").boxShadow'), 'none',
+      '已经加入口播的音频卡也应发光');
+    await mouseClick(red);
+    await mouseClick(green);
+    await wait(playing + ' && ' + el('#preview-name') + '.textContent===' + JSON.stringify(path.basename(files.green)),
+      '快速切换后应播放最后选中的素材');
     await click('#save-project');
     await wait(el('#notice') + '.textContent.includes("工程已保存")', '应能保存带拖入文件夹的工程');
     assert.equal(JSON.parse(await fs.readFile(savedProject, 'utf8')).config.materialFolderKeys.length, 1);
@@ -222,7 +280,7 @@ async function run() {
     for (const [i, file] of [files.red, files.still].entries()) assert.deepEqual(await fs.readFile(file), originals[i]);
     assert.ok((await fs.stat(nested)).isDirectory(), '原子目录应留在磁盘');
     assert.deepEqual(picks, []);
-    console.log('素材库拖放与原有编辑操作、文件夹重开、缩略图复用、轨道定位、音频放置及明暗外观通过。');
+    console.log('素材库点播、跨分镜金色高亮、折叠轨道、素材拖放、文件夹重开、缩略图复用及明暗外观通过。');
   } finally {
     wc.debugger.detach();
     win.destroy();

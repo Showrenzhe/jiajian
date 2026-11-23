@@ -98,3 +98,32 @@ test('draft playback maps sliced narration, original sound, looping music and ef
   state.whole=[];
   assert.deepEqual(makePlan(state,timing(state,()=>0,library),library,waveformSource),[]);
 });
+
+test('live voice priority fills a short candidate, accelerates a long selection and respects the reference mode', () => {
+  const { timing, makePlan } = require('../src/ui/draft-transport.js');
+  const { waveformSource } = require('../src/ui/waveform.js');
+  const clip = (id,end) => ({asset:{kind:'video',id,url:'test://'+id,duration:end},start:0,end});
+  const first=clip('short',.5), second=clip('long',2);
+  const voice={kind:'audio',url:'test://voice',duration:1};
+  const state={shots:[[first,second]],segments:[[voice]],settings:[],whole:[],segmented:true,priority:'voice',
+    voiceVolume:()=>100,voiceRanges:()=>undefined,voiceOffset:()=>0,voiceDuration:()=>1,
+    keepAudio:true,muted:new Set(),music:[],pack:{global:[],composites:[],segmentNarration:[],wholeNarration:[]},fps:30};
+  const plan=focus=>{
+    const layout=timing(state,c=>c.end,()=>null,focus);
+    return makePlan(state,layout,()=>null,waveformSource,focus);
+  };
+  const visuals=focus=>plan(focus).filter(e=>e.lane==='picture');
+  assert.deepEqual(visuals(first).map(e=>[e.asset.id,e.start,e.end,e.rate]),[['short',0,.2,2.5],['long',.2,1,2.5]]);
+  assert.deepEqual(visuals(second).map(e=>[e.asset.id,e.start,e.end,e.rate]),[['long',0,1,2]]);
+  assert.equal(plan(first).find(e=>e.lane==='voice').rate,1);
+  state.shots=[[first]];
+  assert.equal(visuals(first)[0].cycle,.5);
+  assert.equal(visuals(first)[0].end,1);
+  state.shots=[[first,second]];
+  state.voiceAlignment='reference';
+  assert.equal(visuals(first)[0].rate,.5);
+  assert.equal(visuals(second)[0].rate,1);
+  assert.equal(visuals(second)[0].end,1);
+  state.segmented=false;state.whole=[{asset:voice}];state.voiceAlignment='fill';
+  assert.deepEqual(visuals(first).map(e=>e.asset.id),['short','long']);
+});

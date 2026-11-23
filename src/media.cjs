@@ -15,6 +15,7 @@ const { normalizeLayers, normalizeTransform, normalizePackaging, packagingChoice
 const { composeLayers, writeLayerTexts } = require('./packaging-render.cjs');
 const { visualMotion } = require('./layer-motion.cjs');
 const { fontFamily } = require('./text-style.cjs');
+const { maxCandidates, minClipSeconds, minEdgeSilence, audioRate, withOutputFrames, voiceLength, pieces, repeatVisual, visualDuration, fitVisuals, fitSegmentedVoice, fitWholeVoice, fitReferenceWhole } = require('./ui/voice-alignment.js');
 const vendorPath = require('./vendor-path.cjs');
 
 const ffmpegCommand = process.env.SUPERDIR_REPLICA_FFMPEG || 'ffmpeg';
@@ -32,15 +33,10 @@ const stillInput = ['-protocol_whitelist', 'file,pipe', '-f', 'image2', '-patter
 // The old UI imposed a 16-shot product limit. Keep a generous serialization
 // guard for malformed or runaway projects without exposing that legacy cap.
 const maxShots = 1000;
-const maxCandidates = 100;
 const maxExports = 50;
 const maxMontageBatch = 1000;
 const maxWholeTracks = 250;
-const minClipSeconds = 0.1;
 const maxStillSeconds = 60;
-const minEdgeSilence = 0.12;
-const seamPadding = 0.025;
-const audioRate = 48000;
 const dimensions = {
   '16:9': { 720: [1280, 720], 1080: [1920, 1080] },
   '9:16': { 720: [720, 1280], 1080: [1080, 1920] },
@@ -431,19 +427,9 @@ function readShotTransitions(value, count) {
   });
 }
 
-function withOutputFrames(clip, duration, fps) {
-  const outputFrames = Math.max(1, Math.ceil(duration * fps - 1e-7));
-  return { ...clip, outputFrames, outputDuration: outputFrames / fps };
-}
-
 function segmentSpeechDuration(clip) {
   const available = (clip.timelineDuration ?? clip.shotDuration ?? clip.duration) - (clip.voiceOffset ?? 0);
   return Math.max(0, Math.min(clip.narrationDuration ?? voiceLength(clip), available));
-}
-
-function voiceLength(clip) {
-  const source = clip.narrationRanges?.reduce((sum, range) => sum + range.end - range.start, 0) ?? clip.narration.duration;
-  return source / (clip.narrationSpeed ?? 1);
 }
 
 function appendCaptionCues(cues, caption, offset, speechDuration, speechStart = 0, speed = 1) {
@@ -485,156 +471,8 @@ function generatedSubtitleTrack({ segmented, clips, narration, caption, duration
   return cues.length ? normalizeSubtitles({ name: caption?.name ?? '口播字幕', cues }) : null;
 }
 
-function voiceRange(clips, index) {
-  const clip = clips[index];
-  const voice = clip.narration;
-  const duration = voiceLength(clip);
-  const { leading = 0, trailing = 0 } = voice.edgeSilence ?? {};
-  const first = clip.narrationRanges?.[0], last = clip.narrationRanges?.at(-1);
-  const speed = clip.narrationSpeed ?? 1;
-  const head = (first ? Math.min(first.end - first.start, leading - first.start) : leading)/speed;
-  const tail = (last ? Math.min(last.end - last.start, trailing - (voice.duration - last.end)) : trailing)/speed;
-  const start = clips[index - 1]?.narration && head >= minEdgeSilence ? head - seamPadding : 0;
-  const end = clips[index + 1]?.narration && tail >= minEdgeSilence ? tail - seamPadding : 0;
-  if (!Number.isFinite(start + end) || duration - start - end < minClipSeconds) {
-    return { narrationStart: 0, narrationDuration: duration };
-  }
-  return { narrationStart: start, narrationDuration: duration - start - end };
-}
-
 function visualPool(shot, selected) {
   return [selected, ...shot.filter((candidate) => candidate !== selected && candidate.mirror === selected.mirror)];
-}
-
-function pieces(clip) {
-  if (!clip.retainedRanges) return [clip];
-  const { retainedRanges, ...base } = clip;
-  return retainedRanges.map(({ start, end }) => ({
-    ...base, start, sourceDuration: end - start, duration: (end - start) / base.speed,
-    layerStart: start - base.candidateStart,
-  }));
-}
-
-function trimVisualEnd(visual, seconds) {
-  const sourceDuration = seconds * (visual.speed ?? 1);
-  return { ...visual, sourceDuration, duration: seconds };
-}
-
-function referenceVisuals(clip, target, frames, fps) {
-  const original = pieces(clip);
-  if (clip.duration <= target) return fitVisuals(clip, original, clip.duration / target, frames, fps);
-  let remaining = target;
-  const kept = [];
-  for (const visual of original) {
-    kept.push(visual.duration > remaining ? trimVisualEnd(visual, remaining) : visual);
-    remaining -= visual.duration;
-    if (remaining < 1e-9) break;
-  }
-  return fitVisuals(clip, kept, 1, frames, fps);
-}
-
-function visualDuration(visuals) {
-  return visuals.reduce((seconds, visual) => seconds + visual.duration * (visual.repeat ?? 1), 0);
-}
-
-function repeatVisual(visuals, seconds) {
-  if (seconds <= 1e-9) return;
-  const shortest = visuals.reduce((best, visual) => visual.duration < best.duration ? visual : best);
-  const repeat = Math.max(1, Math.ceil(seconds / shortest.duration - 1e-7));
-  if (shortest === visuals.at(-1)) visuals[visuals.length - 1] = { ...shortest, repeat: repeat + 1 };
-  else visuals.push({ ...shortest, repeat });
-}
-
-function fitVisuals(clip, visuals, tempo, outputFrames, fps) {
-  let duration = 0;
-  let assigned = 0;
-  const parts = visuals.map((visual, index) => {
-    duration += visual.duration * (visual.repeat ?? 1) / tempo;
-    const boundary = index === visuals.length - 1 ? outputFrames : Math.min(outputFrames, Math.round(duration * fps));
-    const frames = boundary - assigned;
-    assigned = boundary;
-    return { ...visual, speed: (visual.speed ?? 1) * tempo, outputFrames: frames, outputDuration: frames / fps };
-  });
-  return { ...clip, visuals: parts, outputFrames, outputDuration: outputFrames / fps };
-}
-
-function fitSegmentedVoice(clips, pools, fps, alignment) {
-  let samples = 0;
-  let assigned = 0;
-  return clips.map((clip, index) => {
-    const range = clip.narration ? (alignment === 'reference'
-      ? { narrationStart: 0, narrationDuration: voiceLength(clip) } : voiceRange(clips, index)) : null;
-    const target = range ? (clip.voiceOffset ?? 0) + range.narrationDuration : withOutputFrames(clip, clip.shotDuration ?? clip.duration, fps).outputDuration;
-    const clipSamples = Math.round(target * audioRate);
-    const timelineDuration = clipSamples / audioRate;
-    samples += clipSamples;
-    const frameBoundary = samples * fps / audioRate;
-    const boundary = index === clips.length - 1 ? Math.ceil(frameBoundary) : Math.round(frameBoundary);
-    const outputFrames = boundary - assigned;
-    assigned = boundary;
-    const timed = { ...clip, ...range, timelineDuration };
-    if (range && alignment === 'reference') return referenceVisuals(timed, target, outputFrames, fps);
-    if (!range && !clip.retainedRanges && !clip.shotDuration) return { ...timed, outputFrames, outputDuration: outputFrames / fps };
-    const visuals = [];
-    let duration = 0;
-    for (const visual of pools[index]) {
-      visuals.push(...pieces(visual));
-      duration += visual.duration;
-      if (duration >= target - 1e-9) break;
-    }
-    repeatVisual(visuals, target - duration);
-    const tempo = Math.max(1, visualDuration(visuals) / target);
-    return fitVisuals(timed, visuals, tempo, outputFrames, fps);
-  });
-}
-
-function fitWholeVoice(clips, pools, target, fps) {
-  const selections = pools.map(([selected]) => [selected]);
-  const base = clips.reduce((seconds, clip) => seconds + clip.duration, 0);
-  let duration = base;
-  for (let candidate = 1; candidate < maxCandidates && duration < target - 1e-9; candidate += 1) {
-    for (const [index, pool] of pools.entries()) {
-      const visual = pool[candidate];
-      if (!visual) continue;
-      selections[index].push(visual);
-      duration += visual.duration;
-      if (duration >= target - 1e-9) break;
-    }
-  }
-  const shortfall = target - duration;
-  for (const [i, selected] of selections.entries()) selections[i] = selected.flatMap(pieces);
-  if (shortfall > 1e-9) {
-    for (const [index, visuals] of selections.entries()) repeatVisual(visuals, shortfall * clips[index].duration / base);
-  }
-  const durations = selections.map(visualDuration);
-  const tempo = Math.max(1, durations.reduce((total, seconds) => total + seconds, 0) / target);
-  const outputFrames = withOutputFrames(clips[0], target, fps).outputFrames;
-  let elapsed = 0;
-  let assigned = 0;
-  return clips.map((clip, index) => {
-    elapsed += durations[index] / tempo;
-    const boundary = index === clips.length - 1 ? outputFrames : Math.min(outputFrames, Math.round(elapsed * fps));
-    const frames = boundary - assigned;
-    assigned = boundary;
-    return fitVisuals(clip, selections[index], tempo, frames, fps);
-  });
-}
-
-function fitReferenceWhole(clips, target, fps) {
-  const total = clips.reduce((sum, clip) => sum + clip.duration, 0);
-  const stretch = Math.max(1, target / total);
-  const result = [];
-  let elapsed = 0;
-  let assigned = 0;
-  for (const clip of clips) {
-    const seconds = Math.min(target - elapsed, clip.duration * stretch);
-    if (seconds <= 1e-9) break;
-    elapsed += seconds;
-    const boundary = elapsed >= target - 1e-9 ? Math.ceil(target * fps - 1e-7) : Math.round(elapsed * fps);
-    if (boundary > assigned) result.push(referenceVisuals(clip, seconds, boundary - assigned, fps));
-    assigned = boundary;
-  }
-  return result;
 }
 
 function planMontage(config, catalog, random = Math.random, batchLimit = maxMontageBatch) {
@@ -666,17 +504,19 @@ function planMontage(config, catalog, random = Math.random, batchLimit = maxMont
   if (!isRgbColor(backgroundColor)) throw new Error('画面背景颜色须为 #RRGGBB。');
   const subtitleStyle = config.subtitleStyle === undefined ? undefined : normalizeSubtitleStyle(config.subtitleStyle);
 
+  const fullSourceShots = [];
   const shots = config.shots.map((shot, index) => {
     if (!Array.isArray(shot) || !shot.length || shot.length > maxCandidates) {
       throw new Error(`第 ${index + 1} 组需要 1 至 ${maxCandidates} 条候选视频。`);
     }
     const ids = new Set();
+    const fullSources = new Map();
     const originals = shot.flatMap((clip, trackIndex) => {
       if (clip?.enabled !== undefined && typeof clip.enabled !== 'boolean') throw new Error('候选参与状态无效。');
       if (clip?.enabled === false) return [];
       const asset = requireAsset(catalog, clip?.id, 'video', 'image');
       const volume = clip.volume === undefined ? 1 : requireNumber(clip.volume, 0, 100, `${asset.name} 的原声音量`) / 100;
-      const speed = clip.speed === undefined ? 1 : requireNumber(clip.speed, 0.5, 3, `${asset.name} 的播放速度`);
+      const speed = clip.speed === undefined ? 1 : requireNumber(clip.speed, 0.5, Number.MAX_SAFE_INTEGER, `${asset.name} 的播放速度`);
       const ranges = clip.ranges === undefined ? undefined : normalizeRanges(clip.ranges, clip.start, clip.end);
       const key = candidateKey({ ...clip, ranges });
       if (ids.has(key)) throw new Error(`第 ${index + 1} 组有重复素材。`);
@@ -684,7 +524,9 @@ function planMontage(config, catalog, random = Math.random, batchLimit = maxMont
       const layers = clip.layers === undefined ? {} : { layers: normalizeLayers(clip.layers, checkLayerAsset) };
       if (clip.transform !== undefined) layers.transform = normalizeTransform(clip.transform);
       if (clip.look !== undefined) layers.look = normalizeLook(clip.look,(id,role)=>{requireAsset(catalog,id,...(role==='lut'?['lut']:['image','video']));return id;});
-      const shotDuration = settings?.[index]?.duration;
+      const matchedDuration = clip.matchedDuration === undefined ? undefined
+        : requireNumber(clip.matchedDuration, 0.000001, 86400, '候选匹配时长');
+      const shotDuration = matchedDuration ?? settings?.[index]?.duration;
       if (asset.kind === 'image') {
         if (ranges) throw new Error('图片不支持视频区间裁剪。');
         const duration = requireNumber(clip.end, minClipSeconds, maxStillSeconds, `${asset.name} 的播放时长`);
@@ -709,23 +551,33 @@ function planMontage(config, catalog, random = Math.random, batchLimit = maxMont
         if(sourceDuration<minClipSeconds-1e-7)throw new Error(asset.name+' 去片头片尾后不足 0.1 秒。');
         retained=sliceSource(retained,layers.look.head??0,sourceDuration);
       }
-      if (shotDuration && sourceDuration > shotDuration * speed) {
-        const size = shotDuration * speed;
-        const offset = settings[index].smartTrim ? random() * (sourceDuration - size) : 0;
-        retained = sliceSource(retained, offset, size);
-        sourceDuration = size;
+      function sourceClip(parts,length) {
+        return { asset, start:parts[0].start, sourceDuration:length, duration:length/speed, speed,
+          volume:mutedTracks.has(trackIndex) ? 0 : volume, ...layers,
+          ...(matchedDuration && {matchedDuration}), ...(shotDuration && {shotDuration}),
+          ...(parts.length>1 && {retainedRanges:parts,candidateStart:start}),
+          ...(parts[0].start!==start && {layerStart:parts[0].start-start}) };
       }
-      return { asset, start: retained[0].start, sourceDuration, duration: sourceDuration / speed, speed, volume: mutedTracks.has(trackIndex) ? 0 : volume, ...layers,
-        ...(retained.length > 1 && { retainedRanges: retained, candidateStart: start }),
-        ...(retained[0].start !== start && { layerStart: retained[0].start - start }),
-        ...(shotDuration && { shotDuration }),
-      };
+      const full=sourceClip(retained,sourceDuration);
+      if (!matchedDuration && shotDuration && sourceDuration > shotDuration * speed) {
+        const size=shotDuration*speed;
+        const offset=settings[index].smartTrim ? random()*(sourceDuration-size) : 0;
+        const trimmed=sourceClip(sliceSource(retained,offset,size),size);
+        // The selected narration row is known only after drawing a composition. Keep
+        // the whole edited source for voice priority, including all user-retained cuts.
+        fullSources.set(trimmed,full);
+        return trimmed;
+      }
+      return full;
     });
     if (!originals.length) throw new Error(`第 ${index + 1} 组分镜至少需要一条参与混剪的候选。`);
-    return [
-      ...(config.useOriginal ? originals : []),
-      ...(config.useMirrors ? originals.map((clip) => ({ ...clip, mirror: true })) : []),
+    const variants=candidates=>[
+      ...(config.useOriginal ? candidates : []),
+      ...(config.useMirrors ? candidates.map(candidate=>({...candidate,mirror:true})) : []),
     ];
+    const pictureShots=variants(originals);
+    fullSourceShots.push(fullSources.size ? variants(originals.map(c=>fullSources.get(c) ?? c)) : pictureShots);
+    return pictureShots;
   });
   const narrationMode = config.narrationMode === undefined ? 'whole' : config.narrationMode;
   if (!['whole', 'segmented'].includes(narrationMode)) throw new Error('请选择有效的口播方式。');
@@ -778,9 +630,11 @@ function planMontage(config, catalog, random = Math.random, batchLimit = maxMont
     const wholeTrackIndex = narrationChoices[0] ?? 0;
     const { narration = null, subtitles = null, caption = null, speed: narrationSpeed = 1 } = wholeTracks[wholeTrackIndex] ?? {};
     const wholeDuration = narration ? narration.duration/narrationSpeed : 0;
-    const scenes = shots.map((shot, index) => {
-      const candidate = shot[indices[index]];
+    const scenes = shots.map((fixedShot, index) => {
       const match = segmented?.pick(narrationChoices, index);
+      const hasVoice = segmented ? Boolean(match) : Boolean(narration);
+      const shot = priority==='voice' && alignment==='fill' && hasVoice ? fullSourceShots[index] : fixedShot;
+      const candidate = shot[indices[index]];
       const clip = {
         ...candidate,
         shotIndex: index,

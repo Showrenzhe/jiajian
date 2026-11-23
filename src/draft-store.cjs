@@ -49,7 +49,7 @@ function estimateDuration(config) {
     const clip=shot.find((candidate)=>candidate.enabled!==false);
     if (!clip) continue;
     const source=clip.ranges?.reduce((sum,r)=>sum+r.end-r.start,0)??(clip.end-clip.start);
-    seconds += config.shotSettings?.[i]?.duration ?? Math.max(0,source-(clip.look?.head??0)-(clip.look?.tail??0))/(clip.speed??1);
+    seconds += clip.matchedDuration ?? config.shotSettings?.[i]?.duration ?? Math.max(0,source-(clip.look?.head??0)-(clip.look?.tail??0))/(clip.speed??1);
   }
   return Number.isFinite(seconds) && seconds > 0 ? Math.round(seconds * 1000) / 1000 : undefined;
 }
