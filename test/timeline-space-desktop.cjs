@@ -124,7 +124,16 @@ async function check() {
     await seek(.71);
     await space();
     await wait('!!' + live + ' && !' + live + '.paused && ' + live + '.currentTime>.71 && ' + time + '>.76', '从标尺位置开始播放');
+    const clock = q('#timeline-clock'), rulerLabel = q('.sequence-ruler .sequence-head > span');
+    assert.ok(await read(clock + '.matches(":focus-visible")'), '点击标尺后按空格，时间线获得键盘焦点');
+    assert.equal(await read('getComputedStyle(' + clock + ').outlineStyle'), 'none', '播放后时间线上下不应显示整幅焦点边框');
+    assert.equal(await read('getComputedStyle(' + rulerLabel + ').outlineStyle'), 'solid', '标尺的时间标签应标示键盘焦点');
     await space();
+    await click('#timeline-play');
+    await wait('!!' + live + ' && !' + live + '.paused', '工具栏播放按钮可从暂停位置续播');
+    assert.equal(await read('getComputedStyle(' + clock + ').outlineStyle'), 'none', '点击播放按钮不会描边整个时间线');
+    await click('#timeline-play');
+    await wait(live + '.paused', '再次点击工具栏播放按钮暂停');
     await click('#material-search');
     await ensurePaused('#material-search', '');
     await read(q('#timeline-layer-add') + '.click()');
