@@ -1,7 +1,6 @@
 'use strict';
 
 const minimum = 0.1;
-const { candidateKey } = require('./ui/track-tools.js');
 
 function normalizeShotSettings(rows, length) {
   if (rows === undefined) return undefined;
@@ -113,4 +112,4 @@ function sliceSource(ranges, offset, length) {
   return result;
 }
 
-module.exports = { audioSpeed, normalizeMusicSpeeds, normalizeShotSettings, normalizeRanges, candidateKey, normalizeSegmentVoiceCuts, normalizeSceneCuts, normalizeVolumeOverrides, sliceSource };
+module.exports = { audioSpeed, normalizeMusicSpeeds, normalizeShotSettings, normalizeRanges, normalizeSegmentVoiceCuts, normalizeSceneCuts, normalizeVolumeOverrides, sliceSource };

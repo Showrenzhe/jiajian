@@ -1378,7 +1378,8 @@ async function launchDesktop({
     pickerOpen = true;
     const assets = [], folders = [], warnings = [];
     try {
-      for (const file of new Set(paths.slice(0, maxCandidates))) {
+      const selected = paths.slice(0, maxCandidates);
+      for (const file of destination === 'visual' ? selected : new Set(selected)) {
         try {
           if (!localMaterialPath(file)) throw new Error('请选择本机文件。');
           const info = await fs.lstat(file);

@@ -8,7 +8,7 @@ const { createInterface } = require('node:readline');
 const { promisify } = require('node:util');
 const { formatSubtitles, normalizeSubtitles, parseSubtitles } = require('./subtitles.cjs');
 const { normalizeShotSettings, normalizeRanges, normalizeSegmentVoiceCuts, sliceSource } = require('./shot-timing.cjs');
-const { candidateVideoLanes, pictureSpan, usesPlacedVideoSource, soloLaneSequence, recordCandidate } = require('./ui/track-tools.js');
+const { candidateVideoLanes, pictureSpan, usesPlacedVideoSource, soloLaneSequence } = require('./ui/track-tools.js');
 const trackControls = require('./ui/track-controls.js');
 const { preferSolo } = trackControls;
 const { normalizeCover, selectCover, publishCover } = require('./cover.cjs');
@@ -518,7 +518,6 @@ function planMontage(config, catalog, random = Math.random, batchLimit = maxMont
     if (!Array.isArray(shot) || !shot.length || shot.length > maxCandidates) {
       throw new Error(`第 ${index + 1} 组需要 1 至 ${maxCandidates} 条候选视频。`);
     }
-    const seen = new Map();
     const fullSources = new Map();
     const lanes = candidateVideoLanes(shot, maxCandidates);
     const originals = shot.flatMap((clip, candidateIndex) => {
@@ -528,7 +527,6 @@ function planMontage(config, catalog, random = Math.random, batchLimit = maxMont
       const volume = clip.volume === undefined ? 1 : requireNumber(clip.volume, 0, 100, `${asset.name} 的原声音量`) / 100;
       const speed = clip.speed === undefined ? 1 : requireNumber(clip.speed, 0.5, Number.MAX_SAFE_INTEGER, `${asset.name} 的播放速度`);
       const ranges = clip.ranges === undefined ? undefined : normalizeRanges(clip.ranges, clip.start, clip.end);
-      if (!recordCandidate(seen, { ...clip, ranges })) throw new Error(`第 ${index + 1} 组有重复素材。`);
       const layers = clip.layers === undefined ? {} : { layers: normalizeLayers(clip.layers, checkLayerAsset) };
       layers.videoLane = lanes[candidateIndex];
       const laneKey = 'vis'+layers.videoLane;

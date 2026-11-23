@@ -5,7 +5,7 @@ const fs = require('node:fs/promises');
 const os = require('node:os');
 const path = require('node:path');
 const { test } = require('node:test');
-const { inspectAsset, planMontage } = require('../src/media.cjs');
+const { inspectAsset, planMontage, exportBatch } = require('../src/media.cjs');
 const { saveProject, loadProject, normalizeScriptModel } = require('../src/project-format.cjs');
 const { fixtures, ffmpeg } = require('./fixtures.cjs');
 
@@ -79,11 +79,32 @@ test('a draft with every visual excluded keeps muted tracks, clips and original 
   await assert.rejects(saveProject(file, {...config, shots:[[{...config.shots[0][0],videoStart:-1}]]}, catalog), /落点/);
   await assert.rejects(saveProject(file, {...config, shots:[[{...config.shots[0][0],videoDuration:0}]]}, catalog), /裁切时长/);
   const placed={...config.shots[0][0],enabled:true,videoFit:'hold'};
-  const overlap={...config,shots:[[placed,{...placed,videoStart:2.30}]]};
-  await assert.rejects(saveProject(file,overlap,catalog,{overwrite:true}),/重复素材/);
-  assert.throws(()=>planMontage(overlap,catalog),/重复/);
-  assert.deepEqual((await loadProject(file)).config,config,'回绝重叠的同源片段后保留旧工程');
+  const occupied={...config,shots:[[placed,{...placed}]]};
+  await assert.rejects(saveProject(file,occupied,catalog,{overwrite:true}),/视频轨/);
+  assert.throws(()=>planMontage(occupied,catalog),/视频轨/);
+  assert.deepEqual((await loadProject(file)).config,config,'回绝同一轨道起点的两个片段后保留旧工程');
   await assert.rejects(saveProject(file, { ...config, mutedVideoTracks: [-1] }, catalog), /静音/);
+});
+
+test('independent instances of one video save, reopen and export at the same time on different tracks', async (t) => {
+  const root = await testDirectory(t);
+  const file = path.join(root, '同源双轨.sdworkbench');
+  const { red } = await fixtures(root);
+  const catalog = new Map([['red', await inspectAsset(red, 'video')]]);
+  const placed = { id: 'red', start: 0, end: 1, videoStart: 0, videoDuration: .5, videoFit: 'hold' };
+  const clips = [{ ...placed, videoLane: 0, speed: 1, volume: 40 }, { ...placed, videoLane: 1, speed: 2, volume: 75 }];
+  const config = editingConfig({ shots: [clips], resolution: 720, keepAudio: true, useMirrors: false, count: 2 });
+  await saveProject(file, config, catalog);
+  const loaded = await loadProject(file);
+  assert.equal(loaded.assets.size, 1);
+  assert.deepEqual(loaded.config.shots[0], clips);
+  const plans = planMontage(loaded.config, loaded.assets);
+  const variants = plans.map(plan => plan.clips[0]).sort((a, b) => a.videoLane - b.videoLane);
+  assert.deepEqual(variants.map(clip => [clip.videoLane, clip.speed, clip.volume]), [[0, 1, .4], [1, 2, .75]]);
+  const { failures, results } = await exportBatch(plans, root);
+  assert.deepEqual(failures, []);
+  assert.equal(results.length, 2);
+  for (const result of results) assert.ok((await inspectAsset(result.path, 'video')).duration >= .5);
 });
 
 test('deleting inherited footage in one store persists its empty shot without removing the shared footage', async (t) => {

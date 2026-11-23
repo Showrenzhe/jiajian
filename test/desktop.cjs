@@ -653,7 +653,7 @@ async function run() {
   await waitFor('document.querySelectorAll("#timeline-clock .sequence-shots .sequence-block").length===3', '时间线应与三个分镜一一对应');
   assert.equal(await runInWindow('document.querySelector("#timeline-view").value'), 'time');
   await require('./timeline-interaction.cjs')(win, runInWindow, waitFor, checkFold);
-  await runInWindow('document.querySelector(".sequence-video .sequence-block").dispatchEvent(new MouseEvent("contextmenu",{bubbles:true,cancelable:true}))');
+  await runInWindow('document.querySelector(".sequence-video .sequence-block").click();document.querySelector("#clip-actions").click()');
   await runInWindow('[...document.querySelectorAll(".sequence-dialog[open] button")].find(b=>b.textContent==="候选包装").click()');
   await runInWindow(`(() => {const d=document.querySelector(".sequence-dialog[open]");d.querySelector("textarea").value="产品展示";d.querySelector("form").requestSubmit();})()`);
   await waitFor('document.querySelector("#timeline-clock .kind-text")?.textContent.includes("产品展示")', '候选文字应出现在独立轨道');
@@ -1033,12 +1033,11 @@ async function run() {
   await dragMaterial(files.still, '#shots .shot');
   await waitFor('document.querySelectorAll("#shots .shot").length === 1 && document.querySelectorAll("#shots .asset").length === 2', '拖到现有分镜应加入候选');
   await dragMaterial(files.still, '#shots .shot');
-  await waitFor('document.querySelector("#notice").textContent.includes("已在本组")', '应等到重复素材检查完成');
-  assert.equal(await runInWindow('document.querySelectorAll("#shots .asset").length'), 2, '重复拖入同一分镜不能复制候选');
+  await waitFor('document.querySelectorAll("#shots .asset").length === 3', '再次拖入同一分镜应新增一个候选片段');
   await click(`${material(files.blue)} ~ .material-quick-add`);
   await waitFor('document.querySelector("#material-add-dialog").open && document.querySelector("#material-add-target").options.length === 2', '快捷添加应允许选择新建或已有分镜');
   await runInWindow('document.querySelector("#material-add-target").value = "0"; document.querySelector("#material-add-confirm").click();');
-  await waitFor('!document.querySelector("#material-add-dialog").open && document.querySelectorAll("#shots .shot").length === 1 && document.querySelectorAll("#shots .asset").length === 3', '快捷添加应把视频放到指定分镜');
+  await waitFor('!document.querySelector("#material-add-dialog").open && document.querySelectorAll("#shots .shot").length === 1 && document.querySelectorAll("#shots .asset").length === 4', '快捷添加应把视频放到指定分镜');
   await screenshot('material-folder.png');
   assert.equal(await runInWindow('document.querySelector("#material-selection-actions").hidden'), true);
   async function selectNestedBatch() {
@@ -1074,6 +1073,33 @@ async function run() {
   await waitFor(`!document.querySelector('#material-add-dialog').open && document.querySelectorAll('#shots .shot').length === 2 && document.querySelectorAll(${JSON.stringify(`${batchShot} .asset`)}).length === 2`, '两个勾选素材应批量加入同一个新分镜');
   assert.deepEqual(await runInWindow(`[...document.querySelectorAll(${JSON.stringify(`${batchShot} .asset-name`)})].map((label) => label.textContent).sort()`), [path.basename(files.blue), path.basename(files.still)].sort());
   assert.equal(await runInWindow('document.querySelectorAll("#material-list .material-select:checked").length'), 0, '批量添加完成后应清除已提交勾选');
+  await runInWindow('const view = document.querySelector("#timeline-view"); view.value = "time"; view.dispatchEvent(new Event("change"));');
+  const batchCell = lane => `[data-lane-key="vis${lane}"] [data-drop-shot="1"]`;
+  await waitFor(`document.querySelector(${JSON.stringify(batchCell(3))})?.classList.contains('sequence-empty')`, '第二镜的第四轨应有可投放空位');
+  await selectNestedBatch();
+  const previewBounds = await runInWindow(`(() => {
+    const source = document.querySelector(${JSON.stringify(material(files.blue))});
+    const transfer = new DataTransfer();
+    const send = (node, type) => node.dispatchEvent(new DragEvent(type, { bubbles:true, cancelable:true, dataTransfer:transfer }));
+    send(source, 'dragstart');
+    const target = document.querySelector(${JSON.stringify(batchCell(3))});
+    send(target, 'dragover');
+    const ghost = target.closest('.sequence-content').querySelector('.candidate-new-placement');
+    const bounds = ghost && [ghost.style.left, ghost.style.width];
+    send(target, 'drop');
+    send(source, 'dragend');
+    return bounds;
+  })()`);
+  assert.ok(previewBounds, '目标轨应显示本次批量放置的时间窗口');
+  await waitFor(`document.querySelector(${JSON.stringify(batchCell(4))})?.hasAttribute('data-move-candidate')`, '批量拖到第四轨后第二个素材应落在第五轨');
+  const actual = await runInWindow(`[3,4].map(lane => {
+    const clip = document.querySelector('[data-lane-key="vis'+lane+'"] [data-drop-shot="1"]');
+    return [clip.style.left, clip.style.width];
+  })`);
+  assert.deepEqual(actual, [previewBounds, previewBounds], '两条视频应落在预览标示的同一切点窗口');
+  assert.ok(await runInWindow(`document.querySelector(${JSON.stringify(batchCell(2))}).classList.contains('sequence-empty')`), '上方第三轨的空位应保留');
+  await click('#track-undo');
+  await waitFor(`document.querySelectorAll(${JSON.stringify(`${batchShot} .asset`)}).length === 2`, '一次撤销应同时还原两条视频轨');
   await selectNestedBatch();
   await click('#add-shot');
   const draggedBatch = '#shots .shot[data-shot-index="2"]';
@@ -1093,7 +1119,8 @@ async function run() {
   await click('#save-project');
   await waitFor('document.querySelector("#notice").textContent.includes("工程已保存")', '应保存从文件夹加入的分镜');
   const savedFolderProject = JSON.parse(await fs.readFile(folderProject, 'utf8'));
-  assert.deepEqual(savedFolderProject.config.shots.map((shot) => shot.length), [3, 2], '工程应保留两项素材在同一分镜');
+  assert.deepEqual(savedFolderProject.config.shots.map((shot) => shot.length), [4, 2], '工程应保留两次添加的同源片段及批量候选');
+  assert.equal(savedFolderProject.config.shots[0][1].id, savedFolderProject.config.shots[0][2].id);
   assert.deepEqual(savedFolderProject.assets.map(({ path: file }) => file).sort(), [
     path.join(library, path.basename(files.green)),
     path.join(nested, path.basename(files.blue)),
@@ -1104,7 +1131,7 @@ async function run() {
   await reopenFolderProject;
   selections.push({ title: '打开工程', files: [folderProject] });
   await click('#home-open-project');
-  await waitFor('document.querySelector("#notice").textContent.includes("已打开工程") && document.querySelectorAll("#shots .asset").length === 5', '重开应恢复文件夹分镜和同组批量素材');
+  await waitFor('document.querySelector("#notice").textContent.includes("已打开工程") && document.querySelectorAll("#shots .asset").length === 6', '重开应恢复同源片段和同组批量素材');
   assert.equal(await runInWindow('document.querySelector("#material-breadcrumb").hidden && document.querySelectorAll("#material-folders .material-folder").length === 0'), true, '目录浏览状态只保留在当前会话');
   await click(`${batchShot} .remove-shot`);
 
@@ -1242,7 +1269,7 @@ async function run() {
     const toggles = [...document.querySelectorAll('#shots :is(.shot-toggle, .clip-toggle, .segment-toggle, .segment-track-toggle, .transition-toggle)')];
     return toggles.length > 8 && toggles.every((toggle) => toggle.getAttribute('aria-expanded') === 'true');
   })()`, '全部展开应打开每张分镜卡和内层设置');
-  assert.equal(await runInWindow('document.querySelectorAll("#shots .asset").length'), 10, '折叠不能删除候选素材');
+  assert.equal(await runInWindow('document.querySelectorAll("#shots .asset").length'), 11, '折叠不能删除候选素材');
   assert.equal(await runInWindow('document.querySelector("#shots .start").valueAsNumber'), 0.2, '折叠不能丢失已编辑的裁剪点');
   assert.ok(await runInWindow(hasFixtureNarration(firstNarration)), '折叠不能移除已导入的口播');
   await click(`${firstShot} .move-down`);

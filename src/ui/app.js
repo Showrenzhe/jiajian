@@ -1272,9 +1272,8 @@ $('#subproject-replace').addEventListener('click', () => {
   if (operation || !subprojects.active || !shot) return;
   $('#subproject-material-dialog').close();
   pick('visual', Math.min(maxCandidates, maxExports), (assets) => {
-    const unique = [...new Map(assets.map((asset) => [asset.id, asset])).values()];
-    if (!unique.length) return;
-    shot.splice(0, shot.length, ...unique.map(candidate));
+    if (!assets.length) return;
+    shot.splice(0, shot.length, ...assets.map(candidate));
     preview(shot[0], '轨道预览');
   });
 });
@@ -1455,10 +1454,13 @@ function renderMaterials() {
         event.preventDefault();
         return;
       }
-      materialDrag = { id, items: selectedMaterials.has(id) ? [...selectedMaterials.values()] : [materialItems.get(button)] };
+      const items=selectedMaterials.has(id) ? [...selectedMaterials.values()] : [materialItems.get(button)];
+      materialDrag = {id,items,visual:items.every(item=>item.kind==='video' || item.kind==='image'),
+        thumbnail:button.querySelector('.material-thumbnail img')?.currentSrc};
       event.dataTransfer.setData(materialDragType, id);
       event.dataTransfer.effectAllowed = 'copy';
       activateTimelineTab($('#timeline-tracks-tab'));
+      if(materialDrag.visual) timeline.showLibraryLane(materialDrag,maxCandidates);
     });
     button.addEventListener('dragend', clearMaterialDrag);
     check.type = 'checkbox';
@@ -1905,14 +1907,6 @@ function appendVideoClips(shot, clips, targetLane, videoSlot) {
   const implicit=window.candidateVideoLanes([...shot,...clips]).slice(shot.length);
   if(videoSlot) {
     const placement=placementIn(videoSlot);
-    const shotSpan=videoSlot.widths[shots.indexOf(shot)];
-    const incoming=new Set(clips.map(clip=>window.candidateKey(serializeClip(clip))));
-    if(clips.some(clip=>hasMatchingCandidate(shot,clip,undefined,placement,shotSpan))) throw Error('这个时段已有相同素材。');
-    // Older free placements can inherit their duration from the shot clock. Record
-    // the displayed length when the same source first acquires a second placement.
-    for(const item of shot) if(item.videoStart!==undefined && item.videoFit!=='hold' && incoming.has(window.candidateKey(serializeClip(item)))) {
-      item.videoDuration=window.pictureSpan(item,shotSpan);
-    }
     for(const clip of clips) Object.assign(clip,placement);
   }
   if (lanes.some((lane,i)=>lane!==implicit[i])) {
@@ -1942,7 +1936,7 @@ function availableVideoSlots(shot,count,targetLane,videoSlot) {
     });
   }
   const slots=[];
-  let next=0;
+  let next=videoSlot ? targetLane ?? 0 : 0;
   for(let i=0;i<count;i++) {
     while(occupied.has(next) || laneControls['vis'+next]?.locked) next++;
     const lane=i===0 && targetLane!==undefined ? targetLane : next;
@@ -1962,25 +1956,13 @@ async function addLibraryMaterials(items, shot, targetIndex, targetLane, videoSl
   const slowImport = setTimeout(() => updateControls(), 180);
   try {
     const resolved = await Promise.allSettled(items.map(async (item) => item.clip?.asset ?? await api.loadMaterialFile(item.id)));
-    const existing = new Set(videoSlot ? [] : shot?.map(clip => clip.asset.id));
-    const additions = [];
-    for (const [index, result] of resolved.entries()) {
+    const clips = resolved.map((result, index) => {
       const item = items[index];
       if (result.status === 'rejected') throw new Error(`无法添加「${item.name}」。${result.reason.message}`);
-      const asset = result.value;
-      const clip = candidate(asset);
-      if (!existing.has(asset.id) && !(videoSlot && shot && hasMatchingCandidate(shot,clip,undefined,placementIn(videoSlot),videoSlot.widths[targetIndex]))) {
-        existing.add(asset.id);
-        additions.push({ clip, materialId: item.id });
-      }
-    }
+      return candidate(result.value);
+    });
     const remaining = maxCandidates - (shot?.length ?? 0);
-    if (additions.length > remaining) throw new Error(`该分镜还可添加 ${remaining} 条候选，请减少所选素材。`);
-    if (!additions.length) {
-      say(items.length === 1 ? `${items[0].name} 已在本组。` : '所选素材已在本组。');
-      return;
-    }
-    const clips = additions.map(({ clip }) => clip);
+    if (clips.length > remaining) throw new Error(`该分镜还可添加 ${remaining} 条候选，请减少所选素材。`);
     for (const { asset } of clips) editAssets.set(asset.id, asset);
     if (shot) {
       trackExpansion.get(shot)?.delete('body');
@@ -1993,10 +1975,8 @@ async function addLibraryMaterials(items, shot, targetIndex, targetLane, videoSl
       if(videoSlot) preserveShotWidths(videoSlot.widths,clips[0]);
     }
     for (const { id } of items) selectedMaterials.delete(id);
-    const duplicates = items.length - additions.length;
-    if (duplicates) say(`已添加 ${additions.length} 条候选，跳过 ${duplicates} 项重复素材。`);
     activateTimelineTab($('#timeline-tracks-tab'));
-    preview(clips[0], '轨道预览', additions[0].materialId);
+    preview(clips[0], '轨道预览', items[0].id);
   } catch (error) {
     say(error.message);
   } finally {
@@ -2044,29 +2024,41 @@ function highlightMaterialDrop(target, interval) {
 function clearMaterialDrag() {
   materialDrag = undefined;
   highlightMaterialDrop(undefined);
+  timeline?.clearLibraryLane();
 }
 
 function materialDropAt(event) {
-  if(event.target.closest('[data-track-locked]')) return;
   const types = Array.from(event.dataTransfer?.types ?? []);
-  if (mode !== 'montage' || operation || event.target.closest('.track-toolbar, #track-playhead-row, #script-brief, .timeline-lane-label, .sequence-head')) return;
+  const library=materialDrag && types.includes(materialDragType);
+  if (mode !== 'montage' || operation || (library && !materialDrag.visual)) return;
+  let target=event.target;
+  // Re-entering the panel restores the temporary row and shifts the storyboard underneath it.
+  if(library && timeline.showLibraryLane(materialDrag,maxCandidates) && event.clientX) {
+    target=document.elementFromPoint(event.clientX,event.clientY) ?? target;
+  }
+  if(target.closest('[data-track-locked], .track-toolbar, #track-playhead-row, #script-brief, .timeline-lane-label, .sequence-head')) return;
   if (types.includes('Files') || types.includes(processedAudioDrag)) {
-    const audio = processedDropTarget(event.target);
+    const audio = processedDropTarget(target);
     if (audio) return audioDropPlace(audio);
   }
-  if (!(types.includes('Files') || (materialDrag && types.includes(materialDragType)))) return;
-  if (event.target.closest('.narration-lane')) return;
-  if (event.target.closest('.sequence-video .sequence-content')) {
-    const place=timeline.materialVideoDrop(event);
-    if(place && (place.shot ? place.shot.length<maxCandidates : shots.length<maxShots)) return place;
-    return;
+  if (!(types.includes('Files') || library)) return;
+  if (target.closest('.narration-lane')) return;
+  if (target.closest('.sequence-video, .candidate-new-lane')) {
+    const place=timeline.materialVideoDrop({target,clientX:event.clientX},library);
+    const count=library ? materialDrag.items.length : 1;
+    if(!place || (place.shot ? place.shot.length+count>maxCandidates : shots.length>=maxShots)) return;
+    if(count>1 && place.videoSlot) {
+      try { availableVideoSlots(place.shot ?? [],count,place.targetLane,place.videoSlot); }
+      catch { return; }
+    }
+    return place;
   }
-  const row = event.target.closest('.shot, [data-drop-shot]');
+  const row = target.closest('.shot, [data-drop-shot]');
   const shot = row ? shots[Number(row.dataset.shotIndex ?? row.dataset.dropShot)] : undefined;
-  if (!row && event.target.closest('#timeline-cut-editor, .sequence-row:not(.sequence-video, .sequence-shots)')) return;
+  if (!row && target.closest('#timeline-cut-editor, .sequence-row:not(.sequence-video, .sequence-shots)')) return;
   if (shot ? shot.length >= maxCandidates : shots.length >= maxShots) return;
   const targetLane = row?.matches('.sequence-empty[data-candidate-index]') ? Number(row.dataset.candidateIndex) : undefined;
-  return { target: row ?? event.target.closest('#shots-empty') ?? $('#new-shot-drop'), shot, targetLane, targetIndex:row?.dataset.dropShot==null ? undefined : Number(row.dataset.dropShot) };
+  return { target: row ?? target.closest('#shots-empty') ?? $('#new-shot-drop'), shot, targetLane, targetIndex:row?.dataset.dropShot==null ? undefined : Number(row.dataset.dropShot) };
 }
 
 function trackShot() {
@@ -2891,14 +2883,10 @@ async function pick(kind, limit, apply) {
 }
 
 function importCandidates(shot) {
-  return pick('visual', maxCandidates - shot.length, (assets, warnings) => {
-    for (const asset of assets) {
-      if (shot.some((clip) => clip.asset.id === asset.id)) warnings.push(`${asset.name} 已在本组。`);
-      else {
-        trackExpansion.get(shot)?.delete('body');
-        appendVideoClips(shot,[candidate(asset)]);
-      }
-    }
+  return pick('visual', maxCandidates - shot.length, (assets) => {
+    if (!assets.length) return;
+    appendVideoClips(shot, assets.map(candidate));
+    trackExpansion.get(shot)?.delete('body');
     if (!selected && shot.length) preview(shot[0]);
   });
 }
@@ -3398,16 +3386,7 @@ function placementIn(slot) {
   return {videoStart:slot.start,videoDuration:slot.span,videoFit:'hold'};
 }
 
-function hasMatchingCandidate(shot, clip, outgoing, placement={}, shotSpan) {
-  const key = window.candidateKey(serializeClip(clip));
-  return shot.some(item => {
-    if(item===clip || item===outgoing || window.candidateKey(serializeClip(item))!==key) return false;
-    const existing=shotSpan===undefined ? item : {...item,videoDuration:window.pictureSpan(item,shotSpan)};
-    return !window.disjointVideoPlacements(existing,placement);
-  });
-}
-
-function candidatePlacementError(clip, target, source, targetClip, targetLane, videoStart, videoSlot, videoDuration) {
+function candidatePlacementError(clip, target, source, targetClip, targetLane, videoStart, videoSlot) {
   if (videoLocked(source,clip) || laneControls['vis'+targetLane]?.locked || videoLocked(target,targetClip)) return '视频轨道已锁定，请先解锁。';
   if (!shots.includes(target) || (source && (!shots.includes(source) || !source.includes(clip)))
       || (targetClip && (!source || !target.includes(targetClip)))) return '片段位置已变化，请重新拖动。';
@@ -3420,19 +3399,14 @@ function candidatePlacementError(clip, target, source, targetClip, targetLane, v
     }
   }
   if (videoStart !== undefined && (!Number.isFinite(videoStart) || videoStart < 0 || videoStart > Number.MAX_SAFE_INTEGER)) return '请在有效的时间轴范围内放置片段。';
-  const placement=targetClip ?? (videoSlot ? placementIn(videoSlot) : {videoStart,videoDuration,videoFit:videoDuration===undefined ? undefined : 'hold'});
   if (source === target) {
     if(clip===targetClip || (!targetClip && targetLane===undefined)) return '请选择另一个位置。';
-    if((targetClip || videoDuration!==undefined) && (hasMatchingCandidate(target,clip,targetClip,placement)
-        || (targetClip && hasMatchingCandidate(source,targetClip,clip,clip)))) return '这个时段已有相同素材。';
     return '';
   }
   if (!targetClip && target.length >= maxCandidates) return `每个分镜最多可添加 ${maxCandidates} 条候选。`;
   if (!targetClip && videoStart===undefined) {
     try { availableVideoSlots(target,1,targetLane,videoSlot); } catch(error) { return error.message; }
   }
-  if (hasMatchingCandidate(target, clip, targetClip,placement,videoSlot?.widths[shots.indexOf(target)])) return '目标分镜已包含这段素材。';
-  if (targetClip && hasMatchingCandidate(source, targetClip, clip,clip)) return '原分镜已包含要换回的素材。';
   return '';
 }
 
@@ -4387,10 +4361,6 @@ async function importDroppedMaterials(files, place) {
     for (const asset of assets) {
       if (materialAliases.has(asset.id)) asset.name = materialAliases.get(asset.id).name;
       const shot = place?.shot ?? (place?.videoSlot && shots[place.targetIndex]);
-      if (!place?.audioRole && shot && (place?.videoSlot ? hasMatchingCandidate(shot,candidate(asset),undefined,placementIn(place.videoSlot),place.videoSlot.widths[place.targetIndex]) : shot.some((clip) => clip.asset.id === asset.id))) {
-        warnings.push(asset.name + ' 已在本组。');
-        continue;
-      }
       if (destination === 'visual' && (shot ? shot.length >= maxCandidates : shots.length >= maxShots)) {
         warnings.push('已达到分镜或候选数量上限。');
         break;
@@ -4466,13 +4436,21 @@ const tracksPanel = $('#timeline-tracks-panel');
 tracksPanel.addEventListener('dragover', (event) => {
   const place = materialDropAt(event);
   highlightMaterialDrop(place?.target,place?.highlight);
+  timeline.previewLibrarySlot(place);
   if (!place) return;
   event.preventDefault();
   event.dataTransfer.dropEffect = 'copy';
 });
 tracksPanel.addEventListener('dragleave', (event) => {
-  if (!tracksPanel.contains(event.relatedTarget)) highlightMaterialDrop(undefined);
+  if (!tracksPanel.contains(event.relatedTarget)) {
+    highlightMaterialDrop(undefined);
+    timeline.clearLibraryLane();
+  }
 });
+window.addEventListener('keydown',event=>{
+  if(event.key==='Escape' && materialDrag) clearMaterialDrag();
+},true);
+window.addEventListener('blur',()=>{if(materialDrag) clearMaterialDrag();});
 tracksPanel.addEventListener('drop', (event) => {
   const place = materialDropAt(event);
   const drag = materialDrag;
@@ -4694,7 +4672,21 @@ function matchNarrationDuration(shot,clip) {
 }
 
 $('#match-all-voice-duration').addEventListener('click',()=>matchNarrationDuration());
-visualTrackLane.addEventListener('contextmenu',event=>{
+$('#clip-actions').addEventListener('click',()=>timeline.openCandidateActions(trackShot(),selected));
+// A secondary click on a picture lane must preserve keyboard focus as well as the selection.
+function isPictureLane(event) {
+  if (event.target.closest('.sequence-video,#visual-track-lane')) return true;
+  if (!event.target.closest('.sequence-cursor')) return false;
+  return document.elementsFromPoint(event.clientX,event.clientY).some(node=>node.closest('.sequence-video'));
+}
+tracksPanel.addEventListener('mousedown',event=>{
+  if (event.button===2 && isPictureLane(event)) event.preventDefault();
+});
+tracksPanel.addEventListener('contextmenu',event=>{
+  if (isPictureLane(event)) event.preventDefault();
+},true);
+visualTrackLane.addEventListener('keydown',event=>{
+  if (event.key!=='ContextMenu' && !(event.key==='F10' && event.shiftKey)) return;
   if (operation || $('#narration-mode').value!=='segmented' || event.target.closest('input,select,textarea')) return;
   const card=event.target.closest('.shot');
   if (!card) return;
@@ -4889,8 +4881,6 @@ cutEditor = window.createCutTrackEditor({
     if(operation || (index<0 || !shots[index] ? shots.length>=maxShots : shots[index].length>=maxCandidates)) return false;
     const shot=shots[index] ?? [];
     const clip={...candidate(asset),...range};
-    if(videoSlot ? hasMatchingCandidate(shot,clip,undefined,placementIn(videoSlot),videoSlot.widths[index])
-      : shot.some(item=>item.asset.id===asset.id && !item.ranges && Math.abs(item.start-range.start)<.00001 && Math.abs(item.end-range.end)<.00001)) return false;
     appendVideoClips(shot,[clip],targetLane,videoSlot);
     if(!shots[index]) shots.push(shot);
     editAssets.set(asset.id,asset);
@@ -4955,7 +4945,7 @@ timeline = window.mountEditTimeline($('#timeline-clock'), {
   candidatePlacementError,
   placeCandidate(clip, target, source, targetClip, targetLane, videoStart, videoDuration, displayedWidths, videoSlot) {
     if (operation) return false;
-    const error = candidatePlacementError(clip, target, source, targetClip, targetLane, videoStart, videoSlot, videoDuration);
+    const error = candidatePlacementError(clip, target, source, targetClip, targetLane, videoStart, videoSlot);
     if (error) throw Error(error);
     if (source === target) window.pinCandidateLanes(source);
     if (targetClip) {

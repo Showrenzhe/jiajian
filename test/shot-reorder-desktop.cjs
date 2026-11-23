@@ -225,7 +225,8 @@ async function check() {
     await click(cell(3,0));await read(query(cell(3,0))+'.focus()');await key('v',86,2);
     await wait('!!'+filled(3,1),'粘贴到已有候选的分镜应追加视频');
     await context(shotCell(3));await action('粘贴视频');
-    await wait(query('#notice')+'.textContent.includes("已包含")','重复粘贴应提示且不修改工程');
+    await wait('!!'+filled(3,2),'再次粘贴同源视频应追加一个独立候选');
+    await click('#track-undo');await wait('!'+filled(3,2)+' && !!'+filled(3,1),'撤销只移除本次粘贴');
 
     // B contains a second copy of the blue cut. C has a different width and keeps its own voice and captions.
     const swapFixture=path.join(root,'候选互换原稿.sdworkbench');
@@ -276,15 +277,14 @@ async function check() {
       assert.ok(await read('(()=>{const r='+hint+'.getBoundingClientRect(),pane=document.querySelector("#timeline-tracks-panel").getBoundingClientRect();'
         +'return r.width>0 && r.left>=pane.left && r.right<=pane.right && r.top>=pane.top && r.bottom<=pane.bottom})()'),'禁放说明应显示在时间线可见区域');
     }
-    async function reject(from,to,selector,message) {
-      await mouse('mousePressed',from);await mouse('mouseMoved',to);await expectRejected(selector,message);
+    for(const [from,to] of [[sourcePoint,middlePoint],[middlePoint,sourcePoint]]) {
+      await mouse('mousePressed',from);await mouse('mouseMoved',to);
+      await wait('!!'+query('.candidate-displaced'),'与已有同源素材的分镜互换应预览对方片段');
       await mouse('mouseReleased',to);await restored();
-      await wait(query('#notice')+'.textContent==='+JSON.stringify(message),'取消非法放置后说明原因');
-      await wait('!document.getAnimations().some(a=>a.id==="candidate-arrival")','被拒绝的候选回到原位');
-      assert.deepEqual(await read(clips),originalClips,'禁放应保留两端候选');
+      await wait(clipNamed(source,files.green)+' && '+clipNamed(middle,files.blue)+' && '+clipNamed(cell(1,1),files.blue),'交换后保留两个蓝色实例');
+      await click('#track-undo');await wait(clipNamed(source,files.blue)+' && '+clipNamed(middle,files.green),'一次撤销恢复互换前的候选');
+      assert.deepEqual(await read(clips),originalClips);
     }
-    await reject(sourcePoint,middlePoint,middle,'目标分镜已包含这段素材。');
-    await reject(middlePoint,sourcePoint,source,'原分镜已包含要换回的素材。');
 
     async function previewSwap() {
       await mouse('mousePressed',sourcePoint);
@@ -484,12 +484,53 @@ async function check() {
     }
     opens.push(repeatedPath);await click('#open-project');
     await wait(query('#notice')+'.textContent.includes("已打开工程：同一红片回填原空位") && '+duplicateTargets+'===2','重开后保留两段同源但不重叠的红片');
+    await fitTimeline();
     const firstCandidate=cell(0,0)+'[data-move-candidate]';
-    await dragLibraryItem(wc,await center(redTile),await center(firstCandidate),'application/x-sd-workbench-material',async()=>{
-      assert.equal(await read(query(firstCandidate)+'.dataset.materialDrop'),'active');
+    const libraryType='application/x-sd-workbench-material',copyBefore=await read(clips);
+    const lockThird='[data-control-key="vis2"] [data-track-action="locked"]';
+    await dragLibraryItem(wc,await center(redTile),()=>center(firstCandidate),libraryType,async()=>{
+      assert.equal(await read(query(cell(0,2)+'.sequence-empty')+'.dataset.materialDrop'),'active','占用格下方首个空位在第三轨');
     });
-    await wait(query('#notice')+'.textContent.includes("已在本组")','普通已用分镜仍应拒绝重复添加同源候选');
-    assert.equal(await read('document.querySelectorAll('+JSON.stringify('.sequence-video [data-drop-shot="0"][data-move-candidate]')+').length'),2);
+    await wait(clipNamed(cell(0,2),longVideo)+' && '+clipNamed(firstCandidate,longVideo),'同一素材在同镜可同时放在第一和第三轨');
+    await click('#track-undo');await wait('!!'+query(cell(0,2)+'.sequence-empty'),'撤销只移除素材库新加的片段');
+    assert.deepEqual(await read(clips),copyBefore);
+
+    await click(lockThird);await wait(query(lockThird)+'.getAttribute("aria-pressed")==="true"','锁定第三轨');
+    await dragLibraryItem(wc,await center(redTile),()=>center(firstCandidate),libraryType,async()=>{
+      await wait(query(zone)+'.dataset.materialDrop==="active" && !!'+query(zone+' .candidate-new-placement'),'跳过锁定的空轨，在新增第四轨预览');
+    });
+    await wait(clipNamed(cell(0,3),longVideo)+' && '+rows+'===4','已占用的目标下方没有可用轨时新增一轨');
+    await click('#track-undo');await wait(rows+'===3','撤销自动新增的视频轨');
+    await click(lockThird);
+
+    // The new row lies between the last video lane and the purple storyboard.
+    // Choose the second shot after dragstart, when this temporary row exists.
+    async function libraryIntoFourth(cancel) {
+      await dragLibraryItem(wc,await center(redTile),async()=>{
+        const p=await center(zone),second=await bounds(shotCell(1));
+        return {x:second.x+second.width/2,y:p.y};
+      },libraryType,async()=>{
+        const axis=await bounds(ruler),scale=parseFloat(await read(query(shotCell(1))+'.style.left'))/durations[0];
+        await checkPlacement(axis,scale,durations[0],durations[1],'素材库拖入第四轨第二镜');
+        assert.equal(await read(query(zone)+'.parentElement.nextElementSibling.classList.contains("sequence-shots")'),true);
+        if(cancel) await key('Escape',27);
+      },cancel);
+      await wait('!'+query(zone)+' && !'+query(placement),'结束素材库拖动后清除临时行和精确预览');
+    }
+    await libraryIntoFourth(true);
+    assert.deepEqual(await read(clips),copyBefore,'Esc 不改变轨道或片段');
+    await libraryIntoFourth(false);
+    await wait(clipNamed(cell(1,3),longVideo)+' && '+rows+'===4','素材库新建第四轨并保留原片');
+    const fourthFile=await saveAs('素材库直拖新视频轨');
+    const fourthConfig=(await loadProject(fourthFile)).config;
+    const fourth=fourthConfig.shots[1].find(clip=>clip.videoLane===3);
+    assert.deepEqual([fourth.videoStart,fourth.videoDuration].map(v=>Number(v.toFixed(3))),durations.slice(0,2));
+    assert.equal(fourth.videoFit,'hold');
+    assert.deepEqual(fourthConfig.shots.map(shot=>shot.length),repeated.config.shots.map((shot,i)=>shot.length+(i===1?1:0)));
+    await click('#track-undo');await wait(rows+'===3','撤销素材库新建的视频轨');
+    assert.deepEqual(await read(clips),copyBefore);
+    opens.push(fourthFile);await click('#open-project');
+    await wait(clipNamed(cell(1,3),longVideo)+' && '+rows+'===4','保存重开后同源实例仍在指定的视频轨与分镜');
     const boundedFile=path.join(root,'四秒片段与空轨.sdworkbench');
     await saveProject(boundedFile,{...config,
       shots:[[{id:'four',start:0,end:4,videoLane:2},{...red,videoLane:0}],[green],[{id:'still',start:0,end:4,videoStart:15}],[{...blue,end:.7,speed:2,videoSubtitles:undefined}]],
@@ -503,6 +544,25 @@ async function check() {
     await wait(clipNamed(cell(0,2),longVideo)+' && '+query('#notice')+'.textContent.includes("已打开工程：四秒片段与空轨")','打开含四秒片段的工程');
     await verify(['A','B','C','D']);await fitTimeline();
     const boundedBaseline=(await loadProject(await saveAs('四秒片段对照'))).config;
+    await read(query('#track-zoom')+'.value='+query('#track-zoom')+'.max;'+query('#track-zoom')+'.dispatchEvent(new Event("input"))');
+    await wait(host+'.scrollWidth>'+host+'.clientWidth+100','放大时间线以检查横向滚动后的素材落点');
+    await read(query('#timeline-tracks-panel')+'.scrollTop=0');
+    let scrollAxis,scrollScale;
+    await dragLibraryItem(wc,await center(redTile),async()=>{
+      scrollScale=parseFloat(await read(query(shotCell(1))+'.style.left'))/4;
+      await read(host+'.scrollLeft='+5.9*scrollScale+'-'+host+'.clientWidth/3');
+      assert.ok(await read(host+'.scrollLeft')>0);
+      scrollAxis=await bounds(ruler);
+      const row=await bounds(zone);
+      return {x:scrollAxis.x+5.9*scrollScale,y:row.y+row.height/2};
+    },libraryType,async()=>{
+      await checkPlacement(scrollAxis,scrollScale,5.8,.6,'横向滚动后素材库片段吸附口播终点和字幕起点');
+    });
+    await wait(clipNamed(cell(1,3),longVideo),'横向滚动后的新轨落位');
+    const cutWindow=(await loadProject(await saveAs('素材库滚动吸附'))).config.shots[1].at(-1);
+    assert.deepEqual([cutWindow.videoStart,cutWindow.videoDuration].map(n=>Number(n.toFixed(3))),[5.8,.6]);
+    await click('#track-undo');await wait(rows+'===3','撤销滚动后的新视频轨');
+    await fitTimeline();
     const secondLane='[data-lane-key="vis1"] .sequence-content';
     async function dragIntoCutWindow(shot,lane,file,destination,at,start,span,acrossCut=false) {
       await wait('!document.getAnimations().some(a=>a.id==="candidate-arrival")','等待源片归位');

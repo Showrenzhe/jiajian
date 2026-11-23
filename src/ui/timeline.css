@@ -134,7 +134,7 @@
   background:color-mix(in srgb,var(--focus-ring) 12%,var(--surface));
 }
 #timeline-clock[data-candidate-drag="active"] ~ #new-shot-drop {cursor:grabbing;}
-#timeline-clock:has(.candidate-new-lane [data-material-drop]) ~ #new-shot-drop {
+#timeline-clock[data-candidate-drag]:has(.candidate-new-lane [data-material-drop]) ~ #new-shot-drop {
   border-color:var(--focus-ring);outline:1px solid var(--focus-ring);outline-offset:-1px;
 }
 .candidate-new-lane .sequence-content[data-candidate-rejected],

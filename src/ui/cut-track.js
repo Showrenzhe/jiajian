@@ -285,7 +285,7 @@
       dest.value = String(s.destination ?? -1);
       if (dest.selectedIndex < 0) dest.value = '-1';
       dest.onchange = () => { s.destination = Number(dest.value); };
-      const add = button('加入分镜', () => { if (!applyScene(s.asset, items[s.selected], Number(dest.value))) status('未能加入该分镜，请查看候选数量或是否重复。'); });
+      const add = button('加入分镜', () => { if (!applyScene(s.asset, items[s.selected], Number(dest.value))) status('未能加入该分镜，请检查剩余候选数量。'); });
       add.disabled = s.selected < 0;
       const bulk = button('批量加入', () => {
         const pending = visible.filter((row) => !(row.used || row.hidden));

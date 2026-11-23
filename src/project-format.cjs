@@ -14,7 +14,7 @@ const { normalizeShotSettings, normalizeRanges, normalizeSegmentVoiceCuts, norma
 const { normalizeCover } = require('./cover.cjs');
 const { audioSpeed, normalizeMusicSpeeds, normalizeVolumeOverrides } = require('./shot-timing.cjs');
 const { normalizeLook, inspectLut } = require('./visual-style.cjs');
-const { candidateVideoLanes, recordCandidate } = require('./ui/track-tools.js');
+const { candidateVideoLanes } = require('./ui/track-tools.js');
 
 const format = 'sdworkbench';
 const version = 1;
@@ -102,7 +102,6 @@ function cleanConfig(config) {
   function cleanShot(shot, index) {
     if (!Array.isArray(shot) || shot.length > maxCandidates) throw new Error(`第 ${index + 1} 组分镜的候选素材数量无效。`);
     candidateVideoLanes(shot, maxCandidates);
-    const seen = new Map();
     return Array.from(shot, (clip) => {
       const id = record(clip?.id, 'visual');
       if (![clip.start, clip.end].every(Number.isFinite) || clip.start < 0 || clip.end < clip.start) {
@@ -128,7 +127,6 @@ function cleanConfig(config) {
         throw new Error('视频片段的切点窗口无效。');
       }
       const ranges = clip.ranges === undefined ? undefined : normalizeRanges(clip.ranges, clip.start, clip.end);
-      if (!recordCandidate(seen, { ...clip, ranges })) throw new Error(`第 ${index + 1} 组分镜有重复素材。`);
       return {
         id, start: clip.start, end: clip.end,
         ...(clip.videoLane !== undefined && { videoLane: clip.videoLane }),

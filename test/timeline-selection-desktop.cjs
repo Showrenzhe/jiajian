@@ -69,6 +69,19 @@ async function check() {
     await mouse('mousePressed', point.x, point.y);
     await mouse('mouseReleased', point.x, point.y);
   }
+  async function checkVideoRightClick(point) {
+    const selectionState='[document.querySelector("#clip-inspector-name").textContent,document.querySelector(".sequence-cursor").style.left,'
+      +'[...document.querySelectorAll(".sequence-marked")].map(el=>[el.dataset.dropShot,el.dataset.candidateIndex])]';
+    const before=await read(selectionState);
+    await read('window.rightClickFocus=document.activeElement;window.videoRightClickCancelled=false;'
+      +'window.addEventListener("contextmenu",e=>{window.videoRightClickCancelled=e.isTrusted && e.defaultPrevented},{once:true})');
+    for (const type of ['mousePressed','mouseReleased']) {
+      await send('dispatchMouseEvent',{type,...point,button:'right',buttons:type==='mousePressed'?2:0,clickCount:1});
+    }
+    assert.ok(await read('window.videoRightClickCancelled && !document.querySelector("dialog[open],:popover-open")'),'视频轨右键应阻止原生菜单并保留弹窗关闭状态');
+    assert.ok(await read('window.rightClickFocus===document.activeElement'),'视频轨右键保留键盘焦点');
+    assert.deepEqual(await read(selectionState),before,'视频轨右键保留播放头、检查器和片段选区');
+  }
   const undo = () => click('#track-undo');
   const video = '.sequence-video .sequence-block[data-selectable]';
   const music = '.sequence-music .sequence-block[data-selectable]';
@@ -129,6 +142,7 @@ async function check() {
     assert.match(box.hit,/sequence-content/,'从轨道空白处框选');
     await actualClick(video);
     const originalSelection = await read(query(video+'.sequence-marked')+'.textContent');
+    await checkVideoRightClick({x:box.x,y:box.y});
     await mouse('mousePressed',box.x,box.y);
     await mouse('mouseMoved',box.toX,box.toY);
     await wait(count(video+'.sequence-marked')+'===2','拖动中应预览两个候选');
@@ -156,7 +170,8 @@ async function check() {
     if (!await read(query('#whole-track-settings')+'.open')) await click('#whole-track-summary');
     await click('#pick-narration');
     await wait(count(voice)+'===1','添加口播');
-    await read(query(video)+'.dispatchEvent(new MouseEvent("contextmenu",{bubbles:true,cancelable:true}))');
+    await actualClick(video);
+    await click('#clip-actions');
     await read('[...document.querySelectorAll(".sequence-dialog[open] button")].find(button=>button.textContent==="候选包装").click()');
     await read('(() => {const d=document.querySelector(".sequence-dialog[open]");d.querySelector("textarea").value="删除验收";d.querySelector("form").requestSubmit()})()');
     await wait(count(layer)+'===1','添加包装文字');
@@ -199,13 +214,10 @@ async function check() {
     await wait(count(video)+'===4 && '+query(tile(files.red)+' .material-used')+'.title.includes("1、2")','重复源文件用于两个分镜时应标出两个分镜号');
     const pickCount=openedPickers.length;
     const secondRow=slot+'[data-candidate-index="1"]';
-    await actualClick(secondRow);
-    const coords=await pointerPoint(secondRow);
-    for(const type of ['mousePressed','mouseReleased']) {
-      await send('dispatchMouseEvent',{type,...coords,button:'right',buttons:type==='mousePressed'?2:0,clickCount:1});
-    }
-    await wait('!!document.querySelector(".sequence-dialog[open]")','第二条视频轨空位仍可右键打开时间轴菜单');
-    await pressKey('Escape',27);
+    await actualClick(video);
+    await checkVideoRightClick(await pointerPoint(secondRow));
+    await checkVideoRightClick(await pointerPoint(video+'[data-drop-shot="1"]'));
+    await checkVideoRightClick(await pointerPoint('.sequence-video .track-kind'));
     assert.equal(openedPickers.length,pickCount,'点选部分填充的候选行应保留系统文件框的关闭状态');
     await actualClick(tile(files.red));
     await pressDelete();
@@ -224,6 +236,8 @@ async function check() {
     await actualClick(lock);
     await wait(query(lock)+'.ariaPressed==="true" && '+query('#clip-inspector')+'.disabled','锁定轨道后片段和检查器进入只读');
     assert.equal(await read(query(video)+'.closest(".sequence-content").inert'),true);
+    const lockedPoint=await read('(() => {const r='+query(video)+'.getBoundingClientRect();return {x:r.left+r.width/2,y:r.top+r.height/2}})()');
+    await checkVideoRightClick(lockedPoint);
     await read(query('#timeline-clock')+'.focus()');await pressDelete();
     assert.equal(await read(count(video)),4);
     await undo();await wait(query(lock)+'.ariaPressed==="false"','轨道锁可撤销');

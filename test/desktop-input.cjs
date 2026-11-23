@@ -3,10 +3,10 @@
 const assert = require('node:assert/strict');
 const { setTimeout: delay } = require('node:timers/promises');
 
-async function dragLibraryItem(contents, source, target, mimeType, hover) {
+async function dragLibraryItem(contents, source, target, mimeType, hover, cancel=false) {
   const client = contents.debugger;
   const send = (method, params) => client.sendCommand('Input.' + method, params);
-  let data;
+  let data,point=source;
   const capture = (_event, method, params) => { if (method === 'Input.dragIntercepted') data = params.data; };
   client.on('message', capture);
   await send('setInterceptDrags', { enabled: true });
@@ -14,16 +14,17 @@ async function dragLibraryItem(contents, source, target, mimeType, hover) {
     await send('dispatchMouseEvent', { type:'mouseMoved', x:source.x, y:source.y });
     await send('dispatchMouseEvent', { type:'mousePressed', x:source.x, y:source.y, button:'left', buttons:1, clickCount:1 });
     await send('dispatchMouseEvent', { type:'mouseMoved', x:source.x+9, y:source.y, button:'left', buttons:1 });
-    await send('dispatchMouseEvent', { type:'mouseMoved', x:target.x, y:target.y, button:'left', buttons:1 });
+    await send('dispatchMouseEvent', { type:'mouseMoved', x:source.x+18, y:source.y, button:'left', buttons:1 });
     const end = Date.now() + 3000;
     while (!data && Date.now() < end) await delay(20);
     assert.ok(data?.items.some(item => item.mimeType === mimeType), '素材库应发起原生拖放 ' + mimeType);
-    for (const type of ['dragEnter','dragOver']) await send('dispatchDragEvent', { type, x:target.x, y:target.y, data });
+    point=typeof target==='function' ? await target() : target;
+    for (const type of ['dragEnter','dragOver']) await send('dispatchDragEvent', { type, x:point.x, y:point.y, data });
     await hover();
-    await send('dispatchDragEvent', { type:'drop', x:target.x, y:target.y, data });
+    await send('dispatchDragEvent', { type:cancel?'dragCancel':'drop', x:point.x, y:point.y, data });
   } finally {
     client.off('message', capture);
-    await send('dispatchMouseEvent', { type:'mouseReleased', x:target.x, y:target.y, button:'left', clickCount:1 });
+    await send('dispatchMouseEvent', { type:'mouseReleased', x:point.x, y:point.y, button:'left', clickCount:1 });
     await send('setInterceptDrags', { enabled: false });
   }
 }

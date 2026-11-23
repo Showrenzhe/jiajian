@@ -43,25 +43,6 @@
     return ranges;
   }
 
-  function candidateKey(clip) {
-    return JSON.stringify([clip.id, clip.start, clip.end, clip.ranges?.map(({ start, end }) => [start, end])]);
-  }
-
-  function disjointVideoPlacements(a, b) {
-    if (a.videoFit !== 'hold' && b.videoFit !== 'hold') return false;
-    if (![a, b].every(clip => Number.isFinite(clip.videoStart) && Number.isFinite(clip.videoDuration) && clip.videoDuration > 0)) return false;
-    return a.videoStart + a.videoDuration <= b.videoStart + 1e-7 || b.videoStart + b.videoDuration <= a.videoStart + 1e-7;
-  }
-
-  function recordCandidate(seen, clip) {
-    const key = candidateKey(clip);
-    const copies = seen.get(key) ?? [];
-    if (copies.some(copy => !disjointVideoPlacements(copy, clip))) return false;
-    copies.push(clip);
-    seen.set(key, copies);
-    return true;
-  }
-
   // Candidate order drives montage choices. A physical lane may be empty above a candidate.
   function candidateVideoLanes(shot, limit = Infinity) {
     const reserved = new Map();
@@ -148,7 +129,7 @@
     return !voicePriority && clip?.asset?.kind === 'video' && clip.videoStart !== undefined
       && clip.videoDuration !== undefined && clip.matchedDuration === undefined;
   }
-  const tools = { splitRanges, candidateKey, disjointVideoPlacements, recordCandidate, candidateVideoLanes, pinCandidateLanes, pictureSpan, videoLaneCells, emptyVideoCells, soloLaneSequence, usesPlacedVideoSource };
+  const tools = { splitRanges, candidateVideoLanes, pinCandidateLanes, pictureSpan, videoLaneCells, emptyVideoCells, soloLaneSequence, usesPlacedVideoSource };
   if (typeof module === 'object' && module.exports) module.exports = tools;
   else Object.assign(window, tools);
 })();
