@@ -65,6 +65,33 @@ test('persists packaging-only assets and voice, text-group and candidate layers 
   assert.deepEqual((await loadProject(file)).config, loaded.config);
 });
 
+test('reopens reversible source edits and rebuilds a missing result in the local edit cache', async (t) => {
+  const { prepareSourceEdit } = require('../src/source-edit.cjs');
+  const root = await testDirectory(t);
+  const file = path.join(root, 'source-edits.sdworkbench');
+  const { red } = await fixtures(root);
+  const original = await inspectAsset(red, 'video');
+  const bytes = await fs.readFile(red);
+  const ranges = [{start:.25, end:.75, mirror:true, reverse:true}];
+  const rendered = await prepareSourceEdit(original, ranges, path.join(root, 'cache'));
+  const result = await inspectAsset(rendered, 'video');
+  const clip = {id:'edited', start:0, end:.5, sourceEdit:{id:'original',ranges}};
+  const config = editingConfig({shots:[[clip]], subprojects:{
+    active:null, main:[], projects:[{id:'second',name:'副本',shots:[{index:0,clips:[clip]}]}]
+  }});
+  const assets = new Map([['original', original], ['edited', result]]);
+  await saveProject(file, config, assets);
+  assert.deepEqual((await loadProject(file)).config, config);
+  await fs.unlink(rendered);
+  const cache = path.join(root, 'rebuilt');
+  const reopened = await loadProject(file, undefined, inspectAsset, cache);
+  assert.deepEqual(reopened.config, config);
+  assert.equal(path.dirname(reopened.assets.get('edited').path), cache);
+  assert.ok(Math.abs(reopened.assets.get('edited').duration - .5) < .05);
+  assert.deepEqual(await fs.readFile(red), bytes);
+  await assert.rejects(saveProject(file, editingConfig({shots:[[{...clip, sourceEdit:{id:'original', ranges:[{start:0,end:2000}]}}]]}), assets, {overwrite:true}), /范围/);
+});
+
 test('a draft with every visual excluded keeps muted tracks, clips and original volume', async (t) => {
   const root = await testDirectory(t);
   const file = path.join(root, '未参与剪辑.sdworkbench');

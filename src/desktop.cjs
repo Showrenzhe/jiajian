@@ -28,6 +28,7 @@ const { splitNarration: splitNarrationAudio } = require('./subs2srs.cjs');
 const { normalizeLayers, normalizePackaging } = require('./packaging.cjs');
 const {normalizeLook,inspectLut,previewLook} = require('./visual-style.cjs');
 const { createForeground } = require('./foreground.cjs');
+const { prepareSourceEdit } = require('./source-edit.cjs');
 const { detectPauses, processAudio, retimeCaptions } = require('./audio-tools.cjs');
 const { createCreativeSettings, runCreative } = require('./creative-service.cjs');
 const { createWaveformCache } = require('./waveform-cache.cjs');
@@ -39,9 +40,9 @@ const page = `${scheme}://app/index.html`;
 const uiFiles = new Set(['/index.html', '/app.js', '/styles.css', '/dialog-focus.js', '/creative-service.js', '/script-workspace.js', '/script-workspace.css',
   '/editor-text.js', '/text-presets.js', '/caption-inspector.js', '/caption-inspector.css', '/audio-tools.js', '/waveform.js', '/voice-alignment.js', '/draft-transport.js',
   '/track-organizer.js', '/cover-editor.js', '/visual-editor.js', '/batch-edit.js',
-  '/timeline.js', '/timeline-selection.js', '/timeline.css', '/cut-track.js', '/cut-track.css', '/layer-motion.js', '/layer-motion.css', '/subprojects.js',
+  '/timeline.js', '/timeline-selection.js', '/timeline.css', '/cut-filmstrip.js', '/cut-picture-view.js', '/video-cut-timeline.js', '/cut-track.js', '/cut-track.css', '/layer-motion.js', '/layer-motion.css', '/subprojects.js',
   '/track-workspace.css', '/edit-history.js', '/track-tools.js', '/track-controls.js', '/track-tools.css', '/cloud-tts-dialog.js', '/cloud-tts-dialog.css',
-  '/cloud-tts-settings.js', '/cloud-tts-settings.css', '/split-view.js', '/panel-layout.js', '/draft-workspace.js', '/player-tools.js', '/assets/jiajian-logo.png', '/assets/project-cover.jpg',
+  '/cloud-tts-settings.js', '/cut-shortcuts.js', '/cloud-tts-settings.css', '/split-view.js', '/panel-layout.js', '/draft-workspace.js', '/player-tools.js', '/assets/jiajian-logo.png', '/assets/project-cover.jpg',
   '/glass-material.css', '/inspector-controls.css', '/editor-surfaces.css', '/player-controls.css', '/appearance.js', '/appearance.css', '/software-updates.js',
   '/color-wheel.js', '/color-wheel.css', '/menu-motion.js', '/menu-motion.css']);
 const maxCatalog = (maxShots + 1) * (maxCandidates + maxWholeTracks);
@@ -197,7 +198,8 @@ async function launchDesktop({
   const projects = await readProjectLibrary(dataDirectory);
   const resolveOutputFile=(file)=>resolveOutput(recent,file);
   const performanceCache = createPerformanceCache(dataDirectory, {inspect:inspectAsset, thumbnail:createVideoThumbnail, encode:createTrackProxy});
-  const drafts = createDraftStore(path.join(dataDirectory, 'drafts'),resolveOutputFile,performanceCache.inspectCached);
+  const sourceEditDirectory = path.join(dataDirectory, 'source-edits');
+  const drafts = createDraftStore(path.join(dataDirectory, 'drafts'),resolveOutputFile,performanceCache.inspectCached,sourceEditDirectory);
   const published = new Set(recent.map((item) => item.path));
   let job;
   let pickerOpen = false;
@@ -802,6 +804,28 @@ async function launchDesktop({
   handle('workbench:material-tile-preview', materialTilePreview);
   handle('workbench:video-thumbnail', (id) => (catalog.has(id) || materialFiles.has(id)) ? videoThumbnail(id) : null);
   handle('workbench:clip-thumbnail', ({id,time}={})=>catalog.has(id) ? videoThumbnail(id,time) : null);
+  handle('workbench:prepare-source-edit', async ({id,ranges}={}) => {
+    const asset=catalog.get(id);
+    if (asset?.kind!=='video') throw Error('请选择已载入的视频素材。');
+    const origin=folderAssetOrigins.get(asset), signal=thumbnailScope.signal;
+    if (origin) await checkedMaterialPath(origin);
+    const file=await prepareSourceEdit(asset,ranges,sourceEditDirectory,{signal});
+    if (origin) await checkedMaterialPath(origin);
+    signal.throwIfAborted();
+    const key=assetPathKey('video',file);
+    const known=lookupByPath.get(key);
+    if (known) return describeAsset(known,catalog.get(known));
+    const result=await performanceCache.inspectCached(file,'video',{signal});
+    signal.throwIfAborted();
+    if (catalog.get(id)!==asset) throw Error('原素材已关闭。');
+    const existing=lookupByPath.get(key);
+    if (existing) return describeAsset(existing,catalog.get(existing));
+    if (catalog.size>=maxCatalog) throw Error('本次会话的素材已达到上限。');
+    const outputId=randomUUID();
+    catalog.set(outputId,result);
+    lookupByPath.set(key,outputId);
+    return describeAsset(outputId,result);
+  });
   handle('workbench:audio-waveform', audioWaveform);
   handle('workbench:track-proxy', trackProxyUrl);
   handle('workbench:playback-proxy', async (id) => {
@@ -1246,6 +1270,7 @@ async function launchDesktop({
     const remap = (id) => ids.get(id);
     const remapShot = (shot) => shot.map((clip) => ({
       ...clip, id: remap(clip.id), ...(clip.layers && { layers: normalizeLayers(clip.layers, remap) }),
+      ...(clip.sourceEdit && {sourceEdit:{...clip.sourceEdit,id:remap(clip.sourceEdit.id)}}),
       ...(clip.look && {look:normalizeLook(clip.look,remap)}),
     }));
     const descriptions = [...assets].map(([id, asset]) => describeAsset(ids.get(id), asset));
@@ -1319,7 +1344,7 @@ async function launchDesktop({
         projectPath = projects.find((project) => project.id === id)?.path;
         if (!projectPath) throw new Error('找不到这个本地项目。');
       }
-      const { config, assets } = await loadProject(projectPath,resolveOutputFile,performanceCache.inspectCached);
+      const { config, assets } = await loadProject(projectPath,resolveOutputFile,performanceCache.inspectCached,sourceEditDirectory);
       const restored = await restoreCatalog(config, assets);
       const libraryWarning = await trackProject(projectPath);
       return { name: path.basename(projectPath, path.extname(projectPath)), ...restored, libraryWarning };

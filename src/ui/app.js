@@ -396,6 +396,13 @@ function candidate(asset) {
   return { asset, start: 0, end: asset.kind === 'image' ? 3 : asset.duration, volume: 100, speed: 1 };
 }
 
+function originalMaterial(clip) { return clip.sourceEdit?.asset ?? clip.asset; }
+function originalMaterialKey(clip) {
+  const asset = originalMaterial(clip);
+  return asset.sourceKey ?? asset.id;
+}
+function namedRender(asset, source) { return { ...asset, get name() { return source.name; } }; }
+
 function describe(asset) {
   const size = `${asset.width} × ${asset.height}`;
   if (asset.kind === 'image') return `${size} · 图片`;
@@ -510,7 +517,7 @@ function preview(clip, heading, materialId) {
   let firstShot;
   for (const card of visualTrackLane.querySelectorAll('.shot')) {
     const shot = shots[Number(card.dataset.shotIndex)];
-    const match = locatedMaterial && shot?.some(({ asset }) => (asset.sourceKey ?? asset.id) === locatedMaterial);
+    const match = locatedMaterial && shot?.some(item => originalMaterialKey(item) === locatedMaterial);
     card?.classList.toggle('material-shot', Boolean(match));
     if (match && !firstShot) firstShot = card;
   }
@@ -626,6 +633,17 @@ function bindTrackPreview(button, clip) {
     button.setAttribute('aria-keyshortcuts', 'Space ArrowLeft ArrowRight');
   }
   button.addEventListener('click', () => preview(clip));
+}
+
+function openCandidateCut(clip) {
+  const shot = shots.find(items => items.includes(clip));
+  if (mode !== 'montage' || operation || clip.asset.kind !== 'video' || !shot) return false;
+  if (videoLocked(shot, clip)) { say('此视频轨道已锁定。'); return false; }
+  if (!validClip(clip)) { say('请先修正素材的入点和出点。'); return false; }
+  timeline?.stopDraftPlayback();
+  player.pause();
+  try { return cutEditor.openCut(clip); }
+  catch (error) { say(error.message); return false; }
 }
 
 function syncClipInspector() {
@@ -774,7 +792,7 @@ function assetRow(clip, list, trim, lane) {
   row.tabIndex = 0;
   if (trim) {
     clipRows.set(clip, row);
-    row.dataset.clipSource = clip.asset.sourceKey ?? clip.asset.id;
+    row.dataset.clipSource = originalMaterialKey(clip);
     row.classList.toggle('material-instance', row.dataset.clipSource === locatedMaterial);
   }
   const label = row.querySelector('.asset-name');
@@ -801,6 +819,9 @@ function assetRow(clip, list, trim, lane) {
   row.querySelector('.trim-fields').hidden = !trim;
   if (trim) {
     row.dataset.videoLane=lane;
+    row.addEventListener('dblclick', event => {
+      if (!event.target.closest('input,select,textarea,label,button:not(.preview-asset)')) openCandidateCut(clip);
+    });
     const toggle = row.querySelector('.clip-toggle');
     toggle.hidden = false;
     bindTrackDisclosure(toggle, row.querySelector('.trim-fields'), clip, 'trim', `${clip.asset.name} 的参数`, !validClip(clip));
@@ -928,7 +949,7 @@ function shotLabel(index) {
 function shotRow(shot, index, previousPosters) {
   const row = template('#shot-template');
   row.dataset.shotIndex = index;
-  row.classList.toggle('material-shot', Boolean(locatedMaterial && shot.some(({ asset }) => (asset.sourceKey ?? asset.id) === locatedMaterial)));
+  row.classList.toggle('material-shot', Boolean(locatedMaterial && shot.some(clip => originalMaterialKey(clip) === locatedMaterial)));
   const shotName = shotLabel(index);
   row.querySelector('.shot-name').textContent = shotName;
   if (shot.length) {
@@ -952,6 +973,7 @@ function shotRow(shot, index, previousPosters) {
       shotThumbnailObserver.observe(poster);
     }
     bindTrackPreview(poster, first);
+    poster.addEventListener('dblclick', () => openCandidateCut(first));
   }
   bindTrackDisclosure(row.querySelector('.shot-toggle'), row.querySelector('.shot-body'), shot, 'body', shotName);
   row.querySelector('.shot-size').textContent = `${shot.length} 条候选`;
@@ -1334,7 +1356,7 @@ function materialUsage() {
   const segmented = $('#narration-mode').value === 'segmented';
   shots.forEach((shot, i) => {
     const label = '分镜 ' + (i + 1);
-    for (const clip of shot) { mark(clip.asset, i+1); layers(clip.layers, i+1); }
+    for (const clip of shot) { mark(originalMaterial(clip), i+1); layers(clip.layers, i+1); }
     if (segmented) segmentNarrations.get(shot)?.forEach(asset => mark(asset, label + '口播'));
   });
   if (!segmented) {
@@ -1363,9 +1385,10 @@ function renderMaterials() {
   const folder = materialFolderPath.at(-1);
   for (const shot of shots) {
     for (const clip of shot) {
-      const { id, name, kind, sourceKey } = clip.asset;
+      const source = originalMaterial(clip);
+      const { id, name, kind, sourceKey } = source;
       if (excluded.has(sourceKey)) continue;
-      if (!catalog.has(id)) catalog.set(id, { id, name, kind, sourceKey, clip });
+      if (!catalog.has(id)) catalog.set(id, { id, name, kind, sourceKey, clip:clip.sourceEdit ? candidate(source) : clip });
       bin.ids.add(id);
     }
   }
@@ -1485,7 +1508,7 @@ function renderMaterials() {
 
 function updateMaterialSelection() {
   for (const tile of document.querySelectorAll('.material-tile')) {
-    tile.setAttribute('aria-pressed', String(tile.dataset.materialId === (previewedMaterial ?? selected?.asset.id)));
+    tile.setAttribute('aria-pressed', String(tile.dataset.materialId === (previewedMaterial ?? (selected && originalMaterial(selected).id))));
   }
 }
 
@@ -1552,7 +1575,7 @@ function handlePreviewKey(event) {
   }
   if (!selected || selected.asset.kind === 'image' || !validClip(selected) || player.hidden || player.error) return;
   if (!(mode === 'audio' && target === document.body) && trackPreviewButtons.get(target) !== selected
-      && (!material || material.id !== (previewedMaterial ?? selected.asset.id))
+      && (!material || material.id !== (previewedMaterial ?? originalMaterial(selected).id))
       && !(target.dataset.processedId && target.dataset.processedId === previewedMaterial)) return;
   if (key === ' ') {
     event.preventDefault();
@@ -1667,7 +1690,7 @@ function removeLibraryItems({ items, folder }) {
   }
   if (!subprojects.projects.length) {
     for (const id of materialAliases.keys()) {
-      if (keys.has(editAssets.get(id)?.sourceKey) && !shots.some((shot) => shot.some((clip) => clip.asset.id === id))) materialAliases.delete(id);
+      if (keys.has(editAssets.get(id)?.sourceKey) && !shots.some((shot) => shot.some((clip) => originalMaterial(clip).id === id))) materialAliases.delete(id);
     }
     for (let i = processedMaterials.length - 1; i >= 0; i--) {
       if (keys.has(processedMaterials[i].sourceKey)) processedMaterials.splice(i, 1);
@@ -2471,6 +2494,7 @@ function commitMode(value, { focusDraft = false, workflowId = activeWorkflow } =
   homeToolOpener = mode === 'home' && localTools.contains(document.activeElement) ? document.activeElement : null;
   draftLibrary.cancelCoverTransition();
   timeline?.stopDraftPlayback();
+  if (mode === 'montage') cutEditor?.close();
   cancelMaterialMarquee();
   const selectionOrigin = workspaceNavigation.selectionBounds();
   const savingDraft = mode === 'montage' ? draftAutosave.flush() : null;
@@ -3375,10 +3399,11 @@ function renderResults({ results, failures }, complete) {
   $('#results').replaceChildren(...items);
 }
 
-function serializeClip({ asset, start, end, volume, speed, matchedDuration, enabled, ranges, layers, transform, videoSubtitles, look, videoLane, videoStart, videoDuration, videoFit }) {
+function serializeClip({ asset, sourceEdit, start, end, volume, speed, matchedDuration, enabled, ranges, layers, transform, videoSubtitles, look, videoLane, videoStart, videoDuration, videoFit }) {
   return { id: asset.id, start, end, volume, speed, ...(matchedDuration!==undefined && {matchedDuration}), ...(enabled === false && { enabled: false }),
     ...(videoLane !== undefined && {videoLane}), ...(videoStart !== undefined && {videoStart}),
     ...(videoDuration !== undefined && {videoDuration}), ...(videoFit && {videoFit}),
+    ...(sourceEdit && {sourceEdit:{id:sourceEdit.asset.id,ranges:sourceEdit.ranges}}),
     ...(ranges && { ranges }), ...(layers?.length && { layers }), ...(transform && { transform }), ...(videoSubtitles && {videoSubtitles}), ...(look && {look}) };
 }
 
@@ -3424,10 +3449,13 @@ function preserveShotWidths(displayedWidths,focus) {
   });
 }
 
-function reviveClip({ id, start, end, volume, speed, matchedDuration, enabled, ranges, layers, transform, videoSubtitles, look, videoLane, videoStart, videoDuration, videoFit }, assets) {
+function reviveClip({ id, sourceEdit, start, end, volume, speed, matchedDuration, enabled, ranges, layers, transform, videoSubtitles, look, videoLane, videoStart, videoDuration, videoFit }, assets) {
   const asset = assets.get(id);
-  if (!asset) throw new Error('打开的工程缺少画面素材。');
-  return { asset, start: start ?? NaN, end: end ?? NaN, volume: volume ?? 100, ...(matchedDuration!==undefined && {matchedDuration}),
+  const source = sourceEdit && assets.get(sourceEdit.id);
+  if (!asset || (sourceEdit && !source)) throw new Error('打开的工程缺少画面素材。');
+  return { asset:sourceEdit ? namedRender(asset, source) : asset,
+    ...(sourceEdit && {sourceEdit:{asset:source, ranges:structuredClone(sourceEdit.ranges)}}),
+    start: start ?? NaN, end: end ?? NaN, volume: volume ?? 100, ...(matchedDuration!==undefined && {matchedDuration}),
     ...(videoLane !== undefined && {videoLane}), ...(videoStart !== undefined && {videoStart}),
     ...(videoDuration !== undefined && {videoDuration}), ...(videoFit && {videoFit}),
     ...(enabled === false && { enabled: false }), ...(ranges && { ranges: structuredClone(ranges) }),
@@ -4868,15 +4896,128 @@ const coverEditor = window.createCoverEditor({
   pickImage:(onPick)=>pick('image',1,([asset])=>{if(asset){editAssets.set(asset.id,asset);onPick(asset);}}),
 });
 $('#timeline-cover').addEventListener('click',()=>{if(!operation)coverEditor.open();});
+
+// The rendered file cuts on whole frames. Keep these boundaries in sync with
+// source-edit.cjs when translating inspector trims or asset-bound captions.
+function sourceEditSpans(edit) {
+  const fps = edit.asset.fps > 0 ? Number(edit.asset.fps.toFixed(8)) : 30;
+  let elapsed = 0, to = 0;
+  return edit.ranges.map((range,index) => {
+    const from = to;
+    elapsed += range.end - range.start;
+    let frames = Math.round(elapsed * fps);
+    if (index === edit.ranges.length-1) frames = Math.max(frames,Math.ceil(.1*fps-1e-8));
+    to = frames / fps;
+    return { range, from, to };
+  });
+}
+
+function transferCutInterval(start, end, span, toOriginal) {
+  const {range, from, to} = span;
+  const a = toOriginal ? from : range.start, b = toOriginal ? to : range.end;
+  const c = toOriginal ? range.start : from, d = toOriginal ? range.end : to;
+  const left = Math.max(start, a), right = Math.min(end, b);
+  if (right - left < 1e-8 || b <= a || d <= c) return;
+  const project = t => range.reverse ? d - (t-a)/(b-a)*(d-c) : c + (t-a)/(b-a)*(d-c);
+  const one = project(left), two = project(right);
+  return {start:Math.min(one,two), end:Math.max(one,two), skipped:left-start};
+}
+
+function sourceRangesForClip(clip) {
+  const parts = clip.ranges ?? [{start:clip.start,end:clip.end}];
+  if (!clip.sourceEdit) return parts;
+  const spans = sourceEditSpans(clip.sourceEdit);
+  const fullEnd = spans.at(-1).to;
+  if (parts.length === 1 && parts[0].start === 0 && parts[0].end >= Math.min(clip.asset.duration, fullEnd) - 1e-7)
+    return clip.sourceEdit.ranges;
+  const pieces = [];
+  for (const part of parts) {
+    for (const span of spans) {
+      const interval = transferCutInterval(part.start, part.end, span, true);
+      if (!interval) continue;
+      if (pieces.length >= 2000) throw Error('主轨选区与原始剪点交叠后超过 2000 段，请先缩小主轨选区。');
+      pieces.push({...span.range,start:interval.start,end:interval.end});
+    }
+  }
+  return pieces;
+}
+
+function remapCutItems(items, edit, toOriginal, limit) {
+  if (!edit) return items;
+  const result = [];
+  for (const span of sourceEditSpans(edit)) {
+    for (const item of items) {
+      const interval = transferCutInterval(item.start, item.end, span, toOriginal);
+      if (!interval) continue;
+      if (result.length >= limit) throw Error('裁剪后的字幕或包装条目超过工程容量。');
+      const {start,end,skipped} = interval;
+      const next = {...item,start,end};
+      if (skipped && (item.kind === 'pip' || item.kind === 'sound')) next.mediaOffset = (item.mediaOffset ?? 0) + skipped*(item.speed ?? 1);
+      result.push(next);
+    }
+  }
+  return result.sort((a,b)=>a.start-b.start);
+}
+
+function sourceEditAnnotations(clip, nextEdit, nextStart) {
+  const oldRanges = clip.sourceEdit?.ranges, nextRanges = nextEdit?.ranges;
+  if (nextStart === clip.start && oldRanges?.length === nextRanges?.length &&
+      (!oldRanges || oldRanges.every((r,i) => r.start===nextRanges[i].start && r.end===nextRanges[i].end && Boolean(r.reverse)===Boolean(nextRanges[i].reverse))))
+    return {};
+  const map = (items,limit) => remapCutItems(remapCutItems(items,clip.sourceEdit,true,limit),nextEdit,false,limit);
+  const updates = {};
+  if (clip.videoSubtitles && (clip.sourceEdit || nextEdit)) {
+    const source = clip.videoSubtitles.cues.map(c => ({...c,start:c.start/1000,end:c.end/1000}));
+    const cues = map(source,2000).map(c => ({...c,start:Math.round(c.start*1000),end:Math.round(c.end*1000)})).filter(c => c.end>c.start);
+    updates.videoSubtitles = cues.length ? {...clip.videoSubtitles,cues} : undefined;
+  }
+  if (clip.layers?.length) {
+    const absolute = clip.layers.map(item => ({...item,start:(item.start ?? 0)+clip.start,end:item.end==null ? Infinity : item.end+clip.start}));
+    updates.layers = map(absolute,1000).filter(item => item.end>nextStart).map(item => ({
+      ...item, start:Math.max(0,item.start-nextStart), end:Number.isFinite(item.end) ? item.end-nextStart : null,
+    }));
+  }
+  return updates;
+}
+
+function createSourceCommit(clip, sessionActive) {
+  const owner = shots.find(shot => shot.includes(clip));
+  const scope = subprojects.active;
+  const original = JSON.stringify(serializeClip(clip));
+  function check() {
+    if (!sessionActive() || mode !== 'montage' || operation || !owner || !shots.includes(owner) || !owner.includes(clip) ||
+        scope !== subprojects.active || videoLocked(owner,clip) || !$('#timeline-cut-editor').checkVisibility() ||
+        JSON.stringify(serializeClip(clip)) !== original)
+      throw Error('片段、轨道或工程状态已变化，请重新打开片段剪辑。');
+  }
+  return async ranges => {
+    check();
+    const source = originalMaterial(clip);
+    // A subsequent inspector trim can leave a sub-0.1s edge of an earlier cut.
+    // The ordinary candidate format cannot represent that edge; the source recipe can.
+    const render = ranges.some(r => r.reverse || r.mirror || r.rotation || r.crop || r.end-r.start < .1-1e-7);
+    const nextEdit = render ? {asset:source, ranges} : undefined;
+    const prepared = render ? await api.prepareSourceEdit(source.id,ranges) : undefined;
+    check();
+    const start = render ? 0 : Math.min(...ranges.map(r => r.start));
+    const end = render ? Math.min(prepared.duration,sourceEditSpans(nextEdit).at(-1).to) : Math.max(...ranges.map(r => r.end));
+    const annotations = sourceEditAnnotations(clip,nextEdit,start);
+    if (render) editAssets.set(prepared.id,prepared);
+    Object.assign(clip,annotations,{start,end,asset:render ? namedRender(prepared,source) : source});
+    if (render) { clip.sourceEdit=nextEdit; delete clip.ranges; }
+    else { clip.ranges=ranges; delete clip.sourceEdit; }
+    delete clip.matchedDuration;
+    preview(clip,'轨道预览'); renderLists();
+    return true;
+  };
+}
+
 cutEditor = window.createCutTrackEditor({
   container: $('#timeline-cut-editor'), getSceneCuts:()=>sceneCuts, getShots:()=>shots.map((_,i)=>({name:shotLabel(i)})),
   setSceneCuts:(records)=>{sceneCuts=records;renderLists();},
-  commitRanges:(clip,ranges)=>{
-    if (!shots.some((shot)=>shot.includes(clip))) return;
-    delete clip.matchedDuration;
-    clip.start=Math.min(...ranges.map((r)=>r.start)); clip.end=Math.max(...ranges.map((r)=>r.end)); clip.ranges=ranges;
-    preview(clip,'轨道预览');renderLists();
-  },
+  sourceRanges:sourceRangesForClip,
+  prepareSourceEdit:(asset,ranges)=>api.prepareSourceEdit(asset.id,ranges),
+  createCommit:createSourceCommit,
   addCandidate:(index,asset,range,targetLane,videoSlot)=>{
     if(operation || (index<0 || !shots[index] ? shots.length>=maxShots : shots[index].length>=maxCandidates)) return false;
     const shot=shots[index] ?? [];
@@ -5001,7 +5142,7 @@ timeline = window.mountEditTimeline($('#timeline-clock'), {
     while(shots.length<=i) shots.push([]);
     shots[i].push(...assets.map(candidate));preview(shots[i][0],'轨道预览');
   }), preview:(clip)=>preview(clip,'轨道预览'),
-  cut:(clip)=>cutEditor.openCut(clip), scenes:(asset)=>cutEditor.openScenes(asset), dropScene:(event,i,lane,slot)=>cutEditor.dropScene(event,shots[i] ? i : -1,lane,slot),
+  cut:openCandidateCut, scenes:(asset)=>cutEditor.openScenes(asset), dropScene:(event,i,lane,slot)=>cutEditor.dropScene(event,shots[i] ? i : -1,lane,slot),
   mute:setVisualTrackMuted, toggleClip:(clip)=>setCandidateEnabled(clip,clip.enabled===false),
   clear:()=>{clearPreview();activateInspectorTab($('#inspector-tab-visual'));},
   pick:(kind,done)=>pick(kind,1,([asset])=>{if(asset) done(asset);}),

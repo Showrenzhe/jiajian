@@ -109,7 +109,7 @@ function createSubprojects({ shots, serialize, revive,voiceIO }) {
     }
   }
   function removeMaterialReferences(ids) {
-    for (const shot of shots) for (const clip of [...shot]) if (ids.has(clip.asset.id)) removeCandidate(shot,clip);
+    for (const shot of shots) for (const clip of [...shot]) if (ids.has((clip.sourceEdit?.asset ?? clip.asset).id)) removeCandidate(shot,clip);
   }
   function pack() {
     if (!projects.length) return undefined;

@@ -3,6 +3,8 @@
 const { randomUUID } = require('node:crypto');
 const fs = require('node:fs/promises');
 const path = require('node:path');
+const os = require('node:os');
+const { normalizeSourceEditRanges, prepareSourceEdit } = require('./source-edit.cjs');
 const {
   audioExtensions, imageExtensions, videoExtensions, maxShots, maxCandidates, maxMontageBatch, maxWholeTracks,
   inspectAsset, createFrameThumbnail, planMontage, normalizeSubtitleStyle, normalizeGeneratedCaptions, normalizeMutedVideoTracks,
@@ -127,8 +129,15 @@ function cleanConfig(config) {
         throw new Error('视频片段的切点窗口无效。');
       }
       const ranges = clip.ranges === undefined ? undefined : normalizeRanges(clip.ranges, clip.start, clip.end);
+      let sourceEdit;
+      if (clip.sourceEdit !== undefined) {
+        const original = record(clip.sourceEdit?.id, 'visual');
+        if (original === id) throw new Error('剪辑成片与原素材不能使用同一编号。');
+        sourceEdit = { id: original, ranges: normalizeSourceEditRanges(clip.sourceEdit.ranges, Number.MAX_SAFE_INTEGER) };
+      }
       return {
         id, start: clip.start, end: clip.end,
+        ...(sourceEdit && { sourceEdit }),
         ...(clip.videoLane !== undefined && { videoLane: clip.videoLane }),
         ...(clip.videoStart !== undefined && { videoStart: clip.videoStart }),
         ...(clip.videoDuration !== undefined && { videoDuration: clip.videoDuration }),
@@ -281,7 +290,22 @@ function mediaDeclaration(id, asset, role) {
   return { id, kind, path: file };
 }
 
+function* sourceEdits(config) {
+  const subprojects = config.subprojects;
+  const rows = subprojects ? [...subprojects.main, ...subprojects.projects.flatMap(project => project.shots)] : [];
+  for (const shot of [...config.shots, ...rows.map(row => row.clips)]) {
+    for (const clip of shot) {
+      if (clip.sourceEdit) yield [clip.id, clip.sourceEdit];
+    }
+  }
+}
+
 function validateCuts(config, assets) {
+  for (const [id, edit] of sourceEdits(config)) {
+    const original = assets.get(edit.id);
+    if (original?.kind !== 'video' || assets.get(id)?.kind !== 'video') throw new Error('素材剪辑需要原始视频和剪辑后的视频。');
+    normalizeSourceEditRanges(edit.ranges, original.duration);
+  }
   for (const item of config.cover?.items ?? []) {
     const asset = assets.get(item.id);
     if (!asset || (asset.kind === 'image' ? item.time !== 0 : asset.kind !== 'video' || item.time > asset.duration)) throw new Error('封面帧超出素材范围。');
@@ -430,10 +454,11 @@ function projectReferences(project) {
   return {config,rows};
 }
 
-async function loadProject(file,resolvePath,inspect=inspectAsset) {
+async function loadProject(file,resolvePath,inspect=inspectAsset,sourceEditDirectory=path.join(os.tmpdir(),'jiajian-source-edits')) {
   requireProjectPath(file);
   const {config,rows}=projectReferences(await readProject(file));
   const assets = new Map();
+  const edits = new Map(sourceEdits(config));
   const cancellation = new AbortController();
   try {
     for (let index = 0; index < rows.length; index += 4) {
@@ -443,13 +468,21 @@ async function loadProject(file,resolvePath,inspect=inspectAsset) {
           const source=resolvePath ? await resolvePath(row.path) : row.path;
           return [row.id, row.kind==='lut' ? await inspectLut(source) : await inspect(source, row.kind, { signal })];
         } catch (error) {
+          if (edits.has(row.id) && !signal.aborted) return [row.id, null];
           const name = path.basename(row.path);
           if (error.code === 'ENOENT') throw new Error(`找不到工程素材「${name}」。请将它放回原位置后重试。`);
           if (signal.aborted) throw new Error('读取工程素材超时。');
           throw new Error(`无法读取工程素材「${name}」。${error.message}`);
         }
       }));
-      for (const [id, asset] of batch) assets.set(id, asset);
+      for (const [id, asset] of batch) if (asset) assets.set(id, asset);
+    }
+    for (const [id, edit] of edits) {
+      if (assets.has(id)) continue;
+      const original = assets.get(edit.id);
+      if (original?.kind !== 'video') throw new Error('找不到可用于恢复剪辑的原始视频。');
+      const restored = await prepareSourceEdit(original, edit.ranges, sourceEditDirectory, { signal: cancellation.signal });
+      assets.set(id, await inspect(restored, 'video', { signal: cancellation.signal }));
     }
   } catch (error) {
     cancellation.abort();

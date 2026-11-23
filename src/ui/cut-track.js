@@ -44,9 +44,11 @@
       generation += 1;
       waveforms.clear();
       current?.video.pause();
+      current?.destroy?.();
       current = null;
       host.replaceChildren();
       host.hidden = true;
+      delete host.dataset.mode;
     }
     function status(message) { if (current) current.message.textContent = message; }
     function sceneRecords() { return options.getSceneCuts?.() ?? []; }
@@ -166,11 +168,21 @@
     }
     function openCut(clip) {
       if (clip?.asset?.kind !== 'video') return false;
-      const s = makeView('cut', clip.asset);
-      s.clip = clip;
-      s.ranges = (clip.ranges ?? [{ start: clip.start, end: clip.end }]).map((r) => ({ ...r }));
-      s.commit = (ranges) => options.commitRanges(clip, ranges);
-      showRangeTools(s);
+      const trigger = document.activeElement;
+      close();
+      const openedAt = generation;
+      const isCurrent = () => generation === openedAt;
+      current = window.mountVideoCutTimeline(host, clip, {
+        sourceRanges: options.sourceRanges?.(clip),
+        commit: options.createCommit?.(clip, isCurrent) ?? ((ranges) => options.commitRanges(clip, ranges, isCurrent)),
+        prepareSourceEdit: options.prepareSourceEdit,
+        close: () => {
+          close();
+          const fallback = document.querySelector('#timeline-clock .sequence-selected, #timeline-clock');
+          const target = trigger?.isConnected && trigger !== document.body ? trigger : fallback?.querySelector('.sequence-selected') ?? fallback;
+          target?.focus({ preventScroll: true });
+        },
+      });
       return true;
     }
     function openVoice(asset, ranges, commit, initialOffset = 0, speed = 1) {
@@ -347,7 +359,7 @@
       return true;
     }
     host.addEventListener('keydown', (event) => {
-      if (!current || event.target.closest('input, select, textarea')) return;
+      if (!current || current.mode === 'cut' || event.target.closest('input, select, textarea')) return;
       if (event.key === 'Delete') { event.preventDefault(); event.stopPropagation(); if (current.mode === 'scene') deletePoint(); else removeCut(); }
       if (event.key === 'Escape') { event.preventDefault(); event.stopPropagation(); close(); }
     });

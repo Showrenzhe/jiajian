@@ -746,7 +746,7 @@ window.mountEditTimeline = function (host, ctx) {
           b.title='从素材库拖入画面，添加到分镜 '+(i+1);
           continue;
         }
-        bindMaterialSource(b, clip.asset);
+        bindMaterialSource(b, clip.sourceEdit?.asset ?? clip.asset);
         candidateNodes.set(clip,b);
         const owner=s.shots[i];
         selection.bind(b,clip,()=>ctx.removeClip(owner,clip));

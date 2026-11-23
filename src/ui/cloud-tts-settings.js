@@ -15,6 +15,7 @@
           <button type="button" id="creative-settings-entry">云端创作服务</button>
         </header>
         <div class="cloud-settings-body">
+          <button type="button" id="cut-shortcuts-entry" aria-haspopup="dialog" hidden>快捷键 <span aria-hidden="true">›</span></button>
           <fieldset id="appearance-settings" hidden>
             <legend>外观</legend>
             <div class="appearance-options">
@@ -103,6 +104,8 @@
     container.replaceChildren(template.content);
     const $ = (id) => container.querySelector(`#cloud-settings-${id}`);
     const dialog = $('dialog');
+    const shortcuts = container.querySelector('#cut-shortcuts-entry');
+    shortcuts.addEventListener('click', () => window.cutShortcuts.openSettings(shortcuts));
     const appearance = container.querySelector('#appearance-settings');
     window.bindAppearancePicker(appearance);
     const provider = $('provider');
@@ -208,6 +211,7 @@
       const state = { showAppearance, loading: true, ready: false, provider: breeze, selection: breeze, gatewayAddress: '', baseUrl: breezeEndpoint, hasApiKey: false };
       session = state;
       appearance.hidden = !showAppearance;
+      shortcuts.hidden = !showAppearance;
       perf('settings').open = false;
       perf('settings').hidden = !showAppearance;
       perf('options').disabled = true;

@@ -54,7 +54,7 @@ function estimateDuration(config) {
   return Number.isFinite(seconds) && seconds > 0 ? Math.round(seconds * 1000) / 1000 : undefined;
 }
 
-function createDraftStore(directory,resolvePath,inspect) {
+function createDraftStore(directory,resolvePath,inspect,sourceEditDirectory) {
   const records = new Map();
   let ready;
   let writes = Promise.resolve();
@@ -238,7 +238,7 @@ function createDraftStore(directory,resolvePath,inspect) {
       const file = snapshotPath(id);
       if (await fileStamp(file)!==find(id).stamp) await scan();
       const {meta}=find(id);
-      return { ...meta, ...(await loadProject(file,resolvePath,inspect)) };
+      return { ...meta, ...(await loadProject(file,resolvePath,inspect,sourceEditDirectory)) };
     });
   }
 
