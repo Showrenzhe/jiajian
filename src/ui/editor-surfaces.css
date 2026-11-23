@@ -93,10 +93,6 @@
   background: var(--control-fill);
   color: var(--secondary-ink);
 }
-#timeline-clock .sequence-cursor {
-  background: linear-gradient(to right, transparent 4px, var(--system-blue) 4px 5px, transparent 5px);
-}
-#timeline-clock .sequence-cursor::before, #timeline-clock .sequence-hover { background: var(--system-blue); }
 .app-frame[data-mode="montage"] #timeline-more-menu {
   position-area: block-end span-inline-start;
   position-try-fallbacks: flip-block, flip-inline, flip-block flip-inline;
@@ -181,6 +177,7 @@
   .sequence-dialog :is(button, select, input) { border-color: currentColor; }
 }
 @media (forced-colors: active) {
-  #timeline-clock .sequence-cursor { border-inline-start: 2px solid Highlight; background: transparent; }
+  #timeline-clock .sequence-cursor::before { border-color: Highlight; }
+  #timeline-clock .sequence-cursor::after { forced-color-adjust: none; background: Highlight; }
   #timeline-clock .sequence-block[aria-pressed="true"], #timeline-clock .sequence-marked { outline: 2px solid Highlight; }
 }
