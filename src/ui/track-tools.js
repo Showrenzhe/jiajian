@@ -47,6 +47,31 @@
     return JSON.stringify([clip.id, clip.start, clip.end, clip.ranges?.map(({ start, end }) => [start, end])]);
   }
 
-  if (typeof module === 'object' && module.exports) module.exports = { splitRanges, candidateKey };
-  else Object.assign(window, { splitRanges, candidateKey });
+  // Candidate order drives montage choices. A physical lane may be empty above a candidate.
+  function candidateVideoLanes(shot, limit = Infinity) {
+    const reserved = new Set();
+    for (const clip of shot) {
+      const lane = clip?.videoLane;
+      if (lane === undefined) continue;
+      if (!Number.isInteger(lane) || lane < 0 || lane >= limit || reserved.has(lane)) {
+        throw new Error('分镜中的视频轨编号无效或重复。');
+      }
+      reserved.add(lane);
+    }
+    let next = 0;
+    return shot.map(clip => {
+      if (clip?.videoLane !== undefined) return clip.videoLane;
+      while (reserved.has(next)) next++;
+      return next++;
+    });
+  }
+
+  function pinCandidateLanes(shot) {
+    const lanes = candidateVideoLanes(shot);
+    shot.forEach((clip, i) => { clip.videoLane = lanes[i]; });
+  }
+
+  const tools = { splitRanges, candidateKey, candidateVideoLanes, pinCandidateLanes };
+  if (typeof module === 'object' && module.exports) module.exports = tools;
+  else Object.assign(window, tools);
 })();

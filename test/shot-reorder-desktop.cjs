@@ -327,6 +327,128 @@ async function check() {
     await key('ArrowLeft',37,1);
     await wait(clipNamed(cell(0,0),files.red)+' && document.activeElement==='+query(cell(0,0)),'连续反向互换回到原槽位');
 
+    const singleFile=path.join(root,'新增轨道原稿.sdworkbench');
+    await saveProject(singleFile,{...config,shots:[[{...red,start:.1,volume:43,layers:[layer('片段包装')]}],[green],[blue]],
+      mutedVideoTracks:[0]},catalog);
+    opens.push(singleFile);await click('#open-project');await verify(['A','B','C']);await fitTimeline();
+    const singleBaseline=(await loadProject(await saveAs('新增轨前'))).config;
+    const expectedClips=await read(clips);
+    const rows='document.querySelectorAll(".sequence-video[data-lane-key]").length';
+    const zone='.candidate-new-lane .sequence-content', placement='.candidate-new-placement';
+    async function hoverNewLane(row) {
+      await wait('!document.getAnimations().some(a=>a.id==="candidate-arrival")','等待上一操作的片段归位');
+      const start=await center(cell(0,row));
+      const column=await bounds(shotCell(0)), otherColumn=await bounds(shotCell(1));
+      await mouse('mousePressed',start);
+      await mouse('mouseMoved',{x:start.x+9,y:start.y});
+      await wait('!!'+query(zone),'提起已放置的片段后可拖入视频轨下方');
+      await center(zone);
+      const area=await bounds(zone),end={x:otherColumn.x+otherColumn.width/2,y:area.y+area.height/2};
+      await mouse('mouseMoved',end);
+      await wait(query(zone)+'.dataset.materialDrop==="active"','指针在另一分镜下方也应可新增原分镜的视频轨');
+      const preview=await bounds(placement);
+      assert.ok(Math.abs(column.x-preview.x)<4 && Math.abs(column.width-preview.width)<4,'预览应对齐原分镜的起点和时长');
+      return end;
+    }
+    let hover=await hoverNewLane(0);
+    const neighbour=await bounds(cell(1,0));
+    await mouse('mouseMoved',{x:neighbour.x+neighbour.width/2,y:neighbour.y+neighbour.height/2});
+    await wait('!'+query(zone)+'.hasAttribute("data-material-drop")','离开新增区域取消新轨预览');
+    await key('Escape',27);await mouse('mouseReleased',hover);await restored();
+    assert.deepEqual(await read(clips),expectedClips);
+    assert.equal(await read(rows),1);
+    hover=await hoverNewLane(0);
+    await key('Escape',27);await mouse('mouseReleased',hover);await restored();
+    assert.equal(await read(rows),1,'直接取消新增轨道后仍只有原轨');
+    assert.equal(await read(query('#track-undo')+'.disabled'),true,'取消操作不应产生可撤销的编辑');
+
+    async function commitNewLane(from,bottom=false) {
+      let end=await hoverNewLane(from);
+      if(bottom) {
+        end=await center('#new-shot-drop');
+        await mouse('mouseMoved',end);
+        await wait(query(zone)+'.dataset.materialDrop==="active"','轨道底部也接收已放置的片段');
+      }
+      await mouse('mouseReleased',end);await restored();
+      await wait(clipNamed(cell(0,from+1),files.red)+' && !'+filled(0,from),'只移动当前分镜的红色视频');
+      if(bottom) {
+        const destination=query(cell(0,from+1));
+        await wait(`(()=>{const e=${destination},r=e.getBoundingClientRect(),panel=${query('#timeline-tracks-panel')}.getBoundingClientRect();
+          return r.top>=panel.top+${query('.sequence-ruler')}.offsetHeight-1 && r.bottom<=panel.bottom+1 &&
+            e.contains(document.elementFromPoint(r.x+r.width/2,r.y+r.height/2));})()`,'从底部松手后可直接看到并选中新轨片段');
+      }
+      assert.deepEqual(await read(clips),[...expectedClips.slice(1),['0',String(from+1),path.basename(files.red)]],
+        '其余分镜保留在首行，原素材只出现一次');
+    }
+    await commitNewLane(0);
+    await click('#track-undo');await wait(rows+'===1','一次撤销还原轨数及片段');
+    assert.deepEqual(await read(clips),expectedClips);
+    await click('#track-redo');await wait(clipNamed(cell(0,1),files.red),'重做恢复新视频轨');
+    await commitNewLane(1,true);
+    const savedLanes=await saveAs('两次新增视频轨');
+    const reopened=await loadProject(savedLanes);
+    assert.equal(reopened.config.shots[0][0].videoLane,2);
+    const comparison=structuredClone(reopened.config);
+    delete comparison.shots[0][0].videoLane;
+    assert.deepEqual(comparison,singleBaseline,'只应改变原分镜下当前候选的视频轨号');
+    opens.push(savedLanes);await click('#open-project');
+    await wait(query('#notice')+'.textContent.includes("已打开工程") && '+clipNamed(cell(0,2),files.red),'重开后显示两个空位和第三行的原片段');
+    assert.equal(await read(rows),3);
+    await click(cell(0,2));
+    assert.equal(await read(query('#clip-track-muted')+'.checked'),false,'移出静音行的片段应恢复其原音量');
+    const [lanePlan]=createPreviewBatch(reopened.config,reopened.assets).plans;
+    assert.deepEqual(lanePlan.clips.map(c=>[path.basename(c.asset.path),c.volume]),
+      [[files.red,.43],[files.green,0],[files.blue,0]].map(([file,volume])=>[path.basename(file),volume]));
+    const laneRender=await exportBatch([lanePlan],root);
+    assert.deepEqual(laneRender.failures,[]);
+    const renderedFile=laneRender.results[0].path;
+    const rgb=await ffmpeg(['-ss','0.5','-i',renderedFile,'-frames:v','1','-an','-vf','scale=1:1','-pix_fmt','rgb24','-f','rawvideo','pipe:1']);
+    assert.ok(rgb[0]>rgb[1]*3 && rgb[0]>rgb[2]*3,'输出文件的第一镜应保留红色画面');
+    const sound=await ffmpeg(['-ss','0.3','-i',renderedFile,'-t','0.2','-vn','-ac','1','-ar','8000','-f','s16le','pipe:1']);
+    assert.ok(sound.length>1000 && Array.from({length:sound.length/2},(_,i)=>Math.abs(sound.readInt16LE(i*2))).some(v=>v>100),
+      '第一镜移出静音行后，导出文件能读到红色素材的原声');
+    await click('#clip-track-muted');
+    const muted=(await loadProject(await saveAs('第三行静音')));
+    assert.deepEqual(muted.config.mutedVideoTracks,[0,2],'片段检查器应切换当前物理视频行的静音');
+    assert.ok(createPreviewBatch(muted.config,muted.assets).plans[0].clips.every(c=>c.volume===0));
+
+    await read(query('#timeline-tracks-panel')+'.scrollTop=0');
+    const fromThird=await center(cell(0,2)), firstEmpty=await center(cell(0,0));
+    await mouse('mousePressed',fromThird);await mouse('mouseMoved',firstEmpty);await mouse('mouseReleased',firstEmpty);
+    await wait(clipNamed(cell(0,0),files.red),'同一分镜的片段可移回原空行');
+    assert.deepEqual(await read(clips),expectedClips);
+    await click('#track-undo');await wait(clipNamed(cell(0,2),files.red),'撤销回移应恢复稀疏行');
+    const fromSecond=await center(cell(1,0)), sparse=await center(cell(0,1));
+    await mouse('mousePressed',fromSecond);await mouse('mouseMoved',sparse);await mouse('mouseReleased',sparse);
+    await wait(clipNamed(cell(0,1),files.green)+' && '+clipNamed(cell(0,2),files.red)+' && !'+filled(1,0),
+      '跨分镜移入中间空行保留既有视频的位置');
+    const fourth=await hoverNewLane(1);
+    await mouse('mouseReleased',fourth);await restored();
+    await wait(clipNamed(cell(0,3),files.green)+' && '+clipNamed(cell(0,2),files.red)+' && !'+filled(0,1),
+      '同分镜有其他候选时，只把当前候选移到末轨');
+    await wait('!document.getAnimations().some(a=>a.id==="candidate-arrival")','新轨上的片段应落位');
+    const greenSource=await center(cell(0,3)), redTarget=await center(cell(0,2));
+    await mouse('mousePressed',greenSource);await mouse('mouseMoved',redTarget);await mouse('mouseReleased',redTarget);
+    await wait(clipNamed(cell(0,2),files.green)+' && '+clipNamed(cell(0,3),files.red),'稀疏视频轨之间仍可交换完整片段');
+    await wait('!document.getAnimations().some(a=>a.id==="candidate-arrival")','交换的片段应归位');
+    const swapped=await loadProject(await saveAs('同镜换轨'));
+    assert.deepEqual(swapped.config.shots[0].map(c=>[path.basename(swapped.assets.get(c.id).path),c.videoLane]),
+      [[path.basename(files.red),3],[path.basename(files.green),2]],'交换物理行应保留同镜候选在混剪池中的选择顺序');
+
+    opens.push(singleFile);await click('#open-project');await wait(rows+'===1 && '+clipNamed(cell(1,0),files.green),'重开单轨原稿');
+    const switchProject=id=>read(`(()=>{const e=${query('#subproject-select')};e.value=${JSON.stringify(id)};e.dispatchEvent(new Event("change"))})()`);
+    await switchProject('alt');await fitTimeline();await commitNewLane(0);
+    const branchFile=await saveAs('子工程新增轨');
+    opens.push(branchFile);await click('#open-project');
+    await wait(query('#notice')+'.textContent.includes("已打开工程") && '+clipNamed(cell(0,1),files.red),'重开子工程的专属轨道');
+    await switchProject('');await wait(rows+'===1 && '+clipNamed(cell(0,0),files.red),'主工程的原视频仍留在首行');
+    await switchProject('alt');await wait(rows+'===2 && '+clipNamed(cell(0,1),files.red),'再次选择子工程时恢复专属位置');
+    await read(query(cell(0,1))+'.focus()');await key('ArrowDown',40,1);
+    await wait(rows+'===3 && '+clipNamed(cell(0,2),files.red)+' && document.activeElement==='+query(cell(0,2)),
+      'Alt＋下方向键从末行新建视频轨，并将焦点留在移动的片段上');
+    await key('ArrowUp',38,1);
+    await wait(clipNamed(cell(0,1),files.red)+' && document.activeElement==='+query(cell(0,1)),'Alt＋上方向键移回原来的轨道');
+
     const fullFile=path.join(root,'候选已满.sdworkbench');
     const fullShot=Array.from({length:100},(_,i)=>({id:'green',start:0,end:.5+i/200}));
     await saveProject(fullFile,{...config,shots:[config.shots[0],fullShot,config.shots[2]]},catalog);
@@ -338,11 +460,13 @@ async function check() {
     assert.ok(await read('!!'+filled(1,99)+' && !'+filled(1,100)),'互换不增加候选数');
     const lastSource=await center(cell(2,0));
     await mouse('mousePressed',lastSource);await mouse('mouseMoved',{x:lastSource.x+7,y:lastSource.y});
+    // Keep the pointer away from the vertical autoscroll edge while checking rejection.
+    await read(query(shotCell(1))+'.scrollIntoView({block:"center",inline:"nearest"})');
     const fullHeader=await center(shotCell(1));
     await mouse('mouseMoved',fullHeader);
     await expectRejected(shotCell(1),'每个分镜最多可添加 100 条候选。');await mouse('mouseReleased',fullHeader);await restored();
     assert.deepEqual(opens,[]);assert.deepEqual(saves,[]);
-    console.log('分镜排序、候选实时互换及取消、音频字幕视频复制粘贴、撤销重做、保存重开与成片排序通过。');
+    console.log('分镜排序、视频换轨与新建轨道、取消与撤销重做、复制粘贴、子工程重开及成片画面与原声验证通过。');
   } finally {
     wc.debugger.detach();win.destroy();
   }

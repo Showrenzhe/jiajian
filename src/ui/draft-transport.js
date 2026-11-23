@@ -3,6 +3,7 @@
 (() => {
   const alignment = typeof module === 'object' && module.exports ? require('./voice-alignment.js') : window.voiceAlignment;
   const waveformSource = typeof module === 'object' && module.exports ? require('./waveform.js').waveformSource : window.waveformSource;
+  const { candidateVideoLanes } = typeof module === 'object' && module.exports ? require('./track-tools.js') : window;
 
   function chosen(shot,focus) {
     return shot?.includes(focus) && focus.enabled!==false ? focus : shot?.find(clip=>clip.enabled!==false);
@@ -128,6 +129,7 @@
     s.shots.forEach((shot,i)=>{
       const at=starts[i],span=widths[i];
       const clip=chosen(shot,focus);
+      const lanes=candidateVideoLanes(shot);
       const timed=aligned?.[i];
       if(aligned && !timed && s.priority==='voice' && !s.segmented && s.whole.some(track=>track.asset)) return;
       if(timed && clip) {
@@ -139,7 +141,7 @@
           if(!owner || !(length>0)) continue;
           const speed=part.speed || 1, repeats=part.repeat || 1;
           const source=part.sourceDuration ?? part.duration*speed;
-          const volume=s.keepAudio && !s.muted.has(shot.indexOf(owner)) ? (owner.volume ?? 100) : 0;
+          const volume=s.keepAudio && !s.muted.has(lanes[shot.indexOf(owner)]) ? (owner.volume ?? 100) : 0;
           add('picture',owner.asset,offset,length,{ranges:[{start:part.start,end:part.start+source}],
             speed,visual:true,volume,cycle:repeats>1 ? source : 0});
           if(owner.layers?.length) {
@@ -152,7 +154,7 @@
           offset+=length;
         }
       } else if(clip) {
-        const volume=s.keepAudio && !s.muted.has(shot.indexOf(clip)) ? (clip.volume ?? 100) : 0;
+        const volume=s.keepAudio && !s.muted.has(lanes[shot.indexOf(clip)]) ? (clip.volume ?? 100) : 0;
         add('picture',clip.asset,at,span,{ranges:clip.ranges ?? [{start:clip.start,end:clip.end}],
           head:clip.look?.head,tail:clip.look?.tail,visual:true,volume,fit:true});
         const ranges=clip.ranges ?? [{start:clip.start,end:clip.end}];

@@ -93,8 +93,33 @@
   background:color-mix(in srgb,var(--focus-ring) 12%,var(--surface));
   box-shadow:inset 0 0 0 1px color-mix(in srgb,var(--focus-ring) 42%,transparent);
 }
+#timeline-clock .candidate-new-lane {height:28px;}
+.candidate-new-lane .sequence-content {
+  border-block:1px dashed color-mix(in srgb,var(--secondary-ink) 55%,transparent);
+  background:color-mix(in srgb,var(--focus-ring) 5%,var(--surface));
+}
+.candidate-new-lane .sequence-content[data-material-drop] {
+  border-color:var(--focus-ring);
+  background:color-mix(in srgb,var(--focus-ring) 12%,var(--surface));
+}
+#timeline-clock[data-candidate-drag="active"] ~ #new-shot-drop {cursor:grabbing;}
+#timeline-clock:has(.candidate-new-lane [data-material-drop]) ~ #new-shot-drop {
+  border-color:var(--focus-ring);outline:1px solid var(--focus-ring);outline-offset:-1px;
+}
+.candidate-new-lane .sequence-content[data-candidate-rejected],
+#timeline-clock:has(.candidate-new-lane [data-candidate-rejected]) ~ #new-shot-drop {
+  cursor:not-allowed;border-color:var(--warning-ink);
+}
+.candidate-new-placement {
+  display:none;overflow:hidden;align-content:center;padding-inline:3px;border:1px solid var(--focus-ring);
+  background:var(--well);color:white;
+}
+.candidate-new-placement .sequence-frames {opacity:.58;}
+.candidate-new-lane [data-material-drop] > .candidate-new-placement {display:block;}
 @media (forced-colors:active) {
   .candidate-vacancy {border:1px solid Highlight;}
+  .candidate-new-lane .sequence-content {border-color:GrayText;}
+  .candidate-new-lane [data-material-drop], .candidate-new-placement {border-color:Highlight;}
 }
 #timeline-clock[data-drag-rejected], #timeline-clock[data-drag-rejected] .sequence-content,
 #timeline-clock[data-drag-rejected] [data-move-candidate].candidate-moving,
@@ -109,6 +134,7 @@
   padding:3px 9px;border:1px solid currentColor;border-radius:6px;
   background:var(--surface);color:var(--warning-ink);font-size:12px;
 }
+.candidate-drop-hint[data-new-lane] {color:var(--ink);border-color:var(--hairline);}
 #timeline-clock .reordering, #timeline-clock .reordering [data-reorder-shot] {cursor:grabbing;}
 #timeline-clock .shot-drag-source {opacity:.5;}
 .shot-insert-marker {position:absolute;top:0;bottom:0;width:3px;z-index:4;background:#d6b9ff;pointer-events:none;}

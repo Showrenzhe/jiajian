@@ -9,6 +9,7 @@ function createSubprojects({ shots, serialize, revive,voiceIO }) {
   const keyVoice=(state={})=>({whole:state.whole,segments:new WeakMap((state.segments??[]).map(({index,items})=>[shots[index],items]))});
   const packVoice=(state)=>state && ({...(state.whole && {whole:state.whole}),segments:shots.flatMap((s,index)=>state.segments.has(s)?[{index,items:state.segments.get(s)}]:[])});
   const same = typeof module === 'object' && module.exports ? require('./edit-history.js').sameEditSnapshot : window.sameEditSnapshot;
+  const { pinCandidateLanes } = typeof module === 'object' && module.exports ? require('./track-tools.js') : window;
   const hasVoice=(items)=>items?.some((item)=>item?.id || item?.srt);
   function ownRows(current,base,trimWhole) {
     if(same(current,base)||(!hasVoice(current)&&hasVoice(base)))return;
@@ -99,6 +100,8 @@ function createSubprojects({ shots, serialize, revive,voiceIO }) {
   function removeCandidate(shot, clip) {
     const index=shot.indexOf(clip);
     if(index<0) return;
+    // Preserve the other physical slots when removing a clip from a manually arranged shot.
+    if (shot.some(item => item.videoLane !== undefined) && shot.some(item => item.videoLane === undefined)) pinCandidateLanes(shot);
     shot.splice(index,1);
     if (active && !shot.length && main.get(shot)?.length) {
       active.emptyShots ??= new WeakSet();

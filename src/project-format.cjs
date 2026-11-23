@@ -14,6 +14,7 @@ const { normalizeShotSettings, normalizeRanges, candidateKey, normalizeSegmentVo
 const { normalizeCover } = require('./cover.cjs');
 const { audioSpeed, normalizeMusicSpeeds, normalizeVolumeOverrides } = require('./shot-timing.cjs');
 const { normalizeLook, inspectLut } = require('./visual-style.cjs');
+const { candidateVideoLanes } = require('./ui/track-tools.js');
 
 const format = 'sdworkbench';
 const version = 1;
@@ -100,6 +101,7 @@ function cleanConfig(config) {
   const recordLayer = (id, kind) => record(id, kind === 'sound' ? 'audio' : kind === 'lut' ? 'lut' : 'visual');
   function cleanShot(shot, index) {
     if (!Array.isArray(shot) || shot.length > maxCandidates) throw new Error(`第 ${index + 1} 组分镜的候选素材数量无效。`);
+    candidateVideoLanes(shot, maxCandidates);
     const seen = new Set();
     return Array.from(shot, (clip) => {
       const id = record(clip?.id, 'visual');
@@ -122,6 +124,7 @@ function cleanConfig(config) {
       seen.add(key);
       return {
         id, start: clip.start, end: clip.end,
+        ...(clip.videoLane !== undefined && { videoLane: clip.videoLane }),
         ...(clip.enabled !== undefined && { enabled: clip.enabled }),
         ...(clip.layers !== undefined && { layers: normalizeLayers(clip.layers, recordLayer) }),
         ...(clip.transform !== undefined && { transform: normalizeTransform(clip.transform) }),

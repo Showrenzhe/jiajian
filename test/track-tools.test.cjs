@@ -31,6 +31,17 @@ test('the five organizer operations keep occupied rows and move only out-of-boun
 });
 const { splitRanges } = require('../src/ui/track-tools.js');
 
+test('legacy candidates fill unreserved video rows without stealing explicitly placed rows', () => {
+  const { candidateVideoLanes }=require('../src/ui/track-tools.js');
+  const clips=[{id:'first'},{id:'moved',videoLane:3},{id:'second'},{id:'pinned',videoLane:0}];
+  assert.deepEqual(candidateVideoLanes(clips,100),[1,3,2,0]);
+  assert.deepEqual(candidateVideoLanes([{videoLane:99}],100),[99]);
+  for(const invalid of [-1,100,1.5,'2',null]) {
+    assert.throws(()=>candidateVideoLanes([{videoLane:invalid}],100),/视频轨/);
+  }
+  assert.throws(()=>candidateVideoLanes([{videoLane:3},{videoLane:3}],100),/视频轨/);
+});
+
 test('playhead split preserves the original trimmed boundaries', () => {
   assert.deepEqual(splitRanges(2.2, 3, { point: 2.3 }), [
     { start: 2.2, end: 2.3 },
@@ -126,4 +137,26 @@ test('live voice priority fills a short candidate, accelerates a long selection 
   assert.equal(visuals(second)[0].end,1);
   state.segmented=false;state.whole=[{asset:voice}];state.voiceAlignment='fill';
   assert.deepEqual(visuals(first).map(e=>e.asset.id),['short','long']);
+});
+
+test('live playback applies mute to physical video rows in both picture and narration timing', () => {
+  const { timing, makePlan } = require('../src/ui/draft-transport.js');
+  const { waveformSource } = require('../src/ui/waveform.js');
+  const media=(id,kind,duration)=>({id,kind,duration,url:'test://'+id});
+  const moved={asset:media('moved','video',.5),start:0,end:.5,volume:42,videoLane:3};
+  const other={asset:media('other','video',1),start:0,end:1,volume:71,videoLane:0};
+  const state={shots:[[moved,other]],settings:[],whole:[],segments:[[media('voice','audio',1)]],
+    segmented:true,voiceDuration:()=>1,voiceOffset:()=>0,voiceRanges:()=>undefined,voiceVolume:()=>100,
+    keepAudio:true,muted:new Set([0]),music:[],pack:{global:[],composites:[],segmentNarration:[],wholeNarration:[]}};
+  function levels(priority,focus) {
+    state.priority=priority;
+    const layout=timing(state,c=>c.end,()=>null,focus);
+    return makePlan(state,layout,()=>null,waveformSource,focus)
+      .filter(e=>e.lane==='picture').map(e=>[e.asset.id,e.volume]);
+  }
+  assert.deepEqual(levels('picture',moved),[['moved',42]]);
+  assert.deepEqual(levels('picture',other),[['other',0]]);
+  assert.deepEqual(levels('voice',moved),[['moved',42],['other',0]]);
+  state.muted=new Set([3]);
+  assert.deepEqual(levels('voice',moved),[['moved',0],['other',71]]);
 });

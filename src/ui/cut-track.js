@@ -238,21 +238,21 @@
       const next = record.points.filter((v) => v !== s.activePoint);
       s.activePoint = null; updatePoints(next, record);
     }
-    function applyScene(asset, range, shotIndex) {
+    function applyScene(asset, range, shotIndex, targetLane) {
       const record = recordFor(asset);
       if (!record || !sceneRanges(record, asset).some((r) => sameRange(r, range))) return false;
-      if (options.addCandidate(shotIndex, asset, { ...range }) !== true) return false;
+      if (options.addCandidate(shotIndex, asset, { ...range }, targetLane) !== true) return false;
       writeRecord({ ...record, used: record.used.some((r) => sameRange(r, range)) ? record.used : [...record.used, { ...range }] });
       if (current?.mode === 'scene') renderScenes();
       return true;
     }
-    function dropScene(event, shotIndex) {
+    function dropScene(event, shotIndex, targetLane) {
       if (!event.dataTransfer?.types.includes(mime)) return false;
       event.preventDefault(); event.stopPropagation();
       try {
         const { assetId, start, end } = JSON.parse(event.dataTransfer.getData(mime));
         const asset = current?.asset?.id === assetId ? current.asset : options.getAsset?.(assetId);
-        if (asset) return applyScene(asset, { start, end }, shotIndex);
+        if (asset) return applyScene(asset, { start, end }, shotIndex, targetLane);
       } catch { status('无法读取拖入的片段。'); }
       return false;
     }

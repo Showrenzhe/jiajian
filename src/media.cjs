@@ -8,6 +8,7 @@ const { createInterface } = require('node:readline');
 const { promisify } = require('node:util');
 const { formatSubtitles, normalizeSubtitles, parseSubtitles } = require('./subtitles.cjs');
 const { normalizeShotSettings, normalizeRanges, candidateKey, normalizeSegmentVoiceCuts, sliceSource } = require('./shot-timing.cjs');
+const { candidateVideoLanes } = require('./ui/track-tools.js');
 const { normalizeCover, selectCover, publishCover } = require('./cover.cjs');
 const { audioSpeed, normalizeMusicSpeeds, normalizeVolumeOverrides } = require('./shot-timing.cjs');
 const { normalizeLook, chooseLooks, prepareLooks, lookGraph } = require('./visual-style.cjs');
@@ -511,7 +512,8 @@ function planMontage(config, catalog, random = Math.random, batchLimit = maxMont
     }
     const ids = new Set();
     const fullSources = new Map();
-    const originals = shot.flatMap((clip, trackIndex) => {
+    const lanes = candidateVideoLanes(shot, maxCandidates);
+    const originals = shot.flatMap((clip, candidateIndex) => {
       if (clip?.enabled !== undefined && typeof clip.enabled !== 'boolean') throw new Error('候选参与状态无效。');
       if (clip?.enabled === false) return [];
       const asset = requireAsset(catalog, clip?.id, 'video', 'image');
@@ -553,7 +555,7 @@ function planMontage(config, catalog, random = Math.random, batchLimit = maxMont
       }
       function sourceClip(parts,length) {
         return { asset, start:parts[0].start, sourceDuration:length, duration:length/speed, speed,
-          volume:mutedTracks.has(trackIndex) ? 0 : volume, ...layers,
+          volume:mutedTracks.has(lanes[candidateIndex]) ? 0 : volume, ...layers,
           ...(matchedDuration && {matchedDuration}), ...(shotDuration && {shotDuration}),
           ...(parts.length>1 && {retainedRanges:parts,candidateStart:start}),
           ...(parts[0].start!==start && {layerStart:parts[0].start-start}) };
