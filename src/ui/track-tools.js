@@ -77,7 +77,12 @@
   function pictureSpan(clip, shotSpan) {
     return Math.min(shotSpan, clip?.videoDuration ?? shotSpan);
   }
-  const tools = { splitRanges, candidateKey, candidateVideoLanes, pinCandidateLanes, pictureSpan };
+
+  function usesPlacedVideoSource(clip, voicePriority) {
+    return !voicePriority && clip?.asset?.kind === 'video' && clip.videoStart !== undefined
+      && clip.videoDuration !== undefined && clip.matchedDuration === undefined;
+  }
+  const tools = { splitRanges, candidateKey, candidateVideoLanes, pinCandidateLanes, pictureSpan, usesPlacedVideoSource };
   if (typeof module === 'object' && module.exports) module.exports = tools;
   else Object.assign(window, tools);
 })();

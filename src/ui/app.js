@@ -4865,7 +4865,7 @@ timeline = window.mountEditTimeline($('#timeline-clock'), {
     return copy;
   }, pasteClip:(data)=>reviveClip(data,editAssets),
   candidatePlacementError,
-  placeCandidate(clip, target, source, targetClip, targetLane, videoStart, videoDuration) {
+  placeCandidate(clip, target, source, targetClip, targetLane, videoStart, videoDuration, displayedWidths) {
     if (operation) return false;
     const error = candidatePlacementError(clip, target, source, targetClip, targetLane, videoStart);
     if (error) throw Error(error);
@@ -4878,8 +4878,11 @@ timeline = window.mountEditTimeline($('#timeline-clock'), {
       if (targetClip) [clip.videoLane, targetClip.videoLane] = [targetClip.videoLane, clip.videoLane];
       else {
         clip.videoLane = targetLane;
-        if (videoStart !== undefined) clip.videoStart = videoStart;
-        if (videoDuration !== undefined) clip.videoDuration = videoDuration;
+        if (videoStart !== undefined) {
+          clip.videoStart = videoStart;
+          if (videoDuration === undefined) delete clip.videoDuration;
+          else clip.videoDuration = videoDuration;
+        }
       }
       if (source.every((item, index) => item.videoLane === index)) {
         for (const item of source) delete item.videoLane;
@@ -4901,6 +4904,20 @@ timeline = window.mountEditTimeline($('#timeline-clock'), {
       delete clip.videoLane;
       delete clip.videoStart;
       appendVideoClips(target, [clip], targetLane);
+    }
+    if (videoStart !== undefined && displayedWidths && shots.some(shot => shot.length > 1)) {
+      // Preview selects the moved take. Preserve any automatic shot clock that
+      // would otherwise jump on selection, or on reopening with the default take.
+      const state = timelineState();
+      const withFocus = focus => window.draftTimeline.timing(state, window.candidatePlaybackSeconds, id => editAssets.get(id), focus).widths;
+      const selectedWidths = withFocus(clip), defaultWidths = withFocus(undefined);
+      shots.forEach((shot, i) => {
+        const duration = displayedWidths[i];
+        if (shot.length < 2 || state.settings[i]?.duration != null || !(duration >= .1 && duration <= 86400)) return;
+        if (Math.abs(selectedWidths[i] - duration) > 1e-7 || Math.abs(defaultWidths[i] - duration) > 1e-7) {
+          shotProperties.set(shot, {...state.settings[i], duration});
+        }
+      });
     }
     trackExpansion.get(target)?.delete('body');
     renderLists();

@@ -44,6 +44,26 @@ test('timeline picture tail trims keep draft playback speed and trailing silence
   assert.deepEqual(read().map(e=>[e.start,e.end]),[[1,1.75],[1.25,1.75]]);
 });
 
+test('a positioned short candidate plays its retained sources at its own speed inside a longer shot',()=>{
+  const {timing,makePlan}=require('../src/ui/draft-transport.js');
+  const {waveformSource}=require('../src/ui/waveform.js');
+  const long={asset:{kind:'video',url:'test://long'},start:0,end:8};
+  const short={asset:{kind:'video',url:'test://short'},start:0,end:6,speed:2,
+    ranges:[{start:0,end:2},{start:4,end:6}],videoStart:1,videoDuration:2,
+    videoSubtitles:{cues:[{text:'第二段',start:4500,end:5500}]}};
+  const state={shots:[[long,short]],settings:[{duration:8}],whole:[],segments:[[]],segmented:true,priority:'picture',
+    keepAudio:true,muted:new Set(),music:[],pack:{global:[],composites:[],segmentNarration:[],wholeNarration:[]}};
+  for(const priority of ['picture','voice']) {
+    state.priority=priority;
+    const layout=timing(state,c=>c.end-c.start,()=>null,short);
+    const plan=makePlan(state,layout,()=>null,waveformSource,short);
+    assert.equal(layout.total,8);
+    assert.deepEqual(plan.filter(e=>e.asset).map(e=>[e.asset.url,e.source,e.start,e.end,e.rate]),[
+      ['test://short',0,1,2,2],['test://short',4,2,3,2]]);
+    assert.deepEqual(plan.filter(e=>e.text).map(e=>[e.text,e.start,e.end]),[['第二段',2.25,2.75]]);
+  }
+});
+
 test('only current rows participate in visual and audio solo, and locking does not mute', () => {
   const {normalize,forLayout,allows}=require('../src/ui/track-controls.js');
   const state=normalize({vis1:{hidden:true},whole1:{solo:true},music2:{solo:true},voice1:{locked:true}});
@@ -182,6 +202,12 @@ test('live voice priority fills a short candidate, accelerates a long selection 
   assert.equal(visuals(second)[0].end,1);
   state.segmented=false;state.whole=[{asset:voice}];state.voiceAlignment='fill';
   assert.deepEqual(visuals(first).map(e=>e.asset.id),['short','long']);
+  first.videoStart=0;first.videoDuration=.4;
+  for(const segmented of [true,false]) {
+    state.segmented=segmented;
+    assert.deepEqual(plan(first).filter(e=>e.visual).map(e=>[e.asset.id,e.start,e.end,e.rate]),
+      [['short',0,.2,2.5],['long',.2,.4,2.5]],'实际跟随口播时沿用原混剪填充与倍速');
+  }
 });
 
 test('live playback applies mute to physical video rows in both picture and narration timing', () => {

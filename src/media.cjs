@@ -8,7 +8,7 @@ const { createInterface } = require('node:readline');
 const { promisify } = require('node:util');
 const { formatSubtitles, normalizeSubtitles, parseSubtitles } = require('./subtitles.cjs');
 const { normalizeShotSettings, normalizeRanges, candidateKey, normalizeSegmentVoiceCuts, sliceSource } = require('./shot-timing.cjs');
-const { candidateVideoLanes, pictureSpan } = require('./ui/track-tools.js');
+const { candidateVideoLanes, pictureSpan, usesPlacedVideoSource } = require('./ui/track-tools.js');
 const trackControls = require('./ui/track-controls.js');
 const { preferSolo } = trackControls;
 const { normalizeCover, selectCover, publishCover } = require('./cover.cjs');
@@ -18,7 +18,7 @@ const { normalizeLayers, normalizeTransform, normalizePackaging, packagingChoice
 const { composeLayers, writeLayerTexts } = require('./packaging-render.cjs');
 const { visualMotion } = require('./layer-motion.cjs');
 const { fontFamily } = require('./text-style.cjs');
-const { maxCandidates, minClipSeconds, minEdgeSilence, audioRate, withOutputFrames, voiceLength, pieces, repeatVisual, visualDuration, fitVisuals, fitSegmentedVoice, fitWholeVoice, fitReferenceWhole } = require('./ui/voice-alignment.js');
+const { maxCandidates, minClipSeconds, minEdgeSilence, audioRate, withOutputFrames, voiceLength, pieces, repeatVisual, visualDuration, fitVisuals, placedVideoFrames, fitSegmentedVoice, fitWholeVoice, fitReferenceWhole } = require('./ui/voice-alignment.js');
 const vendorPath = require('./vendor-path.cjs');
 
 const ffmpegCommand = process.env.SUPERDIR_REPLICA_FFMPEG || 'ffmpeg';
@@ -652,7 +652,8 @@ function planMontage(config, catalog, random = Math.random, batchLimit = maxMont
       const match = segmented?.pick(narrationChoices, index);
       const hasVoice = segmented ? Boolean(match) : Boolean(narration);
       const shot = priority==='voice' && alignment==='fill' && hasVoice ? fullSourceShots[index] : fixedShot;
-      const candidate = shot[indices[index]];
+      const selected = shot[indices[index]];
+      const candidate = usesPlacedVideoSource(selected,priority==='voice' && hasVoice) ? fullSourceShots[index][indices[index]] : selected;
       const clip = {
         ...candidate,
         shotIndex: index,
@@ -689,6 +690,7 @@ function planMontage(config, catalog, random = Math.random, batchLimit = maxMont
       clips = clips.map((clip, index) => {
         const duration = clip.shotDuration ?? clip.duration;
         const framed = withOutputFrames(clip, duration, config.fps);
+        if (usesPlacedVideoSource(clip,false)) return placedVideoFrames(clip,framed.outputFrames,config.fps);
         if (!clip.retainedRanges && duration <= clip.duration + 1e-9) return framed;
         const visuals = [];
         let used = 0;

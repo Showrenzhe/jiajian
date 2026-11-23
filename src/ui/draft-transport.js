@@ -3,7 +3,7 @@
 (() => {
   const alignment = typeof module === 'object' && module.exports ? require('./voice-alignment.js') : window.voiceAlignment;
   const waveformSource = typeof module === 'object' && module.exports ? require('./waveform.js').waveformSource : window.waveformSource;
-  const { candidateVideoLanes, pictureSpan } = typeof module === 'object' && module.exports ? require('./track-tools.js') : window;
+  const { candidateVideoLanes, pictureSpan, usesPlacedVideoSource } = typeof module === 'object' && module.exports ? require('./track-tools.js') : window;
   const controls = typeof module === 'object' && module.exports ? require('./track-controls.js') : window.trackControls;
 
   function chosen(shot,focus,state) {
@@ -172,6 +172,8 @@
         layers(group?.[i],at,span);
       }
       const clip=chosen(shot,focus,s);
+      const voicePriority=s.priority==='voice' && (s.segmented ? s.segments[i]?.some(Boolean) : s.whole.some(track=>track.asset));
+      const placedSource=usesPlacedVideoSource(clip,voicePriority);
       const lanes=candidateVideoLanes(shot);
       const pictureAt=clip?.videoStart ?? at;
       const visibleSpan=pictureSpan(clip,span);
@@ -180,7 +182,7 @@
       const pictureLane=freePictures ? 'picture:'+lanes[shot.indexOf(clip)]+':'+i : 'picture';
       const timed=aligned?.[i];
       if(aligned && !timed && s.priority==='voice' && !s.segmented && s.whole.some(track=>track.asset)) return;
-      if(timed && clip) {
+      if(timed && clip && !placedSource) {
         const parts=timed.visuals ?? [timed];
         let offset=pictureAt;
         for(const part of parts) {
@@ -208,7 +210,7 @@
         const volume=s.keepAudio && !s.muted.has(lanes[shot.indexOf(clip)]) ? (clip.volume ?? 100) : 0;
         const ranges=clip.ranges ?? [{start:clip.start,end:clip.end}];
         const source=sourceRanges(ranges,clip.look?.head,clip.look?.tail);
-        const speed=source.duration/span;
+        const speed=placedSource ? clip.speed ?? 1 : source.duration/span;
         add(pictureLane,clip.asset,pictureAt,visibleSpan,{ranges,head:clip.look?.head,tail:clip.look?.tail,
           visual:true,volume,trackKey:'vis'+lanes[shot.indexOf(clip)],speed});
         let offset=pictureAt;

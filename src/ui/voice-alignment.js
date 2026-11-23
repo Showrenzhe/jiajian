@@ -1,6 +1,7 @@
 'use strict';
 
 (() => {
+  const {usesPlacedVideoSource} = typeof module === 'object' && module.exports ? require('./track-tools.js') : window;
   const maxCandidates = 100;
   const minClipSeconds = 0.1;
   const minEdgeSilence = 0.12;
@@ -102,6 +103,12 @@
     return { ...clip, visuals: parts, outputFrames, outputDuration: outputFrames / fps };
   }
 
+  // Keep the shot clock independent from the positioned candidate's retained source and playback rate.
+  function placedVideoFrames(clip, outputFrames, fps) {
+    return clip.retainedRanges ? fitVisuals(clip,pieces(clip),1,outputFrames,fps)
+      : { ...clip, outputFrames, outputDuration:outputFrames/fps };
+  }
+
   function fitSegmentedVoice(clips, pools, fps, alignment) {
     let samples = 0;
     let assigned = 0;
@@ -117,6 +124,7 @@
       const outputFrames = boundary - assigned;
       assigned = boundary;
       const timed = { ...clip, ...range, timelineDuration };
+      if (!range && usesPlacedVideoSource(clip.clip ?? clip,false)) return placedVideoFrames(timed,outputFrames,fps);
       if (range && alignment === 'reference') return referenceVisuals(timed, target, outputFrames, fps);
       if (!range && !clip.retainedRanges && !clip.shotDuration) return { ...timed, outputFrames, outputDuration: outputFrames / fps };
       const visuals = [];
@@ -181,7 +189,7 @@
     return result;
   }
 
-  const api = { matchCandidateDuration, maxCandidates, minClipSeconds, minEdgeSilence, audioRate, withOutputFrames, voiceLength, pieces, repeatVisual, visualDuration, fitVisuals, fitSegmentedVoice, fitWholeVoice, fitReferenceWhole };
+  const api = { matchCandidateDuration, maxCandidates, minClipSeconds, minEdgeSilence, audioRate, withOutputFrames, voiceLength, pieces, repeatVisual, visualDuration, fitVisuals, placedVideoFrames, fitSegmentedVoice, fitWholeVoice, fitReferenceWhole };
   if (typeof module === "object" && module.exports) module.exports = api;
   else window.voiceAlignment = api;
 })();
