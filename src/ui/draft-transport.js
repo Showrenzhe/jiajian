@@ -3,10 +3,14 @@
 (() => {
   const alignment = typeof module === 'object' && module.exports ? require('./voice-alignment.js') : window.voiceAlignment;
   const waveformSource = typeof module === 'object' && module.exports ? require('./waveform.js').waveformSource : window.waveformSource;
-  const { candidateVideoLanes, pictureSpan, soloLaneSequence, usesPlacedVideoSource } = typeof module === 'object' && module.exports ? require('./track-tools.js') : window;
+  const { candidateVideoLanes, pictureSpan, soloLaneSequence, joinedVideoSequence, videoGroupLeaders, usesPlacedVideoSource } = typeof module === 'object' && module.exports ? require('./track-tools.js') : window;
   const controls = typeof module === 'object' && module.exports ? require('./track-controls.js') : window.trackControls;
 
   function chosen(shot,focus,state) {
+    if(shot?.includes(focus) && focus.videoGroup && focus.enabled!==false) {
+      const members=joinedVideoSequence(shot,focus);
+      focus=shot.find(clip=>members.includes(clip));
+    }
     if (shot?.length && state?.trackControls) {
       const lanes = candidateVideoLanes(shot);
       const solo = shot.filter((clip,i)=>clip.enabled!==false && state.trackControls['vis'+lanes[i]]?.solo);
@@ -32,7 +36,8 @@
       const lanes=candidateVideoLanes(shot);
       const eligible=controls.preferSolo(shot.filter(clip=>clip.enabled!==false),
         clip=>state.trackControls?.['vis'+lanes[shot.indexOf(clip)]]?.solo);
-      return [first,...eligible.filter(clip=>clip!==first)].map(clip=>{
+      const leaders=videoGroupLeaders(eligible,eligible.map(clip=>lanes[shot.indexOf(clip)]));
+      return [first,...leaders.filter(clip=>clip!==first)].map(clip=>{
         const shotDuration=clip.videoFit==='hold' ? fixed ?? clip.matchedDuration : clip.matchedDuration ?? fixed;
         if(clip.asset.kind==='image') return {clip,start:0,duration:shotDuration ?? clip.end,shotDuration};
         const retained=waveformSource(clip.ranges ?? [{start:clip.start,end:clip.end}],clip.look?.head,clip.look?.tail);
@@ -103,14 +108,17 @@
     let total=0;
     const starts=widths.map((width)=>{const from=total;total+=width;return from;});
     shots.forEach((shot,i)=>{
-      for(const clip of shot) if(clip.videoStart!==undefined) total=Math.max(total,clip.videoStart+pictureSpan(clip,widths[i]));
+      for(const clip of shot) {
+        if(clip.videoStart!==undefined) total=Math.max(total,clip.videoStart+pictureSpan(clip,widths[i]));
+        for(const gap of clip.videoGaps ?? []) total=Math.max(total,gap.start+gap.span);
+      }
     });
     return aligned ? {widths,starts,total,aligned} : {widths,starts,total};
   }
 
   function makePlan(s,{starts,widths,total,aligned},assetFor,sourceRanges,focus) {
     const entries=[];
-    let trimmedShotEnd=0;
+    let trimmedShotEnd=s.shots.some(shot=>shot.some(clip=>clip.videoGaps?.length)) ? total : 0;
     const freePictures=s.shots.some(shot=>shot.some(clip=>clip.videoStart!==undefined));
     if(!freePictures && aligned && !s.segmented && s.priority==='voice') {
       const whole=s.whole[audioRow(s.whole,'whole',s)];
@@ -178,9 +186,15 @@
       const selected=chosen(shot,focus,s);
       const voicePriority=s.priority==='voice' && (s.segmented ? s.segments[i]?.some(Boolean) : s.whole.some(track=>track.asset));
       const lanes=candidateVideoLanes(shot), timed=aligned?.[i];
-      const sequence=soloLaneSequence(shot,selected,s.trackControls,span);
+      const soloSequence=soloLaneSequence(shot,selected,s.trackControls,span);
+      const sequence=soloSequence.length ? soloSequence : joinedVideoSequence(shot,selected);
       for(const clip of sequence.length ? sequence : [selected]) {
-        const hold=clip?.videoFit==='hold' || sequence.length>0;
+        // Reference speech can end before the shot. Its independently placed pictures
+        // still play through their stored windows, as in the export plan.
+        const beyondVoice=aligned && !timed && !s.segmented && s.priority==='voice';
+        const heldWindow=clip?.videoWindow!==undefined && (timed?.outputDuration ?? span)<clip.videoWindow-1e-7;
+        const hold=clip?.videoFit==='hold' || soloSequence.length>0 || heldWindow ||
+          (beyondVoice && (clip?.videoGroup || clip?.videoGaps?.length || clip?.videoWindow!==undefined));
         const placedSource=hold || usesPlacedVideoSource(clip,voicePriority);
         const pictureAt=clip?.videoStart ?? at;
         const visibleSpan=pictureSpan(clip,span);
@@ -198,7 +212,7 @@
             if(!owner || !(length>0)) continue;
             const speed=part.speed || 1, repeats=part.repeat || 1;
             const source=part.sourceDuration ?? part.duration*speed;
-            const volume=s.keepAudio && !s.muted.has(lanes[shot.indexOf(owner)]) ? (owner.volume ?? 100) : 0;
+            const volume=s.keepAudio && !owner.sourceMuted && !s.muted.has(lanes[shot.indexOf(owner)]) ? (owner.volume ?? 100) : 0;
             add(pictureLane,owner.asset,offset,length,{ranges:[{start:part.start,end:part.start+source}],
               speed,visual:true,volume,trackKey:'vis'+lanes[shot.indexOf(owner)],cycle:repeats>1 ? source : 0});
             if(owner.layers?.length || owner.videoSubtitles) {
@@ -214,7 +228,7 @@
             offset+=length;
           }
         } else if(clip) {
-          const volume=s.keepAudio && !s.muted.has(lanes[shot.indexOf(clip)]) ? (clip.volume ?? 100) : 0;
+          const volume=s.keepAudio && !clip.sourceMuted && !s.muted.has(lanes[shot.indexOf(clip)]) ? (clip.volume ?? 100) : 0;
           const ranges=clip.ranges ?? [{start:clip.start,end:clip.end}];
           const source=sourceRanges(ranges,clip.look?.head,clip.look?.tail);
           const speed=placedSource ? clip.speed ?? 1 : source.duration/span;
@@ -284,34 +298,52 @@
     return entries.sort((a,b)=>a.start-b.start);
   }
 
-  function transport(stage,{tick,changed,previewSource}) {
+  function transport(stage,{tick,changed,previewSource,handoff}) {
     const overlay=document.createElement('div');
     overlay.className='draft-transport-preview';overlay.hidden=true;
     const label=document.createElement('span');
     overlay.append(label);stage.append(overlay);
     let playing=false, media=new Map(), entries=[], active=[], next=0, time=0, end=0, stamp, frame;
     let visual=false, canProxy=false;
+    let currentPicture, upcomingPictures=[], upcomingIndex=0, warmed;
     const textNodes=new Map();
     const failed=new Set();
-    function release(node) {
-      if(node.tagName!=='IMG') {node.pause();node.removeAttribute('src');node.load();}
+    function release(item) {
+      item.released=true;
+      const {node}=item;
+      if(item.endFrameCallback!==undefined) node.cancelVideoFrameCallback(item.endFrameCallback);
+      const wasOnStage=node.isConnected;
       node.remove();
+      if(node.tagName==='IMG') return;
+      node.pause();
+      const unload=()=>{node.removeAttribute('src');node.load();};
+      // Clearing an attached video's decoder can blank the old compositor
+      // surface even before Chromium commits the canvas/new video above it.
+      if(wasOnStage && node.tagName==='VIDEO') requestAnimationFrame(()=>requestAnimationFrame(unload));
+      else unload();
     }
-    function halt(keepFrame=false) {
+    function discardWarm() {
+      if(warmed) release(warmed.item);
+      warmed=undefined;
+    }
+    function halt(keepFrame=false, keepCover=false) {
       cancelAnimationFrame(frame);
+      discardWarm();
       const visible=!overlay.hidden;
       playing=false;
       for(const item of media.values()) {
         if(keepFrame && item.node.tagName!=='IMG') item.node.pause();
-        else if(!keepFrame) release(item.node);
+        else if(!keepFrame) release(item);
       }
       if(!keepFrame) {
+        if(!keepCover) handoff.clear(overlay);
+        currentPicture=undefined;
         for(const node of textNodes.values()) node.remove();
         textNodes.clear();media.clear();overlay.hidden=true;
       }
       if(visible) changed(false);
     }
-    function show(entry) {
+    function createItem(entry) {
       const node=document.createElement(entry.asset.kind==='image'?'img':entry.visual?'video':'audio');
       node.hidden=!entry.visual;
       node.className=entry.layer?'draft-layer':'draft-main';
@@ -328,16 +360,28 @@
         node.crossOrigin='anonymous';node.preload='auto';node.playsInline=true;node.loop=!!entry.loop;
         node.volume=Math.max(0,Math.min(1,entry.volume/100));node.muted=!node.volume;
       }
-      overlay.append(node);
       const proxy=previewSource?.(entry.asset);
       const item={node,asset:entry.asset,entry:null,targetSet:false,waitingSince:0,mayUseProxy:Boolean(proxy)};
       if (proxy) Promise.resolve(proxy).catch(()=>null).then(url=>{
-        if (!node.isConnected || !item.mayUseProxy) return;
+        if (item.released || !item.mayUseProxy) return;
         item.mayUseProxy=Boolean(url);
         node.src=url || entry.asset.url;
       });
       else node.src=entry.asset.url;
       return item;
+    }
+    function prepareNextPicture(at) {
+      while(upcomingIndex<upcomingPictures.length && upcomingPictures[upcomingIndex].start<=at) upcomingIndex++;
+      const entry=upcomingPictures[upcomingIndex];
+      if(warmed && warmed.entry!==entry) discardWarm();
+      if(!playing || !entry || warmed || entry.start-at>1 || failed.has(entry.asset) || media.get(entry.lane)?.asset===entry.asset) return;
+      const item=createItem(entry);
+      warmed={entry,item};
+      if(item.node.tagName==='VIDEO' && entry.source>0) {
+        item.node.addEventListener('loadedmetadata',()=>{
+          if(warmed?.item===item) item.node.currentTime=entry.source;
+        },{once:true});
+      }
     }
     function retryOriginal(item) {
       if (!item.mayUseProxy) return false;
@@ -347,12 +391,48 @@
       item.node.src=item.asset.url;
       return true;
     }
+    function protectLastFrame(item,entry,sourceTime) {
+      const node=item.node;
+      const remaining=node.duration-sourceTime;
+      if(!playing || !Number.isFinite(remaining) || remaining>.3 || node.seeking) {
+        item.heldEnd=false;
+        return;
+      }
+      if(item.endFrameCallback!==undefined || item.heldEnd) return;
+      // Some decoders withdraw their presentation surface at native EOS,
+      // before the timeline's next animation tick. Retain the last actual
+      // source frame while its audio plays to the edit point.
+      function presented(_now,{mediaTime}) {
+        item.endFrameCallback=undefined;
+        if(item.released || !playing || currentPicture!==entry || node.seeking || node.duration-node.currentTime>.3) return;
+        if(node.duration-mediaTime <= 1/(entry.asset.fps || 30)+.002) {
+          item.heldEnd=handoff.retain(node);
+        } else item.endFrameCallback=node.requestVideoFrameCallback(presented);
+      }
+      item.endFrameCallback=node.requestVideoFrameCallback(presented);
+    }
     function render() {
       const at=Math.max(0,Math.min(time,end-1e-6));
       active=active.filter((entry)=>entry.end>at);
       while(next<entries.length && entries[next].start<=at) {
         const entry=entries[next++];if(!entry.gap && entry.end>at)active.push(entry);
       }
+      // Sort order mirrors the rendered z-index across independently placed lanes.
+      let picture, pictureOrder=-Infinity;
+      for(const entry of active) {
+        if(!entry.visual || !entry.asset || entry.layer || failed.has(entry.asset)) continue;
+        let order=0;
+        if(entry.lane.startsWith('picture:')) {
+          const [,row,shot]=entry.lane.split(':');
+          order=(100-Number(row))*1000+Number(shot);
+        }
+        if(order>=pictureOrder) {picture=entry;pictureOrder=order;}
+      }
+      if(picture!==currentPicture) {
+        if(picture) {handoff.capture();handoff.moveTo(overlay);}
+        currentPicture=picture;
+      }
+      if(!picture) handoff.clear(overlay);
       const live=new Set();let ready=true;
       for(const entry of active) {
         if(entry.text) {
@@ -367,7 +447,11 @@
         live.add(entry.lane);
         let item=media.get(entry.lane);
         if(item?.asset!==entry.asset || (item && item.node.hidden===entry.visual)) {
-          if(item) release(item.node);item=show(entry);media.set(entry.lane,item);
+          if(item) release(item);
+          if(warmed?.entry===entry) {item=warmed.item;warmed=undefined;}
+          else item=createItem(entry);
+          media.set(entry.lane,item);
+          overlay.append(item.node);
         }
         const node=item.node;
         const now=performance.now();
@@ -378,8 +462,13 @@
           else failed.add(entry.asset);
           continue;
         }
-        if(node.tagName==='IMG') continue;
-        if(item.entry!==entry) {item.entry=entry;item.targetSet=false;item.cycleIndex=undefined;node.volume=Math.max(0,Math.min(1,entry.volume/100));node.muted=!node.volume;}
+        if(node.tagName==='IMG') {
+          if(node.complete && !node.naturalWidth && node.src) failed.add(entry.asset);
+          else if(!node.complete || !node.naturalWidth) ready=false;
+          if(entry===picture) handoff.revealWhen(node);
+          continue;
+        }
+        if(item.entry!==entry) {item.entry=entry;item.heldEnd=false;item.targetSet=false;item.cycleIndex=undefined;node.volume=Math.max(0,Math.min(1,entry.volume/100));node.muted=!node.volume;}
         if(node.readyState<1) {ready=false;continue;}
         let source=entry.source+(at-entry.start)*entry.rate;
         if(entry.loop)source%=entry.asset.duration;
@@ -397,9 +486,14 @@
           if(Math.abs(node.currentTime-source)>(frozen ? 1e-7 : .015))node.currentTime=source;
           item.targetSet=true;
         }
+        if(entry===picture) {
+          protectLastFrame(item,entry,source);
+          if(!item.heldEnd) handoff.revealWhen(node);
+        }
         if(node.readyState<2 || node.seeking) {ready=false;continue;}
       }
-      for(const [lane,item] of media) if(!live.has(lane) || failed.has(item.asset)) {release(item.node);media.delete(lane);}
+      if(picture && failed.has(picture.asset)) handoff.clear(overlay);
+      for(const [lane,item] of media) if(!live.has(lane) || failed.has(item.asset)) {release(item);media.delete(lane);}
       for(const [entry,node] of textNodes) if(!live.has(entry)) {node.remove();textNodes.delete(entry);}
       const visuals=active.some((e)=>e.visual && !failed.has(e.asset));
       label.hidden=visuals;
@@ -415,6 +509,7 @@
           });
         }
       }
+      prepareNextPicture(at);
       return ready;
     }
     function step(now) {
@@ -425,7 +520,9 @@
       frame=requestAnimationFrame(step);
     }
     function setPlan(plan) {
+      discardWarm();
       entries=plan;active=[];next=0;
+      upcomingPictures=plan.filter(entry=>entry.asset && entry.visual && !entry.layer);upcomingIndex=0;
       end=entries.reduce((max,entry)=>Math.max(max,entry.end),0);
       visual=entries.some(entry=>entry.visual);
       canProxy=entries.some(({asset})=>asset?.kind==='video' && !asset.alpha && Math.max(asset.width,asset.height)>480);
@@ -437,21 +534,29 @@
     function toggle(plan,from) {
       if(playing){halt(true);return true;}
       if(!plan.length){halt();return false;}
-      halt();failed.clear();setPlan(plan);
+      handoff.capture();handoff.moveTo(overlay);
+      halt(false,true);failed.clear();setPlan(plan);
       time=from>=end-.001 ? 0 : Math.max(0,from);
       document.getElementById('preview')?.pause();
       overlay.hidden=false;playing=true;changed(true);tick(time);
-      stamp=performance.now();frame=requestAnimationFrame(step);return true;
+      stamp=performance.now();render();frame=requestAnimationFrame(step);return true;
     }
     function seek(seconds,reloadSources=false) {
       if(overlay.hidden) return;
       cancelAnimationFrame(frame);
       if(reloadSources) {
-        for(const item of media.values()) release(item.node);
+        handoff.capture();discardWarm();
+        for(const item of media.values()) release(item);
         media.clear();failed.clear();
       }
-      active=[];next=0;time=Math.max(0,Math.min(end,seconds));
-      for(const item of media.values()) item.targetSet=false;
+      active=[];next=0;upcomingIndex=0;time=Math.max(0,Math.min(end,seconds));
+      for(const item of media.values()) {
+        item.targetSet=false;item.heldEnd=false;
+        if(item.endFrameCallback!==undefined) {
+          item.node.cancelVideoFrameCallback(item.endFrameCallback);
+          item.endFrameCallback=undefined;
+        }
+      }
       stamp=performance.now();
       function paint() {
         const ready=render();
@@ -472,7 +577,12 @@
       }
       return {time,end,playing,visual,canProxy,proxy};
     }
-    return {toggle,updatePlan,seek,state,stop:()=>halt(),playing:()=>playing};
+    function stopForScrub() {
+      if(overlay.hidden) return;
+      handoff.capture();handoff.moveTo(stage.querySelector('.player-picture'));
+      halt();
+    }
+    return {toggle,updatePlan,seek,state,stop:()=>halt(),stopForScrub,playing:()=>playing};
   }
   const api={chosen,timing,makePlan,transport};
   if(typeof module==='object' && module.exports) module.exports=api;

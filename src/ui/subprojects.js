@@ -109,7 +109,11 @@ function createSubprojects({ shots, serialize, revive,voiceIO }) {
     }
   }
   function removeMaterialReferences(ids) {
-    for (const shot of shots) for (const clip of [...shot]) if (ids.has((clip.sourceEdit?.asset ?? clip.asset).id)) removeCandidate(shot,clip);
+    for (const shot of shots) {
+      const matches = shot.filter(clip => ids.has((clip.sourceEdit?.asset ?? clip.asset).id));
+      if (matches.length && matches.length < shot.length) pinCandidateLanes(shot);
+      for (const clip of matches) removeCandidate(shot, clip);
+    }
   }
   function pack() {
     if (!projects.length) return undefined;

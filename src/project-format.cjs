@@ -17,7 +17,7 @@ const { normalizeShotSettings, normalizeRanges, normalizeSegmentVoiceCuts, norma
 const { normalizeCover } = require('./cover.cjs');
 const { audioSpeed, normalizeMusicSpeeds, normalizeVolumeOverrides } = require('./shot-timing.cjs');
 const { normalizeLook, inspectLut } = require('./visual-style.cjs');
-const { candidateVideoLanes } = require('./ui/track-tools.js');
+const { candidateVideoLanes, normalizeVideoGaps } = require('./ui/track-tools.js');
 
 const format = 'sdworkbench';
 const version = 1;
@@ -112,6 +112,7 @@ function cleanConfig(config) {
       if (![clip.start, clip.end].every(Number.isFinite) || clip.start < 0 || clip.end < clip.start) {
         throw new Error(`第 ${index + 1} 组分镜的裁切时间无效。`);
       }
+      if (clip.sourceMuted !== undefined && typeof clip.sourceMuted !== 'boolean') throw new Error('片段原声静音状态无效。');
       if (clip.volume !== undefined && (!Number.isFinite(clip.volume) || clip.volume < 0 || clip.volume > 100)) {
         throw new Error(`第 ${index + 1} 组分镜的原声音量无效。`);
       }
@@ -122,12 +123,14 @@ function cleanConfig(config) {
         throw new Error(`第 ${index + 1} 组分镜的匹配时长无效。`);
       }
       if (clip.enabled !== undefined && typeof clip.enabled !== 'boolean') throw new Error('候选参与状态无效。');
+      if (clip.videoGroup !== undefined && (typeof clip.videoGroup!=='string' || !clip.videoGroup.length || clip.videoGroup.length>64)) throw Error('视频片段组合编号无效。');
       if (clip.videoStart !== undefined && (!Number.isFinite(clip.videoStart) || clip.videoStart < 0 || clip.videoStart > Number.MAX_SAFE_INTEGER)) {
         throw new Error('视频片段的时间轴落点无效。');
       }
       if (clip.videoDuration !== undefined && (!Number.isFinite(clip.videoDuration) || clip.videoDuration <= 0 || clip.videoDuration > Number.MAX_SAFE_INTEGER)) {
         throw new Error('视频片段的时间轴裁切时长无效。');
       }
+      if(clip.videoWindow!==undefined && (clip.videoStart===undefined || !Number.isFinite(clip.videoWindow) || clip.videoWindow<=0 || clip.videoWindow>Number.MAX_SAFE_INTEGER)) throw Error('视频轨插入时保留的片段时长无效。');
       if (clip.videoFit !== undefined && (clip.videoFit !== 'hold' || clip.videoStart === undefined || clip.videoDuration === undefined)) {
         throw new Error('视频片段的切点窗口无效。');
       }
@@ -145,6 +148,9 @@ function cleanConfig(config) {
         ...(clip.videoStart !== undefined && { videoStart: clip.videoStart }),
         ...(clip.videoDuration !== undefined && { videoDuration: clip.videoDuration }),
         ...(clip.videoFit !== undefined && { videoFit: clip.videoFit }),
+        ...(clip.videoGaps !== undefined && {videoGaps:normalizeVideoGaps(clip.videoGaps)}),
+        ...(clip.videoWindow!==undefined && {videoWindow:clip.videoWindow}),
+        ...(clip.videoGroup && {videoGroup:clip.videoGroup}),
         ...(clip.enabled !== undefined && { enabled: clip.enabled }),
         ...(clip.layers !== undefined && { layers: normalizeLayers(clip.layers, recordLayer) }),
         ...(clip.transform !== undefined && { transform: normalizeTransform(clip.transform) }),
@@ -152,6 +158,7 @@ function cleanConfig(config) {
         ...(clip.videoSubtitles && {videoSubtitles:normalizeSubtitles(clip.videoSubtitles)}),
         ...(ranges && { ranges }),
         ...(clip.volume !== undefined && { volume: clip.volume }),
+        ...(clip.sourceMuted && {sourceMuted:true}),
         ...(clip.speed !== undefined && { speed: clip.speed }),
         ...(clip.matchedDuration !== undefined && { matchedDuration: clip.matchedDuration }),
       };

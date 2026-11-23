@@ -94,6 +94,7 @@ contextBridge.exposeInMainWorld('workbench', {
   renderPreview: (value) => invoke('workbench:render-preview', value),
   export: (mode, config, selection) => invoke('workbench:export', { mode, config, selection }),
   saveProject: (config) => invoke('workbench:save-project', config),
+  quickSaveProject: (token, config) => invoke('workbench:quick-save-project', { token, config }),
   openProject: (id) => invoke('workbench:open-project', id),
   cancel: () => invoke('workbench:cancel'),
   reveal: (file) => invoke('workbench:reveal', file),

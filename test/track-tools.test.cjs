@@ -31,6 +31,37 @@ test('the five organizer operations keep occupied rows and move only out-of-boun
 });
 const { splitRanges } = require('../src/ui/track-tools.js');
 
+test('lane insertion uses existing space, ripples only collisions and shares the shot clock',()=>{
+  const {insertVideoGap,videoLaneCells}=require('../src/ui/track-tools.js');
+  const {timing,makePlan}=require('../src/ui/draft-transport.js');
+  const {waveformSource}=require('../src/ui/waveform.js');
+  const clip=(name,start,lane=0)=>({asset:{url:name,kind:'video'},start:0,end:1,videoStart:start,videoLane:lane});
+  const a=clip('a',0), b=clip('b',1.5), c=clip('c',2.5), late=clip('late',5), other=clip('other',1.5,1);
+  const shots=[[a],[b,other],[c],[late]];
+  const starts=[0,1,2,3], widths=[1,1,1,1];
+  const pending=insertVideoGap(videoLaneCells(shots,starts,widths)[0],b,'left');
+  assert.deepEqual(pending,{start:1,span:1});
+  assert.deepEqual([a,b,c,late,other].map(clip=>clip.videoStart),[0,2,3,5,1.5]);
+  const resized=videoLaneCells(shots,starts,[1,5,.5,1])[0];
+  assert.deepEqual(resized.map(cell=>[cell.start,cell.span]),[[0,1],[2,1],[3,1],[5,1]],'分镜长短变化保留本次实际让位的片段边界');
+  const lone=clip('right',0);
+  const right=insertVideoGap(videoLaneCells([[lone]],[0],[2])[0],lone,'right');
+  assert.deepEqual(right,{start:2,span:2});
+  assert.equal(videoLaneCells([[lone]],[0],[5])[0][0].span,2,'延长分镜后，末端空位仍可填入');
+  delete b.videoGaps;
+  const fill={...clip('fill',1),videoFit:'hold',videoDuration:1,videoGroup:'seq'};
+  b.videoGroup='seq';
+  shots[1].push(fill);
+  const state={shots,settings:shots.map(()=>({duration:1})),whole:[],segments:[],music:[],muted:new Set(),
+    pack:{global:[],composites:[],wholeNarration:[]},priority:'picture',timelineCaptions:[{text:'固定字幕',start:1100,end:1400}]};
+  const layout=timing(state,()=>1,()=>null,fill);
+  assert.deepEqual(layout.starts,starts);
+  assert.deepEqual(layout.widths,widths);
+  const plan=makePlan(state,layout,()=>null,waveformSource,fill);
+  assert.deepEqual(plan.map(entry=>[entry.asset?.url ?? entry.text,entry.start,entry.end]),[
+    ['a',0,1],['fill',1,2],['固定字幕',1.1,1.4],['b',2,3],['c',3,4],['late',5,6]]);
+});
+
 test('timeline picture tail trims keep draft playback speed and trailing silence',()=>{
   const {timing,makePlan}=require('../src/ui/draft-transport.js');
   const {waveformSource}=require('../src/ui/waveform.js');

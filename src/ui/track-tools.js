@@ -71,6 +71,7 @@
 
   // A timeline tail trim limits the edited picture without changing its shot or playback rate.
   function pictureSpan(clip, shotSpan) {
+    if(clip?.videoWindow!==undefined) return clip.videoWindow;
     if (clip?.videoFit === 'hold') return clip.videoDuration;
     return Math.min(shotSpan, clip?.videoDuration ?? shotSpan);
   }
@@ -105,6 +106,63 @@
     return gaps;
   }
 
+  // Keep empty insertions with their owning candidate, including after the last shot.
+  function reservedVideoCells(cells) {
+    return cells.flatMap(({clip,index})=>(clip.videoGaps ?? []).map(gap=>({...gap,index,gap,anchor:clip})));
+  }
+
+  function insertVideoGap(cells, anchor, side) {
+    const cell=cells.find(item=>item.clip===anchor);
+    if(!cell || !['left','right'].includes(side)) return;
+    const ordered=[...cells,...reservedVideoCells(cells)].sort((a,b)=>a.start-b.start);
+    const index=ordered.indexOf(cell);
+    const before=side==='left';
+    const previousEnd=index ? ordered[index-1].start+ordered[index-1].span : 0;
+    const start=before ? Math.max(previousEnd,cell.start-cell.span) : cell.start+cell.span;
+    const gap={start,span:cell.span};
+    function pinPicture(item,start) {
+      item.clip.videoStart=start;
+      if(item.clip.videoFit!=='hold') item.clip.videoWindow=item.span;
+    }
+    let end=start+cell.span;
+    for(const next of ordered.slice(index+(before ? 0 : 1))) {
+      if(next.start>=end-1e-7) break;
+      if(next.gap) next.gap.start=end;
+      else pinPicture(next,end);
+      end+=next.span;
+    }
+    // The source and a future fill share a physical lane even in legacy, implicit layouts.
+    pinPicture(cell,anchor.videoStart ?? cell.start);
+    (anchor.videoGaps ??= []).push(gap);
+    return gap;
+  }
+
+  function normalizeVideoGaps(gaps) {
+    if(!Array.isArray(gaps) || gaps.some(gap=>!Number.isFinite(gap?.start) || gap.start<0 ||
+        !Number.isFinite(gap.span) || gap.span<=0 || gap.start+gap.span>Number.MAX_SAFE_INTEGER)) throw Error('视频轨空位范围无效。');
+    return gaps.map(({start,span})=>({start,span}));
+  }
+
+  function videoGroupLeaders(clips,lanes=candidateVideoLanes(clips)) {
+    const seen=new Set();
+    return clips.filter((clip,index)=>{
+      if(!clip.videoGroup) return true;
+      const key=lanes[index]+'/'+clip.videoGroup;
+      if(seen.has(key)) return false;
+      seen.add(key);
+      return true;
+    });
+  }
+
+  function joinedVideoSequence(shot,focus) {
+    if(!focus?.videoGroup) return [];
+    const variants=shot.filter(clip=>Boolean(clip.mirror)===Boolean(focus.mirror));
+    const lanes=candidateVideoLanes(variants);
+    const lane=lanes[variants.indexOf(focus)];
+    return variants.filter((clip,i)=>clip.enabled!==false && clip.videoGroup===focus.videoGroup && lanes[i]===lane)
+      .sort((a,b)=>a.videoStart-b.videoStart);
+  }
+
   // Solo monitors a physical video track. Distinct placements on that track
   // play in time order even when their montage alternatives share one owner.
   function soloLaneSequence(shot, focus, controls, shotSpan) {
@@ -129,7 +187,8 @@
     return !voicePriority && clip?.asset?.kind === 'video' && clip.videoStart !== undefined
       && clip.videoDuration !== undefined && clip.matchedDuration === undefined;
   }
-  const tools = { splitRanges, candidateVideoLanes, pinCandidateLanes, pictureSpan, videoLaneCells, emptyVideoCells, soloLaneSequence, usesPlacedVideoSource };
+  const tools = { splitRanges, candidateVideoLanes, pinCandidateLanes, pictureSpan, videoLaneCells, emptyVideoCells,
+    reservedVideoCells, insertVideoGap, normalizeVideoGaps, videoGroupLeaders, joinedVideoSequence, soloLaneSequence, usesPlacedVideoSource };
   if (typeof module === 'object' && module.exports) module.exports = tools;
   else Object.assign(window, tools);
 })();

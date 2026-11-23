@@ -6,6 +6,7 @@
     undo: ['撤销', 'Ctrl+Z'], redo: ['重做', 'Ctrl+Shift+Z'],
     split: ['分割', 'W', 'Ctrl+B'], 'trim-left': ['剪掉左侧', 'Q'], 'trim-right': ['剪掉右侧', 'E'],
     reverse: ['倒放', null], mirror: ['镜像', null], crop: ['裁剪画面', null], rotate: ['旋转', null],
+    'quick-save': ['快速保存', 'Ctrl+S'],
   };
   const defaults = () => Object.fromEntries(Object.entries(commands).map(([id, [, ...keys]]) => [id, keys]));
   const reserved = new Set([
@@ -43,6 +44,11 @@
       if (data?.version !== 1) return initial;
       for (const [id, slots] of Object.entries(initial)) {
         const saved = data.bindings?.[id];
+        if (id === 'quick-save' && saved === undefined) {
+          // Earlier settings could already assign Ctrl+S to a clip command.
+          initial[id] = slots.map(key => owned.has(key) ? null : key);
+          continue;
+        }
         if (!Array.isArray(saved) || saved.length !== slots.length) return defaults();
         for (const key of saved) {
           if (key === null) continue;
@@ -84,7 +90,8 @@
     dialog.className = 'cloud-settings-dialog';
     dialog.setAttribute('aria-labelledby', 'cut-shortcuts-title');
     dialog.innerHTML = '<header class="cloud-settings-heading"><h2 id="cut-shortcuts-title" tabindex="-1" autofocus>快捷键</h2></header>' +
-      '<div class="cloud-settings-body"><h3>片段剪辑</h3><p class="cloud-settings-muted">选中键位后按下新组合键。按 Esc 取消录制。</p>' +
+      '<div class="cloud-settings-body"><p class="cloud-settings-muted">选中键位后按下新组合键。按 Esc 取消录制。</p>' +
+      '<h3>工程</h3><div class="project-shortcut-list"></div><h3>片段剪辑</h3>' +
       '<div class="cut-shortcut-list"></div><output id="cut-shortcuts-status" role="status"></output></div>' +
       '<footer class="cloud-settings-actions"><button type="button" id="cut-shortcuts-reset">恢复默认</button>' +
       '<button type="button" id="cut-shortcuts-close">完成</button></footer>';
@@ -115,7 +122,7 @@
       slots.className = 'cut-shortcut-slots';
       title.textContent = label;
       row.append(title, slots);
-      list.append(row);
+      (id === 'quick-save' ? dialog.querySelector('.project-shortcut-list') : list).append(row);
       bindings[id].forEach((_, slot) => {
         const group = document.createElement('span'), bind = document.createElement('button'), clear = document.createElement('button');
         group.className = 'cut-shortcut-key';

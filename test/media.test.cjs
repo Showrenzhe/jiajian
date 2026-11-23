@@ -166,6 +166,44 @@ async function frameColor(file, seconds) {
   return { red, green, blue };
 }
 
+test('filled video insertions reopen and play in lane order in an ordinary montage export',async t=>{
+  const {catalog,output}=await fixtureDirectory(t);
+  const {saveProject,loadProject}=require('../src/project-format.cjs');
+  const project=path.join(output,'相邻画面.sdworkbench');
+  const anchor={id:'red',start:0,end:.5,videoStart:.5,videoLane:0,videoGroup:'local',videoWindow:.5};
+  const fill={id:'green',start:0,end:.5,videoStart:0,videoLane:0,videoGroup:'local',videoDuration:.5,videoFit:'hold'};
+  const config={...montage,ratio:'16:9',musicIds:[],keepAudio:true,count:1,
+    shots:[[anchor,fill],[{id:'blue',start:0,end:.5,videoStart:1,videoGaps:[{start:1.5,span:.5}]}]]};
+  await saveProject(project,config,catalog);
+  const reopened=await loadProject(project);
+  assert.deepEqual(reopened.config.shots,config.shots);
+  assert.throws(()=>planMontage({...config,count:2},catalog),/生成数量/,'相邻片段属于同一组合');
+  const [plan]=planMontage(reopened.config,reopened.assets);
+  assert.equal(plan.duration,2);
+  const batch=await exportBatch([plan],output);
+  assert.deepEqual(batch.failures,[]);
+  const [green,red,blue,gap]=await Promise.all([.25,.75,1.25,1.75].map(t=>frameColor(batch.results[0].path,t)));
+  assert.ok(green.green>green.red*2 && red.red>red.green*2 && blue.blue>blue.red*2 && Math.max(...Object.values(gap))<15);
+
+  const voice={...catalog.get('music'),duration:.5};
+  const referenceCatalog=new Map(catalog).set('voice',voice);
+  const shots=[[{id:'blue',start:0,end:1}],[{...anchor,videoStart:1,end:1,videoWindow:1},{...fill,videoStart:2,end:1,videoDuration:1}]];
+  const [reference]=planMontage({...config,shots,priority:'voice',voiceAlignment:'reference',narrationId:'voice',narrationVolume:100},referenceCatalog);
+  const referenceBatch=await exportBatch([reference],output);
+  assert.deepEqual(referenceBatch.failures,[]);
+  const {timing,makePlan}=require('../src/ui/draft-transport.js');
+  const {waveformSource}=require('../src/ui/waveform.js');
+  const draftShots=shots.map(shot=>shot.map(clip=>({...clip,asset:{...catalog.get(clip.id),url:clip.id}})));
+  const state={shots:draftShots,settings:[{},{}],whole:[{asset:{...voice,url:'voice'}}],segments:[[],[]],music:[],muted:new Set(),
+    pack:{global:[],composites:[],wholeNarration:[]},priority:'voice',voiceAlignment:'reference',voiceVolume:()=>100};
+  const draft=makePlan(state,timing(state,c=>c.end-c.start,()=>null),()=>null,waveformSource);
+  for(const [time,color] of [[1.25,'red'],[2.25,'green']]) {
+    assert.equal(draft.find(entry=>entry.visual && entry.start<=time && entry.end>time)?.asset.url,color);
+    const frame=await frameColor(referenceBatch.results[0].path,time);
+    assert.ok(frame[color]>Math.max(...Object.entries(frame).filter(([key])=>key!==color).map(([,v])=>v))*2);
+  }
+});
+
 async function toneAt(media, position) {
   const pcm = await ffmpeg(['-ss', position, '-i', media, '-t', '0.1', '-vn', '-ac', '1', '-ar', '8000', '-f', 's16le', 'pipe:1']);
   assert.ok(pcm.length >= 1000);
@@ -834,6 +872,25 @@ test('exports enabled picture candidates and mutes original audio only in the se
   assert.ok((await frameColor(file, .2)).red > 220);
   assert.equal(await toneAt(file, '0.2'), 0);
   assert.ok(Math.abs(await toneAt(file, '0.7') - 440) < 25);
+});
+
+test('muting one instance preserves another use of its source and independent narration in the exported audio', async (t) => {
+  const {catalog,output}=await fixtureDirectory(t);
+  const red={id:'red',start:0,end:.75,volume:37};
+  const config={...montage,shots:[[{...red,sourceMuted:true}],[red]],count:1,keepAudio:true,musicIds:[],
+    priority:'picture',narrationMode:'segmented',segmentNarrationIds:[['music'],[]]};
+  const [plan]=planMontage(config,catalog);
+  assert.deepEqual(plan.clips.map(clip=>clip.volume),[0,.37]);
+  const [withMusic]=planMontage({...config,segmentNarrationIds:[[],[]],musicIds:['otherMusic']},catalog);
+  const batch=await exportBatch([plan,withMusic],output);
+  assert.deepEqual(batch.failures,[]);
+  const file=batch.results[0].path;
+  const [voice,quiet,original]=await Promise.all(['0.1','0.52','0.95'].map(time=>toneAt(file,time)));
+  assert.ok(Math.abs(voice-660)<45,'独立口播保持 660 Hz');
+  assert.equal(quiet,0,'静音实例在口播结束后安静');
+  assert.ok(Math.abs(original-440)<45,'后一实例播放同一原片的 440 Hz 原声');
+  assert.ok(Math.abs(await toneAt(batch.results[1].path,'0.1')-880)<45,'片段静音时配乐仍播放');
+  assert.throws(()=>planMontage({...config,shots:[[{...red,sourceMuted:'true'}]]},catalog),/静音状态/);
 });
 
 test('applies candidate original volume and narration gain to rendered audio', async (t) => {

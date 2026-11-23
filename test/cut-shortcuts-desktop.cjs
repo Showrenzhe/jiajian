@@ -90,7 +90,12 @@ async function check(dir) {
     await mouseClick(host+' .video-cut-ruler',.32);
     await openSettings();
     assert.equal(await label('split'), 'W / Ctrl+B');
-    assert.equal(await read('document.querySelectorAll("#cut-shortcuts-dialog .cut-shortcut-row").length'),9);
+    assert.equal(await read('document.querySelectorAll("#cut-shortcuts-dialog .cut-shortcut-row").length'),10);
+    assert.equal(await label('quick-save'), 'Ctrl+S');
+    await click(bind('split'));
+    await key('s',2);
+    assert.match(await read('document.querySelector("#cut-shortcuts-status").textContent'), /已分配.*快速保存/);
+    await key('Escape');
     if (process.env.JIAJIAN_SHORTCUT_SCREENSHOT) {
       const shot = process.env.JIAJIAN_SHORTCUT_SCREENSHOT;
       await fs.mkdir(path.dirname(shot), {recursive:true});
@@ -122,6 +127,12 @@ async function check(dir) {
     assert.equal(await count(),1,'已解除的主键和备用键都不得生效');
     await key('k');
     assert.equal(await count(),2);
+    await key('s',2);
+    await wait('document.querySelector("#notice").textContent.includes("工程已保存") && !document.querySelector("#save-project").disabled');
+    assert.match(await read('document.querySelector("#notice").textContent'), /应用裁剪/);
+    assert.equal(await count(),2,'快速保存应保留正在调整的两个片段');
+    const savedClip = JSON.parse(await fs.readFile(file, 'utf8')).config.shots[0][0];
+    assert.equal(savedClip.sourceEdit, undefined, '快速保存应仅写入已经应用的编辑');
     await key('r');
     const rotation = 'document.querySelector('+JSON.stringify(button('rotate'))+').title';
     assert.match(await read(rotation),/当前 90°.*R/);
@@ -157,6 +168,16 @@ async function check(dir) {
     await reload();
     assert.equal(await label('split'),'K');
     assert.equal(await label('mirror'),'Ctrl+Z');
+    await read(`(() => {
+      const key = 'jiajian.cut-shortcuts.v1', saved = JSON.parse(localStorage.getItem(key));
+      delete saved.bindings['quick-save'];
+      saved.bindings.rotate = ['Ctrl+S'];
+      localStorage.setItem(key, JSON.stringify(saved));
+    })()`);
+    await reload();
+    assert.equal(await label('split'),'K');
+    assert.equal(await label('rotate'),'Ctrl+S');
+    assert.equal(await label('quick-save'),'');
     await openSettings();
     await click('#cut-shortcuts-reset');
     assert.equal(await label('split'),'W / Ctrl+B');

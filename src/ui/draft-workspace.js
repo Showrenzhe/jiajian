@@ -52,7 +52,8 @@
       onState(draft ? 'saved' : 'idle');
     }
 
-    function stage(name, configKey) {
+    function stage(name, configKey, { ensureDraft = false } = {}) {
+      if (ensureDraft && !draft) savedKey = undefined;
       const key = keyOf(name, configKey);
       if (pending?.key === key || (!pending && !inFlight && key === savedKey)) return;
       clearTimeout(timer);

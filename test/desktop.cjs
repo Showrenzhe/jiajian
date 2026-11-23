@@ -724,6 +724,11 @@ async function run() {
   await runInWindow('[...document.querySelectorAll(".sequence-dialog[open] button")].find(b=>b.textContent==="参与混剪").click()');
   const trackView = value => runInWindow(`(() => { const v=document.querySelector("#timeline-view"); v.value=${JSON.stringify(value)}; v.dispatchEvent(new Event("change")); })()`);
   await trackView('time');
+  assert.ok(await runInWindow(`(() => {
+    const header = document.querySelector('.timeline-header').getBoundingClientRect();
+    const ruler = document.querySelector('#timeline-clock .sequence-ruler').getBoundingClientRect();
+    return document.querySelector('#track-selection-info') === null && ruler.top <= header.bottom + 3;
+  })()`), '选中片段后，时间尺应紧接轨道工具栏');
   const muteVideo = '[data-control-key="vis0"] [data-track-action="muted"]';
   await waitFor(`(() => {
     const b=document.querySelector('${muteVideo}');
@@ -757,16 +762,13 @@ async function run() {
   assert.equal(await runInWindow('document.querySelector("#preview").playbackRate'), 0.5);
   await runInWindow('(() => { const speed = document.querySelector("#shots .speed"); speed.value = "1"; speed.dispatchEvent(new Event("input")); speed.dispatchEvent(new Event("blur")); })()');
   await runInWindow('(() => { const head = document.querySelector("#track-playhead"); head.value = "0.65"; head.dispatchEvent(new Event("input")); })()');
-  await waitFor('Math.abs(document.querySelector("#preview").currentTime - 0.65) < 0.04 && !document.querySelector("#track-split").disabled', '播放头应定位并允许分割');
-  await runInWindow('document.querySelector("#track-split").click()');
-  assert.equal(await runInWindow('document.querySelectorAll("#shots .shot").length'), 4);
-  assert.equal(await runInWindow('document.querySelector(\'#shots .shot[data-shot-index="1"] .start\').valueAsNumber'), 0.65);
+  await waitFor('Math.abs(document.querySelector("#preview").currentTime - 0.65) < 0.04', '播放头应定位');
+  assert.equal(await runInWindow('document.querySelectorAll(".track-toolbar #track-split, .track-toolbar #track-toggle-audio").length'), 0);
+  await runInWindow('(() => { const interval = document.querySelector("#track-slice-interval"); interval.value = "0.5"; interval.dispatchEvent(new Event("input")); document.querySelector("#track-slice").click(); })()');
+  assert.equal(await runInWindow('document.querySelectorAll("#shots .shot").length'), 5);
   await runInWindow('document.querySelector("#track-undo").click()');
   assert.equal(await runInWindow('document.querySelectorAll("#shots .shot").length'), 3);
   await runInWindow('document.querySelector("#track-redo").click()');
-  assert.equal(await runInWindow('document.querySelectorAll("#shots .shot").length'), 4);
-  await runInWindow('document.querySelector("#track-undo").click(); document.querySelector("#shots .preview-asset").click();');
-  await runInWindow('(() => { const interval = document.querySelector("#track-slice-interval"); interval.value = "0.5"; interval.dispatchEvent(new Event("input")); document.querySelector("#track-slice").click(); })()');
   assert.equal(await runInWindow('document.querySelectorAll("#shots .shot").length'), 5);
   await runInWindow('document.querySelector("#track-undo").click(); document.querySelector("#add-shot").click(); document.querySelector("#track-clean").click();');
   assert.equal(await runInWindow('document.querySelectorAll("#shots .shot").length'), 3);

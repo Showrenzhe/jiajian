@@ -197,6 +197,7 @@ async function launchDesktop({
   const lookupByPath = new Map();
   const recent = await readHistory(dataDirectory);
   const projects = await readProjectLibrary(dataDirectory);
+  let boundProject;
   const resolveOutputFile=(file)=>resolveOutput(recent,file);
   const performanceCache = createPerformanceCache(dataDirectory, {inspect:inspectAsset, thumbnail:createVideoThumbnail, encode:createTrackProxy});
   const sourceEditDirectory = path.join(dataDirectory, 'source-edits');
@@ -1262,7 +1263,19 @@ async function launchDesktop({
         await saveProject(filePath, config, catalog, { overwrite: true });
       }
       const libraryWarning = await trackProject(filePath);
-      return { name: path.basename(filePath, path.extname(filePath)), libraryWarning };
+      boundProject = { token: randomUUID(), filePath };
+      return { name: path.basename(filePath, path.extname(filePath)), projectToken: boundProject.token, libraryWarning };
+    } finally {
+      pickerOpen = false;
+    }
+  });
+
+  handle('workbench:quick-save-project', async ({ token, config }) => {
+    if (!boundProject || token !== boundProject.token) throw new Error('当前工程文件已切换，请重新打开或使用“保存工程”。');
+    if (job || pickerOpen) throw new Error('请先完成当前操作。');
+    pickerOpen = true;
+    try {
+      await saveProject(boundProject.filePath, config, catalog, { overwrite: true });
     } finally {
       pickerOpen = false;
     }
@@ -1327,7 +1340,9 @@ async function launchDesktop({
     pickerOpen = true;
     try {
       const { config, assets, ...meta } = await drafts.open(id);
-      return { ...publicDraft(meta), ...(await restoreCatalog(config, assets)) };
+      const restored = await restoreCatalog(config, assets);
+      boundProject = undefined;
+      return { ...publicDraft(meta), ...restored };
     } finally {
       pickerOpen = false;
     }
@@ -1351,7 +1366,8 @@ async function launchDesktop({
       const { config, assets } = await loadProject(projectPath,resolveOutputFile,performanceCache.inspectCached,sourceEditDirectory);
       const restored = await restoreCatalog(config, assets);
       const libraryWarning = await trackProject(projectPath);
-      return { name: path.basename(projectPath, path.extname(projectPath)), ...restored, libraryWarning };
+      boundProject = { token: randomUUID(), filePath: projectPath };
+      return { name: path.basename(projectPath, path.extname(projectPath)), projectToken: boundProject.token, ...restored, libraryWarning };
     } finally {
       pickerOpen = false;
     }

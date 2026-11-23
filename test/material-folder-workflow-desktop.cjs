@@ -136,6 +136,14 @@ async function run() {
     }, '删除反映到自动草稿和本地子目录');
     assert.deepEqual(await fs.readFile(still),original);
     assert.equal(await read(tracks),1);
+    await back();
+    await click(folder('产品')); await key('Delete',46);
+    await wait(el('#material-remove-dialog')+'.open && '+el('#material-remove-detail')+'.textContent.includes("1 个对应片段")','移除有在用视频归类的目录应确认影响');
+    await click('#material-remove-cancel');
+    await wait('document.activeElement==='+el(folder('产品'))+' && '+tracks+'===1','取消保留整个目录与片段并回来');
+    await key('Delete',46); await click('#material-remove-confirm');
+    await wait('!'+el(folder('产品'))+' && '+tracks+'===0', '一次删除目录和目录内在用视频');
+    await click('#track-undo'); await wait('!!'+el(folder('产品'))+' && '+tracks+'===1', '一次撤销恢复目录与片段');
     console.log('素材库文件与目录导入、原生拖动归类、嵌套目录重命名、草稿目录同步、重开及删除均通过。');
   } finally {wc.debugger.detach(); win.destroy();}
 }

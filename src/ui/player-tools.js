@@ -1,5 +1,101 @@
 'use strict';
 
+// Keep the last picture in the monitor until the incoming decoder submits its
+// requested frame. Steady playback stays on the native video surface.
+function createPreviewFrameHandoff(stage) {
+  const canvas = document.createElement('canvas');
+  canvas.className = 'preview-frame-hold';
+  canvas.setAttribute('aria-hidden', 'true');
+  let pendingFrame, videoCallback, incoming;
+
+  function cancelReveal() {
+    cancelAnimationFrame(pendingFrame);
+    if (videoCallback !== undefined) incoming.cancelVideoFrameCallback(videoCallback);
+    videoCallback = undefined;
+    incoming = undefined;
+  }
+  function clear(parent) {
+    if (parent && canvas.parentElement !== parent) return;
+    cancelReveal();
+    canvas.remove();
+  }
+  function copyFrame(source) {
+    const width = source.videoWidth || source.naturalWidth, height = source.videoHeight || source.naturalHeight;
+    if (!width || !height || (source.tagName === 'VIDEO' && source.readyState < 2)) return false;
+    const rect = source.getBoundingClientRect(), fit = getComputedStyle(source).objectFit;
+    if (!rect.width || !rect.height) return false;
+    const fitScale = fit === 'cover' ? Math.max : Math.min;
+    const scale = Math.min(1, 1920 / Math.max(width, height),
+      devicePixelRatio * fitScale(rect.width / width, rect.height / height));
+    canvas.width = Math.max(1, Math.round(width * scale));
+    canvas.height = Math.max(1, Math.round(height * scale));
+    try { canvas.getContext('2d').drawImage(source, 0, 0, canvas.width, canvas.height); }
+    catch { return false; }
+    canvas.style.objectFit = fit;
+    return true;
+  }
+  function capture() {
+    cancelReveal();
+    if (canvas.isConnected) return;
+    const draft = stage.querySelector('.draft-transport-preview:not([hidden])');
+    const parent = draft || stage.querySelector('.player-picture:not([hidden]):not([data-track-hidden])');
+    if (!parent) return;
+    // Independently positioned video lanes share the monitor; the highest
+    // z-index is the visible source, matching the timeline compositor.
+    const source = draft ? [...draft.querySelectorAll('.draft-main:not([hidden])')]
+      .sort((a,b) => Number(b.style.zIndex) - Number(a.style.zIndex))[0]
+      : parent.querySelector('video:not([hidden]), img:not([hidden])');
+    if (source?.checkVisibility() && copyFrame(source)) parent.append(canvas);
+  }
+  function moveTo(parent) {
+    if (canvas.isConnected && parent !== canvas.parentElement) {
+      cancelReveal();
+      parent.append(canvas);
+    }
+  }
+  function retain(source) {
+    if (!source.checkVisibility() || !copyFrame(source)) return false;
+    cancelReveal();
+    source.parentElement.append(canvas);
+    return true;
+  }
+  function revealWhen(source) {
+    if (!canvas.isConnected || incoming === source) return;
+    cancelReveal();
+    incoming = source;
+    const video = source.tagName === 'VIDEO';
+    let presented = !video, copied = false;
+    function ready() {
+      return source.currentSrc === source.src && (video ? source.readyState >= 2 && !source.seeking
+        : source.complete && source.naturalWidth > 0);
+    }
+    function check() {
+      if (incoming !== source) return;
+      if (ready()) {
+        if (presented && copied) { clear(); return; }
+        if (!copied) copied = copyFrame(source);
+        // A warmed or paused video may already have submitted its only frame.
+        // Show that decoded frame and wait for native presentation to resume.
+        if (copied && !presented) return;
+      }
+      pendingFrame = requestAnimationFrame(check);
+    }
+    if (video) {
+      function onPresented() {
+        if (incoming !== source) return;
+        videoCallback = undefined;
+        if (!ready()) { videoCallback = source.requestVideoFrameCallback(onPresented); return; }
+        presented = true;
+        cancelAnimationFrame(pendingFrame);
+        pendingFrame = requestAnimationFrame(check);
+      }
+      videoCallback = source.requestVideoFrameCallback(onPresented);
+    }
+    pendingFrame = requestAnimationFrame(check);
+  }
+  return { capture, moveTo, revealWhen, retain, clear };
+}
+
 function mountStereoMeter(stage, meter) {
   const bars = [...meter.children];
   const sources = new WeakMap();

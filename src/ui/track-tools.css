@@ -33,12 +33,6 @@
 .app-frame[data-mode="montage"] .track-interval input { width: 50px; }
 .app-frame[data-mode="montage"] #track-zoom { width: 78px; accent-color: var(--accent); }
 
-.app-frame[data-mode="montage"] #track-selection-info {
-  padding: 4px 11px;
-  background: var(--well);
-  overflow-wrap: anywhere;
-}
-.app-frame[data-mode="montage"] #track-selection-info:empty { display: none; }
 .app-frame[data-mode="montage"] #track-playhead-row {
   display: grid;
   grid-template-columns: auto minmax(0, 1fr) minmax(63px, auto);
@@ -152,27 +146,4 @@
 }
 .app-frame[data-mode="montage"] #track-more-options:popover-open { display: grid; }
 .app-frame[data-mode="montage"] #track-more-options[popover] .track-view-options { padding-top: 6px; border-top: 1px solid var(--hairline); }
-.app-frame[data-mode="montage"] .timeline-position {
-  display: flex;
-  align-items: center;
-  gap: 12px;
-  padding-inline: 12px;
-  background: color-mix(in srgb, var(--surface) 72%, transparent);
-}
-.app-frame[data-mode="montage"] .timeline-position #track-selection-info {
-  min-width: 0;
-  padding: 3px 0;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-  background: transparent;
-}
-.app-frame[data-mode="montage"] .timeline-position #track-playhead-row {
-  flex: 1;
-  min-width: 100px;
-  background: transparent;
-}
-.app-frame[data-mode="montage"] .timeline-position:has(#track-playhead-row:not([hidden])) #track-selection-info {
-  max-width: 42%;
-}
 .app-frame[data-mode="montage"] #montage-pane:has(#shots-empty:not([hidden])) .track-toolbar:has(#track-reset:disabled) #track-more { display: none; }

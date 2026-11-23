@@ -362,12 +362,14 @@ async function check() {
     await click(tool('apply'));
     await wait('!'+q('#timeline-cut-editor')+'.checkVisibility() && '+approx('parseFloat('+duration+')',4.5),'应用后主时间线时长更新');
     assert.equal(await read(q(monitor)),null,'应用后应还原轨道播放器');
-    win.setContentSize(1440,960);
-    await wait('innerWidth>1200','恢复标准窗口');
     await click('#track-undo');
     await wait(approx('parseFloat('+duration+')',6),'工程一次撤销应还原整个素材剪辑');
     await click('#track-redo');
     await wait(approx('parseFloat('+duration+')',4.5),'工程重做应恢复剪辑');
+    // Finish the pointer-driven undo/redo pair in the same window in which Apply was clicked.
+    // Moving the native window between clicks can invalidate Chromium's compositor hit region.
+    win.setContentSize(1440,960);
+    await wait('innerWidth===1440 && innerHeight===960','恢复标准窗口');
     const applied=await save('裁剪调序');
     const [a,b]=applied.shots;
     assert.deepEqual(b,original.shots[1],'第二个同源实例应保留原入出点、音量和顺序');

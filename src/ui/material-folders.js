@@ -91,7 +91,7 @@ window.createMaterialFolderTree = function createMaterialFolderTree() {
     return ids;
   }
   return {
-    rows, sources, grants, files, children, uniqueName, importDirectory, read,
+    rows, sources, grants, files, children, descendants, uniqueName, importDirectory, read,
     create(scope, parentId, name, siblings) {
       const row = rowFor(scope, parentId, name, siblings);
       rows.set(row.id, row);

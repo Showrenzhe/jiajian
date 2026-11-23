@@ -50,7 +50,7 @@ async function run() {
     const end = Date.now() + 10000;
     while (!await read(condition)) {
       if (Date.now() > end) throw new Error(label + '；' + await read('[' + el('#material-message') + '.textContent,'
-        + el('#preview-name') + '.textContent,' + el('#still-preview') + '.hidden,' + el('#still-preview') + '.naturalWidth,document.activeElement.title].join(" / ")'));
+        + el('#preview-name') + '.textContent,' + el('#still-preview') + '.hidden,' + el('#still-preview') + '.naturalWidth,document.activeElement.outerHTML.slice(0,110)].join(" / ")'));
       await delay(40);
     }
   }
@@ -77,6 +77,7 @@ async function run() {
   async function key(name, code, modifiers = 0) {
     for (const type of ['rawKeyDown', 'keyUp']) {
       await send('dispatchKeyEvent', { type, key: name, code: name === 'z' ? 'KeyZ' : name, windowsVirtualKeyCode: code, modifiers });
+      if (type === 'rawKeyDown' && name === 'Enter') await send('dispatchKeyEvent', {type:'char',key:name,code:name,text:'\r',windowsVirtualKeyCode:code,modifiers});
     }
   }
   async function dropFiles(selector, files) {
@@ -134,6 +135,12 @@ async function run() {
     await mouseClick('#material-import');
     await mouseClick('#material-import-files');
     await wait(tracks + '===1 && !!' + el(red), '导入视频应同时显示素材和一个分镜');
+    const lock = '[data-control-key="vis0"] [data-track-action="locked"]';
+    await click(lock);
+    await wait(el(lock)+'.ariaPressed==="true" && document.activeElement==='+el(lock), '锁定反馈并恢复轨头焦点');
+    await mouseClick(red); await key('Delete',46);
+    await wait(el('#material-message')+'.textContent.includes("请先解锁视频轨 1") && !'+el('#material-remove-dialog')+'.open && !!'+el(red)+' && '+tracks+'===1','锁定轨道中有实例时保留整项并指明需解锁的轨道');
+    await click(lock);
     await pickFolder();
     await wait('!!' + el(folder), '应显示导入的文件夹');
     const icon = el(folder + ' svg');
@@ -175,7 +182,12 @@ async function run() {
       await fs.writeFile(output, Buffer.from(capture.data, 'base64'));
     }
     await click(menu);
-    await wait('!' + el(red) + ' && ' + tracks + '===1', '右键移除应隐藏素材并保留在用分镜');
+    await wait(el('#material-remove-dialog') + '.open && document.activeElement.id==="material-remove-cancel"', '右键移除在用视频应默认聚焦取消');
+    assert.ok(await read(el('#material-remove-detail') + '.textContent.includes("1 个对应片段")'));
+    await key('Enter',13);
+    await wait('!' + el('#material-remove-dialog') + '.open && document.activeElement===' + el(red) + ' && ' + tracks + '===1', '默认回车取消并还回素材焦点');
+    await rightClick(red); await click(menu); await click('#material-remove-confirm');
+    await wait('!' + el(red) + ' && ' + tracks + '===0', '右键确认移除后清除在用片段');
     await undo();
     await wait(el(red) + '?.dataset.used==="true" && ' + tracks + '===1', 'Ctrl+Z 应恢复素材及已用标记');
 
@@ -183,7 +195,11 @@ async function run() {
     await click(still + ' ~ .material-select');
     await rightClick(still);
     await click(menu);
-    await wait('!' + el(red) + ' && !' + el(still) + ' && ' + tracks + '===1', '右键已勾选项应一起移除已用视频和未用图片');
+    await wait(el('#material-remove-dialog') + '.open && '+ el('#material-remove-detail')+'.textContent.includes("2 项素材")', '多选提示应包含全部选中项');
+    await key('Escape',27);
+    await wait(count('#material-list input:checked')+'===2 && '+tracks+'===1 && !'+el('#material-remove-dialog')+'.open', 'Esc 取消后保留原多选和片段');
+    await rightClick(still); await click(menu); await click('#material-remove-confirm');
+    await wait('!' + el(red) + ' && !' + el(still) + ' && ' + tracks + '===0', '右键已勾选项应一起移除已用视频和未用图片');
     await undo();
     await wait('!!' + el(red) + ' && !!' + el(still), '多项移除应可一次撤销');
     await rightClick(child);
@@ -196,6 +212,24 @@ async function run() {
     await mouseClick(child);
     await key('Enter', 13);
     await wait(el('#material-breadcrumb') + '.textContent.includes("补拍镜头")', '回车应打开选中的子目录');
+    const back = '#material-breadcrumb .material-back';
+    assert.equal(await read(el(back) + '.getAttribute("aria-label")'), '返回上一级');
+    assert.equal(await read(el(back + ' use') + '.getAttribute("href")'), '#icon-chevron');
+    win.setContentSize(900, 720);
+    await wait('window.innerWidth <= 940', '应切换到紧凑布局');
+    await point(back);
+    assert.ok(await read('(() => { const bounds=' + el(back) + '.getBoundingClientRect();'
+      + 'return bounds.width >= 28 && bounds.height >= 26 && ' + el(back + ' + span') + '.clientWidth > 40; })()'),
+    '紧凑窗口应保留返回按钮命中区和可读的目录路径');
+    for (const theme of ['light', 'dark']) {
+      await wc.debugger.sendCommand('Emulation.setEmulatedMedia', { features: [{ name: 'prefers-color-scheme', value: theme }] });
+      await wait('document.documentElement.dataset.theme===' + JSON.stringify(theme), '返回按钮应跟随主题');
+      await read(el(back) + '.focus()');
+      assert.ok(await read(el(back) + '.matches(":focus-visible") && getComputedStyle(' + el(back) + ').outlineWidth === "2px"'),
+        '键盘焦点应有独立外框');
+    }
+    win.setContentSize(1400, 960);
+    await wait('window.innerWidth > 940', '恢复标准窗口');
     for (const file of [portraitVideo, portraitStill]) {
       const tile = item('material-tile', file);
       await wait(el(tile + ' img') + '?.naturalWidth > 0', '竖屏素材应载入缩略图');
@@ -209,7 +243,7 @@ async function run() {
       const target = path.parse(process.env.JIAJIAN_LIBRARY_CAPTURE);
       await fs.writeFile(path.join(target.dir, target.name + '-portrait.png'), Buffer.from(shot.data, 'base64'));
     }
-    await click('#material-breadcrumb .material-back');
+    await key('Enter', 13);
     await wait('document.activeElement===' + el(child), '返回上一级应重新聚焦原目录');
     await click('#material-breadcrumb .material-back');
     await wait('!!' + el(folder) + ' && !!' + el(red), '返回素材库应恢复根目录列表');
@@ -220,7 +254,11 @@ async function run() {
     await wait(count(folder) + '===1', '重新添加同一目录应恢复单个文件夹图标');
     await read(el(red) + '.focus()');
     await key('Delete', 46);
-    await wait('!' + el(red) + ' && ' + tracks + '===1', '素材卡片上按 Delete 应只移除库条目');
+    await wait(el('#material-remove-dialog')+'.open','素材卡 Delete 应确认使用范围');
+    await click('#material-remove-confirm');
+    await wait('!' + el(red) + ' && ' + tracks + '===0', '素材卡 Delete 移除素材及对应轨道片段');
+    await undo();
+    await wait('!!'+el(red)+' && '+tracks+'===1', '一次撤销恢复库条目与轨道');
     picks.push({ title: '选择素材文件', files: [files.red] });
     await click('#material-import');
     await click('#material-import-files');
@@ -235,22 +273,23 @@ async function run() {
     await click(fold);
     await wait(count('.sequence-video.sequence-folded .material-instance') + '===2', '折叠轨道应保留两个匹配片段');
     const foldedRing = await read('getComputedStyle(' + el('.sequence-folded .material-instance') + ', "::after").borderTopColor');
-    assert.equal(foldedRing, await read('getComputedStyle(document.documentElement).getPropertyValue("--material-match-gold").trim()'));
+    const accent = 'getComputedStyle(' + el('#timeline-selection-count') + ').color';
+    assert.equal(foldedRing, await read(accent));
     await click(fold);
     const green = item('material-tile', files.green);
     await dropFiles('#materials-heading', [files.green, nested]);
     await wait('!!' + el(green) + ' && !!' + el(child) + ' && ' + tracks + '===2', '拖入文件和文件夹只应扩充素材库');
     await wait(el(green + ' img') + '?.naturalWidth > 0 && !!' + el(green + ' .material-duration') + '?.textContent', '素材卡片应有实帧和时长');
-    const usedRing = 'getComputedStyle(' + el(green) + ',"::after").boxShadow';
-    assert.equal(await read(usedRing), 'none', '未使用的素材不显示已用光圈');
+    const usedBadge = el(green + ' .material-used');
+    assert.equal(await read(usedBadge), null, '未使用的素材没有已用徽标');
     await wait(el(folder + ' .folder-preview img') + '?.naturalWidth > 0', '素材目录应有实帧封面');
     await read('window.savedTile=' + el(green) + '; window.savedImage=window.savedTile.querySelector("img")');
     await dropFiles('.sequence-video [data-drop-shot="0"]', [files.green]);
     await wait(tracks + '===3 && ' + count('.shot') + '===2', '文件拖到已有分镜应只增加候选');
     assert.ok(await read('window.savedTile===' + el(green) + ' && window.savedImage===' + el(green + ' img')), '添加候选应复用原素材卡片及已解码帧');
-    assert.notEqual(await read(usedRing), 'none', '使用后应立刻显示外发光');
+    assert.equal(await read(usedBadge + '?.textContent'), '已用', '使用后应立刻显示文字徽标');
     await undo();
-    await wait(tracks + '===2 && ' + usedRing + '==="none"', '撤销使用后应立刻恢复原外框');
+    await wait(tracks + '===2 && !' + usedBadge, '撤销使用后应立刻移除徽标');
     await dropFiles('.sequence-video [data-drop-shot="0"]', [files.green]);
     await wait(tracks + '===3', '应可重新加入候选');
     await dropFiles('#new-shot-drop', [files.still, files.blue]);
@@ -263,10 +302,13 @@ async function run() {
         features: [{ name: 'prefers-color-scheme', value: theme }, { name: 'prefers-reduced-motion', value: 'reduce' }],
       });
       await wait('document.documentElement.dataset.theme===' + JSON.stringify(theme), '素材卡应能切换主题');
-      const glow = 'getComputedStyle(' + el('.sequence-video .material-instance') + ')';
-      assert.ok(await read(glow + '.outlineWidth === "3px" && ' + glow + '.boxShadow !== "none" && '
-        + glow + '.outlineColor === getComputedStyle(document.documentElement).getPropertyValue("--material-match-gold").trim()'),
-      '两种主题下都应有金色外框和外发光');
+      const stripe = 'getComputedStyle(' + el('.sequence-video .material-instance') + ', "::after")';
+      assert.ok(await read(stripe + '.borderTopWidth === "3px" && ' + stripe + '.borderTopColor === ' + accent
+        + ' && ' + stripe + '.boxShadow === "none"'), '两种主题下同源标记都应为系统蓝顶线');
+      assert.equal(await read('getComputedStyle(' + el(green + ' .material-thumbnail') + ').outlineColor'), await read(accent),
+        '点选素材缩略图应使用同一系统蓝');
+      assert.equal(await read('getComputedStyle(' + usedBadge + ').borderInlineStartColor'), await read(accent),
+        '已用徽标侧线应和轨道同源标记采用同一系统蓝');
       if (process.env.JIAJIAN_LIBRARY_CAPTURE) {
         const frame = await read('(() => {const r=' + el('#materials-pane') + '.getBoundingClientRect(); return {x:r.x,y:r.y,width:r.width,height:r.height,scale:1};})()');
         const shot = await wc.debugger.sendCommand('Page.captureScreenshot', { clip: frame });
@@ -281,9 +323,9 @@ async function run() {
     await mouseClick('#processed-material-list li strong');
     await wait(playing + ' && ' + el('#preview-name') + '.textContent===' + JSON.stringify(path.basename(files.music)),
       '单击素材库音频应直接试听');
-    await wait(count('.sequence-voice .material-instance') + '===1', '口播轨里的同一音频应显示金色外框');
-    assert.notEqual(await read('getComputedStyle(' + el('#processed-material-list li[data-used]') + ',"::after").boxShadow'), 'none',
-      '已经加入口播的音频卡也应发光');
+    await wait(count('.sequence-voice .material-instance') + '===1', '口播轨里的同一音频应显示同源标记');
+    assert.equal(await read(el('#processed-material-list li[data-used] .processed-used') + '?.textContent'), '已用',
+      '已经加入口播的音频卡也应有已用徽标');
     const voiceSlot = '.sequence-voice [data-voice-row="1"]';
     await click('#add-whole-track');
     await wait('!!'+el(voiceSlot+'.sequence-empty'),'添加第二条整段口播轨');
@@ -302,17 +344,48 @@ async function run() {
       '快速切换后应播放最后选中的素材');
     await click('#save-project');
     await wait(el('#notice') + '.textContent.includes("工程已保存")', '应能保存带拖入文件夹的工程');
-    const saved = JSON.parse(await fs.readFile(savedProject, 'utf8')).config;
+    const savedDocument = JSON.parse(await fs.readFile(savedProject, 'utf8'));
+    const saved = savedDocument.config;
     const roots = saved.libraryFolders.filter(row => row.parentId === null);
     assert.ok(roots.some(row => row.name === path.basename(nested)), '拖入的文件夹应作为独立根目录保存');
     picks.push({ title: '打开工程', files: [savedProject] });
     await click('#open-project');
     await wait(el('#notice') + '.textContent.includes("已打开工程") && !!' + el(child), '重开后应恢复拖入的目录');
     await wait(el(segment)+'?.textContent.includes('+JSON.stringify(path.basename(files.music))+')','重开工程后口播仍在第二镜第二轨');
+    // Load an older catalog with repeated declarations for the same source,
+    // a rendered edit of that source, and unrelated footage with the same name.
+    const duplicateProject = path.join(root, '同源目录.sdworkbench');
+    const source = savedDocument.assets.find(a=>a.path===files.red);
+    const rendered = path.join(root, '剪辑后.mp4');
+    await fs.copyFile(files.red, rendered);
+    savedDocument.assets.push({...source,id:'red-copy'}, {...source,id:'red-render',path:rendered});
+    const unrelated = savedDocument.assets.find(a=>a.path===files.blue);
+    unrelated.path = path.join(root,path.basename(files.red));
+    await fs.copyFile(files.blue, unrelated.path);
+    const repeated = saved.shots[1][0];
+    Object.assign(repeated,{id:'red-copy',videoLane:0,videoStart:1.5,videoDuration:.5,videoFit:'hold',videoGroup:'red-group'});
+    saved.shots[1].push({...repeated,id:'red-render',videoStart:2,sourceEdit:{id:'red-copy',ranges:[{start:0,end:repeated.end}]}});
+    await fs.writeFile(duplicateProject,JSON.stringify(savedDocument));
+    picks.push({title:'打开工程',files:[duplicateProject]});
+    await click('#open-project');
+    await wait(tracks+'===6 && '+count(red)+'===3', '载入同源不同 ID、同轨重复和同名独立文件');
+    await mouseClick(red); await key('Delete',46);
+    await wait(el('#material-remove-detail')+'.textContent.includes("3 个对应片段")', '统计含裁切副本的三个同源实例');
+    win.setContentSize(840,600);
+    for (const theme of ['dark','light']) {
+      await wc.debugger.sendCommand('Emulation.setEmulatedMedia',{features:[{name:'prefers-color-scheme',value:theme},{name:'prefers-reduced-motion',value:'reduce'}]});
+      await wait('document.documentElement.dataset.theme==='+JSON.stringify(theme)+' && (()=>{const d='+el('#material-remove-dialog')+',r=d.getBoundingClientRect();return d.open && d.scrollWidth===d.clientWidth && r.left>=0 && r.right<=innerWidth && r.bottom<=innerHeight && [...d.querySelectorAll("button")].every(b=>{const s=b.getBoundingClientRect();return document.elementFromPoint(s.x+s.width/2,s.y+s.height/2)===b})})()',
+        '紧凑窗口中确认文字完整、两个按钮可达 · '+theme);
+    }
+    await click('#material-remove-confirm');
+    await wait(tracks+'===3 && '+count(red)+'===1 && !!'+el(green)+' && '+el(segment)+'?.textContent.includes('+JSON.stringify(path.basename(files.music))+')',
+      '移除同源组合片段，保留同名不同源、独立口播及其他画面');
+    await undo();
+    await wait(tracks+'===6 && '+count(red)+'===3','一次撤销恢复重复片段和素材');
     for (const [i, file] of [files.red, files.still].entries()) assert.deepEqual(await fs.readFile(file), originals[i]);
     assert.ok((await fs.stat(nested)).isDirectory(), '原子目录应留在磁盘');
     assert.deepEqual(picks, []);
-    console.log('素材库点播、跨分镜金色高亮、折叠轨道、素材拖放、文件夹重开、缩略图复用及明暗外观通过。');
+    console.log('素材库点播、跨分镜同源标记、折叠轨道、素材拖放、目录返回、缩略图复用及明暗外观通过。');
   } finally {
     wc.debugger.detach();
     win.destroy();

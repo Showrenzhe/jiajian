@@ -131,7 +131,7 @@ window.mountEditTimeline = function (host, ctx) {
     return scales.sort((a,b)=>a-b);
   }
   const draftTransport=window.draftTimeline.transport(document.querySelector('.preview-stage'),{
-    previewSource:ctx.previewSource,
+    previewSource:ctx.previewSource, handoff:ctx.previewHandoff,
     tick:(time)=>{playTime=time;syncCursor();ctx.draftTick?.();}, changed:(playing)=>ctx.draftPlaybackChanged?.(playing),
   });
   function draftPlan() {
@@ -420,23 +420,24 @@ window.mountEditTimeline = function (host, ctx) {
   function closeVideoMenu() {
     if(videoMenu.matches(':popover-open')) videoMenu.hidePopover();
   }
-  // An empty project renders guides before it owns any real shots.
-  function adjacentShotIndex(slot,action,index) {
-    if(!slot.shot) return 0;
-    return action==='left' ? index : index+1;
-  }
+  videoMenu.addEventListener('toggle',()=>{if(!videoMenu.matches(':popover-open')) menuCell?.removeAttribute('data-menu-anchor');});
   function showVideoMenu(cell,x,y) {
     const slot=candidateSlots.get(cell);
     if(!slot || ctx.busy() || cell.closest('[data-track-locked]')) return;
+    menuCell?.removeAttribute('data-menu-anchor');
     menuCell=cell;
+    if(slot.clip) cell.dataset.menuAnchor='';
     keyboardCell=cell;
     const state=ctx.state();
     const index=state.shots.indexOf(slot.shot);
     if(index<0 && state.shots.length) return;
     for(const button of videoMenu.querySelectorAll('button')) {
       const action=button.dataset.action;
-      const reason=action==='delete' ? (slot.clip ? '' : '此处没有视频片段。')
-        : ctx.insertShotError(adjacentShotIndex(slot,action,index));
+      const insert=action==='left' || action==='right';
+      if(action==='mute') button.textContent=slot.clip?.sourceMuted ? '取消静音' : '静音片段';
+      const reason=!slot.clip ? '请选择视频片段。'
+        : action==='mute' && (slot.clip.asset.kind!=='video' || !slot.clip.asset.hasAudio) ? '这个片段没有原声音轨。'
+        : insert && slot.shot.length>=state.maxCandidates ? '当前分镜的候选数量已达上限。' : '';
       button.disabled=Boolean(reason);
       button.title=reason;
     }
@@ -484,12 +485,23 @@ window.mountEditTimeline = function (host, ctx) {
     const state=ctx.state(), index=state.shots.indexOf(slot.shot);
     if(state.trackControls?.['vis'+slot.lane]?.locked) return;
     if(index<0 && state.shots.length) return;
-    if(button.dataset.action==='delete') {
+    if(button.dataset.action==='mute') {
+      if(!slot.shot?.includes(slot.clip) || slot.clip?.asset.kind!=='video' || !slot.clip.asset.hasAudio) return;
+      ctx.toggleClipMute(slot.clip);
+      requestAnimationFrame(()=>(candidateNodes.get(slot.clip) ?? host).focus({preventScroll:true}));
+    } else if(button.dataset.action==='delete') {
       if(!slot.clip || !slot.shot.includes(slot.clip)) return;
       ctx.removeClip(slot.shot,slot.clip);
       ctx.afterRemove();
-    } else {
-      ctx.insertShot(adjacentShotIndex(slot,button.dataset.action,index));
+    } else if(slot.clip && slot.shot?.includes(slot.clip)) {
+      const cells=window.videoLaneCells(state.shots,shotTimes,widths)[slot.lane];
+      const gap=window.insertVideoGap(cells,slot.clip,button.dataset.action);
+      if(gap) {
+        playTime=gap.start;
+        ctx.change();
+        ctx.notify('已在视频 '+(slot.lane+1)+' 插入 '+summary(gap.span)+'空位，可从素材库拖入画面。');
+        host.focus({preventScroll:true});
+      }
     }
   });
   videoMenu.addEventListener('keydown',event=>{
@@ -763,7 +775,10 @@ window.mountEditTimeline = function (host, ctx) {
         };
         head.append(handle);
         if(heights.has(key)) node.style.setProperty('--lane-height',heights.get(key)+'px');
-      } else head.append(el('span','',label));
+      } else {
+        track.setAttribute('role','group');
+        track.setAttribute('aria-label',label);
+      }
       node.append(head,track);canvas.append(node);
       return track;
     }
@@ -815,9 +830,10 @@ window.mountEditTimeline = function (host, ctx) {
       retained.visit(0,window.pictureSpan(clip,widths[index])*rate,false,(start,end)=>ranges.push({start,end}));
       return {ranges,rate};
     }
-    const ruler=row('时间','sequence-ruler');
+    const ruler=row('时间标尺','sequence-ruler');
     const step=[.25,.5,1,2,5,10,30,60,120,300,600,1800,3600].find((v)=>v*timeScale>=55) ?? 7200;
     ruler.dataset.step=step;
+    ruler.style.setProperty('--minor-tick-spacing', (step*timeScale/5)+'px');
     drawRuler(ruler,timelineWidth);
     const videoCells=window.videoLaneCells(s.shots,shotTimes,widths);
     const depth=Math.max(1,videoCells.length);
@@ -825,8 +841,10 @@ window.mountEditTimeline = function (host, ctx) {
       const lane=row('视频 '+(j+1),'sequence-video','vis'+j);
       candidateSlots.set(lane,{lane:j,track:lane});
       const filled=videoCells[j] ?? [];
-      const gaps=window.emptyVideoCells(filled,shotTimes,widths).filter(cell=>cell.span>=1/(s.fps || 30)-1e-7);
-      for(const {index:i,clip,start,span} of filled.concat(gaps)) {
+      const reserved=window.reservedVideoCells(filled);
+      const occupied=filled.concat(reserved);
+      const gaps=window.emptyVideoCells(occupied,shotTimes,widths).filter(cell=>cell.span>=1/(s.fps || 30)-1e-7);
+      for(const {index:i,clip,start,span,gap,anchor} of occupied.concat(gaps)) {
         const b=block(lane,start,span,clip?.asset.name ?? '',clip ? (event)=>{
           focusShot=s.shots[i];focusClip=clip;voiceTarget=undefined;
           playTime=start;syncCursor();ctx.preview(clip);
@@ -835,10 +853,14 @@ window.mountEditTimeline = function (host, ctx) {
         } : undefined);
         b.dataset.dropShot=String(i);
         b.dataset.candidateIndex=String(j);
-        candidateSlots.set(b,{shot:s.shots[i],index:i,clip,lane:j,start,span,track:lane});
+        candidateSlots.set(b,{shot:s.shots[i],index:i,clip,lane:j,start,span,track:lane,gap,anchor});
         if (!clip) {
           b.classList.add('sequence-empty');
-          b.title='从素材库拖入画面，添加到分镜 '+(i+1);
+          if(gap) {
+            b.dataset.insertedGap='';
+            b.textContent='拖入画面';
+          }
+          b.title=gap ? '从素材库拖入画面，填入视频 '+(j+1)+' 的 '+summary(span)+'空位' : '从素材库拖入画面，添加到分镜 '+(i+1);
           continue;
         }
         bindMaterialSource(b, clip.sourceEdit?.asset ?? clip.asset);
@@ -855,13 +877,14 @@ window.mountEditTimeline = function (host, ctx) {
         if (clip.enabled===false) b.classList.add('sequence-disabled');
         if (clip===s.selected) b.classList.add('sequence-selected');
         const seconds=clipSpan(clip);
-        const duration=Number.isFinite(seconds) ? (clip.videoDuration===undefined ? seconds : span).toFixed(2)+' 秒' : '—';
+        const duration=Number.isFinite(seconds) ? (clip.videoDuration===undefined && clip.videoWindow===undefined ? seconds : span).toFixed(2)+' 秒' : '—';
         const name=el('span','sequence-clip-name',clip.asset.name);
         const label=el('span','sequence-clip-label');
-        const match=clip.videoDuration===undefined && Number.isFinite(clip.matchedDuration) ? clip.matchedDuration.toFixed(2)+' 秒 · 已匹配' : '';
-        label.append(name,el('span','sequence-clip-duration',match || duration));
+        const match=clip.videoWindow===undefined && clip.videoDuration===undefined && Number.isFinite(clip.matchedDuration) ? clip.matchedDuration.toFixed(2)+' 秒 · 已匹配' : '';
+        const detail=(match || duration)+(clip.sourceMuted ? ' · 已静音' : '');
+        label.append(name,el('span','sequence-clip-duration',detail));
         b.replaceChildren(label);
-        b.title=clip.asset.name+' · '+(match || '候选时长 '+duration)+(clip.asset.kind==='video' ? ' · 原片 '+clip.asset.duration.toFixed(2)+' 秒' : '')+' · 拖至视频轨下方新建轨道，Alt＋上下键换轨，Alt＋左右键移动分镜中的候选';
+        b.title=clip.asset.name+' · '+(match ? detail : '候选时长 '+detail)+(clip.asset.kind==='video' ? ' · 原片 '+clip.asset.duration.toFixed(2)+' 秒' : '')+' · 拖至视频轨下方新建轨道，Alt＋上下键换轨，Alt＋左右键移动分镜中的候选';
         b.setAttribute('aria-haspopup','menu');
         b.setAttribute('aria-keyshortcuts','Shift+F10 Control+C Control+V Alt+ArrowLeft Alt+ArrowRight Alt+ArrowUp Alt+ArrowDown');
         const frames=el('span','sequence-frames');
@@ -882,7 +905,7 @@ window.mountEditTimeline = function (host, ctx) {
         }
         b.prepend(frames);
         waveforms.add(b,clip.asset,{ranges,span:span*rate,
-          volume:clip.volume,muted:!s.keepAudio || s.muted.has(j) || !window.trackControls.allows(s.trackControls,'vis'+j,'audio')});
+          volume:clip.volume,muted:clip.sourceMuted || !s.keepAudio || s.muted.has(j) || !window.trackControls.allows(s.trackControls,'vis'+j,'audio')});
         b.ondblclick=()=>{if (clip.asset.kind==='video') ctx.cut(clip); else editShot(s,i);};
       }
     }
@@ -1210,7 +1233,7 @@ window.mountEditTimeline = function (host, ctx) {
     ctx.scroll();
   }
   function scrubAt(x) {
-    draftTransport.stop();
+    draftTransport.stopForScrub();
     const ruler=host.querySelector('.sequence-ruler .sequence-content');
     if(!ruler) return;
     const viewport=host.getBoundingClientRect();
@@ -1223,7 +1246,8 @@ window.mountEditTimeline = function (host, ctx) {
     for(const [i,shot] of (lastState?.shots ?? []).entries()) {
       const first=window.draftTimeline.chosen(shot,focusClip,lastState);
       if(!first) continue;
-      const sequence=window.soloLaneSequence(shot,first,lastState.trackControls,widths[i]);
+      const solo=window.soloLaneSequence(shot,first,lastState.trackControls,widths[i]);
+      const sequence=solo.length ? solo : window.joinedVideoSequence(shot,first);
       const lanes=window.candidateVideoLanes(shot);
       for(const candidate of sequence.length ? sequence : [first]) {
         const start=candidate.videoStart ?? shotTimes[i],end=start+window.pictureSpan(candidate,widths[i]);
@@ -1433,6 +1457,9 @@ window.mountEditTimeline = function (host, ctx) {
   function freeVideoSlot(target,source,owner,pointer,windows) {
     const slot={...target,clip:undefined,shot:owner};
     const epsilon=1e-7;
+    const reserved=Array.from(target.track?.querySelectorAll('[data-inserted-gap]') ?? [],node=>candidateSlots.get(node));
+    const gap=reserved.find(cell=>pointer>=cell.start-epsilon && pointer<cell.start+cell.span-epsilon);
+    if(gap) return {...gap,videoStart:gap.start,videoDuration:gap.span};
     const interval=referenceWindowAt(windows,pointer);
     if(!interval) {
       slot.rejection='请拖到分镜、音频或字幕的时间范围内。';
@@ -1440,9 +1467,9 @@ window.mountEditTimeline = function (host, ctx) {
     }
 
     let start=interval.start,end=interval.end;
-    for(const button of target.track?.querySelectorAll('[data-move-candidate]') ?? []) {
+    for(const button of target.track?.querySelectorAll('[data-move-candidate],[data-inserted-gap]') ?? []) {
       const other=candidateSlots.get(button);
-      if(other.clip===source?.clip) continue;
+      if(other.clip && other.clip===source?.clip) continue;
       if(other.start+other.span<=pointer+epsilon) start=Math.max(start,other.start+other.span);
       else if(other.start>pointer+epsilon) end=Math.min(end,other.start);
       else {
@@ -1472,7 +1499,7 @@ window.mountEditTimeline = function (host, ctx) {
     if(node!==drag.target) drag.placement?.remove();
     drag.target=node;
     drag.slot=slot;
-    const reason=slot ? slot.rejection || ctx.candidatePlacementError(drag.clip,slot.shot,drag.owner,slot.clip,slot.lane,slot.videoStart,undefined,slot.videoDuration) : '';
+    const reason=slot ? slot.rejection || ctx.candidatePlacementError(drag.clip,slot.shot,drag.owner,slot.clip,slot.lane,slot.videoStart,slot.gap ? slot : undefined) : '';
     drag.rejection=reason;
     dropHint.toggleAttribute('data-new-lane',Boolean(free && !reason));
     dropHint.textContent=reason || (free ? '视频 '+(slot.lane+1)+' · '+summary(slot.videoStart)+' · 时长 '+summary(slot.span) : '');
@@ -1611,11 +1638,11 @@ window.mountEditTimeline = function (host, ctx) {
     if(!cell) return;
     const index=positionAt(time).index;
     if(cell.clip) return {target:node,shot:lastState.shots[index],targetIndex:index};
-    const start=Math.max(cell.start,interval?.start ?? cell.start);
-    const end=Math.min(cell.start+cell.span,interval?.end ?? cell.start+cell.span);
+    const start=cell.gap ? cell.start : Math.max(cell.start,interval?.start ?? cell.start);
+    const end=cell.gap ? cell.start+cell.span : Math.min(cell.start+cell.span,interval?.end ?? cell.start+cell.span);
     if(end-start<1/(lastState.fps || 30)-1e-7) return;
     return {target:node,shot:cell.shot,targetIndex:cell.index,targetLane:cell.lane,
-      videoSlot:{start,span:end-start,widths,starts:shotTimes},
+      videoSlot:{start,span:end-start,widths,starts:shotTimes,...(cell.gap && {gap:cell.gap,anchor:cell.anchor})},
       highlight:{left:(start-cell.start)*timeScale,width:Math.max(2,(end-start)*timeScale-2)}};
   }
   function drawRuler(ruler,width) {
@@ -1696,7 +1723,8 @@ window.mountEditTimeline = function (host, ctx) {
   function placeAtSlot(clip,owner,slot) {
     if(!slot || ctx.busy()) return false;
     const i=ctx.state().shots.indexOf(slot.shot);
-    if(!ctx.placeCandidate(clip,slot.shot,owner,slot.clip,slot.lane,slot.videoStart,slot.videoDuration,widths)) return false;
+    const videoSlot=slot.gap ? {...slot,widths,starts:shotTimes} : undefined;
+    if(!ctx.placeCandidate(clip,slot.shot,owner,slot.clip,slot.lane,slot.videoStart,slot.videoDuration,widths,videoSlot)) return false;
     focusShot=slot.shot;focusClip=clip;voiceTarget=undefined;
     ctx.preview(clip);
     selection.selectOnly(clip);

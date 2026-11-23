@@ -133,6 +133,17 @@
 }
 .app-frame[data-mode="montage"] .draft-transport-preview .draft-main { object-fit: var(--picture-fit); }
 .player-picture[data-track-hidden] :is(img,video) { visibility:hidden; }
+.player-picture { position: relative; }
+.preview-frame-hold {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  z-index: 100999;
+  background: var(--picture-background, #15181e);
+  pointer-events: none;
+}
+.player-picture[data-track-hidden] .preview-frame-hold { visibility: hidden; }
 @container player-controls (max-width: 330px) {
   .player-control-row { gap: 2px; }
   .player-display, .player-clocks, .player-times { gap: 3px; }
