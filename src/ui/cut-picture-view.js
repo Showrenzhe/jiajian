@@ -57,7 +57,11 @@
     const resize = new ResizeObserver(paint);
     resize.observe(container);
     return {
-      update(next) { range = next || {}; watch(); },
+      update(next = {}) {
+        const changed = range.crop !== next.crop || range.mirror !== next.mirror || range.rotation !== next.rotation;
+        range = next;
+        if (changed) watch();
+      },
       destroy() {
         if (frame != null) video.cancelVideoFrameCallback(frame);
         events.forEach((name) => video.removeEventListener(name, watch));

@@ -174,6 +174,7 @@
       const isCurrent = () => generation === openedAt;
       current = window.mountVideoCutTimeline(host, clip, {
         sourceRanges: options.sourceRanges?.(clip),
+        mountMonitor: options.mountMonitor,
         commit: options.createCommit?.(clip, isCurrent) ?? ((ranges) => options.commitRanges(clip, ranges, isCurrent)),
         prepareSourceEdit: options.prepareSourceEdit,
         close: () => {

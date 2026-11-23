@@ -100,6 +100,7 @@ window.mountPlayerTools = ({ panel, getClip, isEditor, isTrack, validClip, notif
   let imageStart = null;
   let animation = 0;
   let drag;
+  let cut;
 
   const imagePlaying = () => imageStart !== null;
   const imagePosition = () => imagePlaying() ? imageTime + (performance.now() - imageStart) / 1000 : imageTime;
@@ -116,14 +117,14 @@ window.mountPlayerTools = ({ panel, getClip, isEditor, isTrack, validClip, notif
     return [Math.floor(total / 3600), Math.floor(total / 60) % 60, total % 60, frames]
       .map((part) => String(part).padStart(2, '0')).join(':');
   }
-  function updatePosition(draft = getDraft(), idle = draft ? null : getIdleDraft()) {
+  function updatePosition(draft = cut || getDraft(), idle = draft ? null : getIdleDraft()) {
     const clip = getClip();
-    const active = ready(clip);
+    const active = !draft && ready(clip);
     const timeline = draft || (idle?.end ? idle : null);
     const clipTime = clip?.asset.kind === 'image' ? imagePosition() : video.currentTime;
     const seconds = timeline ? Math.min(timeline.time,timeline.end) : active ? Math.max(clip.start,Math.min(clip.end,clipTime)) : 0;
-    const rate = fps(draft ? null : clip);
-    const timedClip = clip && validClip(clip) && (clip.asset.kind !== 'image' || isTrack());
+    const rate = fps(cut || (draft ? null : clip));
+    const timedClip = !draft && clip && validClip(clip) && (clip.asset.kind !== 'image' || isTrack());
     const length = draft?.end ?? idle?.end ?? (timedClip ? clip.end - clip.start : 0);
     const elapsed = draft ? seconds : Math.max(0, seconds - (clip?.start ?? 0));
     const currentText = timecode(elapsed, rate), endText = timecode(length, rate);
@@ -138,6 +139,7 @@ window.mountPlayerTools = ({ panel, getClip, isEditor, isTrack, validClip, notif
     const proxy = draft ? draft.proxy : !video.hidden && video.dataset.proxyFor && video.currentSrc === video.getAttribute('src') && video.readyState >= 1;
     const label = proxy ? '流畅' : '原画';
     if (qualityLabel.textContent !== label) qualityLabel.textContent = label;
+    if (cut && position.max !== String(cut.end)) position.max = cut.end;
     position.value = seconds;
     if (!draft && clip?.asset.kind === 'image' && active) onImageTime?.(clip, seconds);
   }
@@ -155,38 +157,40 @@ window.mountPlayerTools = ({ panel, getClip, isEditor, isTrack, validClip, notif
   }
   function sync() {
     const clip = getClip();
-    const draft = getDraft();
+    const draft = cut || getDraft();
     const idle = draft ? null : getIdleDraft();
     const timelineView = Boolean(draft || idle?.end);
     find('#preview-heading').hidden = timelineView;
-    find('#draft-preview-heading').hidden = !timelineView;
+    find('#draft-preview-heading').hidden = !timelineView || Boolean(cut);
+    find('#cut-preview-heading').hidden = !cut;
+    find('#cut-preview-name').hidden = !cut;
     find('#preview-meta').hidden = timelineView;
-    panel.setAttribute('aria-labelledby', timelineView ? 'draft-preview-heading' : 'preview-heading');
+    panel.setAttribute('aria-labelledby', cut ? 'cut-preview-heading' : timelineView ? 'draft-preview-heading' : 'preview-heading');
     if (!clip && !draft && isEditor()) {
       find('#preview-hint').textContent = idle?.end ? '播放时间线，或选择素材单独预览' : '在素材库或轨道选择一个素材';
     }
     transport.hidden = !isEditor();
     video.controls = !isEditor();
     const active = Boolean(draft) || ready(clip);
-    play.disabled = !active && !idle?.end;
-    for (const button of panel.querySelectorAll('.player-buttons button')) button.disabled = !active;
-    position.disabled = !active;
+    play.disabled = Boolean(cut?.busy || (!active && !idle?.end));
+    for (const button of panel.querySelectorAll('.player-buttons button')) button.disabled = !active || Boolean(cut?.busy);
+    position.disabled = !active || Boolean(cut?.busy);
     position.min = active && !draft ? clip.start : 0;
     position.max = draft?.end ?? (active ? clip.end : 1);
     const playing = draft?.playing ?? (active && (clip.asset.kind === 'image' ? imagePlaying() : !video.paused));
     play.setAttribute('aria-pressed', String(playing));
     play.setAttribute('aria-label', playing ? '暂停' : '播放');
-    play.title = `${play.getAttribute('aria-label')}${timelineView ? '时间线' : ''}（空格）`;
+    play.title = `${play.getAttribute('aria-label')}${cut ? '片段' : timelineView ? '时间线' : ''}（空格）`;
     find('#player-ratio').value = ratio.value;
     find('.player-ratio-label').textContent = ratio.value;
-    find('#player-ratio').disabled = ratio.matches(':disabled');
+    find('#player-ratio').disabled = Boolean(cut) || ratio.matches(':disabled');
     frame.toggleAttribute('data-project-frame', Boolean(clip && isTrack()));
     const [width, height] = ratio.value.split(':').map(Number);
     stage.style.setProperty('--picture-ratio', width / height);
     stage.style.setProperty('--picture-background', document.querySelector('#background-color').value);
     stage.style.setProperty('--picture-fit', document.querySelector('#fit').value === 'fill' ? 'cover' : 'contain');
     quality.disabled = !(draft ? draft.canProxy : canProxy(clip?.asset));
-    zoom.disabled = !(draft ? draft.visual : clip && !frame.hidden && clip.asset.kind !== 'audio');
+    zoom.disabled = !cut && !(draft ? draft.visual : clip && !frame.hidden && clip.asset.kind !== 'audio');
     float.disabled = !draft && (!clip || frame.hidden);
     stage.toggleAttribute('data-audio', !draft && clip?.asset.kind === 'audio' && !frame.hidden);
     updatePosition(draft,idle);
@@ -195,7 +199,7 @@ window.mountPlayerTools = ({ panel, getClip, isEditor, isTrack, validClip, notif
     imageStart = null;
     imageTime = 0;
     cancelAnimationFrame(animation);
-    if (!getClip()) closeFloating();
+    if (!cut && !getClip()) closeFloating();
     sync();
   }
   function seek(value) {
@@ -209,6 +213,7 @@ window.mountPlayerTools = ({ panel, getClip, isEditor, isTrack, validClip, notif
     updatePosition();
   }
   function pause() {
+    cut?.pause();
     if (imagePlaying()) {
       imageTime = imagePosition();
       imageStart = null;
@@ -217,6 +222,7 @@ window.mountPlayerTools = ({ panel, getClip, isEditor, isTrack, validClip, notif
     sync();
   }
   function step(direction) {
+    if (cut) return cut.seek(cut.time + direction / fps(cut));
     const draft = getDraft();
     if (draft) {
       if (draft.playing) toggleDraft();
@@ -229,6 +235,7 @@ window.mountPlayerTools = ({ panel, getClip, isEditor, isTrack, validClip, notif
     seek((clip.asset.kind === 'image' ? imageTime : video.currentTime) + direction / fps(clip));
   }
   async function togglePlay() {
+    if (cut) return cut.togglePlay();
     if (getDraft() || getIdleDraft()?.end || (isTrack() && isEditor())) return toggleDraft();
     const clip = getClip();
     if (!ready(clip)) return;
@@ -262,7 +269,7 @@ window.mountPlayerTools = ({ panel, getClip, isEditor, isTrack, validClip, notif
     if (menu.matches(':popover-open')) menu.hidePopover();
     if (panel.matches(':popover-open') || document.pictureInPictureElement === video) return closeFloating();
     if (document.fullscreenElement === panel) await document.exitFullscreen();
-    if (!getDraft() && zoom.value === '1' && getClip()?.asset.kind === 'video' && video.readyState >= 2 && document.pictureInPictureEnabled) {
+    if (!cut && !getDraft() && zoom.value === '1' && getClip()?.asset.kind === 'video' && video.readyState >= 2 && document.pictureInPictureEnabled) {
       try { await video.requestPictureInPicture(); return; } catch { /* Use the floating editor panel when system PiP is unavailable. */ }
     }
     panel.setAttribute('popover', 'manual');
@@ -326,13 +333,18 @@ window.mountPlayerTools = ({ panel, getClip, isEditor, isTrack, validClip, notif
   find('#player-previous').addEventListener('click', () => step(-1));
   find('#player-next').addEventListener('click', () => step(1));
   find('#player-stop').addEventListener('click', () => {
+    if (cut) return cut.seek(0);
     const draft = getDraft();
     if (draft) {
       if (draft.playing) toggleDraft();
       seekDraft(0);
     } else if (getClip()) { pause(); seek(getClip().start); }
   });
-  position.addEventListener('input', () => getDraft() ? seekDraft(position.valueAsNumber) : seek(position.valueAsNumber));
+  position.addEventListener('input', () => {
+    if (cut) cut.seek(position.valueAsNumber);
+    else if (getDraft()) seekDraft(position.valueAsNumber);
+    else seek(position.valueAsNumber);
+  });
   quality.addEventListener('change', changeQuality);
   zoom.addEventListener('change', () => {
     stage.style.setProperty('--player-zoom', zoom.value);
@@ -355,11 +367,39 @@ window.mountPlayerTools = ({ panel, getClip, isEditor, isTrack, validClip, notif
     const onTimeline = target.matches('#timeline-clock, #timeline-tracks-panel, #timeline-clock .sequence-block:not(.sequence-empty)');
     if (target !== document.body && !onPlayer && !onTimeline) return;
     if (key === '.' && !event.repeat) toggleFullscreen();
-    else if (!getDraft() && !getIdleDraft()?.end && !ready(getClip())) return;
+    else if (!cut && !getDraft() && !getIdleDraft()?.end && !ready(getClip())) return;
     else if (key === 'ArrowLeft' || key === 'ArrowRight') step(key === 'ArrowRight' ? 1 : -1);
     else if (key === ' ' && !event.repeat && !event.target.closest?.('button, a')) togglePlay();
     else return;
     event.preventDefault();
   });
-  return { sync, updatePosition, reset, closeFloating, pause, seek, step, togglePlay };
+  function mountCutMonitor(preview, controller) {
+    pause();
+    if (document.pictureInPictureElement === video) closeFloating();
+    cut = controller;
+    panel.setAttribute('data-cut-monitor', '');
+    find('#cut-preview-name').textContent = cut.asset.name;
+    stage.append(preview);
+    sync();
+    const onKey = event => {
+      if (menu.matches(':popover-open') || event.target.closest('input, select, textarea') ||
+          event.key === '.' || event.key === 'Tab' ||
+          (event.key === 'Escape' && (document.fullscreenElement || panel.matches(':popover-open'))) ||
+          ((event.key === ' ' || event.key === 'Enter') && event.target.closest('button'))) return;
+      controller.onKey(event);
+    };
+    panel.addEventListener('keydown', onKey);
+    return {updatePosition, sync, close() {
+      panel.removeEventListener('keydown', onKey);
+      // Removing the media node in the stage lets the stereo meter disconnect its source.
+      preview.querySelector('video')?.remove();
+      preview.remove();
+      if (cut !== controller) return;
+      cut = undefined;
+      panel.removeAttribute('data-cut-monitor');
+      find('#cut-preview-name').textContent = '';
+      sync();
+    }};
+  }
+  return { sync, updatePosition, reset, closeFloating, pause, seek, step, togglePlay, mountCutMonitor, get monitoringCut() { return Boolean(cut); } };
 };

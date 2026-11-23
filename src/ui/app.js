@@ -642,6 +642,7 @@ function openCandidateCut(clip) {
   if (!validClip(clip)) { say('请先修正素材的入点和出点。'); return false; }
   timeline?.stopDraftPlayback();
   player.pause();
+  if (proxyResume) proxyResume.playing = false;
   try { return cutEditor.openCut(clip); }
   catch (error) { say(error.message); return false; }
 }
@@ -5014,6 +5015,7 @@ function createSourceCommit(clip, sessionActive) {
 
 cutEditor = window.createCutTrackEditor({
   container: $('#timeline-cut-editor'), getSceneCuts:()=>sceneCuts, getShots:()=>shots.map((_,i)=>({name:shotLabel(i)})),
+  mountMonitor: playerTools.mountCutMonitor,
   setSceneCuts:(records)=>{sceneCuts=records;renderLists();},
   sourceRanges:sourceRangesForClip,
   prepareSourceEdit:(asset,ranges)=>api.prepareSourceEdit(asset.id,ranges),
@@ -5184,6 +5186,7 @@ function syncTimelinePlayButton() {
 }
 function toggleTimelinePlayback() {
   if(operation || mode!=='montage') return;
+  if (playerTools.monitoringCut) { say('请先应用或取消片段剪辑，再播放时间线。'); return; }
   materialPreviewRequest++;
   if(proxyResume) proxyResume.playing=false;
   playerTools.pause();

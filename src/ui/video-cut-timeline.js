@@ -20,7 +20,7 @@ window.mountVideoCutTimeline = function mountVideoCutTimeline(host, clip, option
   const history = window.createEditHistory(ranges);
   let starts, total, selected = 0, head = 0, drag;
   let disposed = false, applying = false, playing = false, preparing = false, playIndex = 0;
-  let renderKey = 0, run = 0, raf, renderedAsset, usingRender = false, pendingSeek = 0, cropDialog;
+  let renderKey = 0, run = 0, raf, renderedAsset, usingRender = false, pendingSeek, cropDialog, monitor;
 
   const header = node('header');
   const title = node('strong', '', '片段剪辑');
@@ -28,7 +28,13 @@ window.mountVideoCutTimeline = function mountVideoCutTimeline(host, clip, option
   name.title = asset.name;
   const body = node('div', 'cut-track-body');
   const preview = node('div', 'video-cut-preview');
+  preview.tabIndex = -1;
+  watch(preview, 'pointerdown', event => {
+    if (event.button === 0) preview.focus({preventScroll: true});
+  });
   const video = node('video');
+  video.crossOrigin = 'anonymous';
+  video.playsInline = true;
   video.preload = 'auto';
   video.setAttribute('aria-label', '片段预览 ' + asset.name);
   video.src = asset.url;
@@ -57,6 +63,20 @@ window.mountVideoCutTimeline = function mountVideoCutTimeline(host, clip, option
   const guide = node('div', 'video-cut-trim-guide');
   guide.hidden = true;
   timeline.append(ruler, lane, playhead, guide);
+  const sourceOverview = node('div', 'video-cut-source-overview');
+  const sourceAxis = node('div', 'cut-source-axis');
+  const sourceLabel = node('span', 'cut-source-heading', '原片范围');
+  const sourceRail = node('div', 'cut-source-rail');
+  sourceRail.setAttribute('role', 'img');
+  const inMark = node('span', 'cut-source-in', '入');
+  const outMark = node('span', 'cut-source-out', '出');
+  sourceRail.append(inMark, outMark);
+  sourceAxis.append(sourceLabel, node('span', 'cut-source-limit', '0'), sourceRail,
+    node('span', 'cut-source-limit', round(asset.duration) + ' 秒'));
+  const sourceFields = node('div', 'cut-source-fields');
+  sourceOverview.append(sourceAxis, sourceFields);
+  const usedBands = [];
+  let currentBand, currentSourceRange;
   const message = node('output');
   message.setAttribute('aria-live', 'polite');
   const status = text => { message.textContent = text; };
@@ -101,7 +121,7 @@ window.mountVideoCutTimeline = function mountVideoCutTimeline(host, clip, option
       record(atStart ? undefined : lastFrame(ranges[index]));
     };
     wrap.append(input);
-    actions.append(wrap);
+    sourceFields.append(wrap);
     return input;
   }
   header.append(title, name);
@@ -123,8 +143,8 @@ window.mountVideoCutTimeline = function mountVideoCutTimeline(host, clip, option
   button('delete', '移除片段', 'Delete', remove, actions);
   button('reset', '恢复完整素材', '', reset, actions);
   button('apply', '应用裁剪', '', apply, actions);
-  work.append(tools, timeline, actions, message);
-  body.append(preview, work);
+  work.append(tools, timeline, sourceOverview, actions, message);
+  body.append(work);
   host.dataset.mode = 'cut';
   host.classList.add('cut-track-editor');
   host.replaceChildren(header, body);
@@ -164,11 +184,18 @@ window.mountVideoCutTimeline = function mountVideoCutTimeline(host, clip, option
     usingRender = transformed;
     video.src = transformed ? renderedAsset.url : asset.url;
   }
+  function flushSeek() {
+    if (pendingSeek == null || !video.readyState || video.seeking) return;
+    const source = pendingSeek;
+    pendingSeek = undefined;
+    if (Math.abs(video.currentTime - source) > 0.00001) video.currentTime = source;
+  }
   function seekMedia(source) {
     pendingSeek = source;
-    if (video.readyState && Math.abs(video.currentTime - source) > 0.00001) video.currentTime = source;
+    flushSeek();
   }
-  watch(video, 'loadedmetadata', () => seekMedia(pendingSeek));
+  watch(video, 'loadedmetadata', flushSeek);
+  watch(video, 'seeked', flushSeek);
   function previewAt(source) {
     const index = source !== undefined ? selected : indexAt(head);
     framePreview?.update(usingRender ? {} : ranges[index]);
@@ -180,16 +207,27 @@ window.mountVideoCutTimeline = function mountVideoCutTimeline(host, clip, option
     playhead.setAttribute('aria-valuenow', String(value));
     playhead.setAttribute('aria-valuetext', value.toFixed(2) + ' 秒');
     timer.textContent = value.toFixed(2) + ' / ' + total.toFixed(2) + ' 秒';
+    monitor?.updatePosition();
   }
   function selection(index) {
     segments[selected]?.setAttribute('aria-pressed', 'false');
     if (segments[selected]) segments[selected].tabIndex = -1;
     selected = index;
     const range = ranges[index];
+    if (currentBand !== usedBands[index] || currentSourceRange !== range) {
+      currentBand?.removeAttribute('data-current');
+      currentBand = usedBands[index];
+      currentBand?.setAttribute('data-current', '');
+      currentSourceRange = range;
+      sourceRail.setAttribute('aria-label', '原片共 ' + round(asset.duration) + ' 秒，片段 ' + (index + 1) +
+        ' 入点 ' + round(range.start) + ' 秒，出点 ' + round(range.end) + ' 秒');
+      inMark.style.setProperty('--at', (range.start / asset.duration * 100) + '%');
+      outMark.style.setProperty('--at', (range.end / asset.duration * 100) + '%');
+    }
     segments[index]?.setAttribute('aria-pressed', 'true');
     if (segments[index]) segments[index].tabIndex = 0;
-    startField.value = String(range.start);
-    endField.value = String(range.end);
+    startField.value = String(round(range.start));
+    endField.value = String(round(range.end));
     buttons.reverse.setAttribute('aria-pressed', String(Boolean(range.reverse)));
     buttons.mirror.setAttribute('aria-pressed', String(Boolean(range.mirror)));
     buttons.crop.setAttribute('aria-pressed', String(Boolean(range.crop)));
@@ -218,7 +256,21 @@ window.mountVideoCutTimeline = function mountVideoCutTimeline(host, clip, option
     measure();
     while (segments.length < ranges.length) newSegment(segments.length);
     while (segments.length > ranges.length) segments.pop().remove();
+    while (usedBands.length > ranges.length) usedBands.pop().remove();
     ranges.forEach((range, i) => {
+      let band = usedBands[i];
+      if (!band) {
+        band = node('span', 'cut-source-band');
+        sourceRail.append(band);
+        usedBands.push(band);
+      }
+      if (band.dataset.start !== String(range.start) || band.dataset.end !== String(range.end)) {
+        band.dataset.start = String(range.start);
+        band.dataset.end = String(range.end);
+        band.style.left = (range.start / asset.duration * 100) + '%';
+        band.style.width = ((range.end - range.start) / asset.duration * 100) + '%';
+        band.title = '片段 ' + (i + 1) + ' · 原片 ' + round(range.start) + ' – ' + round(range.end) + ' 秒';
+      }
       const segment = segments[i], label = String(i + 1);
       segment.style.width = (starts[i + 1] - starts[i]) / total * 100 + '%';
       segment.dataset.sourceStart = String(range.start);
@@ -236,7 +288,7 @@ window.mountVideoCutTimeline = function mountVideoCutTimeline(host, clip, option
     buttons.redo.disabled = !history.canRedo();
     head = clamp(head, 0, total);
     showHead();
-    filmstrip.update(ranges);
+    filmstrip.update(ranges, Boolean(drag?.edge));
   }
   function invalidate() {
     renderKey++;
@@ -339,6 +391,7 @@ window.mountVideoCutTimeline = function mountVideoCutTimeline(host, clip, option
     pause();
     if (window.sameEditSnapshot(original, ranges)) { options.close(); return; }
     applying = true;
+    monitor?.sync();
     body.inert = true;
     buttons.cancel.disabled = true;
     host.setAttribute('aria-busy', 'true');
@@ -350,6 +403,7 @@ window.mountVideoCutTimeline = function mountVideoCutTimeline(host, clip, option
     } catch (error) {
       if (disposed) return;
       applying = false;
+      monitor?.sync();
       body.inert = false;
       buttons.cancel.disabled = false;
       host.removeAttribute('aria-busy');
@@ -359,12 +413,15 @@ window.mountVideoCutTimeline = function mountVideoCutTimeline(host, clip, option
   }
   function showTransport() {
     const item = buttons.play;
-    item.dataset.playing = String(playing || preparing);
+    const active = String(playing || preparing);
+    if (item.dataset.playing === active) return;
+    item.dataset.playing = active;
     const label = item.querySelector('.cut-action-label');
     if (label) label.textContent = playing || preparing ? '暂停' : '播放';
     item.setAttribute('aria-pressed', String(playing || preparing));
     item.setAttribute('aria-label', playing || preparing ? '暂停' : '播放');
     item.title = (playing || preparing ? '暂停' : '播放') + '（Space）';
+    monitor?.sync();
   }
   function pause() {
     run++;
@@ -505,7 +562,7 @@ window.mountVideoCutTimeline = function mountVideoCutTimeline(host, clip, option
       previewAt();
     } else if (edge && (ranges[index].start !== before[index].start || ranges[index].end !== before[index].end)) {
       record(edge === 'end' ? lastFrame(ranges[index]) : frameAt(index, head));
-    }
+    } else if (edge) filmstrip.update(ranges);
   }
   watch(timeline, 'pointerdown', event => {
     if (event.button !== 0 || applying || drag) return;
@@ -547,7 +604,7 @@ window.mountVideoCutTimeline = function mountVideoCutTimeline(host, clip, option
   }
   function refreshShortcuts() { shortcuts.forEach(shortcutTitle); }
   watch(window, 'cutshortcutschange', refreshShortcuts);
-  watch(host, 'keydown', event => {
+  function onKey(event) {
     if (event.isComposing || applying) { event.stopPropagation(); return; }
     if (event.key === 'Escape') {
       event.stopPropagation();
@@ -588,8 +645,14 @@ window.mountVideoCutTimeline = function mountVideoCutTimeline(host, clip, option
       else scrub(head + (event.key === 'ArrowLeft' ? -1 : 1) * frame * (event.shiftKey ? 10 : 1));
       playhead.focus({preventScroll: true});
     }
-  });
+  }
+  watch(host, 'keydown', onKey);
   layout();
+  monitor = options.mountMonitor(preview, {
+    asset, get time() { return head; }, get end() { return total; },
+    get playing() { return playing || preparing; }, get busy() { return applying; },
+    togglePlay, pause, seek: time => { if (!applying && !drag) scrub(time); }, onKey,
+  });
   refreshShortcuts();
   showTransport();
   previewAt();
@@ -606,6 +669,7 @@ window.mountVideoCutTimeline = function mountVideoCutTimeline(host, clip, option
       host.removeAttribute('aria-busy');
       video.removeAttribute('src');
       video.load();
+      monitor.close();
     },
   };
 };

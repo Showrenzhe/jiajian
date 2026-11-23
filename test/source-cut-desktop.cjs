@@ -6,7 +6,7 @@ const fs = require('node:fs/promises');
 const os = require('node:os');
 const path = require('node:path');
 const { setTimeout: delay } = require('node:timers/promises');
-const { app } = require('electron');
+const { app, nativeImage } = require('electron');
 const { launchDesktop } = require('../src/desktop.cjs');
 const { saveProject, readProject } = require('../src/project-format.cjs');
 const { inspectAsset } = require('../src/media.cjs');
@@ -83,7 +83,12 @@ async function check() {
   const host = '#timeline-cut-editor[data-mode="cut"]';
   const ruler = host+' .video-cut-ruler';
   const slider = host+' .video-cut-playhead[role="slider"]';
-  const localVideo = q(host+' video');
+  const monitor = '#player-pane[data-cut-monitor]';
+  const localVideo = q(monitor+' .preview-stage .video-cut-preview video');
+  const film = host+' .video-cut-filmstrip';
+  const bands = host+' .cut-source-band';
+  const activeBand = q(bands+'[data-current]');
+  const availableFrames = `[...document.querySelectorAll(${JSON.stringify(film+' img')})].filter(img=>img.checkVisibility() && img.naturalWidth>0).length`;
   const segment = host+' .video-cut-segment[data-index]';
   const count = 'document.querySelectorAll('+JSON.stringify(segment)+').length';
   const mainClip = shot => '.sequence-video [data-drop-shot="'+shot+'"][data-move-candidate]';
@@ -92,6 +97,29 @@ async function check() {
   const time = 'Number('+q(slider)+'.getAttribute("aria-valuenow"))';
   const end = 'Number('+q(slider)+'.getAttribute("aria-valuemax"))';
   const approx = (value,expected,tolerance=.06) => `Math.abs((${value})-(${expected}))<${tolerance}`;
+  const clock = id => `(()=>{const [h,m,s,f]=${q(id)}.textContent.split(':').map(Number);return h*3600+m*60+s+f/24;})()`;
+  async function pixel(selector,x=.5,y=.5) {
+    const position=await read(`(()=>{const r=${q(selector)}.getBoundingClientRect();return {x:r.x+r.width*${x},y:r.y+r.height*${y},width:2,height:2,scale:1};})()`);
+    const {data}=await wc.debugger.sendCommand('Page.captureScreenshot',{clip:position});
+    const [blue,green,red]=nativeImage.createFromBuffer(Buffer.from(data,'base64')).toBitmap();
+    return [red,green,blue];
+  }
+  async function expectFrame(selector,channel,x=.5,y=.5) {
+    let rgb;
+    for (const until=Date.now()+8000;Date.now()<until;) {
+      rgb=await pixel(selector,x,y);
+      if (rgb[channel]>180 && rgb.every((c,i)=>i===channel || c<60)) return;
+      await delay(75);
+    }
+    throw Error('画面颜色不对应原片，目标 '+selector+'，实际 '+rgb);
+  }
+  async function checkBounds(start,finish) {
+    await wait(approx('Number('+activeBand+'.dataset.start)',start) + ' && ' +
+      approx('Number('+activeBand+'.dataset.end)',finish),'原片上的入、出点应跟随当前片段');
+    const actual=await read(`(()=>{const band=${activeBand}, r=band.getBoundingClientRect(), rail=band.parentElement.getBoundingClientRect();return [(r.left-rail.left)/rail.width,(r.right-rail.left)/rail.width];})()`);
+    assert.ok(Math.abs(actual[0]-start/6)<.015 && Math.abs(actual[1]-finish/6)<.015,
+      '标记应使用整段 6 秒原片的比例 '+actual);
+  }
   async function wait(expression,description,milliseconds=10000) {
     for (const until=Date.now()+milliseconds; Date.now()<until;) {
       if (await read(expression)) return;
@@ -162,10 +190,10 @@ async function check() {
     const output=process.env.JIAJIAN_SOURCE_CUT_SCREENSHOTS;
     if (!output) return;
     await fs.mkdir(output,{recursive:true});
-    const clip=await read(`(async()=>{const el=${q(selector)};el.scrollIntoView({block:'center',behavior:'instant'});
+    const clip=selector && await read(`(async()=>{const el=${q(selector)};el.scrollIntoView({block:'center',behavior:'instant'});
       await new Promise(requestAnimationFrame);const r=el.getBoundingClientRect();
       return {x:Math.max(0,r.x),y:Math.max(0,r.y),width:Math.min(r.width,innerWidth),height:Math.min(r.height,innerHeight),scale:1};})()`);
-    const {data}=await wc.debugger.sendCommand('Page.captureScreenshot',{clip});
+    const {data}=await wc.debugger.sendCommand('Page.captureScreenshot',clip ? {clip} : {});
     await fs.writeFile(path.join(output,name+'.png'),Buffer.from(data,'base64'));
   }
   try {
@@ -188,21 +216,64 @@ async function check() {
     }
     assert.equal(await read(q('#timeline-cut-editor')+'.checkVisibility()'),false,'锁定的视频轨不可进入剪辑');
     await click(lock);
-    const original = await save('原始状态');
+    const initial = await save('原始状态');
     await dblclick(mainClip(0));
     await wait(localVideo+'.readyState>=2', '载入剪辑源视频');
+    assert.equal(await read(q(host+' video')),null,'底部剪辑栏不应重复创建视频窗口');
+    assert.equal(await read(`[...document.querySelectorAll('#player-pane video')].filter(v=>v.checkVisibility({visibilityProperty:true})).length`),1);
+    await wait(q('#player-play')+'.checkVisibility() && !'+q('#player-play')+'.disabled','剪辑可由主播放器播放');
+    await click('#player-play');
+    await wait(time+'>.22 && !'+localVideo+'.paused && '+q('#player-play')+'.getAttribute("aria-pressed")==="true"','主播放器接管片段播放');
+    await wait(`document.querySelector('#player-more .stereo-meter i[data-level]:not([data-level="0"])')`,'片段原声应驱动主播放器声道电平');
+    await click('#player-play');
+    await wait(localVideo+'.paused','主控制暂停剪辑播放');
+    await click('#player-more');
+    await click('#player-stop');
+    await wait(approx(time,0),'主播放控制可回到剪辑起点');
+    await click('#player-next');
+    await wait(approx(time,1/24,.004),'主播放控制可逐帧定位片段');
+    await key('Escape',27);
+    await wait('!'+q('#player-more-menu')+'.matches(":popover-open") && !!'+q(monitor),'关闭更多播放控制应保留片段监看');
+    await checkBounds(0,6);
+    await wait(availableFrames+'>=3','拖动前胶片有原片缩略图');
+    const right=await point(host+' .video-cut-handle[data-edge="end"]');
+    const span=await read(q(ruler)+'.getBoundingClientRect().width');
+    await mouse('mousePressed',right);
+    let minFrames=Infinity;
+    for (let step=1;step<=12;step++) {
+      await mouse('mouseMoved',{x:right.x-span*(.75*step/12),y:right.y});
+      minFrames=Math.min(minFrames,await read(availableFrames));
+    }
+    assert.ok(minFrames>0,'连续拖动中，已解码的缩略图不能全部消失');
+    await checkBounds(0,1.5);
+    await expectFrame(monitor+' .video-cut-preview',0);
+    await mouse('mouseReleased',{x:right.x-.75*span,y:right.y});
+    await expectFrame(film,0,.86);
+    console.log('连续 12 次拖动，最少仍有 '+minFrames+' 个已加载的可见胶片帧。');
+    await click(tool('undo'));
+    await checkBounds(0,6);
     await seek(1);
     await key('w',87);
     await wait(count+'===2','W 分割');
     await key('Escape',27);
     await wait('!'+q('#timeline-cut-editor')+'.checkVisibility()','Esc 取消');
+    assert.equal(await read(q(monitor)),null,'取消应归还主播放器');
     const canceled=await save('已取消剪辑');
-    assert.deepEqual(canceled,original,'取消应完整保留工程');
+    assert.deepEqual(canceled,initial,'取消应完整保留工程');
     await dblclick(mainClip(0));
+    await seek(.8);
+    await key('w',87);
+    await click('#open-project');
+    await wait('!'+q(monitor)+' && !'+q('#timeline-cut-editor')+'.checkVisibility() && !!'+q(mainClip(1)),'打开另一个工程应释放剪辑监看');
+    // The project catalog assigns fresh IDs on each open.
+    const original = await save('重开后的原始状态');
+    await dblclick(mainClip(0));
+    assert.equal(await read(count),1,'切工程应丢弃未应用的分割');
     await seek(1);
     const from=await point(slider), to=await point(ruler,2/6);
     await drag(from,{x:to.x,y:from.y});
     await wait(approx(time,2)+' && '+approx(localVideo+'.currentTime',2),'拖播放头更新源视频和位置');
+    await wait(approx(clock('#player-time'),2),'主时间码应跟随编辑播放头');
     await key('w',87);
     await wait(count+'===2','W 在 2 秒分割');
     await seek(4); await key('w',87);
@@ -234,6 +305,10 @@ async function check() {
     await click(tool('move-left'));
     await seek(1.8);
     await wait(approx(localVideo+'.currentTime',4.3,.10),'前移第三段后，编辑器预览应显示对应的蓝色原片');
+    await expectFrame(monitor+' .video-cut-preview',2);
+    await checkBounds(4,5);
+    assert.equal(await read('document.querySelectorAll('+JSON.stringify(bands)+').length'),3);
+    await wait(approx(clock('#player-time'),1.8)+' && '+approx(clock('#player-duration'),4.5),'主播放器应显示重排后的编辑时间');
     for (const [scheme,width] of [['light',1440],['dark',960]]) {
       win.setContentSize(width,900);
       await wc.debugger.sendCommand('Emulation.setEmulatedMedia',{features:[
@@ -247,10 +322,11 @@ async function check() {
       if (process.env.JIAJIAN_SOURCE_CUT_SCREENSHOTS) await wait(
         `[...document.querySelectorAll(${JSON.stringify(host+' .video-cut-filmstrip img')})].every(img=>img.naturalWidth>0)`,
         '截取已载入完整色带的素材剪辑界面');
-      await screenshot('素材剪辑-'+scheme,host);
+      await screenshot('素材剪辑-'+scheme);
     }
     await click(tool('apply'));
     await wait('!'+q('#timeline-cut-editor')+'.checkVisibility() && '+approx('parseFloat('+duration+')',4.5),'应用后主时间线时长更新');
+    assert.equal(await read(q(monitor)),null,'应用后应还原轨道播放器');
     win.setContentSize(1440,960);
     await wait('innerWidth>1200','恢复标准窗口');
     await click('#track-undo');
@@ -289,6 +365,7 @@ async function check() {
     await dblclick(mainClip(0));
     await click(tool('reset'));
     await click(tool('reverse'));
+    await checkBounds(0,6);
     await click(tool('mirror'));
     await click(tool('rotate'));
     await click(tool('crop'));
