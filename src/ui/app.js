@@ -1442,7 +1442,7 @@ function renderMaterials() {
   $('#material-empty').hidden = visibleFiles.length > 0 || visibleFolders.length > 0;
   $('#material-empty-title').textContent = query ? '没有匹配的素材' : folder ? '这个文件夹没有可用素材' : '暂无素材';
   $('#material-empty-hint').textContent = query ? '试试搜索其他文件名。' : folder
-    ? '请选择包含视频或图片的文件夹。' : '拖入本地视频、图片、音频或文件夹。';
+    ? '请选择包含视频或图片的文件夹。' : '从本机或局域网共享文件夹拖入视频、图片、音频或文件夹。';
   renderMaterialFolders(folder, visibleFolders);
   const previous = new Map([...materialList.children].map((row) => [row.firstElementChild.dataset.materialId, row]));
   const canPlace = canPlaceMaterial();
@@ -4771,10 +4771,11 @@ async function importDroppedMaterials(files, place) {
   operation = 'import';
   updateControls();
   const library = !place;
+  if (library) materialMessage('正在导入素材…');
   try {
     const destination = library ? 'library' : place.audioRole ? 'audio' : 'visual';
     const { assets, folders, warnings } = await api.importDroppedMaterials(files, destination);
-    const parent = library && await managedFolder(currentLibraryFolder());
+    const parent = library && (assets.length || folders.length) && await managedFolder(currentLibraryFolder());
     for (const folder of folders) {
       const result = await attachSourceDirectory(folder, parent);
       warnings.push(...result.warnings);

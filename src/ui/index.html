@@ -133,7 +133,10 @@
     <span id="title-tab">工作台</span>
     <span id="titlebar-update">
       <button type="button" id="software-update-entry" title="打开软件更新" aria-haspopup="dialog" aria-controls="update-dialog">
-        <svg class="ui-icon" aria-hidden="true"><use href="#icon-import"></use></svg>软件更新
+        <span class="update-icon" aria-hidden="true">
+          <svg class="ui-icon"><use href="#icon-import"></use></svg>
+          <span id="update-badge" hidden></span>
+        </span>软件更新
         <span id="update-notice" hidden></span>
       </button>
       <button type="button" id="update-notice-dismiss" title="收起本次更新提醒" aria-label="收起本次更新提醒" hidden>×</button>
@@ -481,7 +484,7 @@
       <div id="material-empty" class="material-empty">
         <svg class="ui-icon empty-material-glyph" aria-hidden="true"><use href="#icon-folder"></use></svg>
         <strong id="material-empty-title">暂无素材</strong>
-        <p id="material-empty-hint" class="muted compact">拖入本地视频、图片、音频或文件夹。</p>
+        <p id="material-empty-hint" class="muted compact">从本机或局域网共享文件夹拖入视频、图片、音频或文件夹。</p>
       </div>
       <ul id="material-list" class="material-list"></ul>
       <div popover="auto" id="material-context-menu" role="menu" aria-label="素材操作">

@@ -4,6 +4,7 @@ window.bindSoftwareUpdates = (api) => {
   const $ = (id) => document.getElementById(id);
   const dialog = $('update-dialog');
   const entry = $('software-update-entry');
+  const badge = $('update-badge');
   const notice = $('update-notice');
   const dismiss = $('update-notice-dismiss');
   const action = $('update-action');
@@ -55,9 +56,22 @@ window.bindSoftwareUpdates = (api) => {
     action.disabled = submitting || !command;
     action.textContent = command?.[0] || '';
     action.dataset.method = command?.[1] || '';
-    notice.hidden = !['available', 'downloaded'].includes(status) || dismissed === version;
+    // The service only supplies a version after verifying a newer stable release.
+    const updateHints = {
+      available: '可更新', downloading: '正在下载', downloaded: '已下载，等待安装',
+      installing: '正在安装', checking: '可更新，正在重新检查',
+      error: { download: '下载失败，可重试', install: '安装失败，可重试', check: '上次检查时可更新' }[retry],
+    };
+    const hint = version && version !== currentVersion && updateHints[status];
+    badge.hidden = !hint;
+    entry.title = hint ? '佳剪 v' + version + ' ' + hint : '打开软件更新';
+    entry.setAttribute('aria-label', hint ? '软件更新，' + entry.title : '软件更新');
+    const reminder = {
+      available: descriptions.available, checking: descriptions.available, downloaded: '更新已就绪',
+      error: retry === 'check' ? '上次发现 ' + version : '',
+    }[status];
+    notice.hidden = !hint || !reminder || dismissed === version;
     dismiss.hidden = notice.hidden;
-    const reminder = status === 'downloaded' ? '更新已就绪' : descriptions.available;
     notice.textContent = notice.hidden ? '' : reminder;
     if (focused === dismiss && dismiss.hidden) entry.focus({ preventScroll: true });
     if (dialog.open && ((focused === action && action.disabled) ||

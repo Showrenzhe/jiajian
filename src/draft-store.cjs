@@ -6,6 +6,7 @@ const path = require('node:path');
 const { saveProject, loadProject, readProject, embeddedThumbnail, projectReferences } = require('./project-format.cjs');
 const { imageExtensions, videoExtensions } = require('./media.cjs');
 const { withDraftFolderMirror } = require('./library-folders.cjs');
+const { isMaterialPath } = require('./material-path.cjs');
 
 const maxBytes = 1024 * 1024;
 const maxDrafts = 2048;
@@ -29,8 +30,7 @@ function firstVisual(document) {
 
 function localCover(asset, time) {
   const file = asset?.path;
-  if (typeof file !== 'string' || !path.isAbsolute(file) || file.includes('\0') || /^[\\/]{2}/.test(file)
-      || (process.platform === 'win32' && (!/^[a-z]:[\\/]/i.test(file) || file.slice(2).includes(':')))) return null;
+  if (!isMaterialPath(file)) return null;
   const allowed = asset.kind === 'image' ? imageExtensions : asset.kind === 'video' ? videoExtensions : [];
   return allowed.includes(path.extname(file).slice(1).toLowerCase()) ? { path: file, kind: asset.kind, ...(asset.kind === 'video' && Number.isFinite(time) && {time}) } : null;
 }

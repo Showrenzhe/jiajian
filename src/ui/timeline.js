@@ -156,6 +156,7 @@ window.mountEditTimeline = function (host, ctx) {
   let scrubPointer, scrubX, scrubFrame, activeSeek;
   let resizeDrag,layerDrag;
   let locatedMaterial;
+  const blocksBySource = new Map();
   const thumbQueue=[];
   let thumbWorkers=0;
   function loadVisibleFrames() {
@@ -752,6 +753,7 @@ window.mountEditTimeline = function (host, ctx) {
     }
     const canvas=el('div','sequence-canvas');
     const blocks=[], filmstrips=[];
+    blocksBySource.clear();
     waveforms.clear();
     canvas.style.width=(timelineWidth+headWidth)+'px';
     function row(label, cls, key, layer) {
@@ -2112,32 +2114,31 @@ window.mountEditTimeline = function (host, ctx) {
     display();d.wrapper.showModal();return closed;
   }
   function bindMaterialSource(block, asset) {
-    block.dataset.clipSource = asset.sourceKey ?? asset.id;
-    block.classList.toggle('material-instance', block.dataset.clipSource === locatedMaterial);
+    const source = asset.sourceKey ?? asset.id;
+    block.dataset.clipSource = source;
+    if (!blocksBySource.has(source)) blocksBySource.set(source, []);
+    blocksBySource.get(source).push(block);
+    block.classList.toggle('material-instance', source === locatedMaterial);
   }
   function locateMaterial(source, reveal = false) {
-    if(!reveal && locatedMaterial===source) return;
-    locatedMaterial = source;
-    let first;
-    for (const block of host.querySelectorAll('[data-clip-source]')) {
-      const match = block.dataset.clipSource === source;
-      block.classList.toggle('material-instance', match);
-      if (match && (!first || Number(block.dataset.dropShot) < Number(first.dataset.dropShot))) first = block;
+    const matches = blocksBySource.get(source);
+    if (source !== locatedMaterial) {
+      for (const block of blocksBySource.get(locatedMaterial) ?? []) block.classList.remove('material-instance');
+      for (const block of matches ?? []) block.classList.add('material-instance');
+      locatedMaterial = source;
     }
-    if (reveal && first && host.clientWidth) {
-      const panel = host.closest('#timeline-tracks-panel');
-      const area = host.getBoundingClientRect(), rect = first.getBoundingClientRect();
-      const left = area.left + (first.closest('.sequence-row')?.firstElementChild.offsetWidth ?? 0);
-      const viewport = panel.getBoundingClientRect();
-      const visible = Array.from(host.querySelectorAll('.material-instance')).some(block => {
-        const bounds = block.getBoundingClientRect();
-        return bounds.left >= left && bounds.left < area.right && bounds.top >= viewport.top && bounds.bottom <= viewport.bottom;
-      });
-      if (visible) return;
-      if (rect.left < left || rect.left >= area.right) host.scrollLeft += rect.left - left;
-      if (rect.top < viewport.top) panel.scrollTop += rect.top - viewport.top;
-      else if (rect.bottom > viewport.bottom) panel.scrollTop += rect.bottom - viewport.bottom;
+    if (!reveal || !matches?.length || !host.clientWidth) return;
+    const panel = host.closest('#timeline-tracks-panel');
+    const area = host.getBoundingClientRect(), viewport = panel.getBoundingClientRect();
+    const left = area.left + headWidth;
+    const top = viewport.top + panel.clientTop + host.querySelector('.sequence-ruler').offsetHeight;
+    let first = matches[0];
+    for (const block of matches) {
+      const bounds = block.getBoundingClientRect();
+      if (bounds.right > left && bounds.left < area.right && bounds.top >= top && bounds.bottom <= viewport.bottom) return;
+      if (block.offsetLeft < first.offsetLeft) first = block;
     }
+    revealCandidateLane(first);
   }
   function selectClip(clip) {
     cachedDraftDuration=undefined;

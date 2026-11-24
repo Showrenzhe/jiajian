@@ -7,6 +7,8 @@ const path = require('node:path');
 const { test } = require('node:test');
 const { inspectAsset, planMontage, exportBatch } = require('../src/media.cjs');
 const { saveProject, loadProject, normalizeScriptModel } = require('../src/project-format.cjs');
+const { isLocalPath, isMaterialPath, isSharedMaterialPath } = require('../src/material-path.cjs');
+const { createDraftStore } = require('../src/draft-store.cjs');
 const { fixtures, ffmpeg } = require('./fixtures.cjs');
 
 async function testDirectory(t) {
@@ -28,6 +30,75 @@ function editingConfig(overrides = {}) {
     ...overrides,
   };
 }
+
+test('material paths accept ordinary Windows shares and keep project locations local', {skip:process.platform !== 'win32'}, () => {
+  for (const file of ['\\\\编辑室\\素材库', '\\\\NAS-01.office\\拍摄 A\\第二集\\镜头 02.mp4', '\\\\192.168.1.2\\共享\\']) {
+    assert.equal(isSharedMaterialPath(file), true, file);
+    assert.equal(isMaterialPath(file), true, file);
+    assert.equal(isLocalPath(file), false, file);
+  }
+  assert.equal(isMaterialPath('Z:\\素材库\\镜头.mp4'), true);
+  for (const file of [null, '相对\\镜头.mp4', 'https://nas/media.mp4', '\\\\nas', '\\\\nas\\素材\\..\\镜头.mp4',
+    '\\\\nas\\素材\\镜头.mp4:extra', '\\\\nas\\素材\\NUL.mp4', '\\\\nas\\IPC$', '\\\\nas\\pipe\\media',
+    '\\\\.\\C:\\镜头.mp4', '\\\\?\\UNC\\nas\\素材\\镜头.mp4']) {
+    assert.equal(isMaterialPath(file), false, String(file));
+  }
+});
+
+test('opening a project or cold draft never probes a share before source resolution succeeds', {skip:process.platform !== 'win32'}, async t => {
+  const root = await testDirectory(t), directory = path.join(root, '草稿'), project = path.join(root, '待授权.sdworkbench');
+  const source = '\\\\studio.invalid\\素材\\解说.wav';
+  const config = editingConfig({musicIds:['voice']});
+  const catalog = new Map([['voice', {kind:'audio', path:source, duration:1}]]);
+  const attempts = [];
+  // Block the network boundary here so a regression cannot contact an external host.
+  for (const method of ['stat', 'lstat', 'realpath', 'open', 'readFile', 'access', 'readdir']) {
+    const original = fs[method];
+    t.mock.method(fs, method, (file, ...args) => {
+      if (!isSharedMaterialPath(file)) return original(file, ...args);
+      attempts.push(method);
+      throw new Error('意外访问共享路径');
+    });
+  }
+  await saveProject(project, config, catalog);
+  const draft = await createDraftStore(directory).create({name:'待授权', config}, catalog);
+  const inspect = t.mock.fn(() => { throw new Error('不应探测未授权素材'); });
+  await assert.rejects(loadProject(source + '.sdworkbench', undefined, inspect), /请选择本地/);
+  await assert.rejects(loadProject(project, undefined, inspect), /先.*导入.*共享素材/);
+  await assert.rejects(createDraftStore(directory, undefined, inspect).open(draft.id), /先.*导入.*共享素材/);
+  const deny = t.mock.fn(() => { throw new Error('共享素材未在本机登记'); });
+  await assert.rejects(loadProject(project, deny, inspect), /未在本机登记/);
+  await assert.rejects(createDraftStore(directory, deny, inspect).open(draft.id), /未在本机登记/);
+  assert.deepEqual(deny.mock.calls.map(call => call.arguments[0]), [source, source]);
+  assert.equal(inspect.mock.callCount(), 0);
+  assert.deepEqual(attempts, []);
+});
+
+test('a resolved SMB recording reopens as the same source in both projects and cold drafts', {skip:process.platform !== 'win32'}, async t => {
+  const root = await testDirectory(t), project = path.join(root, '已选录音.sdworkbench'), directory = path.join(root, '草稿');
+  // A loopback share exercises real SMB and ffprobe without assuming an external NAS.
+  const drive = path.parse(root).root;
+  if (!/^[a-z]:\\$/i.test(drive)) return t.skip('临时目录不在本机盘符上');
+  const folder = path.join('\\\\localhost\\' + drive[0] + '$', path.relative(drive, root));
+  if (!await fs.stat(folder).then(info => info.isDirectory(), () => false)) return t.skip('此账户没有回环共享读取权限');
+  const filename = '同事录音.wav', source = path.join(folder, filename);
+  await ffmpeg(['-f','lavfi','-i','sine=frequency=440:duration=0.4','-c:a','pcm_s16le',path.join(root, filename)]);
+  const recording = await inspectAsset(source, 'audio');
+  const catalog = new Map([['voice', recording]]);
+  const config = editingConfig({musicIds:['voice']});
+  await saveProject(project, config, catalog);
+  const draft = await createDraftStore(directory).create({name:'已选录音', config}, catalog);
+  const resolve = t.mock.fn(file => {
+    assert.equal(file, source);
+    return file;
+  });
+  for (const opened of [await loadProject(project, resolve), await createDraftStore(directory, resolve).open(draft.id)]) {
+    assert.equal(opened.assets.get('voice').path, source);
+    assert.equal(opened.assets.get('voice').duration, recording.duration);
+    assert.deepEqual(opened.config.musicIds, ['voice']);
+  }
+  assert.equal(resolve.mock.callCount(), 2);
+});
 
 test('persists packaging-only assets and voice, text-group and candidate layers in partially filled drafts', async (t) => {
   const root = await testDirectory(t);
