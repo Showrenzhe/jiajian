@@ -527,7 +527,8 @@ window.mountEditTimeline = function (host, ctx) {
     if(button.dataset.action==='mute') {
       if(!slot.shot?.includes(slot.clip) || slot.clip?.asset.kind!=='video' || !slot.clip.asset.hasAudio) return;
       ctx.toggleClipMute(slot.clip);
-      requestAnimationFrame(()=>(candidateNodes.get(slot.clip) ?? host).focus({preventScroll:true}));
+      finishControlEdit();
+      (candidateNodes.get(slot.clip) ?? host).focus({preventScroll:true});
     } else if(button.dataset.action==='delete') {
       if(!slot.clip || !slot.shot.includes(slot.clip)) return;
       ctx.removeClip(slot.shot,slot.clip);
@@ -790,7 +791,8 @@ window.mountEditTimeline = function (host, ctx) {
             if(layer && !layer.laneId) layer.laneId=crypto.randomUUID();
             const id=layer ? window.trackControls.layerKey(layer) : key;
             ctx.toggleTrackControl(id,action,!on);
-            requestAnimationFrame(()=>host.querySelector('[data-control-key="'+CSS.escape(id)+'"] [data-track-action="'+action+'"]')?.focus({preventScroll:true}));
+            finishControlEdit();
+            host.querySelector('[data-control-key="'+CSS.escape(id)+'"] [data-track-action="'+action+'"]')?.focus({preventScroll:true});
           },label+' · '+names[action]);
           button.setAttribute('aria-label',label+' · '+names[action]);
           button.setAttribute('aria-pressed',String(on));
@@ -1502,6 +1504,12 @@ window.mountEditTimeline = function (host, ctx) {
     cachedDraftDuration=undefined;
     if (key!==undefined) lastKey=key;
     if(refreshFrame===undefined) refreshFrame=requestAnimationFrame(draw);
+  }
+  // These discrete commands replace their own controls. Restore focus before the next input.
+  function finishControlEdit() {
+    if(refreshFrame===undefined) return;
+    cancelAnimationFrame(refreshFrame);
+    draw();
   }
   function stopCandidateMotion(node) {
     arrivalAnimations.get(node)?.cancel();

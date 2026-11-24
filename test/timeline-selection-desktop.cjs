@@ -379,7 +379,17 @@ async function check() {
     await actualClick(tile(files.red)); await wait(previewVolume+'===1','素材库试听原片有声');
     await actualClick(secondLower); await wait(previewVolume+'===0','选中静音片段的播放器保持静音');
     const laneMute='[data-control-key="vis1"] [data-track-action="muted"]';
+    // Open a second command in the same event turn, before the previous edit's next paint.
+    await read(`document.addEventListener('click', () => {
+      const clip=${query(secondLower)}, r=clip.getBoundingClientRect();
+      clip.dispatchEvent(new MouseEvent('contextmenu',{bubbles:true,cancelable:true,button:2,
+        clientX:r.left+r.width/2,clientY:r.top+r.height/2}));
+    }, {once:true})`);
     await actualClick(laneMute);
+    await read('new Promise(done=>requestAnimationFrame(done))');
+    assert.ok(await read(query(videoMenu)+'===document.activeElement'),'连续操作时整轨静音的刷新应保留刚打开的菜单和焦点');
+    await pressKey('Escape',27);
+    assert.ok(await read(query(secondLower)+'===document.activeElement'),'退出菜单应将焦点交还刚刚右击的片段');
     await openVideoMenu(await pointerPoint(secondLower),[],true); await chooseVideoCommand('mute');
     await wait('!!'+query(mutedWave)+' && '+previewVolume+'===0 && !'+query(secondLower)+'.title.includes("已静音")','取消片段静音时整轨静音仍生效');
     await click('#keep-audio');
@@ -387,6 +397,7 @@ async function check() {
     await read('new Promise(done=>requestAnimationFrame(()=>requestAnimationFrame(done)))');
     await actualClick(laneMute);
     await wait(query(laneMute)+'.ariaPressed==="false" && !'+query('#keep-audio')+'.checked && '+previewVolume+'===0','整轨取消静音后仍遵循全局原声开关');
+    assert.ok(await read(query(laneMute)+'===document.activeElement'),'单独切换整轨静音后焦点应保留在轨道按钮');
     await click('#keep-audio');
     await wait('!'+query(mutedWave)+' && '+previewVolume+'===.37 && '+query('#track-volume')+'.value==="37"','开启全局原声后恢复原有 37% 音量');
     await checkSilentVideoPoint(await pointerPoint('.sequence-video .track-kind'));
