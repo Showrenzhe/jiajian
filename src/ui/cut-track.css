@@ -102,6 +102,20 @@
 .cut-track-editor[data-mode="cut"] .ui-icon { width: 15px; height: 15px; }
 .video-cut-tools [data-action="play"][data-playing="true"] path { d: path("M7 5v12m7-12v12"); stroke-width: 3; }
 .video-cut-tools .video-cut-time { margin-inline-start: auto; }
+.cut-track-editor .video-cut-speed {
+  padding-inline-start: 7px;
+  border-radius: 5px;
+  background: var(--control-fill);
+  color: var(--secondary-ink);
+}
+.cut-track-editor[data-mode="cut"] .video-cut-speed select[data-action="speed"] {
+  width: auto;
+  border: 0;
+  background: transparent;
+  color: var(--ink);
+  cursor: pointer;
+  font-variant-numeric: tabular-nums;
+}
 .video-cut-timeline[data-dragging] { cursor: ew-resize; }
 .video-cut-timeline {
   --ruler-height: 25px;

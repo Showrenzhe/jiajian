@@ -8,7 +8,7 @@ const { createInterface } = require('node:readline');
 const { promisify } = require('node:util');
 const { formatSubtitles, normalizeSubtitles, parseSubtitles } = require('./subtitles.cjs');
 const { normalizeShotSettings, normalizeRanges, normalizeSegmentVoiceCuts, sliceSource } = require('./shot-timing.cjs');
-const { candidateVideoLanes, pictureSpan, usesPlacedVideoSource, soloLaneSequence, joinedVideoSequence, videoGroupLeaders, normalizeVideoGaps } = require('./ui/track-tools.js');
+const { candidateVideoLanes, pictureSpan, usesPlacedVideoSource, soloLaneSequence, joinedVideoSequence, videoGroupLeaders, normalizeVideoGaps, placedVideoSpeed, minVideoSpeed } = require('./ui/track-tools.js');
 const trackControls = require('./ui/track-controls.js');
 const { preferSolo } = trackControls;
 const { normalizeCover, selectCover, publishCover } = require('./cover.cjs');
@@ -379,7 +379,7 @@ function segmentNarrationGroups(config, catalog, captions, controls) {
   const rows = config.shots.map((_shot, index) => {
     const row = ids[index] === undefined ? [] : ids[index];
     if (!Array.isArray(row) || row.length > maxWholeTracks) throw new Error(`第 ${index + 1} 组分镜的口播数量无效。`);
-    return Array.from(row, (id, rowIndex) => id === null ? null : {
+    return Array.from(row, (id, rowIndex) => id === null || !trackControls.participates(controls,'voice'+rowIndex) ? null : {
       asset: requireAsset(catalog, id, 'audio'),
       caption: captionFor(captions, id),
       ranges: cuts?.[index][rowIndex]?.ranges,
@@ -405,13 +405,14 @@ function segmentNarrationGroups(config, catalog, captions, controls) {
   };
 }
 
-function wholeNarrationTracks(config, catalog, captions) {
+function wholeNarrationTracks(config, catalog, captions, controls) {
   const extras = config.extraWholeTracks === undefined ? [] : config.extraWholeTracks;
   if (!Array.isArray(extras) || extras.length >= maxWholeTracks) {
     throw new Error(`整段口播最多可设置 ${maxWholeTracks} 条轨道。`);
   }
-  return [config, ...extras].map((track) => {
+  return [config, ...extras].map((track,index) => {
     if (!track || typeof track !== 'object' || Array.isArray(track)) throw new Error('整段口播轨道设置无效。');
+    if (!trackControls.wholeRowParticipates(controls,index,track.narrationId!=null,track.subtitles!=null)) return null;
     return {
       narration: track.narrationId == null ? null : requireAsset(catalog, track.narrationId, 'audio'),
       speed: audioSpeed(track.narrationSpeed ?? 1),
@@ -523,12 +524,13 @@ function planMontage(config, catalog, random = Math.random, batchLimit = maxMont
     const originals = shot.flatMap((clip, candidateIndex) => {
       if (clip?.enabled !== undefined && typeof clip.enabled !== 'boolean') throw new Error('候选参与状态无效。');
       if (clip?.sourceMuted !== undefined && typeof clip.sourceMuted !== 'boolean') throw new Error('片段原声静音状态无效。');
-      if (clip?.enabled === false) return [];
+      if (clip?.enabled === false || !trackControls.participates(controls,'vis'+lanes[candidateIndex])) return [];
       const asset = requireAsset(catalog, clip?.id, 'video', 'image');
       const volume = clip.volume === undefined ? 1 : requireNumber(clip.volume, 0, 100, `${asset.name} 的原声音量`) / 100;
-      const speed = clip.speed === undefined ? 1 : requireNumber(clip.speed, 0.5, Number.MAX_SAFE_INTEGER, `${asset.name} 的播放速度`);
       const ranges = clip.ranges === undefined ? undefined : normalizeRanges(clip.ranges, clip.start, clip.end);
-      const layers = clip.layers === undefined ? {} : { layers: normalizeLayers(clip.layers, checkLayerAsset) };
+      const layers = clip.layers === undefined ? {} : {
+        layers: normalizeLayers(clip.layers, checkLayerAsset).filter(layer=>trackControls.participates(controls, trackControls.layerKey(layer))),
+      };
       layers.videoLane = lanes[candidateIndex];
       if(clip.videoWindow!==undefined) layers.videoWindow=requireNumber(clip.videoWindow,Number.MIN_VALUE,Number.MAX_SAFE_INTEGER,'视频轨片段时长');
       if(clip.videoGaps) layers.videoGaps=normalizeVideoGaps(clip.videoGaps);
@@ -564,6 +566,7 @@ function planMontage(config, catalog, random = Math.random, batchLimit = maxMont
         layers.layers=[...(layers.layers ?? []),...captions];
       }
       if (end - start < minClipSeconds - 1e-9) throw new Error(`${asset.name} 的有效片段至少需要 0.1 秒。`);
+      const speed = requireNumber(placedVideoSpeed(clip), minVideoSpeed, Number.MAX_SAFE_INTEGER, `${asset.name} 的播放速度`);
       let retained = ranges ?? [{ start, end }];
       let sourceDuration = retained.reduce((sum, range) => sum + range.end - range.start, 0);
       if(layers.look?.head || layers.look?.tail){
@@ -590,7 +593,7 @@ function planMontage(config, catalog, random = Math.random, batchLimit = maxMont
       }
       return full;
     });
-    if (!originals.length) throw new Error(`第 ${index + 1} 组分镜至少需要一条参与混剪的候选。`);
+    if (!originals.length) throw new Error(`第 ${index + 1} 组分镜至少需要一条参与混剪的候选。请启用视频轨道或候选片段。`);
     const variants=candidates=>[
       ...(config.useOriginal ? candidates : []),
       ...(config.useMirrors ? candidates.map(candidate=>({...candidate,mirror:true})) : []),
@@ -607,10 +610,10 @@ function planMontage(config, catalog, random = Math.random, batchLimit = maxMont
   if (!['whole', 'segmented'].includes(narrationMode)) throw new Error('请选择有效的口播方式。');
   const captions = normalizeGeneratedCaptions(config.generatedCaptions, config);
   const segmented = narrationMode === 'segmented' ? segmentNarrationGroups(config, catalog, captions, controls) : null;
-  const wholeTracks = segmented ? [] : wholeNarrationTracks(config, catalog, captions);
-  const wholeRows=preferSolo(wholeTracks.map((_,i)=>i), i=>wholeTracks[i].narration && controls?.['whole'+i]?.solo);
+  const wholeTracks = segmented ? [] : wholeNarrationTracks(config, catalog, captions,controls);
+  const wholeRows=preferSolo(wholeTracks.flatMap((track,i)=>track ? [i] : []), i=>wholeTracks[i].narration && controls?.['whole'+i]?.solo);
   const voiceGroups = segmented?.groups ?? (wholeRows.length > 1 ? [wholeRows] : []);
-  const pack = normalizePackaging(config.packaging ?? {}, checkLayerAsset, shots.length);
+  const pack = trackControls.enabledPackaging(normalizePackaging(config.packaging ?? {}, checkLayerAsset, shots.length),controls);
   const packaging = packagingChoices(pack, shots.length);
   const coverShot = coverSettings?.mode === 'first-shot';
   const groups = shots.map((shot,i) => coverShot && i === 0 ? [shot[0]] : shot).concat(voiceGroups, packaging.groups);
@@ -625,9 +628,9 @@ function planMontage(config, catalog, random = Math.random, batchLimit = maxMont
   }
   const musicSpeeds = config.musicSpeeds === undefined ? [] : normalizeMusicSpeeds(config.musicSpeeds, config.musicIds.length);
   const timelineCaptions = normalizeSubtitles(config.timelineCaptions);
-  const musicPool = config.musicIds.map((id) => requireAsset(catalog, id, 'audio'));
-  const musicRows = preferSolo(musicPool.map((_,i)=>i), i=>controls?.['music'+i]?.solo);
-  const musicVolume = musicPool.length ? requireNumber(config.musicVolume, 0, 100, '配乐音量') / 100 : 0;
+  const musicPool = config.musicIds.map((id,i) => trackControls.participates(controls,'music'+i) ? requireAsset(catalog, id, 'audio') : null);
+  const musicRows = preferSolo(musicPool.flatMap((asset,i)=>asset ? [i] : []), i=>controls?.['music'+i]?.solo);
+  const musicVolume = musicRows.length ? requireNumber(config.musicVolume, 0, 100, '配乐音量') / 100 : 0;
   const narrationVolume = config.narrationVolume === undefined ? 1 : requireNumber(config.narrationVolume, 0, 100, '口播音量') / 100;
   const priority = config.priority === undefined ? 'picture' : config.priority;
   if (!['picture', 'voice'].includes(priority)) throw new Error('请选择有效的混剪合成模式。');
@@ -653,7 +656,7 @@ function planMontage(config, catalog, random = Math.random, batchLimit = maxMont
     if (coverShot) indices[0] = Math.min(shots[0].length - 1,Math.floor(random()*shots[0].length));
     const narrationChoices = indices.slice(shots.length, shots.length + voiceGroups.length);
     const selection = packaging.select(indices.slice(shots.length + voiceGroups.length));
-    const wholeTrackIndex = wholeRows[narrationChoices[0] ?? 0] ?? 0;
+    const wholeTrackIndex = wholeRows[narrationChoices[0] ?? 0];
     const { narration = null, subtitles = null, caption = null, speed: narrationSpeed = 1 } = wholeTracks[wholeTrackIndex] ?? {};
     const wholeDuration = narration ? narration.duration/narrationSpeed : 0;
     const scenes = shots.map((fixedShot, index) => {
@@ -792,7 +795,7 @@ function planMontage(config, catalog, random = Math.random, batchLimit = maxMont
     });
     const videoCues=scheduled.filter((layer)=>layer.sourceCaption).map((l)=>({start:Math.round(l.start*1000),end:Math.round(l.end*1000),text:l.text,...(l.highlights && {highlights:l.highlights})})).filter((c)=>c.end>c.start);
     const cover = selectCover(coverSettings,catalog,duration,config.fps,random);
-    const musicIndex=musicRows[Math.floor(random()*musicRows.length)] ?? 0;
+    const musicIndex=musicRows[Math.floor(random()*musicRows.length)];
     const voiceId=wholeTrackIndex?config.extraWholeTracks?.[wholeTrackIndex-1]?.narrationId:config.narrationId;
     return {
       kind: 'montage', clips, size, fps: config.fps, fit: config.fit, backgroundColor,
@@ -803,7 +806,7 @@ function planMontage(config, catalog, random = Math.random, batchLimit = maxMont
       ...(videoCues.length && {videoSubtitles:{name:'视频字幕',cues:videoCues}}),
       subtitles: voiceSubtitles,...(voiceStart && {voiceStart}),
       ...(subtitleStyle && { subtitleStyle }),
-      ...(wholeTracks.length > 1 && { wholeTrack: wholeTrackIndex + 1 }),
+      ...(wholeTracks.length > 1 && wholeTrackIndex!==undefined && { wholeTrack: wholeTrackIndex + 1 }),
       ...(cover && {cover,contentDuration:duration}),
       duration: duration + (cover?.frames ?? 0)/config.fps,
     };

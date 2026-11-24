@@ -17,10 +17,16 @@ window.mountVideoCutTimeline = function mountVideoCutTimeline(host, clip, option
     return item;
   };
   let ranges = structuredClone(original);
-  const history = window.createEditHistory(ranges);
+  const initialSpeed = clip.speed ?? 1;
+  const slotDuration = clip.videoWindow ?? (clip.videoFit === 'hold' ? clip.videoDuration : undefined);
+  const initialAutoFit = Boolean(slotDuration && clip.autoFitSpeed);
+  let autoFit = initialAutoFit;
+  let speed = initialSpeed;
+  const history = window.createEditHistory({ranges, speed, autoFit});
   let starts, total, selected = 0, head = 0, drag;
   let disposed = false, applying = false, playing = false, preparing = false, playIndex = 0;
   let renderKey = 0, run = 0, raf, renderedAsset, usingRender = false, pendingSeek, cropDialog, monitor;
+  let scanStart, scanHead, scanTimer;
 
   const header = node('header');
   const title = node('strong', '', '片段剪辑');
@@ -107,6 +113,26 @@ window.mountVideoCutTimeline = function mountVideoCutTimeline(host, clip, option
   button('split', '分割', '', () => cut('split'), tools);
   button('trim-left', '剪掉左侧', '', () => cut('trim-left'), tools);
   button('trim-right', '剪掉右侧', '', () => cut('trim-right'), tools);
+  const speedLabel = node('label', 'video-cut-speed', '倍速');
+  const speedSelect = node('select');
+  speedSelect.dataset.action = 'speed';
+  speedSelect.setAttribute('aria-label', '片段倍速');
+  const autoOption = slotDuration > 0 ? new Option('自动', 'auto') : undefined;
+  if (autoOption) speedSelect.add(autoOption);
+  const speeds = [...new Set([0.5, 0.75, 1, 1.25, 1.5, 2, 3, initialSpeed])].sort((a, b) => a - b);
+  const displayRate = rate => Number(rate.toPrecision(4)) + '×';
+  for (const rate of speeds) speedSelect.add(new Option(displayRate(rate), String(rate)));
+  speedLabel.append(speedSelect);
+  tools.append(speedLabel);
+  watch(speedSelect, 'change', () => {
+    if (applying || drag) return;
+    const value = speedSelect.value;
+    autoFit = value === 'auto';
+    if (autoFit) measure();
+    else setSpeed(Number(value));
+    history.record({ranges, speed, autoFit});
+    layout();
+  });
   button('reverse', '倒放', '', () => effect('reverse'), tools);
   button('mirror', '镜像', '', () => effect('mirror'), tools);
   button('crop', '裁剪画面', '', openCrop, tools);
@@ -131,8 +157,39 @@ window.mountVideoCutTimeline = function mountVideoCutTimeline(host, clip, option
   const segments = [];
   function measure() {
     starts = [0];
-    for (const range of ranges) starts.push(round(starts.at(-1) + range.end - range.start));
-    total = starts.at(-1);
+    total = 0;
+    for (const range of ranges) {
+      total += range.end - range.start;
+      starts.push(total);
+    }
+    if (autoOption) {
+      const retained = total - (clip.look?.head ?? 0) - (clip.look?.tail ?? 0);
+      const next = window.fitVideoSpeed(retained, slotDuration);
+      const label = '自动 · ' + displayRate(next);
+      if (autoOption.text !== label) autoOption.text = label;
+      if (autoFit) setSpeed(next);
+    }
+  }
+  // Head, edit ranges and rendered previews use source seconds. Convert only
+  // the transport interface to elapsed playback time so retiming keeps its frame.
+  function setSpeed(next) {
+    const previous = speed;
+    speed = next;
+    speedSelect.value = autoFit ? 'auto' : String(next);
+    const nativeRate = window.sampleVideoRate(next) ? 1 : next;
+    if (video.defaultPlaybackRate !== nativeRate) video.defaultPlaybackRate = nativeRate;
+    if (video.playbackRate !== nativeRate) video.playbackRate = nativeRate;
+    if (playing && previous !== next) {
+      if (window.sampleVideoRate(next)) {
+        video.pause();
+        scanStart = performance.now();
+        scanHead = head;
+      } else if (window.sampleVideoRate(previous)) {
+        playIndex = indexAt(head);
+        previewAt();
+        startMedia(run);
+      }
+    }
   }
   function indexAt(time) {
     let lo = 0, hi = ranges.length - 1;
@@ -183,12 +240,12 @@ window.mountVideoCutTimeline = function mountVideoCutTimeline(host, clip, option
     seekMedia(usingRender ? Math.min(head, Math.max(0, total - frame / 2)) : source ?? frameAt(index, head));
   }
   function showHead() {
-    const value = round(head);
+    const value = round(head / speed);
     const source = sourceAt(playheadIndex(), head);
     playhead.style.left = source / asset.duration * 100 + '%';
     playhead.setAttribute('aria-valuenow', String(value));
     playhead.setAttribute('aria-valuetext', '原片 ' + source.toFixed(2) + ' 秒，剪后 ' + value.toFixed(2) + ' 秒');
-    timer.textContent = value.toFixed(2) + ' / ' + total.toFixed(2) + ' 秒';
+    timer.textContent = value.toFixed(2) + ' / ' + (total / speed).toFixed(2) + ' 秒';
     monitor?.updatePosition();
   }
   function edgeLimits(range, key) {
@@ -279,7 +336,7 @@ window.mountVideoCutTimeline = function mountVideoCutTimeline(host, clip, option
     }
     ranges.forEach(drawRange);
     ticks.forEach((tick, i) => { tick.textContent = (asset.duration * i / 4).toFixed(asset.duration < 10 ? 2 : 1); });
-    playhead.setAttribute('aria-valuemax', String(total));
+    playhead.setAttribute('aria-valuemax', String(round(total / speed)));
     selected = clamp(selected, 0, ranges.length - 1);
     head = clamp(head, 0, total);
     selection(playheadIndex());
@@ -295,7 +352,8 @@ window.mountVideoCutTimeline = function mountVideoCutTimeline(host, clip, option
   }
   function record(source) {
     invalidate();
-    history.record(ranges);
+    measure();
+    history.record({ranges, speed, autoFit});
     layout();
     previewAt(source);
     status('');
@@ -305,8 +363,10 @@ window.mountVideoCutTimeline = function mountVideoCutTimeline(host, clip, option
     const previous = history[direction]();
     if (!previous) return;
     pause();
-    ranges = previous;
-    invalidate();
+    if (!window.sameEditSnapshot(ranges, previous.ranges)) invalidate();
+    ranges = previous.ranges;
+    autoFit = previous.autoFit;
+    setSpeed(previous.speed);
     layout();
     previewAt();
     status(direction === 'undo' ? '已撤销。' : '已重做。');
@@ -387,7 +447,7 @@ window.mountVideoCutTimeline = function mountVideoCutTimeline(host, clip, option
   async function apply() {
     if (applying || drag) return;
     pause();
-    if (window.sameEditSnapshot(original, ranges)) { options.close(); return; }
+    if (autoFit === initialAutoFit && speed === initialSpeed && window.sameEditSnapshot(original, ranges)) { options.close(); return; }
     applying = true;
     monitor?.sync();
     body.inert = true;
@@ -396,7 +456,7 @@ window.mountVideoCutTimeline = function mountVideoCutTimeline(host, clip, option
     host.focus({preventScroll: true});
     status('正在应用剪辑…');
     try {
-      if (await options.commit(structuredClone(ranges)) === false) throw new Error('无法应用，请检查素材和分镜。');
+      if (await options.commit(structuredClone(ranges), speed, autoFit) === false) throw new Error('无法应用，请检查素材和分镜。');
       if (!disposed) options.close();
     } catch (error) {
       if (disposed) return;
@@ -424,6 +484,7 @@ window.mountVideoCutTimeline = function mountVideoCutTimeline(host, clip, option
   function pause() {
     run++;
     cancelAnimationFrame(raf);
+    clearTimeout(scanTimer);
     playing = false;
     if (preparing) status('');
     preparing = false;
@@ -445,7 +506,15 @@ window.mountVideoCutTimeline = function mountVideoCutTimeline(host, clip, option
     video.play().catch(error => playbackError(error, token));
   }
   function advance() {
-    if (!playing || video.seeking || !video.readyState) return;
+    if (!playing) return;
+    if (window.sampleVideoRate(speed)) {
+      // Outside Chromium's native rate range, sample frames against the edit clock.
+      follow(scanHead + (performance.now() - scanStart) * speed / 1000);
+      if (head >= total) pause();
+      previewAt();
+      return;
+    }
+    if (video.seeking || !video.readyState) return;
     const source = video.currentTime;
     if (usingRender) {
       if (video.ended || source >= total) { pause(); follow(total); }
@@ -501,14 +570,25 @@ window.mountVideoCutTimeline = function mountVideoCutTimeline(host, clip, option
       showTransport();
       previewAt();
       status('');
-      await video.play();
+      if (window.sampleVideoRate(speed)) {
+        scanStart = performance.now();
+        scanHead = head;
+      } else {
+        try { await video.play(); }
+        catch (error) {
+          // A rate change can switch to sampled playback before native play resolves.
+          if (!window.sampleVideoRate(speed) || error.name !== 'AbortError') throw error;
+        }
+      }
       if (disposed || token !== run) return;
       function tick() {
         if (!playing || token !== run) return;
         advance();
-        if (playing && token === run) raf = requestAnimationFrame(tick);
+        if (!playing || token !== run) return;
+        if (window.sampleVideoRate(speed)) scanTimer = setTimeout(tick, 1000 / 60);
+        else raf = requestAnimationFrame(tick);
       }
-      raf = requestAnimationFrame(tick);
+      tick();
     } catch (error) { playbackError(error, token); }
   }
   function scrubToStart() {
@@ -516,8 +596,9 @@ window.mountVideoCutTimeline = function mountVideoCutTimeline(host, clip, option
     selection(0);
     showHead();
   }
-  watch(video, 'ended', advance);
-  watch(video, 'timeupdate', advance);
+  const advanceNative = () => { if (!window.sampleVideoRate(speed)) advance(); };
+  watch(video, 'ended', advanceNative);
+  watch(video, 'timeupdate', advanceNative);
   watch(video, 'error', () => { if (playing) playbackError(video.error, run); });
 
   function scrubSource(source) {
@@ -550,7 +631,7 @@ window.mountVideoCutTimeline = function mountVideoCutTimeline(host, clip, option
     setSource(false);
     drawRange(ranges[index], index);
     selection(index);
-    playhead.setAttribute('aria-valuemax', String(total));
+    playhead.setAttribute('aria-valuemax', String(round(total / speed)));
     filmstrip.update(fullSource, Boolean(drag?.edge));
     showHead();
     previewAt(frameAt(index, head));
@@ -633,6 +714,7 @@ window.mountVideoCutTimeline = function mountVideoCutTimeline(host, clip, option
     if (event.isComposing || applying) { event.stopPropagation(); return; }
     if (event.key === 'Escape') {
       event.stopPropagation();
+      if (speedSelect.matches(':open')) return;
       event.preventDefault();
       if (drag) finishDrag(true);
       else options.close();
@@ -683,11 +765,12 @@ window.mountVideoCutTimeline = function mountVideoCutTimeline(host, clip, option
     }
   }
   watch(host, 'keydown', onKey);
+  setSpeed(initialSpeed);
   layout();
   monitor = options.mountMonitor(preview, {
-    asset, get time() { return head; }, get end() { return total; },
+    asset, get time() { return head / speed; }, get end() { return total / speed; },
     get playing() { return playing || preparing; }, get busy() { return applying; },
-    togglePlay, pause, seek: time => { if (!applying && !drag) scrub(time); }, onKey,
+    togglePlay, pause, seek: time => { if (!applying && !drag) scrub(time * speed); }, onKey,
   });
   refreshShortcuts();
   showTransport();

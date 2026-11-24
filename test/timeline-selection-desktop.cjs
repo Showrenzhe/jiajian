@@ -72,7 +72,7 @@ async function check() {
     await mouse('mouseReleased', point.x, point.y);
   }
   const videoMenu = '#video-track-menu[role="menu"]:popover-open';
-  const commands = ['删除','静音片段','本轨向左插入空位','本轨向右插入空位'];
+  const commands = ['删除','静音片段','向左插入空分镜','向右插入空分镜'];
   async function rightClickTrack(point) {
     await read('window.videoRightClickCancelled=false;'
       +'window.addEventListener("contextmenu",e=>{window.videoRightClickCancelled=e.isTrusted && e.defaultPrevented},{once:true})');
@@ -301,53 +301,38 @@ async function check() {
     await undoKey(); await wait(originalOrder,'Ctrl+Z 恢复删除的指定候选');
     await openVideoMenu(await pointerPoint(secondLower));
     await chooseVideoCommand('left');
-    const gap='.sequence-video [data-inserted-gap]';
-    const leftInserted=originalOrder+' && '+query(gap)+'?.dataset.candidateIndex==="1" && parseFloat('+query(gap)+'.style.left)<parseFloat('+query(secondLower)+'.style.left)';
-    await wait(leftInserted,'在下轨片段左边预留空位，分镜及上轨保持原序');
-    await undoKey(); await wait(originalOrder+' && !'+query(gap),'撤销下轨插入');
-    await redoKey(); await wait(leftInserted,'重做下轨插入');
-    await undoKey(); await wait('!'+query(gap),'恢复原轨');
+    const blank=(shot,lane=0)=>'.sequence-video .sequence-empty[data-drop-shot="'+shot+'"][data-candidate-index="'+lane+'"]';
+    const strip=shot=>'.sequence-shots [data-drop-shot="'+shot+'"]';
+    const aligned=(target,index)=>'Math.abs(parseFloat('+query(target)+'.style.left)-parseFloat('+query(strip(index))+'.style.left))<1';
+    const leftInserted=shotCount+'===4 && '+count(video)+'===4 && !!'+query(blank(1))+' && !!'+query(blank(1,1))+
+      ' && '+owns(cell(2,0),greenName)+' && '+owns(cell(2,1),redName)+' && '+aligned(cell(2,1),2)+' && '+aligned(layer,2);
+    await wait(leftInserted,'从第二视频轨向左插入真正的空分镜，上下轨和绑定包装整体后移');
+    await wait(query(monitor)+' && !'+query(monitor+' video'),'播放头定位空镜，预览不能残留前一个画面');
+    await undoKey(); await wait(originalOrder+' && '+aligned(secondLower,1),'撤销空分镜恢复原片位置');
+    await redoKey(); await wait(leftInserted,'重做重新腾出完整分镜和落点');
+    await read(libraryDrop(blank(1,1)));
+    await wait(shotCount+'===4 && '+count(video)+'===5 && '+owns(cell(1,1),redName)+' && '+aligned(cell(1,1),1),'拖入的素材属于新增分镜，同时能进入指定视频轨');
+    saveTarget=path.join(root,'填入空分镜.sdworkbench');
+    await click('#save-project');
+    await wait(query('#notice')+'.textContent.includes("工程已保存")','保存新增分镜');
+    const inserted=(await require('../src/project-format.cjs').loadProject(saveTarget)).config;
+    assert.deepEqual(inserted.shots.map(group=>group.length),[1,1,2,1]);
+    assert.ok(inserted.shots[1][0].videoStart < inserted.shots[2][1].videoStart,'重开磁盘工程保留新增分镜与后续轨道位置');
+    assert.ok(!inserted.shots.flat().some(clip=>clip.videoGaps?.length),'新操作只保存结构分镜');
+    saveTarget=project;
+    await undoKey();await wait(leftInserted,'撤销填充只还原新镜空槽');
+    await undoKey();await wait(originalOrder,'撤销新镜');
     await openVideoMenu(await pointerPoint(cell(2,0)),['静音片段']);
     await chooseVideoCommand('right');
-    await wait(originalOrder+' && '+query(gap)+'?.dataset.candidateIndex==="0" && parseFloat('+query(gap)+'.style.left)>parseFloat('+query(cell(2,0))+'.style.left)','末尾视频右侧出现可填充的实际空位');
-    const lastShot='.sequence-shots [data-drop-shot="2"]';
-    await read(query(lastShot)+'.dispatchEvent(new MouseEvent("dblclick",{bubbles:true}))');
-    await wait('!!'+query('.sequence-dialog[open] input[type="number"]'),'编辑末镜时长');
-    await read('(()=>{const form=document.querySelector(".sequence-dialog[open] form");form.querySelector("input[type=number]").value=5;form.requestSubmit()})()');
-    await wait(query(lastShot)+'.textContent.endsWith("· 5 秒")','分镜延长到五秒后原片段的右侧空位应保留');
-    await read(libraryDrop(gap));
-    await wait(originalOrder+' && '+count(cell(2,0))+'===2 && !'+query(gap),'从素材库填入末端空位');
-    const tailClip=name=>cell(2,0)+'[title^='+JSON.stringify(name)+']';
-    const blueTail=tailClip(path.basename(files.blue)), redTail=tailClip(redName);
-    const redBeforeBlue='parseFloat('+query(redTail)+'.style.left)<parseFloat('+query(blueTail)+'.style.left)';
-    await click('#timeline-fit');
-    await read('new Promise(done=>requestAnimationFrame(()=>requestAnimationFrame(done)))');
-    const from=await pointerPoint(redTail), to=await pointerPoint(blueTail);
-    await mouse('mousePressed',from.x,from.y);
-    await wait('!!'+query('.candidate-moving'),'按下已填入的视频片段后浮起');
-    await mouse('mouseMoved',to.x,to.y);
-    await wait('!!'+query('.candidate-displaced'),'同轨相邻片段可交换');
-    await mouse('mouseReleased',to.x,to.y);
-    await wait(redBeforeBlue,'红色素材交换到蓝色之前');
-    saveTarget=path.join(root,'同轨相邻交换.sdworkbench');
-    await click('#save-project');
-    await wait(query('#notice')+'.textContent.includes("工程已保存")','保存同轨相邻交换');
-    const saved=(await require('../src/project-format.cjs').loadProject(saveTarget)).config;
-    const [blue,red]=saved.shots[2];
-    assert.ok(red.videoStart<blue.videoStart && red.videoGroup && red.videoGroup===blue.videoGroup && red.videoLane===blue.videoLane,'重开磁盘文件保留同轨先红后蓝');
-    saveTarget=project;
-    await undoKey(); await wait('!('+redBeforeBlue+')','一次撤销只恢复两个相邻片段的位置');
-    await undoKey(); await wait('!!'+query(gap)+' && '+count(cell(2,0))+'===1','一次撤销恢复末端空位');
-    await undoKey(); await wait('!'+query(lastShot)+'.textContent.endsWith("· 5 秒") && !!'+query(gap),'撤销分镜时长后空位仍在');
-    await actualClick(cell(2,0));
-    await read('(()=>{const field=document.querySelector("#track-slice-interval");field.value=.3;field.dispatchEvent(new Event("input"));document.querySelector("#track-slice").click()})()');
-    await wait(shotCount+'>3 && '+count(gap)+'===1','自动切片后只在切出的末段保留原有右空位');
-    await undoKey(); await wait(originalOrder+' && '+count(gap)+'===1','一次撤销自动切片');
-    await undoKey(); await wait(originalOrder+' && !'+query(gap),'撤销末端空位');
+    await wait(shotCount+'===4 && '+count(video)+'===4 && !!'+query(blank(3))+' && '+owns(cell(2,0),path.basename(files.blue)),'在末尾向右追加独立空镜');
+    await read(libraryDrop(blank(3)));
+    await wait(shotCount+'===4 && '+owns(cell(3,0),redName)+' && '+aligned(cell(3,0),3),'末尾新增分镜可以接收素材');
+    await undoKey();await wait('!!'+query(blank(3)),'撤销末镜素材');
+    await undoKey();await wait(originalOrder,'撤销末尾分镜');
     const stripLock='[data-control-key="shot-strip"] [data-track-action="locked"]';
     await actualClick(stripLock);
     await wait(query(stripLock)+'.ariaPressed==="true"','锁定分镜轨');
-    await openVideoMenu(await pointerPoint(secondLower));
+    await openVideoMenu(await pointerPoint(secondLower),commands.slice(2));
     await pressKey('Escape',27);
     await undoKey();
     await wait(query(stripLock)+'.ariaPressed==="false"','撤销分镜轨锁定');
@@ -419,7 +404,7 @@ async function check() {
     const action=(lane,command)=>'[data-control-key="'+lane+'"] [data-track-action="'+command+'"]';
     const lock=action('vis0','locked'), hide=action('vis0','hidden'), solo=action('music0','solo'), mute=action('vis0','muted');
     assert.deepEqual(await read('[...document.querySelectorAll(\'[data-lane-key="vis0"] [data-track-action]\')].map(el=>el.dataset.trackAction)'),
-      ['locked','hidden','muted','solo']);
+      ['disabled','locked','hidden','muted','solo']);
     await actualClick(video);
     await actualClick(lock);
     await wait(query(lock)+'.ariaPressed==="true"','锁定视频轨');
@@ -444,8 +429,39 @@ async function check() {
     assert.equal(await read(count(video) + '===2 && !' + query(tile(files.red)) + ' && '+owns(secondUpper,greenName)+' && '+shotCount+'===3'), true,
       '重开后同源轨道片段均已移除，独立片段与三个分镜保留');
     await wait([hide,solo,mute,layerHide].map(selector=>query(selector)+'.ariaPressed==="true"').join(' && '),'重开保留视频、配乐和包装轨操作');
+    const fixture=JSON.parse(await fs.readFile(path.join(root,'片段静音.sdworkbench'),'utf8'));
+    const config=fixture.config,voiceId=config.narrationId;
+    config.narrationMode='segmented';
+    config.segmentNarrationIds=[[],[voiceId],[]];
+    config.segmentVoiceCuts=[[],[null],[]];
+    config.generatedCaptions={[voiceId]:{name:'绑定字幕',cues:[{start:0,end:400,text:'跟随分镜'}]}};
+    config.timelineCaptions={name:'独立字幕',cues:[{start:300,end:500,text:'固定时间'}]};
+    async function reopenFixture(name) {
+      const file=path.join(root,name+'.sdworkbench');
+      await fs.writeFile(file,JSON.stringify(fixture));
+      picks.push({title:'打开工程',files:[file]});
+      await click('#open-project');
+      await wait(query('#notice')+'.textContent.includes("已打开工程") && '+shotCount+'===3','打开'+name);
+    }
+    await reopenFixture('带分镜口播与固定字幕');
+    const speechCaption='[data-lane-key="caption0"] .sequence-block';
+    const fixedCaption='[data-lane-key="pasted-captions"] .sequence-block';
+    await wait(aligned(voice,1)+' && '+aligned(speechCaption,1),'插入前分镜口播和字幕对齐');
+    const fixedTimeRatio='parseFloat('+query(fixedCaption)+'.style.left)/parseFloat('+query(strip(0))+'.style.width)';
+    const fixedAt=await read(fixedTimeRatio);
+    await openVideoMenu(await pointerPoint(cell(0,0)));
+    await chooseVideoCommand('right');
+    await wait(leftInserted+' && '+aligned(voice,2)+' && '+aligned(speechCaption,2),'向右插入空镜后分镜口播、字幕、视频和包装仍对齐');
+    assert.ok(Math.abs(await read(fixedTimeRatio)-fixedAt)<.002,'独立字幕保持绝对时间');
+    await undoKey();await wait(originalOrder+' && '+aligned(voice,1),'撤销恢复口播和视频');
+    // A legacy free-positioned clip extends across the first cut on the lower lane.
+    config.shots[1][1].videoStart=1.25;
+    await reopenFixture('跨越分镜边界的旧工程');
+    await openVideoMenu(await pointerPoint(cell(0,0)));
+    await chooseVideoCommand('right');
+    await wait(query('#notice')+'.textContent.includes("跨过此分镜边界") && '+originalOrder,'跨界片段给出可执行的提示，原工程完整保留');
     assert.deepEqual(picks,[]);
-    console.log('视频轨右键菜单、本轨左右插入及末端填充、快捷撤销重做、框选删除和同源标记通过。');
+    console.log('视频轨右键菜单、左右插入空分镜并填充、快捷撤销重做、框选删除和同源标记通过。');
   } finally {
     win.webContents.debugger.detach();
     win.destroy();

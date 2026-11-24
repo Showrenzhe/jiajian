@@ -338,9 +338,13 @@ async function run() {
     }
     const zoom = el('#track-zoom');
     await read(zoom + '.value=' + zoom + '.min;' + zoom + '.dispatchEvent(new Event("input"))');
-    await wait('window.greenBlock.offsetWidth<=112 && getComputedStyle(window.greenBlock.querySelector(".sequence-clip-duration")).display==="none"',
-      '窄片段应把标签空间留给文件名');
-    assert.ok(await read('window.greenBlock.querySelector(".sequence-clip-name").clientWidth>0'), '窄片段的文件名仍有可见空间');
+    await wait('window.greenBlock.offsetWidth<=112 && window.greenBlock.querySelector(".sequence-source-duration")?.offsetWidth>0',
+      '窄片段仍应显示原片时长');
+    const badge=await read('(() => {const clip=window.greenBlock, badge=clip.querySelector(".sequence-source-duration");return {'
+      +'text:badge.textContent,rightInset:clip.getBoundingClientRect().right-badge.getBoundingClientRect().right,title:clip.title};})()');
+    assert.equal(badge.text,'1.50 秒');
+    assert.ok(badge.rightInset>=0 && badge.rightInset<=6,'时长应贴近片段右上角并留在片段内');
+    assert.ok(badge.title.includes(path.basename(files.green)) && badge.title.includes('原片 1.50 秒'),'窄片段保留完整的文件名和原片时长提示');
     await click('#timeline-fit');
     await wait(el(greenBlock) + '.matches(".material-instance") && ' + el(greenBlock) + '!==window.greenBlock',
       '适配导致重新绘制后，同源提示应跟随片段');
@@ -395,10 +399,22 @@ async function run() {
     const repeated = saved.shots[1][0];
     Object.assign(repeated,{id:'red-copy',videoLane:0,videoStart:1.5,videoDuration:.5,videoFit:'hold',videoGroup:'red-group'});
     saved.shots[1].push({...repeated,id:'red-render',videoStart:2,sourceEdit:{id:'red-copy',ranges:[{start:0,end:repeated.end}]}});
+    repeated.videoSubtitles={name:'视频原声字幕',cues:[{start:0,end:450,text:'仅该片段有字幕'}]};
+    saved.trackControls={...saved.trackControls,'local-subtitles':{disabled:true}};
     await fs.writeFile(duplicateProject,JSON.stringify(savedDocument));
     picks.push({title:'打开工程',files:[duplicateProject]});
     await click('#open-project');
     await wait(tracks+'===6 && '+count(red)+'===3', '载入同源不同 ID、同轨重复和同名独立文件');
+    const localCaptionLane='[data-control-key="local-subtitles"]';
+    const captionPower=localCaptionLane+' [data-track-action="disabled"]';
+    await wait(el(captionPower)+'?.ariaPressed==="true"','重开草稿应能直接找到已禁用的视频字幕轨');
+    await mouseClick('.sequence-video [data-drop-shot="1"][data-candidate-index="0"][data-move-candidate]');
+    await wait(el(localCaptionLane)+'.textContent.includes("仅该片段有字幕")','选择带字幕的片段后显示其字幕');
+    await mouseClick(greenBlock);
+    await wait(el(captionPower)+'?.ariaPressed==="true" && '+count(localCaptionLane+' .sequence-block')+'===0',
+      '切换到无字幕片段后保留整行开关，清除上一片段的字幕');
+    await mouseClick(captionPower);
+    await wait(el(captionPower)+'.ariaPressed==="false"','可以在无字幕片段上重新启用视频字幕轨');
     await mouseClick(red); await key('Delete',46);
     await wait(el('#material-remove-detail')+'.textContent.includes("3 个对应片段")', '统计含裁切副本的三个同源实例');
     win.setContentSize(840,600);

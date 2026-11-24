@@ -109,15 +109,17 @@
       : { ...clip, outputFrames, outputDuration:outputFrames/fps };
   }
 
-  function fitSegmentedVoice(clips, pools, fps, alignment) {
+  function fitSegmentedVoice(clips, pools, fps, alignment, preserveFixedClock = false) {
     let samples = 0;
     let assigned = 0;
     return clips.map((clip, index) => {
       const range = clip.narration ? (alignment === 'reference'
         ? { narrationStart: 0, narrationDuration: voiceLength(clip) } : voiceRange(clips, index)) : null;
-      const target = range ? (clip.voiceOffset ?? 0) + range.narrationDuration : withOutputFrames(clip, clip.shotDuration ?? clip.duration, fps).outputDuration;
+      const fixedClock = preserveFixedClock && !range ? clip.shotDuration : undefined;
+      const target = range ? (clip.voiceOffset ?? 0) + range.narrationDuration
+        : fixedClock ?? withOutputFrames(clip, clip.shotDuration ?? clip.duration, fps).outputDuration;
       const clipSamples = Math.round(target * audioRate);
-      const timelineDuration = clipSamples / audioRate;
+      const timelineDuration = fixedClock ?? clipSamples / audioRate;
       samples += clipSamples;
       const frameBoundary = samples * fps / audioRate;
       const boundary = index === clips.length - 1 ? Math.ceil(frameBoundary) : Math.round(frameBoundary);

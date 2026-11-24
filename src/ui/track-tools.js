@@ -69,6 +69,28 @@
     shot.forEach((clip, i) => { clip.videoLane = lanes[i]; });
   }
 
+  function fitVideoSpeed(sourceSeconds, windowSeconds) {
+    return sourceSeconds > 0 && windowSeconds > 0 ? sourceSeconds / windowSeconds : 1;
+  }
+
+  // A 0.1-second cut can occupy a project window of up to one day.
+  const minVideoSpeed = 0.000001;
+
+  function placedVideoSpeed(clip) {
+    const span = clip.videoWindow ?? (clip.videoFit === 'hold' ? clip.videoDuration : undefined);
+    if (!clip.autoFitSpeed || !span) return clip.speed === undefined ? 1 : clip.speed;
+    const retained = clip.ranges?.reduce((seconds, r) => seconds + (r.end - r.start), 0) ?? (clip.end - clip.start);
+    return fitVideoSpeed(retained - (clip.look?.head ?? 0) - (clip.look?.tail ?? 0), span);
+  }
+
+  function sampleVideoRate(rate) {
+    return rate > 16 || (rate > 0 && rate < 0.0625);
+  }
+
+  function nativeVideoRate(rate) {
+    return Number.isFinite(rate) && rate > 0 ? Math.max(.0625,Math.min(16,rate)) : 1;
+  }
+
   // A timeline tail trim limits the edited picture without changing its shot or playback rate.
   function pictureSpan(clip, shotSpan) {
     if(clip?.videoWindow!==undefined) return clip.videoWindow;
@@ -109,32 +131,6 @@
   // Keep empty insertions with their owning candidate, including after the last shot.
   function reservedVideoCells(cells) {
     return cells.flatMap(({clip,index})=>(clip.videoGaps ?? []).map(gap=>({...gap,index,gap,anchor:clip})));
-  }
-
-  function insertVideoGap(cells, anchor, side) {
-    const cell=cells.find(item=>item.clip===anchor);
-    if(!cell || !['left','right'].includes(side)) return;
-    const ordered=[...cells,...reservedVideoCells(cells)].sort((a,b)=>a.start-b.start);
-    const index=ordered.indexOf(cell);
-    const before=side==='left';
-    const previousEnd=index ? ordered[index-1].start+ordered[index-1].span : 0;
-    const start=before ? Math.max(previousEnd,cell.start-cell.span) : cell.start+cell.span;
-    const gap={start,span:cell.span};
-    function pinPicture(item,start) {
-      item.clip.videoStart=start;
-      if(item.clip.videoFit!=='hold') item.clip.videoWindow=item.span;
-    }
-    let end=start+cell.span;
-    for(const next of ordered.slice(index+(before ? 0 : 1))) {
-      if(next.start>=end-1e-7) break;
-      if(next.gap) next.gap.start=end;
-      else pinPicture(next,end);
-      end+=next.span;
-    }
-    // The source and a future fill share a physical lane even in legacy, implicit layouts.
-    pinPicture(cell,anchor.videoStart ?? cell.start);
-    (anchor.videoGaps ??= []).push(gap);
-    return gap;
   }
 
   function normalizeVideoGaps(gaps) {
@@ -187,8 +183,8 @@
     return !voicePriority && clip?.asset?.kind === 'video' && clip.videoStart !== undefined
       && clip.videoDuration !== undefined && clip.matchedDuration === undefined;
   }
-  const tools = { splitRanges, candidateVideoLanes, pinCandidateLanes, pictureSpan, videoLaneCells, emptyVideoCells,
-    reservedVideoCells, insertVideoGap, normalizeVideoGaps, videoGroupLeaders, joinedVideoSequence, soloLaneSequence, usesPlacedVideoSource };
+  const tools = { splitRanges, candidateVideoLanes, pinCandidateLanes, minVideoSpeed, fitVideoSpeed, placedVideoSpeed, sampleVideoRate, nativeVideoRate, pictureSpan, videoLaneCells, emptyVideoCells,
+    reservedVideoCells, normalizeVideoGaps, videoGroupLeaders, joinedVideoSequence, soloLaneSequence, usesPlacedVideoSource };
   if (typeof module === 'object' && module.exports) module.exports = tools;
   else Object.assign(window, tools);
 })();

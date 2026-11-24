@@ -11,15 +11,33 @@
   function layerKey(item) {
     return item?.laneId ? 'layer-'+item.kind+'-'+item.laneId : undefined;
   }
+  function participates(state,key) {
+    return !state?.[key]?.disabled;
+  }
+  function wholeRowParticipates(state,index,hasNarration,hasSubtitles) {
+    // Imported SRT can occupy an otherwise empty whole-voice row.
+    return participates(state,(hasNarration || !hasSubtitles ? 'whole' : 'caption')+index);
+  }
+  function enabledPackaging(pack,state) {
+    if (!Object.entries(state ?? {}).some(([key,flags])=>flags.disabled && layer.test(key))) return pack;
+    const active=items=>items.filter(item=>participates(state,layerKey(item)));
+    return {...pack,
+      ...(pack.global && {global:active(pack.global)}),
+      ...(pack.composites && {composites:pack.composites.map(active)}),
+      ...(pack.textGroups && {textGroups:pack.textGroups.map(row=>row.map(active))}),
+      ...(pack.wholeNarration && {wholeNarration:pack.wholeNarration.map(active)}),
+      ...(pack.segmentNarration && {segmentNarration:pack.segmentNarration.map(row=>row.map(active))}),
+    };
+  }
   function actions(key) {
-    if (video.test(key)) return ['locked','hidden','muted','solo'];
-    if (audio.test(key)) return ['locked','muted','solo'];
-    if (captions.test(key)) return ['locked','hidden'];
+    if (video.test(key)) return ['disabled','locked','hidden','muted','solo'];
+    if (audio.test(key)) return ['disabled','locked','muted','solo'];
+    if (captions.test(key)) return ['disabled','locked','hidden'];
     if (key==='shot-strip') return ['locked'];
     const kind = layer.exec(key)?.[1];
-    if (kind==='sound') return ['locked','muted'];
-    if (kind==='pip') return ['locked','hidden','muted'];
-    return kind ? ['locked','hidden'] : [];
+    if (kind==='sound') return ['disabled','locked','muted'];
+    if (kind==='pip') return ['disabled','locked','hidden','muted'];
+    return kind ? ['disabled','locked','hidden'] : [];
   }
   function normalize(value) {
     if (value===undefined) return {};
@@ -40,12 +58,12 @@
   // Track state is replaced on every edit and restore; audio and visual solos act independently.
   function allows(state,key,channel) {
     if (!state) return true;
-    if (state[key]?.[channel==='audio'?'muted':'hidden']) return false;
+    if (!participates(state,key) || state[key]?.[channel==='audio'?'muted':'hidden']) return false;
     let solo=soloCache.get(state);
     if (!solo) {
       solo={audio:false,visual:false};
       for(const [id,flags] of Object.entries(state)) {
-        if(!flags.solo) continue;
+        if(!flags.solo || flags.disabled) continue;
         if(video.test(id)) solo.visual=true;
         if(video.test(id) || audio.test(id)) solo.audio=true;
       }
@@ -75,7 +93,7 @@
     const solo=items.filter(isSolo);
     return solo.length ? solo : items;
   }
-  const tools={actions,layerKey,normalize,allows,forLayout,preferSolo};
+  const tools={actions,layerKey,participates,wholeRowParticipates,enabledPackaging,normalize,allows,forLayout,preferSolo};
   if(typeof module==='object' && module.exports) module.exports=tools;
   else window.trackControls=tools;
 })();

@@ -11,7 +11,7 @@ module.exports = async function checkTimelineInteraction(win, read, waitFor, che
   const next = await rect(clip + ':nth-child(2)');
   const still = await rect(clip + ':nth-child(3)');
   const ruler = await rect('.sequence-ruler .sequence-content');
-  assert.match(await read(`document.querySelector(${JSON.stringify(clip)}).innerText`), /1\.50\s*秒/, '候选上应显示自身使用时长');
+  assert.equal(await read(`document.querySelector('${clip} .sequence-clip-duration').textContent`),'1.50 秒','右上角应显示完整原片时长');
   win.webContents.debugger.attach();
   async function mouse(type, x, y) {
     await win.webContents.debugger.sendCommand('Input.dispatchMouseEvent', {
@@ -79,11 +79,12 @@ module.exports = async function checkTimelineInteraction(win, read, waitFor, che
       input.value='${speed}';input.dispatchEvent(new Event('input',{bubbles:true}));
     })()`);
     await changeSpeed(2);
-    await waitFor(`document.querySelector('${clip} .sequence-clip-duration').textContent==='0.75 秒'
+    await waitFor(`Number(document.querySelector('${clip}').dataset.playbackDuration)===.75
+      && document.querySelector('${clip} .sequence-clip-duration').textContent==='1.50 秒'
       && document.querySelector('#shots .asset-meta').textContent.startsWith('候选 0.75 秒')
-      && document.querySelector('${clip}:nth-child(2) .sequence-clip-duration').textContent==='1.50 秒'`, '时间线与卡片应使用各自候选的裁剪和变速后时长');
+      && Number(document.querySelector('${clip}:nth-child(2)').dataset.playbackDuration)===1.5`, '倍速缩短候选播放长度，原片时长保持可见');
     await changeSpeed(1);
-    await waitFor(`document.querySelector('${clip} .sequence-clip-duration').textContent==='1.50 秒'`, '还原速度应同步刷新候选时长');
+    await waitFor(`Number(document.querySelector('${clip}').dataset.playbackDuration)===1.5`, '还原速度应同步刷新候选时长');
   } finally {
     win.webContents.debugger.detach();
   }

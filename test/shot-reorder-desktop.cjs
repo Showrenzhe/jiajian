@@ -468,7 +468,7 @@ async function check() {
     assert.equal(transition.length,12);
     const colorAt=i=>[...transition.subarray(i*3,i*3+3)].map(v=>v>130);
     assert.deepEqual([0,1,2,3].map(colorAt),[[true,false,false],[false,true,false],[false,true,false],[false,false,false]],
-      '独显第三轨时，第二镜末仍是红片，第三镜第一帧切绿，第三镜末保留绿片尾帧');
+      '独显第三轨时，第二镜末仍是红片，第三镜第一帧切绿，绿色画面持续至第三镜末尾');
     const pcm=await ffmpeg(['-i',soloVideo,'-vn','-ac','1','-ar','8000','-f','s16le','pipe:1']);
     function amplitude(at,hz) {
       const length=800,first=Math.round(at*8000);let x=0,y=0;
@@ -482,7 +482,8 @@ async function check() {
     assert.ok(voiceReference>400 && Math.abs(secondVoice/voiceReference-1)<.2,'每个分镜独立口播按原音量只混入一次');
     assert.ok(Math.abs(amplitude(5.5,440)/voiceReference-1)<.2 && amplitude(8.425,440)<50 &&
       Math.abs(amplitude(8.6,880)/voiceReference-1)<.2 &&
-      amplitude(10.4,880)<50 && amplitude(9,660)<50,'两个原声音调只随各自的源片播放，冻结段静音，口播不重复');
+      Math.abs(amplitude(10.4,880)/voiceReference-1)<.2 && amplitude(12.6,880)<50 && amplitude(9,660)<50,
+      '绿片原声按适配速度延续至第三镜并在边界结束，口播不重复');
     await click('#timeline-play');
     await wait('!!'+query('.draft-transport-preview:not([hidden])'),'播放已独显的视频轨');
     await click('#timeline-play');
@@ -537,6 +538,9 @@ async function check() {
     const fourth=fourthConfig.shots[1].find(clip=>clip.videoLane===3);
     assert.deepEqual([fourth.videoStart,fourth.videoDuration].map(v=>Number(v.toFixed(3))),durations.slice(0,2));
     assert.equal(fourth.videoFit,'hold');
+    assert.deepEqual([fourth.start,fourth.end,fourth.autoFitSpeed],[0,4,true]);
+    assert.ok(Math.abs(fourth.speed-4/durations[1])<1e-6,
+      '四秒原片拖入新轨后应匀速慢放至第二镜末尾');
     assert.deepEqual(fourthConfig.shots.map(shot=>shot.length),repeated.config.shots.map((shot,i)=>shot.length+(i===1?1:0)));
     await click('#track-undo');await wait(rows+'===3','撤销素材库新建的视频轨');
     assert.deepEqual(await read(clips),copyBefore);
@@ -889,6 +893,29 @@ async function check() {
     await wait('Number('+rulerElement+'.dataset.width)==='+dayWidth,'取消后恢复超长工程的原始宽度');
     await openLongTimeline('极远落点',Number.MAX_SAFE_INTEGER);
     await wait('Number('+rulerElement+'.dataset.width)>1e13 && '+rulerElement+'.childElementCount<200','极远落点的时间尺仅绘制有界数量的刻度');
+    const fittedFile=path.join(root,'分镜槽内的自动倍速素材.sdworkbench');
+    const reorderedFile=path.join(root,'自动倍速分镜重排.sdworkbench');
+    await saveProject(fittedFile,{...config,priority:'picture',
+      shotSettings:['A','B','C'].map(name=>({name,duration:1})),
+      shots:['red','green','blue'].map((id,videoStart)=>[{id,start:0,end:1,speed:1,
+        autoFitSpeed:true,videoStart,videoDuration:1,videoFit:'hold'}])},catalog);
+    opens.push(fittedFile);saves.push(reorderedFile);
+    await click('#open-project');await verify(['A','B','C']);await fitTimeline();
+    await drag(2,0,.2);await verify(['C','A','B']);
+    await click('#save-project');await wait(query('#notice')+'.textContent.includes("工程已保存")','保存带槽位的分镜顺序');
+    const reordered=await loadProject(reorderedFile);
+    assert.deepEqual(reordered.config.shots.map(([clip])=>clip.videoStart),[0,1,2]);
+    const fittedBatch=createPreviewBatch(reordered.config,reordered.assets);
+    const fittedPlans=selectPreviewPlans(fittedBatch,reordered.config,{id:fittedBatch.id,indices:[0]});
+    const fittedRender=await exportBatch(fittedPlans,root);
+    assert.deepEqual(fittedRender.failures,[]);
+    const fittedColors=[];
+    for (const mid of [.5,1.5,2.5]) {
+      const rgb=await ffmpeg(['-ss',String(mid),'-i',fittedRender.results[0].path,'-frames:v','1','-an',
+        '-vf','crop=8:8:(iw-8)/2:(ih-8)/2,scale=1:1','-pix_fmt','rgb24','-f','rawvideo','pipe:1']);
+      fittedColors.push(rgb.indexOf(Math.max(...rgb)));
+    }
+    assert.deepEqual(fittedColors,[2,0,1],'自动倍速视频应随分镜一起重排并导出蓝、红、绿三镜');
     assert.deepEqual(opens,[]);assert.deepEqual(saves,[]);
     console.log('分镜排序、视频换轨与新建轨道、取消与撤销重做、复制粘贴、子工程重开及成片画面与原声验证通过。');
   } finally {

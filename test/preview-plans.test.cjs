@@ -99,6 +99,55 @@ test('disabled candidates stay out of draws and voice fill, and track mute cover
   assert.throws(() => createPreviewBatch({ ...settings, shots: disabled }, assets), /第 1 组.*参与/);
 });
 
+test('disabled physical rows do not enter random or ordered draws, including sparse narration and attached layers', () => {
+  const voice = name => ({kind:'audio', name, duration:.4});
+  const assets = new Map([...catalog, ['A',voice('A')], ['B',voice('B')]]);
+  const caption = {name:'固定字幕', cues:[{start:0,end:80,text:'固定'}]};
+  const text = (value,laneId) => ({kind:'text',text:value,laneId});
+  const settings = {...config, count:1, priority:'voice', narrationMode:'segmented',
+    shots:[[...config.shots[0]], [{...config.shots[1][0],videoLane:1}]],
+    segmentNarrationIds:[['A','B'], ['A']], generatedCaptions:{A:'录音甲',B:'录音乙'}, timelineCaptions:caption,
+    musicIds:['A','B'], trackControls:{vis0:{disabled:true,solo:true},voice0:{disabled:true,solo:true},
+      music0:{disabled:true,solo:true},'layer-text-off':{disabled:true}},
+    packaging:{composites:[[text('甲包装','off')],[text('乙包装','on')]],
+      segmentNarration:[[[text('跟甲','on')],[text('跟乙','on')]],[[text('跟甲','on')]]]}};
+  for (const selection of ['ordered','random']) {
+    const current = {...settings,segmentNarrationSelection:selection};
+    const [plan] = createPreviewBatch(current,assets).plans;
+    assert.deepEqual(plan.clips.map(clip=>[clip.asset.name,clip.narration?.name,clip.narrationRow]),[['b','B',1],['c',undefined,undefined]]);
+    assert.equal(plan.music.name,'B');
+    assert.ok(plan.musicVolume>0);
+    assert.deepEqual(plan.layers.map(layer=>layer.text),['跟乙','乙包装']);
+    assert.deepEqual(plan.subtitles.cues.map(cue=>cue.text).sort(),['固定','录音乙']);
+    assert.throws(()=>createPreviewBatch({...current,count:2},assets),/生成数量/);
+    const [silent] = createPreviewBatch({...current,trackControls:{...settings.trackControls,voice1:{disabled:true},music1:{disabled:true}}},assets).plans;
+    assert.ok(silent.clips.every(clip=>clip.narration===null));
+    assert.equal(silent.music,null);
+    assert.deepEqual(silent.subtitles.cues,caption.cues);
+    assert.deepEqual(silent.layers.map(layer=>layer.text),['乙包装']);
+  }
+  assert.throws(()=>createPreviewBatch({...settings,trackControls:{...settings.trackControls,vis1:{disabled:true}}},assets),/第 1 组.*启用视频轨道/);
+});
+
+test('a standalone SRT follows its subtitle row while an attached SRT follows its narration', () => {
+  const caption = text=>({name:text+'.srt',cues:[{start:0,end:400,text}]});
+  const assets = new Map([...catalog,['voice',{kind:'audio',name:'旁白',duration:.4}]]);
+  const settings = {...config, count:1,shots:[config.shots[1]],narrationId:'voice',subtitles:caption('绑定'),
+    extraWholeTracks:[{narrationId:null,subtitles:caption('独立')}],timelineCaptions:caption('固定')};
+  const select = trackControls=>createPreviewBatch({...settings,trackControls},assets).plans[0];
+  const srt = select({whole0:{disabled:true},whole1:{disabled:true}});
+  assert.equal(srt.wholeTrack,2);
+  assert.equal(srt.narration,null);
+  assert.deepEqual(srt.subtitles.cues.map(cue=>cue.text),['独立','固定']);
+  const spoken = select({caption0:{disabled:true},caption1:{disabled:true}});
+  assert.equal(spoken.narration,assets.get('voice'));
+  assert.deepEqual(spoken.subtitles.cues.map(cue=>cue.text),['固定']);
+  const silent = select({whole0:{disabled:true},caption1:{disabled:true},'pasted-captions':{disabled:true}});
+  assert.equal(silent.narration,null);
+  assert.equal(silent.subtitles,null);
+  assert.equal(silent.wholeTrack,undefined);
+});
+
 test('samples complete composite and text rows and anchors text and narration to the selected shots', () => {
   const text = (value) => ({ kind: 'text', text: value });
   const settings = { ...config, count: 4, shots: [[{ id: 'a', start: 0, end: .5 }], [{ id: 'b', start: 0, end: 1 }]],
