@@ -203,14 +203,22 @@ async function createFrameThumbnail(asset, { signal, time: requestedTime } = {})
     && stdout.at(-2) === 0xff && stdout.at(-1) === 0xd9 ? stdout : null;
 }
 
-async function createTrackProxy(asset, output, signal, edge = 640) {
+async function createTrackProxy(asset, output, signal, edge = 640, retime) {
+  const filters = [];
+  if (retime) filters.push('settb=AVTB', `setpts=(PTS-STARTPTS)/${retime.rate}`, `fps=${retime.fps}`,
+    'tpad=stop_mode=clone:stop=1', `trim=end_frame=${Math.ceil(asset.duration * retime.fps / retime.rate - 1e-7)}`);
+  filters.push(`scale=${edge}:${edge}:force_original_aspect_ratio=decrease:force_divisible_by=2:reset_sar=1`);
   const args = ['-hide_banner', '-loglevel', 'error', '-nostdin', '-threads', '2', ...mediaInput, '-i', asset.path,
-    '-map', `0:${asset.videoIndex}`, '-filter_threads', '1', '-vf', `scale=${edge}:${edge}:force_original_aspect_ratio=decrease:force_divisible_by=2:reset_sar=1`,
+    '-map', `0:${asset.videoIndex}`, '-filter_threads', '1', '-vf', filters.join(','),
     '-c:v', 'libx264', '-threads', '2', '-preset', 'veryfast', '-crf', '26', '-pix_fmt', 'yuv420p', '-fps_mode', 'passthrough'];
-  if (asset.audioIndex !== null) args.push('-map', `0:${asset.audioIndex}`, '-c:a', 'aac', '-ac', '2', '-b:a', '96k');
+  if (asset.audioIndex !== null) {
+    if (retime) args.push('-af', ['asetpts=PTS-STARTPTS', ...audioTempo(retime.rate)].join(','),
+      '-t', time(asset.duration / retime.rate));
+    args.push('-map', `0:${asset.audioIndex}`, '-c:a', 'aac', '-ac', '2', '-b:a', '96k');
+  }
   else args.push('-an');
   args.push('-sn', '-dn', '-map_metadata', '-1', '-movflags', '+faststart', output);
-  await runTool(ffmpeg, args, { signal });
+  await runTool(ffmpeg, args, { signal, timeout: retime ? Math.min(300000,Math.max(30000,asset.duration * 1000)) : 0 });
 }
 
 async function analyzeNarrationSilence(asset, { signal } = {}) {

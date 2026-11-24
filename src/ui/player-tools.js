@@ -207,7 +207,7 @@ function createTrackPreviewClock(clip) {
   return {duration, rate, sourceAt, timeAt};
 }
 
-window.mountPlayerTools = ({ panel, getClip, getTrackClock, seekTrackSource, isEditor, isTrack, validClip, notify, onImageTime,
+window.mountPlayerTools = ({ panel, getClip, getTrackClock, seekTrackSource, isLibraryVideo, isEditor, isTrack, validClip, notify, onImageTime,
   getDraft, getIdleDraft, toggleDraft, seekDraft, canProxy, changeQuality }) => {
   const find = (selector) => panel.querySelector(selector);
   const video = find('#preview');
@@ -218,6 +218,8 @@ window.mountPlayerTools = ({ panel, getClip, getTrackClock, seekTrackSource, isE
   const transport = find('#player-transport');
   const play = find('#player-play');
   const position = find('#player-position');
+  const sourceScrubber = find('.player-source-scrubber');
+  const seekLabel = find('.player-seek-label');
   const ratio = document.querySelector('#ratio');
   const float = find('#player-float');
   const full = find('#player-fullscreen');
@@ -242,6 +244,7 @@ window.mountPlayerTools = ({ panel, getClip, getTrackClock, seekTrackSource, isE
   let animation = 0;
   let drag;
   let cut;
+  let scrub, seekFrame;
 
   const imagePlaying = () => imageStart !== null;
   const imagePosition = () => imagePlaying() ? imageTime + (performance.now() - imageStart) / 1000 : imageTime;
@@ -262,7 +265,7 @@ window.mountPlayerTools = ({ panel, getClip, getTrackClock, seekTrackSource, isE
     const clip = getClip();
     const active = !draft && ready(clip);
     const timeline = draft || (idle?.end ? idle : null);
-    const clipTime = clip?.asset.kind === 'image' ? imagePosition() : video.currentTime;
+    const clipTime = clip?.asset.kind === 'image' ? imagePosition() : scrub?.time ?? video.currentTime;
     const trackClock = timeline ? undefined : getTrackClock();
     let seconds = 0;
     if (timeline) seconds = Math.min(timeline.time,timeline.end);
@@ -285,6 +288,11 @@ window.mountPlayerTools = ({ panel, getClip, getTrackClock, seekTrackSource, isE
     if (qualityLabel.textContent !== label) qualityLabel.textContent = label;
     if (cut && position.max !== String(cut.end)) position.max = cut.end;
     position.value = seconds;
+    if (!sourceScrubber.hidden) {
+      const fraction = length > 0 ? Math.max(0, Math.min(1, elapsed / length)) : 0;
+      position.style.setProperty('--progress', fraction * 100 + '%');
+      position.setAttribute('aria-valuetext', currentText + ' / ' + endText);
+    }
     if (!draft && clip?.asset.kind === 'image' && active) onImageTime?.(clip, seconds);
   }
   function tick() {
@@ -304,6 +312,14 @@ window.mountPlayerTools = ({ panel, getClip, getTrackClock, seekTrackSource, isE
     const draft = cut || getDraft();
     const idle = draft ? null : getIdleDraft();
     const timelineView = Boolean(draft || idle?.end);
+    const showSourceBar = !timelineView && isEditor() && isLibraryVideo();
+    if (scrub && (!showSourceBar || scrub.clip !== clip)) endSourceScrub(false);
+    if (sourceScrubber.hidden === showSourceBar) {
+      if (showSourceBar) sourceScrubber.append(position);
+      else { seekLabel.after(position); position.removeAttribute('aria-valuetext'); }
+      sourceScrubber.hidden = !showSourceBar;
+      seekLabel.hidden = showSourceBar;
+    }
     find('#preview-heading').hidden = timelineView;
     find('#draft-preview-heading').hidden = !timelineView || Boolean(cut);
     find('#cut-preview-heading').hidden = !cut;
@@ -341,6 +357,7 @@ window.mountPlayerTools = ({ panel, getClip, getTrackClock, seekTrackSource, isE
     updatePosition(draft,idle);
   }
   function reset() {
+    endSourceScrub(false);
     imageStart = null;
     imageTime = 0;
     cancelAnimationFrame(animation);
@@ -360,7 +377,24 @@ window.mountPlayerTools = ({ panel, getClip, getTrackClock, seekTrackSource, isE
   function seekPosition(value) {
     const trackClock = getTrackClock();
     if (trackClock) seekTrackSource(getClip(), trackClock.sourceAt(value));
+    else if (!sourceScrubber.hidden) seekTrackSource(getClip(), value, false);
     else seek(value);
+  }
+  function applySourceScrub() {
+    seekFrame = undefined;
+    if (scrub && scrub.clip === getClip()) seekTrackSource(scrub.clip, scrub.time, false);
+  }
+  function endSourceScrub(commit) {
+    if (!scrub) return;
+    cancelAnimationFrame(seekFrame);
+    seekFrame = undefined;
+    const {id, clip, resume} = scrub;
+    if (commit) applySourceScrub();
+    scrub = undefined;
+    if (position.hasPointerCapture(id)) position.releasePointerCapture(id);
+    if (commit && resume && clip === getClip()) video.play().catch(error => {
+      if (clip === getClip() && error.name !== 'AbortError') notify('播放器未能继续播放此素材。');
+    });
   }
   function pause() {
     cut?.pause();
@@ -494,10 +528,31 @@ window.mountPlayerTools = ({ panel, getClip, getTrackClock, seekTrackSource, isE
     } else if (getClip()) { pause(); seekPosition(getTrackClock() ? 0 : getClip().start); }
   });
   position.addEventListener('input', () => {
-    if (cut) cut.seek(position.valueAsNumber);
+    if (scrub) {
+      scrub.time = position.valueAsNumber;
+      updatePosition();
+      if (seekFrame === undefined) seekFrame = requestAnimationFrame(applySourceScrub);
+    } else if (cut) cut.seek(position.valueAsNumber);
     else if (getDraft()) seekDraft(position.valueAsNumber);
     else seekPosition(position.valueAsNumber);
   });
+  position.addEventListener('pointerdown', event => {
+    if (sourceScrubber.hidden || !event.isPrimary || event.button !== 0 || scrub) return;
+    scrub = {id:event.pointerId, clip:getClip(), time:position.valueAsNumber, resume:!video.paused && !video.ended};
+    video.pause();
+    position.setPointerCapture(event.pointerId);
+  });
+  position.addEventListener('keydown', event => {
+    if (sourceScrubber.hidden || (event.code !== 'Space' && event.key !== ' ') || event.isComposing
+      || event.altKey || event.ctrlKey || event.metaKey || event.shiftKey) return;
+    event.preventDefault();
+    if (!event.repeat) togglePlay();
+  });
+  for (const type of ['pointerup', 'pointercancel', 'lostpointercapture']) {
+    position.addEventListener(type, event => {
+      if (scrub?.id === event.pointerId) endSourceScrub(type === 'pointerup');
+    });
+  }
   quality.addEventListener('change', changeQuality);
   zoom.addEventListener('change', () => {
     stage.style.setProperty('--player-zoom', zoom.value);

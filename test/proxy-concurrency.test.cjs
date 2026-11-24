@@ -8,7 +8,7 @@ const { test } = require('node:test');
 const { setTimeout: delay } = require('node:timers/promises');
 const { createPerformanceCache } = require('../src/performance-cache.cjs');
 const { createDraftStore } = require('../src/draft-store.cjs');
-const { inspectAsset } = require('../src/media.cjs');
+const { inspectAsset, createTrackProxy } = require('../src/media.cjs');
 const { ffmpeg } = require('./fixtures.cjs');
 
 async function setup(t, encode) {
@@ -35,6 +35,37 @@ test('fast preview changes keep a bounded encoder queue and produce the latest p
   assert.ok(result.at(-1));
   assert.ok(maximum <= 2, '同时编码数为 ' + maximum);
   assert.ok(started <= 3, '快速浏览只应生成最先和最后请求的代理，实际 ' + started);
+});
+
+test('a retimed preview preserves moving frames and source sound across the entire shot and reuses its cache', async t => {
+  let encodes = 0;
+  const {dir,cache} = await setup(t,(...args) => { encodes++; return createTrackProxy(...args); });
+  const file = path.join(dir,'source.mov');
+  await ffmpeg(['-f','lavfi','-i','color=white:s=320x180:r=60:d=11.34',
+    '-f','lavfi','-i','sine=frequency=440:duration=11.34','-vf','fade=in:0:680',
+    '-c:v','libx264','-threads','1','-c:a','aac',file]);
+  const asset = await inspectAsset(file,'video');
+  const options = {rate:5.67,fps:60,original:true};
+  const proxy = await cache.proxy(asset,{retime:options});
+  const media = await inspectAsset(proxy,'video');
+  assert.deepEqual([media.width,media.height,media.fps],[320,180,60]);
+  assert.ok(Math.abs(media.duration-2) <= 1/60 && media.audioIndex !== null);
+  const signal = await ffmpeg(['-i',proxy,'-vn','-ac','1','-ar','8000','-f','s16le','pipe:1']);
+  for (const time of [.25,1,1.75]) {
+    const pixel = await ffmpeg(['-ss',String(time),'-i',proxy,'-an','-frames:v','1','-vf','scale=1:1',
+      '-pix_fmt','rgb24','-f','rawvideo','pipe:1']);
+    assert.ok(Math.abs(pixel[0]-255*time/2)<12,'Moving picture follows the fitted duration at '+time);
+    const offset = Math.round(time*8000)*2;
+    let cycles = 0;
+    for (let i=offset+2; i<offset+1600; i+=2) if (signal.readInt16LE(i-2)<0 && signal.readInt16LE(i)>=0) cycles++;
+    assert.ok(Math.abs(cycles*10-440)<25, 'Continuous pitch-preserved source audio at '+time);
+  }
+  assert.equal(await cache.proxy(asset,{retime:options}),proxy);
+  assert.equal(encodes,1);
+  const low = await cache.proxy(asset,{retime:{...options,original:false}});
+  const otherRate = await cache.proxy(asset,{retime:{...options,rate:4}});
+  const otherFps = await cache.proxy(asset,{retime:{...options,fps:24}});
+  assert.equal(new Set([proxy,low,otherRate,otherFps]).size,4);
 });
 
 test('clear and changing folders wait for unpublished output and keep cache views consistent', async t => {

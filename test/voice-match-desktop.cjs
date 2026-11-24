@@ -21,9 +21,11 @@ async function run() {
   const catalog = new Map(await Promise.all([...clips, ...voices].map(async (id, index) => {
     const visual = index < clips.length;
     const file = path.join(root, id + (visual ? '.mp4' : '.wav'));
-    const source = visual ? 'color=' + ['red', 'green'][index] + ':s=160x90:r=24:d=4'
+    const source = visual ? 'color=' + id + ':s=160x90:r=24:d=4'
       : 'sine=frequency=440:duration=' + (voices.indexOf(id) + 1);
-    await ffmpeg(['-f', 'lavfi', '-i', source, ...(visual ? ['-c:v', 'libx264', '-threads', '1'] : []), file]);
+    // Blue only appears in the final quarter-second of the four-second red clip.
+    const tailMarker = id === 'red' ? ['-vf', "drawbox=w=iw:h=ih:color=blue:t=fill:enable='gte(t,3.75)'"] : [];
+    await ffmpeg(['-f', 'lavfi', '-i', source, ...tailMarker, ...(visual ? ['-c:v', 'libx264', '-threads', '1'] : []), file]);
     return [id, await inspectAsset(file, visual ? 'video' : 'audio')];
   })));
   const before = [[4, 3], [4, 2.5], [3.5]];
@@ -106,25 +108,37 @@ async function run() {
     await read(node('#timeline-clock') + '.focus()');
     const key = { key: ' ', code: 'Space', windowsVirtualKeyCode: 32, nativeVirtualKeyCode: 32 };
     const probe = read(`new Promise(resolve => {
-      let maxTime = 0, rate = 0;
-      const started = performance.now();
+      const canvas = document.createElement('canvas');
+      canvas.width = canvas.height = 1;
+      const ctx = canvas.getContext('2d', { willReadFrequently: true });
+      const deadline = performance.now() + 10000;
+      let started, sawRed = false, sawBlue = false;
+      let elapsedToBlue = null;
       const timer = setInterval(() => {
+        const now = performance.now();
         const video = document.querySelector('.draft-transport-preview:not([hidden]) video');
-        if (video && video.readyState >= 2 && (rate || !video.paused)) {
-          maxTime = Math.max(maxTime, video.currentTime);
-          rate = video.playbackRate;
+        if (video && video.readyState >= 2 && (started !== undefined || !video.paused)) {
+          started ??= now;
+          ctx.drawImage(video, 0, 0, 1, 1);
+          const [r, , b] = ctx.getImageData(0, 0, 1, 1).data;
+          if (r > 160 && b < 80) sawRed = true;
+          if (sawRed && !sawBlue && b > 160 && r < 80) {
+            sawBlue = true;
+            elapsedToBlue = (now - started) / 1000;
+          }
         }
-        if ((maxTime > 3.75 && (!video || video.paused)) || performance.now() - started > 6500) {
+        if (sawBlue || now >= deadline) {
           clearInterval(timer);
-          resolve({ rate, maxTime });
+          resolve({ sawRed, sawBlue, elapsedToBlue });
         }
       }, 10);
     })`);
     await wc.debugger.sendCommand('Input.dispatchKeyEvent', { ...key, type: 'keyDown', text: ' ' });
     await wc.debugger.sendCommand('Input.dispatchKeyEvent', { ...key, type: 'keyUp' });
     const observed = await probe;
-    assert.equal(observed.rate, 4, label + '打开后空格应直接四倍速试播。实际 ' + JSON.stringify(observed));
-    assert.ok(observed.maxTime > 3.75, label + '应播放到原片最后 0.25 秒。实际 ' + JSON.stringify(observed));
+    const actual = label + '实际 ' + JSON.stringify(observed);
+    assert.ok(observed.sawRed && observed.sawBlue, '空格试播应从红色画面播到原片末段的蓝色画面。' + actual);
+    assert.ok(observed.elapsedToBlue >= .65 && observed.elapsedToBlue <= 1.4, '四秒原片应在约一秒内播到末段。' + actual);
     assert.equal(await read(node('#preview-batch-list') + '.childElementCount'), 0, label + '直接空格应保留实时轨道试播');
     console.log(label + '直接空格试播', observed);
   }

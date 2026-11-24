@@ -3,7 +3,7 @@
 (() => {
   const alignment = typeof module === 'object' && module.exports ? require('./voice-alignment.js') : window.voiceAlignment;
   const waveformSource = typeof module === 'object' && module.exports ? require('./waveform.js').waveformSource : window.waveformSource;
-  const { candidateVideoLanes, pictureSpan, soloLaneSequence, joinedVideoSequence, videoGroupLeaders, usesPlacedVideoSource, placedVideoSpeed, sampleVideoRate } = typeof module === 'object' && module.exports ? require('./track-tools.js') : window;
+  const { candidateVideoLanes, pictureSpan, soloLaneSequence, joinedVideoSequence, videoGroupLeaders, usesPlacedVideoSource, placedVideoSpeed, sampleVideoRate, shouldRetimeVideo } = typeof module === 'object' && module.exports ? require('./track-tools.js') : window;
   const controls = typeof module === 'object' && module.exports ? require('./track-controls.js') : window.trackControls;
 
   function eligiblePictures(shot,state,lanes=candidateVideoLanes(shot)) {
@@ -362,8 +362,9 @@
     const label=document.createElement('span');
     overlay.append(label);stage.append(overlay);
     let playing=false, media=new Map(), entries=[], active=[], next=0, time=0, end=0, stamp, frame;
-    let visual=false, canProxy=false;
-    let currentPicture, upcomingPictures=[], upcomingIndex=0, warmed;
+    let visual=false, canProxy=false, priming=false;
+    let currentPicture, preloadQueues=[];
+    const warmed=new Map();
     const textNodes=new Map();
     const failed=new Set();
     function release(item) {
@@ -381,8 +382,8 @@
       else unload();
     }
     function discardWarm() {
-      if(warmed) release(warmed.item);
-      warmed=undefined;
+      for(const item of warmed.values()) release(item);
+      warmed.clear();
     }
     function halt(keepFrame=false, keepCover=false) {
       cancelAnimationFrame(frame);
@@ -401,6 +402,9 @@
       }
       if(visible) changed(false);
     }
+    function preparedRate(entry) {
+      return (entry.visual || entry.volume>0) && shouldRetimeVideo(entry.asset,entry.rate) ? entry.rate : 1;
+    }
     function createItem(entry) {
       const node=document.createElement(entry.asset.kind==='image'?'img':entry.visual?'video':'audio');
       node.hidden=!entry.visual;
@@ -418,32 +422,47 @@
         node.crossOrigin='anonymous';node.preload='auto';node.playsInline=true;node.loop=!!entry.loop;
         node.volume=Math.max(0,Math.min(1,entry.volume/100));node.muted=!node.volume;
       }
-      const proxy=previewSource?.(entry.asset);
-      const item={node,asset:entry.asset,entry:null,targetSet:false,waitingSince:0,mayUseProxy:Boolean(proxy)};
-      if (proxy) Promise.resolve(proxy).catch(()=>null).then(url=>{
+      const retimeRate=preparedRate(entry);
+      const proxy=previewSource?.(entry.asset,retimeRate,playing);
+      const item={node,asset:entry.asset,entry:null,targetSet:false,waitingSince:0,mayUseProxy:Boolean(proxy),
+        retimeRate,sourceScale:1,preparingSince:playing && proxy && retimeRate>1 ? performance.now() : 0};
+      if (proxy) Promise.resolve(proxy).catch(()=>null).then(source=>{
         if (item.released || !item.mayUseProxy) return;
-        item.mayUseProxy=Boolean(url);
-        node.src=url || entry.asset.url;
+        item.mayUseProxy=Boolean(source);
+        item.reduced=Boolean(source?.reduced);
+        item.sourceScale=source?.sourceScale ?? 1;
+        item.mediaFps=source?.fps;
+        item.preparingSince=0;
+        node.src=source?.url || entry.asset.url;
       });
       else node.src=entry.asset.url;
       return item;
     }
-    function prepareNextPicture(at) {
-      while(upcomingIndex<upcomingPictures.length && upcomingPictures[upcomingIndex].start<=at) upcomingIndex++;
-      const entry=upcomingPictures[upcomingIndex];
-      if(warmed && warmed.entry!==entry) discardWarm();
-      if(!playing || !entry || warmed || entry.start-at>1 || failed.has(entry.asset) || media.get(entry.lane)?.asset===entry.asset) return;
-      const item=createItem(entry);
-      warmed={entry,item};
-      if(item.node.tagName==='VIDEO' && entry.source>0) {
-        item.node.addEventListener('loadedmetadata',()=>{
-          if(warmed?.item===item) item.node.currentTime=entry.source;
-        },{once:true});
+    function prepareNextMedia(at) {
+      for(const [entry,item] of warmed) {
+        if(entry.start>at) continue;
+        release(item);warmed.delete(entry);
+      }
+      if(!playing) return;
+      for(const queue of preloadQueues) {
+        while(queue.index<queue.entries.length && queue.entries[queue.index].start<=at) queue.index++;
+        const entry=queue.entries[queue.index];
+        if(!entry || warmed.has(entry) || failed.has(entry.asset)) continue;
+        const rate=preparedRate(entry), current=media.get(entry.lane);
+        if(entry.start-at>(rate>1 ? 4 : 1) || (current?.asset===entry.asset && current.retimeRate===rate)) continue;
+        const item=createItem(entry);
+        warmed.set(entry,item);
+        if(item.node.tagName!=='IMG' && entry.source>0) {
+          item.node.addEventListener('loadedmetadata',()=>{
+            if(warmed.has(entry)) item.node.currentTime=entry.source/item.sourceScale;
+          },{once:true});
+        }
       }
     }
     function retryOriginal(item) {
       if (!item.mayUseProxy) return false;
       item.mayUseProxy=false;
+      item.preparingSince=0;item.sourceScale=1;item.reduced=false;item.mediaFps=undefined;
       item.waitingSince=0;
       item.targetSet=false;
       item.node.src=item.asset.url;
@@ -463,7 +482,7 @@
       function presented(_now,{mediaTime}) {
         item.endFrameCallback=undefined;
         if(item.released || !playing || currentPicture!==entry || node.seeking || node.duration-node.currentTime>.3) return;
-        if(node.duration-mediaTime <= 1/(entry.asset.fps || 30)+.002) {
+        if(node.duration-mediaTime <= 1/(item.mediaFps || entry.asset.fps || 30)+.002) {
           item.heldEnd=handoff.retain(node);
         } else item.endFrameCallback=node.requestVideoFrameCallback(presented);
       }
@@ -491,7 +510,7 @@
         currentPicture=picture;
       }
       if(!picture) handoff.clear(overlay);
-      const live=new Set();let ready=true;
+      const live=new Set();let ready=true,preparing=false;
       for(const entry of active) {
         if(entry.text) {
           live.add(entry);
@@ -504,16 +523,21 @@
         if(failed.has(entry.asset)) continue;
         live.add(entry.lane);
         let item=media.get(entry.lane);
-        if(item?.asset!==entry.asset || (item && item.node.hidden===entry.visual)) {
+        if(item?.asset!==entry.asset || item.retimeRate!==preparedRate(entry) || item.node.hidden===entry.visual) {
           if(item) release(item);
-          if(warmed?.entry===entry) {item=warmed.item;warmed=undefined;}
-          else item=createItem(entry);
+          item=warmed.get(entry) ?? createItem(entry);
+          warmed.delete(entry);
           media.set(entry.lane,item);
           overlay.append(item.node);
         }
         const node=item.node;
         const now=performance.now();
-        if(node.tagName!=='IMG' && (node.readyState<2 || node.seeking)) item.waitingSince ||= now;
+        item.activeSince??=now;
+        // At a running cut, keep the original playable if the upcoming cache
+        // missed its deadline. A late completion is used on the next playback.
+        if(item.preparingSince && now-item.activeSince>(priming ? 10000 : 100)) retryOriginal(item);
+        if(item.preparingSince && now-item.preparingSince>200) preparing=true;
+        if(node.tagName!=='IMG' && !item.preparingSince && (node.readyState<2 || node.seeking)) item.waitingSince ||= now;
         else item.waitingSince=0;
         if(node.error || (item.waitingSince && now-item.waitingSince>10000)) {
           if(retryOriginal(item)) ready=false;
@@ -562,10 +586,18 @@
         }
         const frozen=entry.rate===0;
         if(frozen && !node.paused)node.pause();
-        const rate=frozen ? 1 : Math.max(.0625,Math.min(16,entry.rate));
+        source/=item.sourceScale;
+        const rate=frozen ? 1 : Math.max(.0625,Math.min(16,entry.rate/item.sourceScale));
         if(node.playbackRate!==rate)node.playbackRate=rate;
-        if(!item.targetSet || (!node.seeking && Math.abs(node.currentTime-source)>.20)) {
-          if(Math.abs(node.currentTime-source)>(frozen ? 1e-7 : .015))node.currentTime=source;
+        // Media time is measured in source seconds. A 5.67× source moves
+        // 0.28 seconds in just 50 ms of timeline time.
+        const drift=Math.abs(node.currentTime-source);
+        const outOfSync=playing && !priming && node.readyState>=2 && !node.seeking && !frozen &&
+          now>=item.nextSync && drift>.20*Math.max(1,rate);
+        if(!item.targetSet || outOfSync) {
+          if(drift>(frozen ? 1e-7 : .015))node.currentTime=source;
+          // Give a decoder time to present after a seek before correcting again.
+          item.nextSync=now+400;
           item.targetSet=true;
         }
         if(entry===picture) {
@@ -578,26 +610,34 @@
       for(const [lane,item] of media) if(!live.has(lane) || failed.has(item.asset)) {release(item);media.delete(lane);}
       for(const [entry,node] of textNodes) if(!live.has(entry)) {node.remove();textNodes.delete(entry);}
       const visuals=active.some((e)=>e.visual && !failed.has(e.asset));
-      label.hidden=visuals || !entries.length;
-      if(!label.hidden) label.textContent=active.filter((e)=>!failed.has(e.asset)).map((e)=>e.asset.name).join(' · ') || '轨道试听';
+      label.hidden=!entries.length || (visuals && !preparing);
+      label.classList.toggle('draft-preparing',preparing);
+      if(!label.hidden) {
+        const message=preparing ? '正在准备倍速预览…' : active.filter(e=>e.asset && !failed.has(e.asset)).map(e=>e.asset.name).join(' · ') || '轨道试听';
+        if(label.textContent!==message) label.textContent=message;
+      }
+      // Start (or seek) the composition together. Once rolling, a decoding
+      // video must not repeatedly stop narration, music or the timeline clock.
+      if(ready) priming=false;
       for(const item of media.values()) {
         const {node,asset}=item;
         if(node.tagName==='IMG')continue;
-        if(!playing || !ready || item.entry?.rate===0 || sampleVideoRate(item.entry?.rate)) {if(!node.paused)node.pause();continue;}
-        if(node.paused && !node.ended) {
+        if(!playing || priming || item.entry?.rate===0 || sampleVideoRate(item.entry?.rate)) {if(!node.paused)node.pause();continue;}
+        if(node.paused && !node.ended && !node.seeking && node.readyState>=2) {
           const src=node.src;
           node.play().catch(error=>{
             if(error.name!=='AbortError' && node.isConnected && node.src===src && !retryOriginal(item)) failed.add(asset);
           });
         }
       }
-      prepareNextPicture(at);
+      prepareNextMedia(at);
       return ready;
     }
     function step(now) {
       if(!playing) return;
-      if(render())time=Math.min(end,time+Math.min(.1,(now-stamp)/1000));
-      stamp=now;tick(time);
+      if(!priming) time=Math.min(end,time+Math.max(0,(now-stamp)/1000));
+      stamp=now;
+      render();tick(time);
       if(time>=end || (failed.size && entries.every((e)=>e.gap || failed.has(e.asset)))) {
         halt(true);
         if(time>=end && sampleVideoRate(currentPicture?.rate)) seek(end);
@@ -608,7 +648,13 @@
     function setPlan(plan) {
       discardWarm();
       entries=plan;active=[];next=0;
-      upcomingPictures=plan.filter(entry=>entry.asset && entry.visual && !entry.layer);upcomingIndex=0;
+      // Preload the next picture and independently timed sounds before a cut.
+      preloadQueues=[
+        plan.filter(entry=>entry.asset && entry.visual && !entry.layer),
+        plan.filter(entry=>entry.asset?.kind==='video' && !entry.visual && entry.volume>0 && !entry.layer),
+        plan.filter(entry=>entry.lane==='voice'),
+        plan.filter(entry=>entry.lane==='music'),
+      ].filter(entries=>entries.length).map(entries=>({entries,index:0}));
       end=entries.reduce((max,entry)=>Math.max(max,entry.end),0);
       visual=entries.some(entry=>entry.visual);
       canProxy=entries.some(({asset})=>asset?.kind==='video' && !asset.alpha && Math.max(asset.width,asset.height)>480);
@@ -633,21 +679,23 @@
       halt(false,true);failed.clear();setPlan(plan);
       time=from>=end-.001 ? 0 : Math.max(0,from);
       document.getElementById('preview')?.pause();
-      overlay.hidden=false;playing=true;changed(true);tick(time);
+      overlay.hidden=false;playing=true;priming=true;changed(true);tick(time);
       stamp=performance.now();render();frame=requestAnimationFrame(step);return true;
     }
     function seek(seconds,reloadSources=false) {
       if(overlay.hidden) return;
       cancelAnimationFrame(frame);
       if(reloadSources) {
-        handoff.capture();discardWarm();
+        handoff.capture();
         for(const item of media.values()) release(item);
         media.clear();failed.clear();
       }
       // An empty composition stays on the monitor. Preserve its playhead so
       // re-enabling a take can reveal the same position without loading a source preview.
       if(!entries.length) playing=false;
-      active=[];next=0;upcomingIndex=0;time=Math.max(0,entries.length ? Math.min(end,seconds) : seconds);
+      discardWarm();
+      for(const queue of preloadQueues) queue.index=0;
+      active=[];next=0;time=Math.max(0,entries.length ? Math.min(end,seconds) : seconds);
       for(const item of media.values()) {
         item.targetSet=false;item.heldEnd=false;item.sampleReady=false;
         if(item.endFrameCallback!==undefined) {
@@ -655,7 +703,7 @@
           item.endFrameCallback=undefined;
         }
       }
-      stamp=performance.now();
+      priming=playing;stamp=performance.now();
       function paint() {
         const ready=render();
         tick(time);
@@ -668,7 +716,7 @@
       if(overlay.hidden) return null;
       let proxy=false;
       for(const item of media.values()) {
-        if(item.mayUseProxy && item.node.tagName==='VIDEO' && item.node.readyState>=1 && item.node.currentSrc!==item.asset.url) {
+        if(item.reduced && item.node.tagName==='VIDEO' && item.node.readyState>=1 && item.node.currentSrc!==item.asset.url) {
           proxy=true;
           break;
         }

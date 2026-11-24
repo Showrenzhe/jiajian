@@ -67,9 +67,14 @@ async function check() {
   wc.debugger.attach();
   const read = js => wc.executeJavaScript(js,true);
   const click = selector => clickVisible(wc,selector);
-  const mouse = (type,coords) => wc.debugger.sendCommand('Input.dispatchMouseEvent',{
-    type,...coords,button:'left',buttons:type==='mouseReleased'?0:1,clickCount:1,
+  const mouse = (type,coords,clickCount=1) => wc.debugger.sendCommand('Input.dispatchMouseEvent',{
+    type,...coords,button:'left',buttons:type==='mouseReleased'?0:1,clickCount,
   });
+  async function key(key,code,virtualKey) {
+    for (const type of ['keyDown','keyUp']) await wc.debugger.sendCommand('Input.dispatchKeyEvent',{
+      type,key,code,windowsVirtualKeyCode:virtualKey,
+    });
+  }
   async function point(selector,fraction=.5) {
     return read(`(async()=>{
       const el=${q(selector)};el.scrollIntoView({block:'nearest',inline:'nearest',behavior:'instant'});
@@ -196,6 +201,37 @@ async function check() {
     const library=await waitState(s=>s.title==='素材预览' && !s.paused && s.source>.1,'素材库点播原片');
     assert.equal(library.rate,1);
     assert.ok(Math.abs(library.duration-2.02)<.04,'素材库显示原时长');
+    assert.ok(await read(q('.player-source-scrubber #player-position')+'.checkVisibility()'),'素材库的进度条直接展示在播放器');
+    const left=await point(slider,.18), right=await point(slider,.63);
+    await mouse('mousePressed',left);
+    await mouse('mouseMoved',right);
+    await waitState(s=>s.paused && Math.abs(s.source-1.27)<.08,'播放中抓住进度条应暂停并定位原片');
+    await mouse('mouseReleased',right);
+    await waitState(s=>!s.paused && s.source>1.35,'松开进度条从落点继续播放');
+    await click('#player-play');
+    await mouse('mousePressed',left);
+    await mouse('mouseReleased',left);
+    await waitState(s=>s.paused && Math.abs(s.source-.36)<.08,'暂停时点击进度条停留在所选位置');
+    assert.equal(await read('document.activeElement.id'),'player-position');
+    await key(' ','Space',32);
+    await waitState(s=>!s.paused && s.source>.42,'进度条获得焦点后空格继续播放原片');
+    await key(' ','Space',32);
+    const stopped=await waitState(s=>s.paused,'再次按空格暂停');
+    await key('ArrowRight','ArrowRight',39);
+    await waitState(s=>s.paused && s.source>stopped.source,'方向键微调原片进度');
+    await key('Tab','Tab',9);
+    assert.notEqual(await read('document.activeElement.id'),'player-position','Tab 应离开进度条');
+    const fast=await point(shot(0));
+    for (const clicks of [1,2]) {
+      await mouse('mousePressed',fast,clicks); await mouse('mouseReleased',fast,clicks);
+    }
+    const edited=q('.video-cut-preview video');
+    await until(()=>read(edited+'?.currentSrc.includes("/track-proxy/") && '+edited+'.readyState>=2'),'剪辑窗口应直接读取流畅代理');
+    assert.ok(!(await read(q('.player-source-scrubber')+'.checkVisibility()')),'剪辑窗口只使用片段时间线');
+    await click('#player-play');
+    await until(()=>read('!'+edited+'.paused && '+edited+'.currentTime>.4 && '+edited+'.playbackRate>2'),'代理按分镜倍率连续播放');
+    assert.equal(await read(q('.player-quality-label')+'.textContent'),'流畅');
+    await click('#timeline-cut-editor [data-action="cancel"]');
     openFile=blank;
     await click('#open-project');
     await until(()=>read(q(empty)+'?.checkVisibility() && !!'+q(tile)),'带口播和字幕的空白第二镜');

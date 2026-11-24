@@ -11,6 +11,31 @@
   gap: 5px;
   min-height: 40px;
 }
+.player-source-scrubber { padding-top: 2px; }
+.player-source-scrubber #player-position {
+  appearance: none;
+  height: 18px;
+  padding: 0;
+  background: transparent;
+  cursor: pointer;
+  touch-action: none;
+}
+.player-source-scrubber #player-position::-webkit-slider-runnable-track {
+  height: 3px;
+  border-radius: 2px;
+  background: linear-gradient(to right, var(--accent) var(--progress), var(--hairline) var(--progress));
+}
+.player-source-scrubber #player-position::-webkit-slider-thumb {
+  appearance: none;
+  height: 11px;
+  width: 11px;
+  margin-top: -4px;
+  border-radius: 50%;
+  background: var(--ink);
+}
+@media (forced-colors: active) {
+  .player-source-scrubber #player-position, .player-source-scrubber #player-position::-webkit-slider-thumb { appearance: auto; }
+}
 .player-clocks, .player-times, .player-display {
   display: flex;
   align-items: center;
