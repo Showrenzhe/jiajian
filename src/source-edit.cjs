@@ -98,7 +98,21 @@ async function render(asset,ranges,directory,sourceSignature,{signal}) {
   }
   const work=await fs.mkdtemp(path.join(directory,'.render-'));
   const common=['-hide_banner','-loglevel','error','-nostdin','-threads','2','-filter_threads','2'];
-  const run=(args)=>runTool(ffmpeg,[...common,...args],{cwd:work,signal});
+  async function run(args) {
+    const stalled=new AbortController();
+    const timer=setTimeout(()=>stalled.abort(Error('应用剪辑长时间没有进展，请检查素材是否可读取后重试。')),120000);
+    let lastTime=-1;
+    try {
+      await runTool(ffmpeg,[...common,'-progress','pipe:1','-nostats',...args],{
+        cwd:work, signal:signal ? AbortSignal.any([signal,stalled.signal]) : stalled.signal,
+        onProgress(seconds) {
+          if (seconds>lastTime) { lastTime=seconds; timer.refresh(); }
+        },
+      });
+    } finally {
+      clearTimeout(timer);
+    }
+  }
   // reverse retains decoded frames. Bound its input by both bytes and duration, even for 4K+ video.
   const maxFrames=Math.max(1,Math.min(Math.ceil(fps*8),Math.floor(160*1024*1024/(width*height*1.5))));
   const list=[];
@@ -129,9 +143,14 @@ async function render(asset,ranges,directory,sourceSignature,{signal}) {
         if (range.reverse) audioFilters.push('areverse');
         audioFilters.push('asetpts=PTS-STARTPTS');
         const part='part-'+list.length+'.mov';
+        // Independent audio/video filtergraphs can block each other on one demuxer
+        // when trimming a seeked MOV. Schedule both streams in a single graph.
+        const streams=audio ? ['-filter_complex_threads','2','-filter_complex',
+          `[0:${asset.videoIndex}]${videoFilters.join(',')}[v];[0:${asset.audioIndex}]${audioFilters.join(',')}[a]`,
+          '-map','[v]','-map','[a]','-c:a','pcm_s16le'] :
+          ['-map','0:'+asset.videoIndex,'-vf',videoFilters.join(','),'-an'];
         await run(['-protocol_whitelist','file,pipe','-format_whitelist','mov,matroska,webm,avi,mpegts,mpeg',
-          '-ss',String(seek),'-t',String(start-seek+Math.max(seconds,1.5/fps)),'-i',asset.path,'-map','0:'+asset.videoIndex,'-vf',videoFilters.join(','),
-          ...(audio ? ['-map','0:'+asset.audioIndex,'-af',audioFilters.join(','),'-c:a','pcm_s16le'] : ['-an']),
+          '-ss',String(seek),'-t',String(start-seek+Math.max(seconds,1.5/fps)),'-i',asset.path,...streams,
           // A one-frame part has no B-frame delay. Use the same zero reordering delay
           // on every part so the concat demuxer cannot overlap their initial DTS.
           '-c:v','libx264','-threads','2','-bf','0','-preset','veryfast','-crf','16','-map_metadata','-1','-sn','-dn','-n',part]);

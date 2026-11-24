@@ -24,7 +24,7 @@ window.mountVideoCutTimeline = function mountVideoCutTimeline(host, clip, option
   let speed = initialSpeed;
   const history = window.createEditHistory({ranges, speed, autoFit});
   let starts, total, selected = 0, head = 0, drag;
-  let disposed = false, applying = false, playing = false, preparing = false, playIndex = 0;
+  let disposed = false, pendingApply, playing = false, preparing = false, playIndex = 0;
   let renderKey = 0, run = 0, raf, renderedAsset, usingRender = false, pendingSeek, cropDialog, monitor;
   let proxyUrl, baked, bakeRequest, requestedRate, mediaScale = 1;
   let scanStart, scanHead, scanTimer;
@@ -107,7 +107,7 @@ window.mountVideoCutTimeline = function mountVideoCutTimeline(host, clip, option
     return item;
   }
   header.append(title, name);
-  button('cancel', '取消', 'Escape', () => { if (!applying) options.close(); }, header);
+  button('cancel', '取消', 'Escape', cancel, header);
   button('play', '播放', 'Space', togglePlay, tools);
   button('undo', '撤销', '', () => travel('undo'), tools);
   button('redo', '重做', '', () => travel('redo'), tools);
@@ -126,7 +126,7 @@ window.mountVideoCutTimeline = function mountVideoCutTimeline(host, clip, option
   speedLabel.append(speedSelect);
   tools.append(speedLabel);
   watch(speedSelect, 'change', () => {
-    if (applying || drag) return;
+    if (pendingApply || drag) return;
     const value = speedSelect.value;
     autoFit = value === 'auto';
     if (autoFit) measure();
@@ -388,7 +388,7 @@ window.mountVideoCutTimeline = function mountVideoCutTimeline(host, clip, option
     status('');
   }
   function travel(direction) {
-    if (applying || drag) return;
+    if (pendingApply || drag) return;
     const previous = history[direction]();
     if (!previous) return;
     pause();
@@ -408,7 +408,7 @@ window.mountVideoCutTimeline = function mountVideoCutTimeline(host, clip, option
     previewAt();
   }
   function cut(action) {
-    if (applying || drag) return;
+    if (pendingApply || drag) return;
     pause();
     const i = indexAt(head), range = ranges[i], source = sourceAt(i, head);
     if (head <= starts[i] || head >= starts[i + 1]) return status('请把播放头移到要剪的片段内。');
@@ -423,7 +423,7 @@ window.mountVideoCutTimeline = function mountVideoCutTimeline(host, clip, option
     record(action === 'trim-right' ? lastFrame(left) : undefined);
   }
   function remove() {
-    if (applying || drag || ranges.length === 1) return;
+    if (pendingApply || drag || ranges.length === 1) return;
     if (total - (ranges[selected].end - ranges[selected].start) < minimum - 1e-7) return status('剪辑后至少保留 0.1 秒画面。');
     pause();
     head = starts[selected];
@@ -435,7 +435,7 @@ window.mountVideoCutTimeline = function mountVideoCutTimeline(host, clip, option
   }
   function move(delta) {
     const next = selected + delta;
-    if (applying || drag || next < 0 || next >= ranges.length) return;
+    if (pendingApply || drag || next < 0 || next >= ranges.length) return;
     pause();
     const offset = clamp(head - starts[selected], 0, ranges[selected].end - ranges[selected].start);
     const moved = ranges.slice();
@@ -447,7 +447,7 @@ window.mountVideoCutTimeline = function mountVideoCutTimeline(host, clip, option
     record();
   }
   function reset() {
-    if (applying || drag) return;
+    if (pendingApply || drag) return;
     pause();
     ranges = [{start: 0, end: asset.duration}];
     selected = 0;
@@ -455,7 +455,7 @@ window.mountVideoCutTimeline = function mountVideoCutTimeline(host, clip, option
     record();
   }
   function effect(key, value) {
-    if (applying || drag) return;
+    if (pendingApply || drag) return;
     pause();
     const next = {...ranges[selected]};
     if (key === 'rotation') value = ((next.rotation ?? 0) + 90) % 360;
@@ -467,33 +467,45 @@ window.mountVideoCutTimeline = function mountVideoCutTimeline(host, clip, option
     record();
   }
   function openCrop() {
-    if (applying || drag) return;
+    if (pendingApply || drag) return;
     pause();
     const index = selected;
     cropDialog = window.editCutCrop(buttons.crop, asset, frameAt(index, head), ranges[index].crop,
       value => { if (!disposed && selected === index) effect('crop', value); });
   }
+  function setApplying(attempt) {
+    pendingApply = attempt;
+    const busy = Boolean(attempt);
+    for (const control of [tools, timeline, sequence, actions]) control.inert = busy;
+    if (busy) timeline.setAttribute('aria-busy', 'true');
+    else timeline.removeAttribute('aria-busy');
+    const label = busy ? '取消应用' : '取消';
+    buttons.cancel.textContent = label;
+    buttons.cancel.title = label + '（Escape）';
+    buttons.cancel.setAttribute('aria-label', label);
+    monitor?.sync();
+  }
+  function cancel() {
+    if (!pendingApply) { options.close(); return; }
+    pendingApply.abort();
+    setApplying(undefined);
+    status('已取消应用，当前剪辑已保留。');
+    buttons.apply.focus({preventScroll: true});
+  }
   async function apply() {
-    if (applying || drag) return;
+    if (pendingApply || drag) return;
     pause();
     if (autoFit === initialAutoFit && speed === initialSpeed && window.sameEditSnapshot(original, ranges)) { options.close(); return; }
-    applying = true;
-    monitor?.sync();
-    body.inert = true;
-    buttons.cancel.disabled = true;
-    host.setAttribute('aria-busy', 'true');
-    host.focus({preventScroll: true});
-    status('正在应用剪辑…');
+    const attempt = new AbortController();
+    setApplying(attempt);
+    buttons.cancel.focus({preventScroll: true});
+    status(ranges.some(range => range.reverse) ? '正在应用倒放剪辑…' : '正在应用剪辑…');
     try {
-      if (await options.commit(structuredClone(ranges), speed, autoFit) === false) throw new Error('无法应用，请检查素材和分镜。');
-      if (!disposed) options.close();
+      if (await options.commit(structuredClone(ranges), speed, autoFit, attempt.signal) === false) throw new Error('无法应用，请检查素材和分镜。');
+      if (!attempt.signal.aborted) options.close();
     } catch (error) {
-      if (disposed) return;
-      applying = false;
-      monitor?.sync();
-      body.inert = false;
-      buttons.cancel.disabled = false;
-      host.removeAttribute('aria-busy');
+      if (attempt.signal.aborted) return;
+      setApplying(undefined);
       status('应用失败，已保留当前剪辑。' + error.message);
       buttons.apply.focus();
     }
@@ -571,7 +583,7 @@ window.mountVideoCutTimeline = function mountVideoCutTimeline(host, clip, option
     follow(starts[playIndex] + clamp(source - range.start, 0, range.end - range.start));
   }
   async function togglePlay() {
-    if (applying || drag) return;
+    if (pendingApply || drag) return;
     if (playing || preparing) { pause(); return; }
     pause();
     const token = run, revision = renderKey;
@@ -718,7 +730,7 @@ window.mountVideoCutTimeline = function mountVideoCutTimeline(host, clip, option
     } else if (edge) filmstrip.update(fullSource);
   }
   function startDrag(event) {
-    if (event.button !== 0 || applying || drag) return;
+    if (event.button !== 0 || pendingApply || drag) return;
     const surface = event.currentTarget;
     const box = (surface === sequence ? sequence : lane).getBoundingClientRect();
     if (!box.width) return;
@@ -757,15 +769,17 @@ window.mountVideoCutTimeline = function mountVideoCutTimeline(host, clip, option
   function refreshShortcuts() { shortcuts.forEach(shortcutTitle); }
   watch(window, 'cutshortcutschange', refreshShortcuts);
   function onKey(event) {
-    if (event.isComposing || applying) { event.stopPropagation(); return; }
+    if (event.isComposing) { event.stopPropagation(); return; }
     if (event.key === 'Escape') {
       event.stopPropagation();
       if (speedSelect.matches(':open')) return;
       event.preventDefault();
+      if (event.repeat) return;
       if (drag) finishDrag(true);
-      else options.close();
+      else cancel();
       return;
     }
+    if (pendingApply) { event.stopPropagation(); return; }
     if (event.target.closest('input,textarea,select,[contenteditable=true]') || drag) {
       event.stopPropagation();
       return;
@@ -817,8 +831,8 @@ window.mountVideoCutTimeline = function mountVideoCutTimeline(host, clip, option
     asset, get time() { return head / speed; }, get end() { return total / speed; },
     get proxy() { return video.readyState >= 1 && Boolean((baked && !baked.original && video.currentSrc === baked.url)
       || (proxyUrl && video.currentSrc === proxyUrl)); },
-    get playing() { return playing || preparing; }, get busy() { return applying; },
-    togglePlay, pause, seek: time => { if (!applying && !drag) scrub(time * speed); }, onKey,
+    get playing() { return playing || preparing; }, get busy() { return Boolean(pendingApply); },
+    togglePlay, pause, seek: time => { if (!pendingApply && !drag) scrub(time * speed); }, onKey,
   });
   refreshShortcuts();
   showTransport();
@@ -838,12 +852,12 @@ window.mountVideoCutTimeline = function mountVideoCutTimeline(host, clip, option
     mode: 'cut', video,
     destroy() {
       disposed = true;
+      pendingApply?.abort();
       abort.abort();
       pause();
       cropDialog?.close?.();
       filmstrip.destroy();
       framePreview?.destroy();
-      host.removeAttribute('aria-busy');
       video.removeAttribute('src');
       video.load();
       monitor.close();
