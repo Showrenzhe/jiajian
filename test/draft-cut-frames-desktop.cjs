@@ -17,7 +17,7 @@ app.setPath('userData', root);
 app.setPath('sessionData', root);
 
 async function check() {
-  const catalog = new Map(await Promise.all(['red', 'blue', 'black'].map(async id => {
+  const catalog = new Map(await Promise.all(['red', 'blue', 'black','lime'].map(async id => {
     const file = path.join(root, id + '.mp4');
     // Two addressable frames on the blue source distinguish a current seek from
     // a late completion for the same URL, even when both show the right asset.
@@ -26,8 +26,9 @@ async function check() {
       blue:"drawbox=color=0x0000b0:t=fill:enable='gte(t,0.52)'",
     };
     const toneChange=changes[id] ? ['-vf',changes[id]] : [];
-    await ffmpeg(['-f', 'lavfi', '-i', 'color=' + id + ':s=320x180:r=30:d=1', ...toneChange,
-      '-c:v', 'libx264', '-threads', '1', file]);
+    await ffmpeg(['-f', 'lavfi', '-i', 'color=' + id + ':s=320x180:r=30:d=1',
+      '-f','lavfi','-i','sine=frequency=440:duration=1',...toneChange,
+      '-c:v', 'libx264','-c:a','aac', '-threads', '1', file]);
     return [id, await inspectAsset(file, 'video')];
   })));
   const project = path.join(root, '切点逐帧.sdworkbench');
@@ -39,7 +40,25 @@ async function check() {
   await saveProject(project,config,catalog);
   const plain=path.join(root,'连续分镜.sdworkbench');
   await saveProject(plain,{...config,shots:config.shots.slice(0,2)},catalog);
-  const projects=[project,plain];
+  const layered=path.join(root,'上下两条视频轨.sdworkbench');
+  await saveProject(layered,{...config,keepAudio:true,shotSettings:[{duration:1},{duration:1}],shots:[
+    [{id:'red',start:0,end:1}],
+    [{id:'red',start:0,end:1,videoLane:0},
+      {id:'blue',start:0,end:1,videoLane:1,videoStart:1.15,videoDuration:.5,videoFit:'hold'},
+      {id:'lime',start:0,end:1,videoLane:2,videoStart:1.35,videoDuration:.47,videoFit:'hold'},
+      {id:'blue',start:0,end:1,videoLane:3,enabled:false}],
+  ]},catalog);
+  const fastSource = path.join(root,'三色长素材.mp4');
+  await ffmpeg(['-f','lavfi','-i',"color=lime:s=320x180:r=30:d=12,drawbox=color=red:t=fill:enable='lt(t,3)',drawbox=color=blue:t=fill:enable='gte(t,10)'",
+    '-c:v','libx264','-threads','1',fastSource]);
+  const speech=path.join(root,'半秒口播.wav');
+  await ffmpeg(['-f','lavfi','-i','sine=frequency=660:duration=0.5',speech]);
+  const fastProject=path.join(root,'自动倍速分镜.sdworkbench');
+  await saveProject(fastProject,{...config,priority:'voice',narrationMode:'segmented',segmentNarrationIds:[['voice']],
+    shotSettings:[{duration:.5}],shots:[[
+    {id:'fast',start:0,end:12,speed:24,autoFitSpeed:true,videoStart:0,videoDuration:.5,videoFit:'hold'}
+  ]]},new Map([['fast',await inspectAsset(fastSource,'video')],['voice',await inspectAsset(speech,'audio')]]));
+  const projects=[project,plain,layered,fastProject];
   const win = await launchDesktop({show:false, dataDirectory:path.join(root,'profile'), dialogs:{
     async showOpenDialog() { return {canceled:false,filePaths:[projects.shift()]}; },
   }});
@@ -56,6 +75,7 @@ async function check() {
   function colour(r,g,b) {
     if (r>140 && g<85 && b<85) return 'red';
     if (b>140 && r<85 && g<85) return 'blue';
+    if (g>140 && r<85 && b<85) return 'green';
     if (Math.max(r,g,b)<10) return 'black';
     if (Math.min(r,g,b)>205) return 'white';
     return 'background';
@@ -171,15 +191,17 @@ async function check() {
       await delay(19);
     }
     await mouse('mouseReleased',point(1.72));
-    await waitFor(()=>stable('blue'),'latest scrub target');
-    await delay(190);
+    const isLastBlue=frame=>frame?.c==='blue' && frame.rgb[2]>150 && frame.rgb[2]<201;
+    await waitFor(()=>Math.abs(samples.at(-1)?.head-1.72)<.03 && isLastBlue(samples.at(-1)),'later, darker blue frame at latest scrub target');
+    const settled=samples.length-1;
+    await waitFor(()=>samples.length-settled>=4 && samples.at(-1).t-samples[settled].t>=190,'compositor samples after the final seek');
     record('rapidScrub',samples.slice(from),['red','blue']);
-    assert.ok(stable('blue',4),'latest target remains visible after asynchronous completions');
-    assert.ok(samples.slice(-4).every(s=>s.rgb[2]>150 && s.rgb[2]<201),'final scrub shows the later, darker blue source frame');
+    assert.ok(samples.slice(settled).every(isLastBlue),'latest target remains visible after asynchronous completions: '+JSON.stringify(samples.slice(settled)));
+    from=samples.length;
     await seek(2.24);
-    await delay(170);
-    const gapSamples=samples.slice(-3);
-    record('scrubGap',gapSamples,['background','black','white']);
+    const gapSamples=()=>samples.slice(from).filter(frame=>Math.abs(frame.head-2.24)<.03);
+    await waitFor(()=>gapSamples().length>=3,'three compositor frames at the scrubbed gap');
+    record('scrubGap',gapSamples().slice(0,3),['background','black','white']);
     await seek(2.74);
     await waitFor(()=>stable('black'),'real black source');
     record('scrubBlack',samples.slice(-3),['black']);
@@ -194,6 +216,94 @@ async function check() {
     record('plainCut',plainCut,['red','blue']);
     assert.ok(plainCut.some(s=>s.c==='red') && plainCut.some(s=>s.c==='blue'),'both plain sequential clips render');
     assert.ok(plainCut.some(s=>s.c==='red' && s.rgb[0]<201),'plain playback preserves the outgoing tail');
+    const rowButton=(row,action)=>read(`document.querySelector('[data-control-key="vis${row}"] [data-track-action="${action}"]').click()`);
+    await rowButton(0,'disabled');
+    await waitFor(()=>['background','white','black'].some(color=>stable(color)),'switch off the last track while playing');
+    const monitor='.draft-transport-preview:not([hidden])';
+    assert.equal(await read(`!!document.querySelector('${monitor}') && !document.querySelector('${monitor} video,${monitor} audio')`),true,
+      'empty timeline retains the blank composition without playing the selected source');
+    assert.equal(await read("document.querySelector('#player-play').disabled"),true,'empty monitor cannot start source playback');
+    await seek(1.5);
+    await rowButton(0,'disabled');
+    await waitFor(()=>stable('blue'),'restore the last track at the scrubbed position');
+    assert.equal(await read("document.querySelector('#player-play').disabled"),false,'restored monitor can play again');
+    await read("document.querySelector('#open-project').click()");
+    await waitFor(()=>read(`!!document.querySelector('[data-control-key="vis3"] [data-drop-shot="1"][data-move-candidate]')`),'layered project timeline');
+    const nowRuler=await read(`(() => {
+      const r=document.querySelector('.sequence-ruler .sequence-content').getBoundingClientRect();
+      return {left:r.x,top:r.y+r.height*.5,scale:parseFloat(document.querySelector('[data-control-key="vis0"] [data-drop-shot="1"]').style.left)};
+    })()`);
+    Object.assign(coords,nowRuler);
+    await seek(1.30);
+    await waitFor(()=>stable('red') && Math.abs(samples.at(-1).head-1.30)<.03,'main track at overlap');
+    await rowButton(0,'hidden');
+    await waitFor(()=>stable('blue'),'immediate paused reveal of lower track');
+    assert.equal(await read(`!!document.querySelector('${monitor} audio.draft-main:not([muted])') &&
+      !document.querySelector('${monitor} audio.draft-main').muted && document.querySelector('${monitor} video.draft-main').muted`),
+      true,'eye keeps the chosen original sound and reveals the lower picture without double audio');
+    await rowButton(0,'muted');
+    assert.equal(await read(`document.querySelector('${monitor} audio.draft-main').muted`),true,'muting the hidden main track is independent');
+    await rowButton(0,'muted');
+    await seek(1.42);
+    await waitFor(()=>stable('blue'),'higher visible track wins overlap');
+    await seek(1.72);
+    await waitFor(()=>stable('green'),'third track revealed in second track gap');
+    await seek(1.87);
+    await waitFor(()=>['background','white','black'].some(color=>stable(color)),'lower track empty past its end');
+    await seek(1.30);
+    await waitFor(()=>stable('blue'),'scrub back onto lower track');
+    await rowButton(0,'hidden');
+    await waitFor(()=>stable('red'),'main track restored at the same time');
+    await rowButton(1,'solo');
+    await waitFor(()=>stable('blue'),'solo lower video track');
+    await rowButton(1,'disabled');
+    await waitFor(()=>stable('red'),'disabled solo releases main video');
+    await rowButton(1,'disabled');
+    await waitFor(()=>stable('blue'),'enabling the soloed take restores it');
+    await rowButton(1,'solo');
+    await waitFor(()=>stable('red'),'release lower solo');
+    await rowButton(0,'disabled');
+    await waitFor(()=>stable('blue'),'disable upper take and use the lower picture and its sound');
+    assert.equal(await read(`!document.querySelector('${monitor} video.draft-main').muted &&
+      !document.querySelector('${monitor} audio.draft-main')`),true,'disabled take contributes neither video nor original audio');
+    await rowButton(0,'disabled');
+    await waitFor(()=>stable('red'),'restore the main take');
+    await seek(1.22);
+    await read("document.querySelector('#timeline-play').click()");
+    await waitFor(()=>read("document.querySelector('#timeline-play').ariaPressed==='true'"),'layered playback');
+    await rowButton(0,'hidden');
+    await waitFor(()=>stable('blue'),'hide main track while playing');
+    assert.equal(await read("document.querySelector('#timeline-play').ariaPressed"),'true','eye toggle preserves playback');
+    await waitFor(()=>['background','white','black'].some(color=>stable(color)),'play across lower clip end');
+    results.hiddenVideoTrack='paused / scrub / play / gap / restore / solo';
+    results.disabledVideoTrack='playing to empty / scrub / restore / disabled solo / alternate original audio';
+    await read("document.querySelector('#open-project').click()");
+    // The open notification can arrive a frame before the new timeline replaces the previous project.
+    await waitFor(()=>read(`!!document.querySelector('.sequence-video [data-drop-shot="0"][title^="三色长素材.mp4"]')`),'fitted project timeline');
+    const fittedRuler=await read(`(() => {
+      const ruler=document.querySelector('.sequence-ruler .sequence-content');
+      const bounds=ruler.getBoundingClientRect();
+      const [first,second]=ruler.querySelectorAll('.sequence-tick');
+      const scale=(parseFloat(second.style.left)-parseFloat(first.style.left))/Number(ruler.dataset.step);
+      return {left:bounds.x,top:bounds.y+bounds.height*.5,scale};
+    })()`);
+    Object.assign(coords,fittedRuler);
+    await seek(.25);
+    await waitFor(()=>stable('green'),'scrub into middle of 24× source');
+    await seek(.02);
+    await waitFor(()=>stable('red'),'24× source head');
+    from=samples.length;
+    const startedAt=performance.now();
+    await read("document.querySelector('#timeline-play').click()");
+    await waitFor(()=>read("document.querySelector('#timeline-play').ariaPressed==='true'"),'24× playing');
+    await waitFor(()=>read(`[...document.querySelectorAll('.draft-transport-preview audio')].some(
+      audio=>!audio.paused && !audio.muted && audio.playbackRate===1 && audio.currentTime>.1)`),'independent narration at its own rate');
+    await waitFor(()=>read("document.querySelector('#timeline-play').ariaPressed==='false'"),'24× slot end');
+    const elapsed=performance.now()-startedAt;
+    await waitFor(()=>stable('blue'),'24× source tail');
+    assert.ok(samples.slice(from).some(s=>s.c==='green'),'middle of long source is presented during playback');
+    assert.ok(elapsed>=340 && elapsed<1500,'half-second slot completes near its timeline duration: '+elapsed);
+    results.autoFit24x={elapsedMs:Math.round(elapsed),finalColor:'blue'};
     console.log(JSON.stringify(results));
     assert.deepEqual(failures,[]);
   } finally {

@@ -18,7 +18,7 @@ const { normalizeShotSettings, normalizeRanges, normalizeSegmentVoiceCuts, norma
 const { normalizeCover } = require('./cover.cjs');
 const { audioSpeed, normalizeMusicSpeeds, normalizeVolumeOverrides } = require('./shot-timing.cjs');
 const { normalizeLook, inspectLut } = require('./visual-style.cjs');
-const { candidateVideoLanes, normalizeVideoGaps } = require('./ui/track-tools.js');
+const { candidateVideoLanes, normalizeVideoGaps, placedVideoSpeed, minVideoSpeed } = require('./ui/track-tools.js');
 
 const format = 'sdworkbench';
 const version = 1;
@@ -112,8 +112,11 @@ function cleanConfig(config) {
       if (clip.volume !== undefined && (!Number.isFinite(clip.volume) || clip.volume < 0 || clip.volume > 100)) {
         throw new Error(`第 ${index + 1} 组分镜的原声音量无效。`);
       }
-      if (clip.speed !== undefined && (!Number.isFinite(clip.speed) || clip.speed < 0.5 || clip.speed > Number.MAX_SAFE_INTEGER)) {
+      if (clip.speed !== undefined && (!Number.isFinite(clip.speed) || clip.speed < minVideoSpeed || clip.speed > Number.MAX_SAFE_INTEGER)) {
         throw new Error(`第 ${index + 1} 组分镜的素材速度无效。`);
+      }
+      if (clip.autoFitSpeed !== undefined && typeof clip.autoFitSpeed !== 'boolean') {
+        throw new Error(`第 ${index + 1} 组分镜的自动倍速设置无效。`);
       }
       if (clip.matchedDuration !== undefined && (!Number.isFinite(clip.matchedDuration) || clip.matchedDuration < 0.000001 || clip.matchedDuration > 86400)) {
         throw new Error(`第 ${index + 1} 组分镜的匹配时长无效。`);
@@ -122,6 +125,9 @@ function cleanConfig(config) {
       if (clip.videoGroup !== undefined && (typeof clip.videoGroup!=='string' || !clip.videoGroup.length || clip.videoGroup.length>64)) throw Error('视频片段组合编号无效。');
       if (clip.videoStart !== undefined && (!Number.isFinite(clip.videoStart) || clip.videoStart < 0 || clip.videoStart > Number.MAX_SAFE_INTEGER)) {
         throw new Error('视频片段的时间轴落点无效。');
+      }
+      if (clip.videoFollowsShot!==undefined && (typeof clip.videoFollowsShot!=='boolean' || clip.videoStart===undefined)) {
+        throw new Error('视频片段的分镜跟随设置无效。');
       }
       if (clip.videoDuration !== undefined && (!Number.isFinite(clip.videoDuration) || clip.videoDuration <= 0 || clip.videoDuration > Number.MAX_SAFE_INTEGER)) {
         throw new Error('视频片段的时间轴裁切时长无效。');
@@ -142,6 +148,7 @@ function cleanConfig(config) {
         ...(sourceEdit && { sourceEdit }),
         ...(clip.videoLane !== undefined && { videoLane: clip.videoLane }),
         ...(clip.videoStart !== undefined && { videoStart: clip.videoStart }),
+        ...(clip.videoFollowsShot !== undefined && { videoFollowsShot: clip.videoFollowsShot }),
         ...(clip.videoDuration !== undefined && { videoDuration: clip.videoDuration }),
         ...(clip.videoFit !== undefined && { videoFit: clip.videoFit }),
         ...(clip.videoGaps !== undefined && {videoGaps:normalizeVideoGaps(clip.videoGaps)}),
@@ -155,7 +162,8 @@ function cleanConfig(config) {
         ...(ranges && { ranges }),
         ...(clip.volume !== undefined && { volume: clip.volume }),
         ...(clip.sourceMuted && {sourceMuted:true}),
-        ...(clip.speed !== undefined && { speed: clip.speed }),
+        ...((clip.speed !== undefined || clip.autoFitSpeed) && { speed: placedVideoSpeed(clip) }),
+        ...(clip.autoFitSpeed && { autoFitSpeed: true }),
         ...(clip.matchedDuration !== undefined && { matchedDuration: clip.matchedDuration }),
       };
     });

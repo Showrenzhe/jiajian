@@ -92,8 +92,11 @@ async function run() {
     }
   }
   const displayed = 'Array.from(document.querySelectorAll(".sequence-shots [data-reorder-shot]"), (_, i) => '
-    + 'Array.from(document.querySelectorAll(\'.sequence-video [data-drop-shot="\' + i + \'"] .sequence-clip-duration\'), n => parseFloat(n.textContent)))';
-  const verify = (expected, label) => wait('JSON.stringify(' + displayed + ') === ' + JSON.stringify(JSON.stringify(expected)), label);
+    + 'Array.from(document.querySelectorAll(\'.sequence-video [data-drop-shot="\' + i + \'"][data-move-candidate]\'), n => Number(n.dataset.playbackDuration)))';
+  async function verify(expected,label) {
+    await wait('JSON.stringify(' + displayed + ') === ' + JSON.stringify(JSON.stringify(expected)), label);
+    assert.ok(await read('[...document.querySelectorAll(".sequence-video .sequence-clip-duration")].every(n=>n.textContent==="4.00 秒")'),'匹配和裁剪后显示四秒原片');
+  }
   const all = [[1, 1], [2, 2], [3.5]];
   const single = '匹配口播时长', group = '匹配本分镜全部候选';
 

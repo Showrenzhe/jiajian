@@ -9,7 +9,7 @@ function createSubprojects({ shots, serialize, revive,voiceIO }) {
   const keyVoice=(state={})=>({whole:state.whole,segments:new WeakMap((state.segments??[]).map(({index,items})=>[shots[index],items]))});
   const packVoice=(state)=>state && ({...(state.whole && {whole:state.whole}),segments:shots.flatMap((s,index)=>state.segments.has(s)?[{index,items:state.segments.get(s)}]:[])});
   const same = typeof module === 'object' && module.exports ? require('./edit-history.js').sameEditSnapshot : window.sameEditSnapshot;
-  const { pinCandidateLanes } = typeof module === 'object' && module.exports ? require('./track-tools.js') : window;
+  const { pinCandidateLanes, pictureSpan, candidateVideoLanes } = typeof module === 'object' && module.exports ? require('./track-tools.js') : window;
   const hasVoice=(items)=>items?.some((item)=>item?.id || item?.srt);
   function ownRows(current,base,trimWhole) {
     if(same(current,base)||(!hasVoice(current)&&hasVoice(base)))return;
@@ -48,6 +48,73 @@ function createSubprojects({ shots, serialize, revive,voiceIO }) {
       if (voice?.whole) voice.whole = voice.whole.map((track) => Number.isInteger(track?.follow)
         ? {...track, follow:positions.get(previousShots[track.follow])} : track);
     }
+  }
+  function reorderVideoPlacements(previousShots, previous, next) {
+    const starts=new Map(shots.map((shot,index)=>[shot,next.starts[index]]));
+    const changes=[];
+    for (const [i,shot] of previousShots.entries()) {
+      const oldStart=previous.starts[i], oldEnd=oldStart+previous.widths[i];
+      const offset=starts.get(shot)-oldStart;
+      const rows=[shot];
+      if (active && main.has(shot)) rows.push(main.get(shot));
+      for (const project of projects) {
+        if (project!==active && project.shots.has(shot)) rows.push(project.shots.get(shot));
+      }
+      for (const row of rows) {
+        const planned=row.map(clip=>{
+          if (clip.videoStart===undefined) return clip;
+          // Early automatic-fit drafts have no binding flag. Classify their original
+          // placement once so a free clip stays fixed across repeated reorders.
+          const follows=clip.videoFollowsShot ?? (clip.autoFitSpeed ? clip.videoStart>=oldStart-1e-7 && clip.videoStart<oldEnd-1e-7 : undefined);
+          const start=follows ? Math.max(0,clip.videoStart+offset) : clip.videoStart;
+          if (follows===clip.videoFollowsShot && start===clip.videoStart) return clip;
+          const placement={videoFollowsShot:follows,videoStart:start};
+          changes.push({clip,placement});
+          return {...clip,...placement};
+        });
+        // A bound clip can land on a fixed slot of the same physical lane.
+        // Reject the move before changing any of the project versions.
+        try { candidateVideoLanes(planned); } catch { return false; }
+      }
+    }
+    for (const {clip,placement} of changes) Object.assign(clip,placement);
+    return true;
+  }
+  function rebaseVideoTimes(previousShots, oldStarts, nextStarts, widths, insertedStart, insertedEnd) {
+    // Older drafts can place a clip or a reserved gap beyond its owning shot.
+    // Map its actual position on the original ruler, including the tail.
+    const shifted=new Map();
+    const move=time=>{
+      if (!shifted.has(time)) {
+        const i=oldStarts.findLastIndex(start=>start<=time+1e-7);
+        shifted.set(time,Math.max(0,time+(nextStarts[i]-oldStarts[i])));
+      }
+      return shifted.get(time);
+    };
+    const changes=[];
+    const moveRow=(row,index)=>{
+      for(const clip of row ?? []) {
+        const start=clip.videoStart===undefined ? nextStarts[index] : move(clip.videoStart);
+        if(start<insertedEnd-1e-7 && start+pictureSpan(clip,widths[index])>insertedStart+1e-7) return false;
+        const gaps=clip.videoGaps?.flatMap(gap=>{
+          const at=move(gap.start);
+          if(at>=insertedEnd-1e-7 || at+gap.span<=insertedStart+1e-7) return [{start:at,span:gap.span}];
+          const left=Math.max(0,insertedStart-at);
+          return [...(left>1e-7 ? [{start:at,span:left}] : []),{start:insertedEnd,span:gap.span-left}];
+        });
+        if(clip.videoStart!==undefined || gaps) changes.push({clip,start,gaps});
+      }
+      return true;
+    };
+    for (const [index,shot] of previousShots.entries()) {
+      if(!moveRow(shot,index) || (active && !moveRow(main.get(shot),index))) return false;
+      for(const project of projects) if(project!==active && !moveRow(project.shots.get(shot),index)) return false;
+    }
+    for(const {clip,start,gaps} of changes) {
+      if(clip.videoStart!==undefined) clip.videoStart=start;
+      if(gaps) clip.videoGaps=gaps;
+    }
+    return true;
   }
   const snapshot = (shot) => structuredClone(shot.map(serialize));
   function replace(shot, clips) { shot.splice(0, shot.length, ...clips.map((row) => revive(row))); }
@@ -142,7 +209,7 @@ function createSubprojects({ shots, serialize, revive,voiceIO }) {
     categories=new WeakMap((data?.categories??[]).map(({index,category})=>[shots[index],category]));
     if (active) for (const shot of shots) if (!main.has(shot)) main.set(shot, snapshot(shot));
   }
-  return { select, create, revert, applyFallbacks, removeCandidate, removeMaterialReferences, pack, restore, fill, syncVoices, reorderVoiceFollows, category:(shot)=>categories.get(shot),
+  return { select, create, revert, applyFallbacks, removeCandidate, removeMaterialReferences, pack, restore, fill, syncVoices, reorderVoiceFollows, reorderVideoPlacements, rebaseVideoTimes, category:(shot)=>categories.get(shot),
     inheritsVoice(shot) { return Boolean(active && (shot ? !active.localVoice?.segments.has(shot) : !active.localVoice?.whole)); },
     get projects() { return projects; }, get active() { return active; },
     ready(project) {

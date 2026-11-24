@@ -237,6 +237,85 @@ test('free video placements keep narration anchored and extend the canvas beyond
   assert.ok(Math.abs(await toneAt(file,'1.01')-440)<60,'original sound follows the new picture time');
 });
 
+test('a short fitted video stretches the retained source and its sound across the whole shot', async t => {
+  const { saveProject, loadProject } = require('../src/project-format.cjs');
+  const { catalog, output } = await fixtureDirectory(t);
+  const source = path.join(output,'短原片.mp4');
+  await ffmpeg(['-f','lavfi','-i',"color=blue:s=160x90:r=50:d=2.02,drawbox=color=red:t=fill:enable='lt(t,1.35)'",
+    '-f','lavfi','-i','sine=frequency=440:duration=2.02','-c:v','libx264','-threads','1','-c:a','aac',source]);
+  catalog.set('short',await inspectAsset(source,'video'));
+  const clip = {id:'short',start:0,end:2.02,videoStart:0,videoDuration:3,videoFit:'hold',autoFitSpeed:true,speed:1};
+  const config = {...montage,ratio:'16:9',musicIds:[],keepAudio:true,count:1,shots:[[clip]],shotSettings:[{duration:3}]};
+  const project = path.join(output,'慢放.sdworkbench');
+  await saveProject(project,config,catalog);
+  const oldDraft=JSON.parse(await fs.readFile(project,'utf8'));
+  oldDraft.config.shots[0][0].speed=1;
+  await fs.writeFile(project,JSON.stringify(oldDraft));
+  const reopened=await loadProject(project);
+  assert.equal(reopened.config.shots[0][0].speed,2.02/3);
+  const [plan]=planMontage(config,catalog);
+  assert.equal(plan.duration,3);
+  assert.equal(plan.clips[0].visuals[0].speed,2.02/3);
+  const batch=await exportBatch([plan],output);
+  assert.deepEqual(batch.failures,[]);
+  const file=batch.results[0].path;
+  assert.ok(Math.abs((await inspectAsset(file,'video')).duration-3)<1/24);
+  assert.ok((await frameColor(file,1.75)).red>200);
+  assert.ok((await frameColor(file,2.55)).blue>200);
+  assert.ok(Math.abs(await toneAt(file,'2.55')-440)<60);
+  const [trimmed]=planMontage({...config,shots:[[{...clip,end:.12}]]},catalog);
+  assert.equal(trimmed.clips[0].visuals[0].speed,.12/3);
+  const extreme=await exportBatch([trimmed],output);
+  assert.deepEqual(extreme.failures,[]);
+  assert.ok(Math.abs((await inspectAsset(extreme.results[0].path,'video')).duration-3)<1/24);
+  assert.ok(Math.abs(await toneAt(extreme.results[0].path,'2.0')-440)<60);
+  const copied={id:'short',start:0,end:.12,speed:.12/3};
+  const copyProject=path.join(output,'慢放副本.sdworkbench');
+  await saveProject(copyProject,{...config,shots:[[copied]]},catalog);
+  assert.deepEqual((await loadProject(copyProject)).config.shots[0][0],copied);
+  const [manual]=planMontage({...config,shots:[[{...clip,autoFitSpeed:false}]]},catalog);
+  assert.equal(manual.clips[0].visuals[0].speed,1);
+});
+
+test('a fitted library video reopens and exports the whole source in its half-second slot', async t => {
+  const { fitVideoSpeed } = require('../src/ui/track-tools.js');
+  const { saveProject, loadProject } = require('../src/project-format.cjs');
+  const { catalog, output } = await fixtureDirectory(t);
+  const source = path.join(output, '完整双色有声.mp4');
+  await ffmpeg(['-f','lavfi','-i',"color=blue:s=160x90:r=24:d=12,drawbox=color=red:t=fill:enable='lt(t,8)'",
+    '-f','lavfi','-i','sine=frequency=440:duration=12','-c:v','libx264','-threads','1','-c:a','aac',source]);
+  catalog.set('two-colors', await inspectAsset(source, 'video'));
+  const clip = { id:'two-colors', start:0, end:12, videoStart:0, videoLane:0, videoDuration:.5,
+    videoFit:'hold', autoFitSpeed:true, speed:fitVideoSpeed(12,.5) };
+  const project = path.join(output, '完整分镜.sdworkbench');
+  await saveProject(project, {...montage, ratio:'16:9', musicIds:[], keepAudio:true, count:1,
+    shots:[[clip]], shotSettings:[{duration:.5}]}, catalog);
+  const reopened = await loadProject(project);
+  assert.deepEqual(reopened.config.shots, [[clip]]);
+  assert.equal(clip.speed, 24);
+  assert.equal(fitVideoSpeed(.2,.5), .4);
+  const [plan] = planMontage(reopened.config, reopened.assets);
+  assert.equal(plan.duration, .5);
+  const batch = await exportBatch([plan], output);
+  assert.deepEqual(batch.failures, []);
+  const file = batch.results[0].path;
+  assert.ok(Math.abs((await inspectAsset(file,'video')).duration-.5) < 1/24);
+  assert.ok((await frameColor(file,.08)).red > 200);
+  assert.ok((await frameColor(file,.42)).blue > 200);
+  assert.ok(Math.abs(await toneAt(file,'0.30')-440) < 60);
+
+  const speech = path.join(output, '半秒口播.wav');
+  await ffmpeg(['-f','lavfi','-i','sine=frequency=660:duration=0.5',speech]);
+  catalog.set('voice', await inspectAsset(speech,'audio'));
+  const [withSpeech] = planMontage({...reopened.config, priority:'voice', keepAudio:false, narrationMode:'segmented',
+    segmentNarrationIds:[['voice']]}, catalog);
+  assert.equal(withSpeech.duration, .5);
+  const spoken = await exportBatch([withSpeech], output);
+  assert.deepEqual(spoken.failures, []);
+  assert.ok((await frameColor(spoken.results[0].path,.42)).blue > 200);
+  assert.ok(Math.abs(await toneAt(spoken.results[0].path,'0.30')-660) < 60);
+});
+
 test('timeline tail trims cut source sound and picture at their original rate and keep the shot clock',async(t)=>{
   const {catalog,output}=await fixtureDirectory(t);
   const source=path.join(output,'双段有声.mp4');
@@ -319,6 +398,47 @@ test('track controls keep visibility independent of source and picture-in-pictur
   const [sound,mute,pip]=await Promise.all(results.map(r=>toneAt(r.path,'0.2')));
   assert.ok(Math.abs(sound-440)<50 && Math.abs(pip-440)<50);
   assert.equal(mute,0);
+});
+
+test('disabled rows survive reopening and export only the enabled picture, voice and subtitle',async(t)=>{
+  const {saveProject, loadProject} = require('../src/project-format.cjs');
+  const {catalog,output} = await fixtureDirectory(t);
+  const project = path.join(output,'横轨开关.sdworkbench');
+  const caption = (word,color)=>({name:word+'.srt',cues:[{start:0,end:390,text:word,highlights:[{word,color}]}]});
+  const controls = {vis0:{disabled:true},whole0:{disabled:true},music0:{disabled:true}};
+  const config = {...montage,ratio:'16:9',count:1,
+    shots:[[{id:'red',start:0,end:.6}, {id:'green',start:0,end:.6}]],
+    keepAudio:true,musicIds:['music'],narrationId:'music',subtitles:caption('AAA','#ff00ff'),
+    extraWholeTracks:[{narrationId:'otherMusic',subtitles:caption('BBB','#ffff00')}],trackControls:controls};
+  await saveProject(project,config,catalog);
+  const reopened = await loadProject(project);
+  assert.deepEqual(reopened.config.trackControls,controls);
+  assert.equal(reopened.config.shots[0].length,2);
+  const plan = flags=>planMontage({...reopened.config,trackControls:flags},reopened.assets)[0];
+  const keepB = plan(controls), noCaptions = plan({...controls,caption1:{disabled:true}}),
+    keepA = plan({vis1:{disabled:true},whole1:{disabled:true},music0:{disabled:true}});
+  const withoutVoice = plan({...controls,whole1:{disabled:true}});
+  const {results,failures} = await exportBatch([keepB,noCaptions,keepA,withoutVoice],output);
+  assert.deepEqual(failures,[]);
+  const [b,captionless,a,silent] = results.map(result=>result.path);
+  const [green,red,voiceB,sameVoice,mixed,silence] = await Promise.all([
+    frameColor(b,.2),frameColor(a,.2),toneAt(b,'0.2'),toneAt(captionless,'0.2'),toneAt(a,'0.2'),toneAt(silent,'0.2')]);
+  assert.ok(green.green>green.red*3 && red.red>red.green*3);
+  assert.ok(Math.abs(voiceB-880)<50 && Math.abs(sameVoice-880)<50 && Math.abs(mixed-660)<90);
+  assert.equal(silence,0);
+  async function coloredGlyphs(file) {
+    const rgb=await ffmpeg(['-ss','0.2','-i',file,'-vf','crop=640:200:(iw-640)/2:ih-200',
+      '-frames:v','1','-an','-pix_fmt','rgb24','-f','rawvideo','pipe:1']);
+    let magenta=0,yellow=0;
+    for(let i=0;i<rgb.length;i+=3) {
+      if(rgb[i]>180 && rgb[i+1]<80 && rgb[i+2]>180) magenta++;
+      if(rgb[i]>180 && rgb[i+1]>180 && rgb[i+2]<80) yellow++;
+    }
+    return {magenta,yellow};
+  }
+  const [onB,off,onA] = await Promise.all([b,captionless,a].map(coloredGlyphs));
+  assert.ok(onB.yellow>50 && onB.magenta===0 && onA.magenta>50 && onA.yellow===0);
+  assert.deepEqual(off,{magenta:0,yellow:0});
 });
 
 test('track controls choose solo candidates, narration and music by physical row',async(t)=>{
@@ -940,7 +1060,7 @@ test('retimes source trims and preserves audio pitch through speed and narration
   const fast = { id: 'greenAudio', start: 0.1, end: 0.9, speed: 2 };
   const transition = { kind: 'fade-black', duration: 0.2 };
   const config = { ...montage, ratio: '1:1', fps: 30, count: 1, shots: [[slow], [fast]], musicIds: [], keepAudio: true, shotTransitions: [transition, null] };
-  assert.throws(() => planMontage({ ...config, shots: [[{ ...slow, speed: 0.49 }], [fast]] }, catalog), /播放速度/);
+  assert.throws(() => planMontage({ ...config, shots: [[{ ...slow, speed: 0 }], [fast]] }, catalog), /播放速度/);
   const [picture] = planMontage({
     ...config, shots: [...config.shots, [{ id: 'still', start: 0, end: 0.3, speed: 3 }]], shotTransitions: [transition, null, null],
   }, catalog);

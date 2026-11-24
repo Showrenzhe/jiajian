@@ -6,9 +6,10 @@ function createPreviewFrameHandoff(stage) {
   const canvas = document.createElement('canvas');
   canvas.className = 'preview-frame-hold';
   canvas.setAttribute('aria-hidden', 'true');
-  let pendingFrame, videoCallback, incoming;
+  let pendingFrame, videoCallback, incoming, generation = 0;
 
   function cancelReveal() {
+    generation++;
     cancelAnimationFrame(pendingFrame);
     if (videoCallback !== undefined) incoming.cancelVideoFrameCallback(videoCallback);
     videoCallback = undefined;
@@ -62,35 +63,46 @@ function createPreviewFrameHandoff(stage) {
   function revealWhen(source) {
     if (!canvas.isConnected || incoming === source) return;
     cancelReveal();
+    const request = generation;
     incoming = source;
     const video = source.tagName === 'VIDEO';
-    let presented = !video, copied = false;
+    let presented = !video, copiedSrc, copiedTime;
     function ready() {
       return source.currentSrc === source.src && (video ? source.readyState >= 2 && !source.seeking
         : source.complete && source.naturalWidth > 0);
     }
     function check() {
-      if (incoming !== source) return;
+      if (request !== generation) return;
       if (ready()) {
-        if (presented && copied) { clear(); return; }
-        if (!copied) copied = copyFrame(source);
-        // A warmed or paused video may already have submitted its only frame.
-        // Show that decoded frame and wait for native presentation to resume.
-        if (copied && !presented) return;
+        const copied = copiedSrc === source.currentSrc;
+        // A paused decoder may have delivered its only presentation callback
+        // before registration. Reveal after the decoded target has remained
+        // ready through a paint with its own frame already covering the cut.
+        const pausedFrame = video && source.paused && copiedTime === source.currentTime;
+        // At native EOS the decoder may withdraw its surface. Keep this last
+        // decoded frame until presentation resumes or a new seek takes over.
+        if (copied && pausedFrame && source.ended && !presented) return;
+        if (copied && (presented || pausedFrame)) { clear(); return; }
+        if ((!copied || (video && source.paused && copiedTime !== source.currentTime)) && copyFrame(source)) {
+          copiedSrc = source.currentSrc;
+          copiedTime = source.currentTime;
+        }
+      } else {
+        copiedSrc = undefined;
+        presented = !video;
+        if (video && videoCallback === undefined) videoCallback = source.requestVideoFrameCallback(onPresented);
       }
       pendingFrame = requestAnimationFrame(check);
     }
-    if (video) {
-      function onPresented() {
-        if (incoming !== source) return;
-        videoCallback = undefined;
-        if (!ready()) { videoCallback = source.requestVideoFrameCallback(onPresented); return; }
-        presented = true;
-        cancelAnimationFrame(pendingFrame);
-        pendingFrame = requestAnimationFrame(check);
-      }
-      videoCallback = source.requestVideoFrameCallback(onPresented);
+    function onPresented() {
+      if (request !== generation) return;
+      videoCallback = undefined;
+      if (!ready()) { videoCallback = source.requestVideoFrameCallback(onPresented); return; }
+      presented = true;
+      cancelAnimationFrame(pendingFrame);
+      pendingFrame = requestAnimationFrame(check);
     }
+    if (video) videoCallback = source.requestVideoFrameCallback(onPresented);
     pendingFrame = requestAnimationFrame(check);
   }
   return { capture, moveTo, revealWhen, retain, clear };
@@ -162,7 +174,40 @@ function mountStereoMeter(stage, meter) {
   }).observe(stage, { childList:true, subtree:true });
 }
 
-window.mountPlayerTools = ({ panel, getClip, isEditor, isTrack, validClip, notify, onImageTime,
+// The decoder and its proxy seek in source seconds. The selected track clip
+// has a local clock after trimming, joining retained intervals and retiming.
+function createTrackPreviewClock(clip) {
+  const rate = window.placedVideoSpeed(clip);
+  const retained = window.waveformSource(clip.ranges ?? [clip], clip.look?.head, clip.look?.tail);
+  if (!(rate > 0 && retained.duration > 0)) return;
+  const parts = [];
+  let offset = 0, current = 0;
+  retained.visit(0, retained.duration, false, (start, end) => {
+    parts.push({start, end, offset});
+    offset += end - start;
+  });
+  const duration = retained.duration / rate;
+  function sourceAt(time) {
+    const distance = Math.max(0, Math.min(duration, time)) * rate;
+    current = parts.findIndex(part => distance < part.offset + part.end - part.start);
+    if (current < 0) current = parts.length - 1;
+    const part = parts[current];
+    return Math.min(part.end, part.start + distance - part.offset);
+  }
+  function timeAt(source) {
+    const contains = part => source >= part.start && source <= part.end;
+    // Repeated source intervals keep the occurrence chosen by the last seek.
+    if (!contains(parts[current])) {
+      const index = parts.findIndex(contains);
+      if (index >= 0) current = index;
+    }
+    const part = parts[current];
+    return (part.offset + Math.max(0, Math.min(part.end, source) - part.start)) / rate;
+  }
+  return {duration, rate, sourceAt, timeAt};
+}
+
+window.mountPlayerTools = ({ panel, getClip, getTrackClock, seekTrackSource, isEditor, isTrack, validClip, notify, onImageTime,
   getDraft, getIdleDraft, toggleDraft, seekDraft, canProxy, changeQuality }) => {
   const find = (selector) => panel.querySelector(selector);
   const video = find('#preview');
@@ -218,11 +263,14 @@ window.mountPlayerTools = ({ panel, getClip, isEditor, isTrack, validClip, notif
     const active = !draft && ready(clip);
     const timeline = draft || (idle?.end ? idle : null);
     const clipTime = clip?.asset.kind === 'image' ? imagePosition() : video.currentTime;
-    const seconds = timeline ? Math.min(timeline.time,timeline.end) : active ? Math.max(clip.start,Math.min(clip.end,clipTime)) : 0;
-    const rate = fps(cut || (draft ? null : clip));
+    const trackClock = timeline ? undefined : getTrackClock();
+    let seconds = 0;
+    if (timeline) seconds = Math.min(timeline.time,timeline.end);
+    else if (active) seconds = trackClock?.timeAt(clipTime) ?? Math.max(clip.start,Math.min(clip.end,clipTime));
+    const rate = fps(cut || (timeline || (trackClock && clip.autoFitSpeed) ? null : clip));
     const timedClip = !draft && clip && validClip(clip) && (clip.asset.kind !== 'image' || isTrack());
-    const length = draft?.end ?? idle?.end ?? (timedClip ? clip.end - clip.start : 0);
-    const elapsed = draft ? seconds : Math.max(0, seconds - (clip?.start ?? 0));
+    const length = draft?.end ?? idle?.end ?? trackClock?.duration ?? (timedClip ? clip.end - clip.start : 0);
+    const elapsed = timeline || trackClock ? seconds : Math.max(0, seconds - (clip?.start ?? 0));
     const currentText = timecode(elapsed, rate), endText = timecode(length, rate);
     if (clock.textContent !== currentText) {
       clock.textContent = currentText;
@@ -267,12 +315,13 @@ window.mountPlayerTools = ({ panel, getClip, isEditor, isTrack, validClip, notif
     }
     transport.hidden = !isEditor();
     video.controls = !isEditor();
-    const active = Boolean(draft) || ready(clip);
+    const active = draft ? draft.end > 0 : ready(clip);
     play.disabled = Boolean(cut?.busy || (!active && !idle?.end));
     for (const button of panel.querySelectorAll('.player-buttons button')) button.disabled = !active || Boolean(cut?.busy);
     position.disabled = !active || Boolean(cut?.busy);
-    position.min = active && !draft ? clip.start : 0;
-    position.max = draft?.end ?? (active ? clip.end : 1);
+    const trackClock = !draft && getTrackClock();
+    position.min = active && !draft && !trackClock ? clip.start : 0;
+    position.max = draft?.end ?? trackClock?.duration ?? (active ? clip.end : 1);
     const playing = draft?.playing ?? (active && (clip.asset.kind === 'image' ? imagePlaying() : !video.paused));
     play.setAttribute('aria-pressed', String(playing));
     play.setAttribute('aria-label', playing ? '暂停' : '播放');
@@ -308,6 +357,11 @@ window.mountPlayerTools = ({ panel, getClip, isEditor, isTrack, validClip, notif
     } else video.currentTime = target;
     updatePosition();
   }
+  function seekPosition(value) {
+    const trackClock = getTrackClock();
+    if (trackClock) seekTrackSource(getClip(), trackClock.sourceAt(value));
+    else seek(value);
+  }
   function pause() {
     cut?.pause();
     if (imagePlaying()) {
@@ -328,7 +382,10 @@ window.mountPlayerTools = ({ panel, getClip, isEditor, isTrack, validClip, notif
     const clip = getClip();
     if (!ready(clip)) return;
     pause();
-    seek((clip.asset.kind === 'image' ? imageTime : video.currentTime) + direction / fps(clip));
+    const source = clip.asset.kind === 'image' ? imageTime : video.currentTime;
+    const trackClock = getTrackClock();
+    const rate = fps(trackClock && clip.autoFitSpeed ? null : clip);
+    seekPosition((trackClock?.timeAt(source) ?? source) + direction / rate);
   }
   async function togglePlay() {
     if (cut) return cut.togglePlay();
@@ -434,12 +491,12 @@ window.mountPlayerTools = ({ panel, getClip, isEditor, isTrack, validClip, notif
     if (draft) {
       if (draft.playing) toggleDraft();
       seekDraft(0);
-    } else if (getClip()) { pause(); seek(getClip().start); }
+    } else if (getClip()) { pause(); seekPosition(getTrackClock() ? 0 : getClip().start); }
   });
   position.addEventListener('input', () => {
     if (cut) cut.seek(position.valueAsNumber);
     else if (getDraft()) seekDraft(position.valueAsNumber);
-    else seek(position.valueAsNumber);
+    else seekPosition(position.valueAsNumber);
   });
   quality.addEventListener('change', changeQuality);
   zoom.addEventListener('change', () => {

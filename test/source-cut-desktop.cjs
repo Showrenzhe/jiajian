@@ -8,23 +8,26 @@ const path = require('node:path');
 const { setTimeout: delay } = require('node:timers/promises');
 const { app, nativeImage } = require('electron');
 const { launchDesktop } = require('../src/desktop.cjs');
-const { saveProject, readProject } = require('../src/project-format.cjs');
+const { saveProject, readProject, loadProject } = require('../src/project-format.cjs');
 const { inspectAsset } = require('../src/media.cjs');
-const { clickVisible } = require('./desktop-input.cjs');
+const { clickVisible, dragLibraryItem } = require('./desktop-input.cjs');
 const { ffmpeg } = require('./fixtures.cjs');
 
 app.disableHardwareAcceleration();
 
-async function makeProject(directory) {
-  const video = path.join(directory, '红绿蓝三段原声.mp4');
-  const voice = path.join(directory, '独立口播.wav');
-  const parts = [['red',440], ['lime',660], ['blue',880]];
-  const inputs = parts.flatMap(([color,hz]) => [
-    '-f','lavfi','-i',`color=c=${color}:s=160x90:r=24:d=2`,
-    '-f','lavfi','-i',`sine=frequency=${hz}:sample_rate=48000:duration=2`,
+async function makeColorSequence(video, fps, durations) {
+  const inputs = [['red',440], ['lime',660], ['blue',880]].flatMap(([color,hz],i) => [
+    '-f','lavfi','-i',`color=c=${color}:s=160x90:r=${fps}:d=${durations[i]}`,
+    '-f','lavfi','-i',`sine=frequency=${hz}:sample_rate=48000:duration=${durations[i]}`,
   ]);
   await ffmpeg([...inputs,'-filter_complex','[0:v][1:a][2:v][3:a][4:v][5:a]concat=n=3:v=1:a=1[v][a]',
     '-map','[v]','-map','[a]','-c:v','libx264','-threads','2','-c:a','aac',video]);
+}
+
+async function makeProject(directory) {
+  const video = path.join(directory, '红绿蓝三段原声.mp4');
+  const voice = path.join(directory, '独立口播.wav');
+  await makeColorSequence(video,24,[2,2,2]);
   await ffmpeg(['-f','lavfi','-i','sine=frequency=1100:duration=0.4',voice]);
   const assets = new Map([['video',await inspectAsset(video,'video')],['voice',await inspectAsset(voice,'audio')]]);
   const file = path.join(directory, '两次使用同一素材.sdworkbench');
@@ -94,8 +97,10 @@ async function check() {
   const segment = host+' .video-cut-segment[data-index]';
   const count = 'document.querySelectorAll('+JSON.stringify(segment)+').length';
   const mainClip = shot => '.sequence-video [data-drop-shot="'+shot+'"][data-move-candidate]';
-  const duration = q(mainClip(0)+' .sequence-clip-duration')+'.textContent';
+  const duration = q(mainClip(0))+'.dataset.playbackDuration';
+  const sourceBadge = q(mainClip(0)+' .sequence-clip-duration')+'.textContent';
   const tool = name => host+' button[data-action="'+name+'"]';
+  const speedPicker = host+' select[data-action="speed"]';
   const time = 'Number('+q(slider)+'.getAttribute("aria-valuenow"))';
   const end = 'Number('+q(slider)+'.getAttribute("aria-valuemax"))';
   const approx = (value,expected,tolerance=.06) => `Math.abs((${value})-(${expected}))<${tolerance}`;
@@ -178,6 +183,16 @@ async function check() {
     await mouse('mouseReleased',coords);
     await wait(approx(time,value),'定位剪辑播放头至 '+value);
   }
+  async function chooseSpeed(value) {
+    await click(speedPicker);
+    await key('Home',36);
+    const options = await read('[...'+q(speedPicker)+'.options].map(option=>option.value)');
+    const index = options.indexOf(String(value));
+    assert.ok(index>=0);
+    for (let i=0; i<index; i++) await key('ArrowDown',40);
+    await key('Enter',13);
+    await wait(q(speedPicker)+'.value==='+JSON.stringify(String(value)), '选择 '+value+' 倍速');
+  }
   async function drag(from,to,cancel=false) {
     await mouse('mousePressed',from);
     await mouse('mouseMoved',to);
@@ -189,6 +204,24 @@ async function check() {
     await click('#save-project');
     await wait(q('#notice')+'.textContent.includes('+JSON.stringify('工程已保存：'+name)+')','保存 '+name);
     return (await readProject(saveFile)).config;
+  }
+  async function scrubColors(samples) {
+    const axis=await point('.sequence-ruler .sequence-content');
+    for(const [fraction,channel] of samples) {
+      const within=await point(mainClip(0),fraction);
+      const cursor={x:within.x,y:axis.y};
+      await mouse('mousePressed',cursor);
+      await mouse('mouseReleased',cursor);
+      await expectFrame('.preview-stage',channel);
+    }
+  }
+  async function exportAndCheck(samples,total) {
+    const previous=new Set(await fs.readdir(exports));
+    await click('#start-export');
+    await wait(q('#output-status')+'.textContent.includes("已保存 1 条") && '+q('#cancel-export')+'.hidden','导出适配后的成片',60000);
+    const file=(await fs.readdir(exports)).find(name=>name.endsWith('.mp4') && !previous.has(name));
+    assert.ok(file,'应导出当前工程');
+    await verifyOutput(path.join(exports,file),samples,total);
   }
   async function screenshot(name,selector) {
     const output=process.env.JIAJIAN_SOURCE_CUT_SCREENSHOTS;
@@ -339,6 +372,18 @@ async function check() {
       await wait(`document.documentElement.dataset.theme===${JSON.stringify(scheme)}`,'切换到'+scheme+'主题');
       await wait(`[...document.querySelectorAll(${JSON.stringify(host+' [data-action]')})].every(el=>el.checkVisibility() && el.getBoundingClientRect().right<=innerWidth+1)`,
         '紧凑与标准窗口内操作均应完整显示');
+      await click(speedPicker);
+      await wait(q(speedPicker)+'.matches(":open")','打开倍速菜单');
+      await key('Escape',27);
+      await wait(q(speedPicker)+'===document.activeElement && !'+q(speedPicker)+'.matches(":open") && !!'+q(monitor),
+        'Esc 应关闭菜单并将焦点归还倍速选择器，保留编辑器');
+      await chooseSpeed(1.5);
+      await wait(approx(clock('#player-duration'),3)+' && '+approx(clock('#player-time'),1.2),'倍速与主监看联动');
+      await wait(`[...document.querySelectorAll(${JSON.stringify(host+' .video-cut-tools [data-action], #player-time, #player-duration')})].every(el=>{
+        const r=el.getBoundingClientRect();
+        return r.width>0 && r.height>0 && el.contains(document.elementFromPoint(r.x+r.width/2,r.y+r.height/2));
+      })`, '工具、倍速选择器和主监看时间码应独立可见');
+      await click(tool('undo'));
       await wait(`[...document.querySelectorAll(${JSON.stringify(host+' .video-cut-filmstrip img')})].filter(img=>img.naturalWidth>0).length>=3`,
         '应有多个实际原片缩略图');
       if (process.env.JIAJIAN_SOURCE_CUT_SCREENSHOTS) await wait(
@@ -361,6 +406,7 @@ async function check() {
     }
     await click(tool('apply'));
     await wait('!'+q('#timeline-cut-editor')+'.checkVisibility() && '+approx('parseFloat('+duration+')',4.5),'应用后主时间线时长更新');
+    assert.equal(await read(sourceBadge),'6.00 秒','裁短后角标仍是完整原片时长');
     assert.equal(await read(q(monitor)),null,'应用后应还原轨道播放器');
     await click('#track-undo');
     await wait(approx('parseFloat('+duration+')',6),'工程一次撤销应还原整个素材剪辑');
@@ -456,6 +502,172 @@ async function check() {
     }
     assert.ok(second,'应导出重开的倒放工程');
     await verifyOutput(path.join(exports,second),[[.55,2,880],[2.5,1,660],[4.5,0,440],[6.48,0,440]],6.75);
+    await dblclick(mainClip(0));
+    await seek(3);
+    await chooseSpeed(2);
+    await wait(approx(time,1.5)+' && '+approx(clock('#player-duration'),3)+' && '+localVideo+'.playbackRate===2',
+      '2× 应保留原片位置，更新剪后时间与主播放器');
+    await checkBounds(0,6);
+    await click(tool('play'));
+    await wait('!'+localVideo+'.paused && '+localVideo+'.playbackRate===2 && '+time+'>1.6','倒放渲染切源后仍按 2× 播放',30000);
+    await chooseSpeed(.5);
+    await wait(localVideo+'.playbackRate===.5 && '+approx(clock('#player-duration'),12),'0.5× 应实时更新主播放器');
+    await click(tool('undo'));
+    await wait(q(speedPicker)+'.value==="2" && '+approx(end,3),'撤销倍速');
+    await click(tool('redo'));
+    await wait(q(speedPicker)+'.value==="0.5" && '+approx(end,12),'重做倍速');
+    await click(tool('cancel'));
+    await dblclick(mainClip(0));
+    assert.equal(await read(q(speedPicker)+'.value'),'1','取消应保留原倍速');
+    await chooseSpeed(2);
+    await click(tool('apply'));
+    await wait('!'+q(monitor)+' && '+approx('parseFloat('+duration+')',3),'应用后时间线应按 2× 显示长度');
+    assert.equal(await read(sourceBadge),'6.00 秒','变速后角标仍是完整原片时长');
+    const retimed=await save('倍速剪辑');
+    assert.equal(retimed.shots[0][0].speed,2);
+    assert.deepEqual(retimed.shots[0][0].sourceEdit.ranges,recipe,'倍速应保留倒放和裁剪配方');
+    assert.equal(retimed.shots[1][0].speed ?? 1,1,'同一素材另一实例应独立');
+    openFile=saveFile;
+    await click('#open-project');
+    await wait(q('#notice')+'.textContent.includes("已打开工程：倍速剪辑")','重开已保存的倍速工程');
+    await dblclick(mainClip(0));
+    assert.equal(await read(q(speedPicker)+'.value'),'2');
+    assert.equal(await read(end),3);
+    await click(tool('cancel'));
+    await click('#start-export');
+    await wait(q('#output-status')+'.textContent.includes("已保存 1 条") && '+q('#cancel-export')+'.hidden','导出重开的倍速工程',60000);
+    const third=(await fs.readdir(exports)).find(name=>name.endsWith('.mp4') && name!==second && name!==files[0]);
+    assert.ok(third,'应有倍速导出文件');
+    await verifyOutput(path.join(exports,third),[[.35,2,880],[1.5,1,660],[2.4,0,440],[3.48,0,440]],3.75);
+    console.log('2×/0.5× 片段预览、撤销重做、取消、同源实例隔离及工程重开后的倍速原声导出均通过。');
+    // The library references a six-second RGB source through a trimmed instance in shot 2.
+    // A fresh timeline drop must use the entire source within shot 1's three-second window.
+    const empty = await loadProject(input);
+    openFile = path.join(directory,'三秒分镜.sdworkbench');
+    await saveProject(openFile,{...empty.config,shots:[[],empty.config.shots[1]],shotSettings:[{duration:3},{}]},empty.assets);
+    await click('#open-project');
+    const emptySlot='.sequence-video [data-drop-shot="0"].sequence-empty';
+    const sourceTile='.material-tile[title="红绿蓝三段原声.mp4"]';
+    await wait('!!'+q(emptySlot)+' && !!'+q(sourceTile),'打开三秒空分镜及同源素材库');
+    const baseline=await save('拖入前');
+    await dragLibraryItem(wc,await point(sourceTile),()=>point(emptySlot),'application/x-sd-workbench-material',
+      ()=>wait(q(emptySlot)+'.dataset.materialDrop==="active"','素材拖入空窗口时高亮目标'));
+    await wait('!!'+q(mainClip(0)), '将整条原片拖入三秒分镜');
+    assert.equal(await read(q(mainClip(0))+'.dataset.timelineDuration'),'3');
+    assert.equal(await read(sourceBadge),'6.00 秒','三秒分镜显示六秒原片');
+    const fitted=await save('整片自动加速');
+    const fit=fitted.shots[0][0];
+    assert.deepEqual([fit.start,fit.end,fit.videoStart,fit.videoDuration,fit.speed,fit.autoFitSpeed],[0,6,0,3,2,true]);
+    assert.deepEqual(fitted.shots[1],baseline.shots[1]);
+    assert.deepEqual(fitted.segmentVoiceCuts,baseline.segmentVoiceCuts);
+    assert.deepEqual(fitted.shotSettings,baseline.shotSettings);
+    await scrubColors([[.1,0],[.5,1],[.9,2]]);
+    await exportAndCheck([[.12,0,440],[1.5,1,660],[2.85,2,880]],3.75);
+    await dblclick(mainClip(0));
+    await checkBounds(0,6);
+    const inMarker=await point(marker('start')), railWidth=await read(q(rail)+'.getBoundingClientRect().width');
+    await drag(inMarker,{x:inMarker.x+railWidth/4,y:inMarker.y});
+    await checkBounds(1.5,6);
+    await click(tool('apply'));
+    await wait('!'+q(monitor),'应用手动入点并重新适配');
+    const trimmed=await save('手动截取后适配');
+    assert.deepEqual([trimmed.shots[0][0].speed,trimmed.shots[0][0].videoDuration],[1.5,3]);
+    openFile=saveFile;
+    await click('#open-project');
+    await wait(q('#notice')+'.textContent.includes("已打开工程：手动截取后适配")','重开截取后的分镜');
+    await dblclick(mainClip(0));
+    await checkBounds(1.5,6);
+    assert.equal(await read(end),3);
+    await chooseSpeed(1);
+    const outMarker=await point(marker('end'));
+    await drag(outMarker,{x:outMarker.x-railWidth/6,y:outMarker.y});
+    await checkBounds(1.5,5);
+    await click(tool('apply'));
+    await wait('!'+q(monitor),'应用手动倍率与出点');
+    const manual=(await save('手动原速')).shots[0][0];
+    assert.equal(manual.speed,1);
+    assert.ok(!manual.autoFitSpeed,'手动选择原速后，拖动出点应保留此设置');
+    await dblclick(mainClip(0));
+    await checkBounds(1.5,5);
+    await chooseSpeed('auto');
+    await wait(approx(end,3),'恢复按分镜时长适配');
+    await click(tool('apply'));
+    await wait('!'+q(monitor),'保存恢复自动后的设置');
+    const restored=(await save('恢复自动')).shots[0][0];
+    assert.equal(restored.autoFitSpeed,true);
+    assert.ok(Math.abs(restored.speed-3.5/3)<1e-6);
+    await dblclick(mainClip(0));
+    await checkBounds(1.5,5);
+    await click(tool('cancel'));
+    const shotTargets=[['分镜条','.sequence-shots [data-drop-shot="0"]'],['分镜卡片','.shot[data-shot-index="0"]']];
+    for(const [index,[name,target]] of shotTargets.entries()) {
+      if(name==='分镜卡片') {
+        await click(view);await key('End',35);await key('Enter',13);
+        await wait(q(view)+'.value==="cards"','打开分镜卡片');
+      }
+      await dragLibraryItem(wc,await point(sourceTile),()=>point(target,.33),'application/x-sd-workbench-material',
+        ()=>wait(q(target)+'.dataset.materialDrop==="active"','拖入'+name+'时高亮当前分镜'));
+      const candidates=(await save('拖到'+name)).shots[0];
+      assert.equal(candidates.length,2+index,name+'应新增一个独立候选');
+      const added=candidates.at(-1);
+      assert.deepEqual([added.start,added.end,added.videoStart,added.videoDuration,added.speed,added.autoFitSpeed],
+        [0,6,0,3,2,true],name+'应使用该既有分镜的完整时窗');
+    }
+    await mouse('mouseMoved',await point(sourceTile));
+    await click(sourceTile+' ~ .material-quick-add');
+    await click('#material-add-target');await key('Home',36);await key('ArrowDown',40);await key('Enter',13);
+    await wait(q('#material-add-target')+'.value==="0"','在加号菜单中指定第一分镜');
+    await click('#material-add-confirm');
+    const fromPlus=(await save('加号添加候选')).shots[0].at(-1);
+    assert.deepEqual([fromPlus.start,fromPlus.end,fromPlus.speed,fromPlus.videoStart,fromPlus.autoFitSpeed],[0,6,1,undefined,undefined]);
+    console.log('素材库六秒全片放入三秒分镜，成片首中尾画面与原声、手动收紧到四秒半后自动重算并重开通过。');
+
+    const shortFile=path.join(directory,'短片三段原声.mp4');
+    await makeColorSequence(shortFile,50,[.7,.9,.42]);
+    const short=await inspectAsset(shortFile,'video');
+    assert.equal(short.duration,2.02);
+    const shortAssets=new Map([['short',short]]);
+    openFile=path.join(directory,'短片拖入前.sdworkbench');
+    await saveProject(openFile,{...empty.config,shots:[[],[{id:'short',start:0,end:.5}]],
+      shotSettings:[{duration:3},{}],segmentVoiceCuts:[[],[]],segmentNarrationIds:[[],[]]},shortAssets);
+    await click('#open-project');
+    const shortTile='.material-tile[title="短片三段原声.mp4"]';
+    await wait('!!'+q(shortTile),'打开短片素材库');
+    await click(view);await key('Home',36);await key('Enter',13);
+    await wait(q(emptySlot)+'?.checkVisibility()','切换至空分镜插槽');
+    await dragLibraryItem(wc,await point(shortTile),()=>point(emptySlot),'application/x-sd-workbench-material',
+      ()=>wait(q(emptySlot)+'.dataset.materialDrop==="active"','短素材拖入三秒空分镜'));
+    await wait('!!'+q(mainClip(0)),'短片已进入视频轨');
+    const slowed=(await save('整片自动慢放')).shots[0][0];
+    assert.deepEqual([slowed.start,slowed.end,slowed.videoDuration,slowed.autoFitSpeed],[0,2.02,3,true]);
+    const slowRate=2.02/3;
+    assert.ok(Math.abs(slowed.speed-slowRate)<1e-6);
+    openFile=saveFile;
+    await click('#open-project');
+    await wait(q('#notice')+'.textContent.includes("已打开工程：整片自动慢放")','重开慢放工程');
+    assert.equal(await read(sourceBadge),'2.02 秒');
+    assert.equal(Number(await read(q(mainClip(0))+'.dataset.timelineDuration')),3);
+    // At 2.16 s a held original would already show blue. The slowed picture is still green.
+    await scrubColors([[.10,0],[.72,1],[.91,2]]);
+    await dblclick(mainClip(0));
+    await wait(q(speedPicker)+'.value==="auto" && '+approx(localVideo+'.playbackRate',slowRate,.001)
+      +' && '+approx(end,3),'主剪辑窗口使用精确慢放速度，时长三秒');
+    await click(tool('cancel'));
+    await exportAndCheck([[.25,0,440],[2.16,1,660],[2.74,2,880],[3.18,0,440]],3.5);
+    await dblclick(mainClip(0));
+    await chooseSpeed(1);
+    await click(tool('apply'));
+    await wait('!'+q(monitor),'保存手动恢复原速');
+    const shortManual=(await save('短片手动原速')).shots[0][0];
+    assert.equal(shortManual.speed,1);
+    assert.ok(!shortManual.autoFitSpeed);
+    openFile=saveFile;
+    await click('#open-project');
+    await wait(q('#notice')+'.textContent.includes("已打开工程：短片手动原速")','重开手动倍速短片');
+    await dblclick(mainClip(0));
+    await wait(q(speedPicker)+'.value==="1" && '+approx(end,2.02),'重新打开后保留手动原速');
+    await click(tool('cancel'));
+    console.log('2.02 秒原片慢放到 3 秒，拖入、原片角标、重开、主预览、导出画面与原声，以及手动改回原速通过。');
     console.log('真实时间线双击、拖动、前后修剪、局部与工程撤销、同源实例、倒放预览和两次工程重开后的画面与原声导出均通过。');
   } finally { wc.debugger.detach(); win.destroy(); }
 }

@@ -146,8 +146,8 @@ test('reopens reversible source edits and rebuilds a missing result in the local
   const ranges = [{start:.25, end:.75, mirror:true, reverse:true}];
   const rendered = await prepareSourceEdit(original, ranges, path.join(root, 'cache'));
   const result = await inspectAsset(rendered, 'video');
-  const clip = {id:'edited', start:0, end:.5, sourceEdit:{id:'original',ranges}};
-  const config = editingConfig({shots:[[clip]], subprojects:{
+  const clip = {id:'edited', start:0, end:.5, speed:2, sourceEdit:{id:'original',ranges}};
+  const config = editingConfig({shots:[[clip]], resolution:720, keepAudio:true, subprojects:{
     active:null, main:[], projects:[{id:'second',name:'副本',shots:[{index:0,clips:[clip]}]}]
   }});
   const assets = new Map([['original', original], ['edited', result]]);
@@ -159,6 +159,13 @@ test('reopens reversible source edits and rebuilds a missing result in the local
   assert.deepEqual(reopened.config, config);
   assert.equal(path.dirname(reopened.assets.get('edited').path), cache);
   assert.ok(Math.abs(reopened.assets.get('edited').duration - .5) < .05);
+  // The reverse cache remains at source speed. Apply the saved rate exactly once at export.
+  const plans = planMontage(reopened.config, reopened.assets);
+  const {failures, results} = await exportBatch(plans, root);
+  assert.deepEqual(failures, []);
+  const exported = await inspectAsset(results[0].path, 'video');
+  assert.ok(Math.abs(exported.duration - .25) < 1 / config.fps);
+  assert.ok(Number.isInteger(exported.audioIndex));
   assert.deepEqual(await fs.readFile(red), bytes);
   await assert.rejects(saveProject(file, editingConfig({shots:[[{...clip, sourceEdit:{id:'original', ranges:[{start:0,end:2000}]}}]]}), assets, {overwrite:true}), /范围/);
 });

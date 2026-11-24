@@ -19,13 +19,13 @@ window.createTimelinePackaging = function () {
     data = Object.assign(fresh(), structuredClone(value ?? {}));
     order = [...shots];
   }
-  function choices(shots) {
-    forShots(shots);
+  function choices(shots, controls) {
+    const pack = window.trackControls.enabledPackaging(forShots(shots), controls);
     const alternatives = (groups) => BigInt(Math.max(1, groups.filter(Boolean).length));
-    let total = alternatives(data.composites.map((row) => row.length));
-    if (data.textMode === 'segmented' && data.textSelection === 'random') {
-      for (let i = 0; i < shots.length; i++) total *= alternatives(data.textGroups.map((row) => row[i]?.length));
-    } else total *= alternatives(data.textGroups.map((row) => data.textMode === 'whole' ? row[0]?.length : row.some((col) => col.length)));
+    let total = alternatives(pack.composites.map((row) => row.length));
+    if (pack.textMode === 'segmented' && pack.textSelection === 'random') {
+      for (let i = 0; i < shots.length; i++) total *= alternatives(pack.textGroups.map((row) => row[i]?.length));
+    } else total *= alternatives(pack.textGroups.map((row) => pack.textMode === 'whole' ? row[0]?.length : row.some((col) => col.length)));
     return total;
   }
   return {forShots, load, choices};
@@ -123,7 +123,7 @@ window.mountEditTimeline = function (host, ctx) {
   document.body.append(dropHint);
   const copySources=new WeakMap();
   let timeScale = 60, totalTime = 0, shotTimes = [], widths = [];
-  let scrubBounds=[], layoutFocus;
+  let scrubBounds=[], layoutFocus, scrubWithDraftPlan=false;
   let headWidth;
   const standardScales = [16, 32, 60, 100, 180];
   let zoomScales = standardScales, manualScale = 60, zoomAnchor, zoomFrame, relayoutZoom;
@@ -187,6 +187,30 @@ window.mountEditTimeline = function (host, ctx) {
   }
   const stamp = (s) => [Math.floor(s / 60), String(Math.floor(s % 60)).padStart(2, '0')].join(':');
   const summary = (s) => String(Number(s.toFixed(2))) + ' 秒';
+  function icon(id) {
+    const svg=document.createElementNS('http://www.w3.org/2000/svg','svg');
+    const use=document.createElementNS(svg.namespaceURI,'use');
+    svg.setAttribute('class','ui-icon');
+    svg.setAttribute('aria-hidden','true');
+    use.setAttribute('href','#icon-'+id);
+    svg.append(use);
+    return svg;
+  }
+  function clipHeader(name,kind,sourceSeconds,detail,muted=false) {
+    const label=el('span','sequence-clip-label');
+    if(muted && kind==='video') label.append(icon('track-mute'));
+    label.append(el('span','sequence-clip-name',name));
+    if(kind!=='video') {
+      label.append(el('span','sequence-clip-duration',detail));
+      return label;
+    }
+    const header=el('span','sequence-clip-header');
+    const duration=Number.isFinite(sourceSeconds) ? sourceSeconds.toFixed(2)+' 秒' : '—';
+    const badge=el('span','sequence-clip-duration sequence-source-duration',duration);
+    badge.title='原片时长 '+duration;
+    header.append(label,badge);
+    return header;
+  }
   const kinds = {text:'文字', pip:'画中画', sticker:'贴纸', sound:'音效'};
   function within(row, i) {
     while (row.length <= i) row.push([]);
@@ -468,7 +492,7 @@ window.mountEditTimeline = function (host, ctx) {
       }
       const reason=!slot.clip ? '请选择视频片段。'
         : action==='mute' && (slot.clip.asset.kind!=='video' || !slot.clip.asset.hasAudio) ? '这个片段没有原声音轨。'
-        : insert && slot.shot.length>=state.maxCandidates ? '当前分镜的候选数量已达上限。' : '';
+        : insert ? ctx.insertShotError(index+(action==='right' ? 1 : 0)) : '';
       button.disabled=Boolean(reason);
       button.title=reason;
     }
@@ -534,14 +558,19 @@ window.mountEditTimeline = function (host, ctx) {
       ctx.removeClip(slot.shot,slot.clip);
       ctx.afterRemove();
     } else if(slot.clip && slot.shot?.includes(slot.clip)) {
-      const cells=window.videoLaneCells(state.shots,shotTimes,widths)[slot.lane];
-      const gap=window.insertVideoGap(cells,slot.clip,button.dataset.action);
-      if(gap) {
-        playTime=gap.start;
-        ctx.change();
-        ctx.notify('已在视频 '+(slot.lane+1)+' 插入 '+summary(gap.span)+'空位，可从素材库拖入画面。');
-        host.focus({preventScroll:true});
-      }
+      const at=index+(button.dataset.action==='right' ? 1 : 0);
+      const monitor=ctx.isMonitoringTimeline();
+      const shot=ctx.insertShot(at,[],{starts:shotTimes,widths,focus:layoutFocus});
+      if(!shot) return;
+      finishControlEdit();
+      playTime=shotTimes[at];
+      pastePosition=positionAt(playTime);
+      if(monitor) draftTransport.scrub(draftPlan,playTime);
+      syncCursor();
+      const strip=host.querySelector('.sequence-shots [data-drop-shot="'+at+'"]');
+      strip?.focus({preventScroll:true});
+      strip?.scrollIntoView({block:'nearest',inline:'nearest'});
+      ctx.notify('已插入空分镜 '+(at+1)+'，可从素材库拖入画面。');
     }
   });
   videoMenu.addEventListener('keydown',event=>{
@@ -738,6 +767,9 @@ window.mountEditTimeline = function (host, ctx) {
     const columns=s.shots.length || 3;
     layoutFocus=focusClip ?? s.selected;
     const layout=window.draftTimeline.timing(s,clipSpan,ctx.asset,layoutFocus);
+    scrubWithDraftPlan=Object.entries(s.trackControls ?? {}).some(([id,flags])=>flags.disabled || /^vis\d+$/.test(id) && (flags.hidden || flags.solo))
+      || layout.aligned?.some((part,i)=>part?.clip?.speed !== undefined && s.settings[i]?.duration
+        && !window.usesPlacedVideoSource(part.clip,false) && Math.abs(candidateSourceSeconds(part.clip)-layout.widths[i])>1e-6);
     ({widths,starts:shotTimes,total:totalTime}=layout);
     headWidth=parseFloat(getComputedStyle(host).getPropertyValue('--track-head-width'));
     const viewportWidth=host.clientWidth, currentScroll=host.scrollLeft;
@@ -770,20 +802,15 @@ window.mountEditTimeline = function (host, ctx) {
         const typeIcon=cls==='sequence-video'?'track-video':cls==='sequence-voice'?'audio':
           cls==='sequence-music'||kind==='sound'?'track-music':cls==='sequence-caption'||kind==='text'?'track-type':
           kind==='pip'||kind==='sticker'?'image':cls==='sequence-shots'?'track-shot':'tracks';
-        function icon(id) {
-          const svg=document.createElementNS('http://www.w3.org/2000/svg','svg');
-          const use=document.createElementNS(svg.namespaceURI,'use');
-          svg.setAttribute('class','ui-icon');svg.setAttribute('aria-hidden','true');
-          use.setAttribute('href','#icon-'+id);svg.append(use);return svg;
-        }
         toggle.classList.add('track-kind');toggle.replaceChildren(icon(typeIcon));
         head.append(toggle);
         const controlKey=layer ? window.trackControls.layerKey(layer) : key;
         const flags=s.trackControls?.[controlKey] ?? {};
         node.toggleAttribute('data-track-locked',Boolean(flags.locked));
         node.toggleAttribute('data-track-hidden',Boolean(flags.hidden));
+        node.toggleAttribute('data-track-disabled',Boolean(flags.disabled));
         track.inert=Boolean(flags.locked);
-        const names={locked:'锁定轨道',hidden:'隐藏轨道',muted:'静音',solo:cls==='sequence-video'?'独显':'独听'};
+        const names={disabled:'禁用轨道',locked:'锁定轨道',hidden:'隐藏轨道',muted:'静音',solo:cls==='sequence-video'?'独显':'独听'};
         for(const action of window.trackControls.actions(controlKey ?? 'layer-'+kind+'-unassigned')) {
           const on=action==='muted' && cls==='sequence-video' ? s.muted.has(Number(key.slice(3))) : Boolean(flags[action]);
           const button=btn('',()=>{
@@ -798,6 +825,10 @@ window.mountEditTimeline = function (host, ctx) {
           button.setAttribute('aria-pressed',String(on));
           button.dataset.trackAction=action;
           if(action==='solo') button.textContent='S';
+          else if(action==='disabled') {
+            button.title=label+(on ? ' · 启用轨道，加入预览和生成' : ' · 禁用轨道，从预览和生成中排除');
+            button.append(icon('track-power'));
+          }
           else button.append(icon(action==='locked' ? (on?'track-lock':'track-unlock')
             : action==='hidden' ? (on?'track-eye-off':'track-eye') : (on?'track-mute':'track-sound')));
           head.append(button);
@@ -935,14 +966,17 @@ window.mountEditTimeline = function (host, ctx) {
         if (clip.enabled===false) b.classList.add('sequence-disabled');
         if (clip===s.selected) b.classList.add('sequence-selected');
         const seconds=clipSpan(clip);
+        b.dataset.playbackDuration=String(seconds);
+        b.dataset.timelineDuration=String(span);
         const duration=Number.isFinite(seconds) ? (clip.videoDuration===undefined && clip.videoWindow===undefined ? seconds : span).toFixed(2)+' 秒' : '—';
-        const name=el('span','sequence-clip-name',clip.asset.name);
-        const label=el('span','sequence-clip-label');
         const match=clip.videoWindow===undefined && clip.videoDuration===undefined && Number.isFinite(clip.matchedDuration) ? clip.matchedDuration.toFixed(2)+' 秒 · 已匹配' : '';
         const detail=(match || duration)+(clip.sourceMuted ? ' · 已静音' : '');
-        label.append(name,el('span','sequence-clip-duration',detail));
+        const source=clip.sourceEdit?.asset ?? clip.asset;
+        const label=clipHeader(clip.asset.name,clip.asset.kind,source.duration,detail,clip.sourceMuted);
         b.replaceChildren(label);
-        b.title=clip.asset.name+' · '+(match ? detail : '候选时长 '+detail)+(clip.asset.kind==='video' ? ' · 原片 '+clip.asset.duration.toFixed(2)+' 秒' : '')+' · 拖至视频轨下方新建轨道，Alt＋上下键换轨，Alt＋左右键移动分镜中的候选';
+        const original=source.kind==='video' && Number.isFinite(source.duration) ? ' · 原片 '+source.duration.toFixed(2)+' 秒' : '';
+        b.title=clip.asset.name+original+' · 轨道占用 '+summary(span)+' · '+(match ? detail : '候选时长 '+detail)+' · 拖至视频轨下方新建轨道，Alt＋上下键换轨，Alt＋左右键移动分镜中的候选';
+        b.setAttribute('aria-label',b.title);
         b.setAttribute('aria-haspopup','menu');
         b.setAttribute('aria-keyshortcuts','Shift+F10 Control+C Control+V Alt+ArrowLeft Alt+ArrowRight Alt+ArrowUp Alt+ArrowDown');
         const frames=el('span','sequence-frames');
@@ -1024,9 +1058,11 @@ window.mountEditTimeline = function (host, ctx) {
       selection.bind(cell,asset,()=>ctx.removeMusic(asset));
       cell.ondblclick=()=>{if(ctx.busy()) return;const d=dialog('配乐 · '+asset.name);speedField(d,s.musicSpeed(asset),speed=>ctx.setMusicSpeed(asset,speed));d.wrapper.showModal();};
     }
-    if(s.selected?.videoSubtitles && s.shots.some((shot)=>shot.includes(s.selected))) {
-      const clip=s.selected, i=s.shots.findIndex((shot)=>shot.includes(clip));
-      const lane=row('视频字幕','sequence-caption','local-subtitles');
+    const localCaptionLane=s.shots.some(shot=>shot.some(clip=>clip.videoSubtitles))
+      ? row('视频字幕','sequence-caption','local-subtitles') : null;
+    const captionShot=localCaptionLane && s.selected?.videoSubtitles ? s.shots.findIndex(shot=>shot.includes(s.selected)) : -1;
+    if(captionShot>=0) {
+      const clip=s.selected, i=captionShot;
       const {ranges,rate}=pictureRanges(clip,i);
       let elapsed=0;
       for(const range of ranges) {
@@ -1037,7 +1073,7 @@ window.mountEditTimeline = function (host, ctx) {
           if(length>0) {
             const start=(clip.videoStart ?? shotTimes[i])+beginAt;
             reference(start,length,clip);
-            const cell=block(lane,start,length,cue.text,()=>{},'双击编辑字幕');
+            const cell=block(localCaptionLane,start,length,cue.text,()=>{},'双击编辑字幕');
             bindCopy(cell,'字幕',()=>({text:cue.text,highlights:structuredClone(cue.highlights),duration:Math.max(1,Math.round(length*1000))}));
             selection.bind(cell,cue,()=>{
               if(!clip.videoSubtitles) return;
@@ -1394,12 +1430,16 @@ window.mountEditTimeline = function (host, ctx) {
     ctx.scroll();
   }
   function scrubAt(x,viewport=host.getBoundingClientRect(),scroll=host.scrollLeft) {
-    draftTransport.stopForScrub();
     const origin=viewport.left+headWidth+host.clientLeft;
     const visibleX=Math.max(origin,Math.min(viewport.right,x));
     playTime=Math.max(0,Math.min(totalTime,(visibleX-origin+scroll)/timeScale));
     pastePosition=positionAt(playTime);
     syncCursor(scroll);
+    if(scrubWithDraftPlan) {
+      draftTransport.scrub(draftPlan,playTime);
+      return;
+    }
+    draftTransport.stopForScrub();
     if(ctx.seekComposition(playTime)) return;
     let index,clip,bestLane=Infinity;
     for(const [i,shot] of (lastState?.shots ?? []).entries()) {
@@ -1576,7 +1616,7 @@ window.mountEditTimeline = function (host, ctx) {
     const placement=el('div','candidate-slot candidate-new-placement');
     placement.style.width=drag.home.style.width;
     placement.append(drag.button.querySelector('.sequence-frames').cloneNode(true),
-      drag.button.querySelector('.sequence-clip-label').cloneNode(true));
+      drag.button.querySelector('.sequence-clip-header, .sequence-clip-label').cloneNode(true));
     drag.placement=placement;
     drag.newLane=newVideoLane(lane,reason && '视频轨已满',drag.owner);
     const bottom=host.parentElement.querySelector('#new-shot-drop');
@@ -1702,7 +1742,7 @@ window.mountEditTimeline = function (host, ctx) {
       if(free) {
         drag.placement.style.left=(slot.videoStart*timeScale)+'px';
         drag.placement.style.width=Math.max(2,slot.span*timeScale-2)+'px';
-        drag.placement.querySelector('.sequence-clip-duration').textContent=summary(slot.span);
+        if(drag.clip.asset.kind!=='video') drag.placement.querySelector('.sequence-clip-duration').textContent=summary(slot.span);
         if(drag.placement.parentElement!==slot.track) slot.track.append(drag.placement);
       } else if(slot.clip) {
         drag.vacancy=slotMarker(node);
@@ -1755,10 +1795,10 @@ window.mountEditTimeline = function (host, ctx) {
       const frames=el('span','sequence-frames'),image=el('img','sequence-thumb');
       image.src=material.thumbnail;image.alt='';frames.append(image);placement.append(frames);
     }
-    const label=el('span','sequence-clip-label'),duration=el('span','sequence-clip-duration');
-    label.append(el('span','sequence-clip-name',material.items[0].name),duration);
+    const item=material.items[0],source=item.clip?.sourceEdit?.asset ?? item.clip?.asset;
+    const label=clipHeader(item.name,item.kind,source?.duration ?? material.sourceDuration,'');
     placement.append(label);
-    libraryDrag={material,maxLanes,tracks,track,placement,duration};
+    libraryDrag={material,maxLanes,tracks,track,placement};
     return true;
   }
   function clearLibraryLane() {
@@ -1771,7 +1811,7 @@ window.mountEditTimeline = function (host, ctx) {
   }
   function previewLibrarySlot(place) {
     if(!libraryDrag) return;
-    const {placement,duration}=libraryDrag,slot=place?.videoSlot;
+    const {placement}=libraryDrag,slot=place?.videoSlot;
     if(!slot) {
       placement.remove();
       dropHint.textContent='';
@@ -1781,10 +1821,10 @@ window.mountEditTimeline = function (host, ctx) {
     const track=place.target.closest('.sequence-content');
     placement.style.left=slot.start*timeScale+'px';
     placement.style.width=Math.max(2,slot.span*timeScale-2)+'px';
-    duration.textContent=summary(slot.span);
+    if(libraryDrag.material.items[0].kind!=='video') placement.querySelector('.sequence-clip-duration').textContent=summary(slot.span);
     if(placement.parentElement!==track) track.append(placement);
     dropHint.dataset.newLane='';
-    dropHint.textContent='视频 '+(place.targetLane+1)+' · '+summary(slot.start)+' · 时长 '+duration.textContent;
+    dropHint.textContent='视频 '+(place.targetLane+1)+' · '+summary(slot.start)+' · 时长 '+summary(slot.span);
   }
   function materialVideoDrop(event,fromLibrary=false) {
     const track=event.target.closest('.sequence-video .sequence-content, .candidate-new-lane .sequence-content');
@@ -2170,8 +2210,9 @@ window.mountEditTimeline = function (host, ctx) {
     }
     if(lastState.selected!==clip && (clip?.videoSubtitles || lastState.selected?.videoSubtitles)) refresh();
   }
-  function refreshMonitoring() {
+  function refreshMonitoring(videoVisibility=false) {
     if(draftTransport.state()) draftTransport.updatePlan(draftPlan());
+    else if(videoVisibility) draftTransport.scrub(draftPlan,playTime);
   }
   return {refresh,refreshMonitoring,syncPlayer,selectClip,locateMaterial,editCaptions,openCardMatchMenu,openCandidateActions,materialVideoDrop,showLibraryLane,clearLibraryLane,previewLibrarySlot,removeSelected:selection.removeSelection,clearSelection:selection.clear,get selectionCount(){return selection.size;},
     get selectedCandidate(){return candidateSlots.get(selection.single())?.clip;},textSettings:()=>textSettings(ctx.state()),
