@@ -7,7 +7,7 @@ const os = require('node:os');
 const path = require('node:path');
 const { normalizeSourceEditRanges,prepareSourceEdit } = require('../src/source-edit.cjs');
 const { inspectAsset } = require('../src/media.cjs');
-const { ffmpeg } = require('./fixtures.cjs');
+const { ffmpeg, reversePhoneMovie } = require('./fixtures.cjs');
 
 test('normalizes source-relative effects and rejects invalid or oversized edits',()=>{
   const plain={start:0,end:1};
@@ -19,6 +19,23 @@ test('normalizes source-relative effects and rejects invalid or oversized edits'
   assert.throws(()=>normalizeSourceEditRanges([{start:.3,end:.31}],1));
   const intersection=[{start:.31,end:.39},{start:.70,end:.72}];
   assert.deepEqual(normalizeSourceEditRanges(intersection,1),intersection);
+});
+
+test('finishes reverse chunks when portrait MOV audio packets lead the video',async t=>{
+  const root=await fs.mkdtemp(path.join(os.tmpdir(),'jiajian-phone-reverse-'));
+  t.after(()=>fs.rm(root,{recursive:true,force:true}));
+  const asset=await inspectAsset(await reversePhoneMovie(root),'video');
+  const file=await prepareSourceEdit(asset,[{start:0,end:3.05,reverse:true}],path.join(root,'edits'),
+    {signal:AbortSignal.timeout(30000)});
+  const result=await inspectAsset(file,'video');
+  assert.deepEqual([result.width,result.height],[1080,1920]);
+  assert.ok(Math.abs(result.duration-3.05)<1/asset.fps);
+  for (const [time,hz] of [[.3,880],[1.5,660],[2.7,440]]) {
+    const pcm=await ffmpeg(['-ss',String(time),'-i',file,'-vn','-t','0.1','-ac','1','-ar','8000','-f','s16le','pipe:1']);
+    let crossings=0;
+    for (let i=2;i<pcm.length;i+=2) if (pcm.readInt16LE(i-2)<0 && pcm.readInt16LE(i)>=0) crossings++;
+    assert.ok(Math.abs(crossings*16000/pcm.length-hz)<25,'原声应与倒放画面一致 '+time);
+  }
 });
 
 test('renders bounded reverse chunks, original audio, normalized crop, mirror and clockwise rotation',async t=>{

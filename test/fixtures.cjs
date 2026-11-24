@@ -31,4 +31,17 @@ async function fixtures(directory) {
   return { red, blue, green, music, otherMusic, still };
 }
 
-module.exports = { ffmpeg, fixtures };
+async function reversePhoneMovie(directory) {
+  const file = path.join(directory, '手机竖屏三色原声.mov');
+  const colors = "color=red:s=1080x1920:r=109800/1831,drawbox=c=lime:t=fill:enable='between(t,1,2)',"
+    + "drawbox=c=blue:t=fill:enable='gte(t,2)'";
+  // Like an iPhone MOV, lay the audio packets ahead of video packets in the container.
+  // The portrait frame size also forces reverse to seek and render several chunks.
+  await ffmpeg(['-f','lavfi','-i',colors,'-f','lavfi','-i',
+    'aevalsrc=0.2*sin(2*PI*(440*t+220*max(0\\,t-1)+220*max(0\\,t-2))):s=44100',
+    '-t','3.051667','-c:v','libx264','-threads','2','-preset','ultrafast','-c:a','aac',
+    '-video_track_timescale','109800','-audio_preload','1000000',file]);
+  return file;
+}
+
+module.exports = { ffmpeg, fixtures, reversePhoneMovie };

@@ -186,7 +186,8 @@
         mountMonitor: options.mountMonitor,
         previewProxy: options.previewProxy,
         retimedPreview: options.retimedPreview,
-        commit: options.createCommit?.(clip, isCurrent) ?? ((ranges, speed, autoFit) => options.commitRanges(clip, ranges, isCurrent, speed, autoFit)),
+        commit: options.createCommit?.(clip, isCurrent) ?? ((ranges, speed, autoFit, signal) =>
+          options.commitRanges(clip, ranges, () => isCurrent() && !signal?.aborted, speed, autoFit)),
         prepareSourceEdit: options.prepareSourceEdit,
         close: () => {
           close();

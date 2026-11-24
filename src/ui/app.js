@@ -5531,7 +5531,7 @@ function createSourceCommit(clip, sessionActive) {
         JSON.stringify(serializeClip(clip)) !== original)
       throw Error('片段、轨道或工程状态已变化，请重新打开片段剪辑。');
   }
-  return async (ranges, speed = clip.speed ?? 1, autoFitSpeed = false) => {
+  return async (ranges, speed = clip.speed ?? 1, autoFitSpeed = false, signal) => {
     check();
     if (!Number.isFinite(speed) || speed < window.minVideoSpeed || speed > Number.MAX_SAFE_INTEGER)
       throw Error('片段播放速度无效，请重新选择倍速。');
@@ -5552,6 +5552,8 @@ function createSourceCommit(clip, sessionActive) {
     const render = ranges.some(r => r.reverse || r.mirror || r.rotation || r.crop || r.end-r.start < .1-1e-7);
     const nextEdit = render ? {asset:source, ranges} : undefined;
     const prepared = render ? await api.prepareSourceEdit(source.id,ranges) : undefined;
+    // A cancelled apply can finish while the same editor already has a new draft.
+    signal?.throwIfAborted();
     check();
     const start = render ? 0 : Math.min(...ranges.map(r => r.start));
     const end = render ? Math.min(prepared.duration,sourceEditSpans(nextEdit).at(-1).to) : Math.max(...ranges.map(r => r.end));

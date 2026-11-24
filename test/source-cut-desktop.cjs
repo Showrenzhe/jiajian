@@ -11,7 +11,7 @@ const { launchDesktop } = require('../src/desktop.cjs');
 const { saveProject, readProject, loadProject } = require('../src/project-format.cjs');
 const { inspectAsset } = require('../src/media.cjs');
 const { clickVisible, dragLibraryItem } = require('./desktop-input.cjs');
-const { ffmpeg } = require('./fixtures.cjs');
+const { ffmpeg, reversePhoneMovie } = require('./fixtures.cjs');
 
 app.disableHardwareAcceleration();
 
@@ -687,6 +687,42 @@ async function check() {
     await expectFrame('.video-cut-preview video',1);
     await click(tool('cancel'));
     console.log('真实时间线双击、拖动、前后修剪、局部与工程撤销、同源实例、倒放预览和两次工程重开后的画面与原声导出均通过。');
+
+    const phone=await inspectAsset(await reversePhoneMovie(directory),'video');
+    const slot=1.933, sourceEnd=3.05;
+    openFile=path.join(directory,'竖屏倒放.sdworkbench');
+    await saveProject(openFile,{ratio:'9:16',resolution:720,fps:30,fit:'fit',keepAudio:true,unordered:false,
+      useOriginal:true,useMirrors:false,musicVolume:50,musicIds:[],count:1,priority:'picture',shotSettings:[{duration:slot}],
+      shots:[[{id:'phone',start:0,end:sourceEnd,autoFitSpeed:true,speed:sourceEnd/slot,
+        videoStart:0,videoDuration:slot,videoFit:'hold'}]]},new Map([['phone',phone]]));
+    await click('#open-project');
+    await wait(q('#notice')+'.textContent.includes("已打开工程：竖屏倒放")','打开竖屏手机素材工程');
+    await dblclick(mainClip(0));
+    await click(tool('reverse'));
+    await click(tool('apply'));
+    await wait(q(tool('cancel'))+'?.textContent.includes("取消应用")','倒放应用中提供取消');
+    await click(tool('cancel'));
+    await wait(q(tool('reverse'))+'.getAttribute("aria-pressed")==="true" && document.activeElement==='+q(tool('apply')),
+      '取消后保留倒放选择并可立即重试');
+    await click(tool('apply'));
+    await wait('!'+q(monitor),'倒放应用完成并返回轨道预览',30000);
+    await scrubColors([[.12,2],[.50,1],[.88,0]]);
+    const appliedPhone=(await save('竖屏倒放已应用')).shots[0][0];
+    assert.deepEqual(appliedPhone.sourceEdit.ranges,[{start:0,end:sourceEnd,reverse:true}]);
+    assert.equal(appliedPhone.autoFitSpeed,true);
+    assert.ok(Math.abs(appliedPhone.videoDuration-slot)<.001 && Math.abs(appliedPhone.speed-sourceEnd/slot)<.003,
+      '倒放应保留约 1.578 倍速和 1.933 秒的分镜时窗');
+    openFile=saveFile;
+    await click('#open-project');
+    await wait(q('#notice')+'.textContent.includes("已打开工程：竖屏倒放已应用")','重开倒放工程');
+    assert.ok(Math.abs(Number(await read(q(mainClip(0))+'.dataset.timelineDuration'))-slot)<.001);
+    await scrubColors([[.12,2],[.50,1],[.88,0]]);
+    await scrubColors([[.08,2]]);
+    await click('#player-play');
+    await expectFrame('.preview-stage',1);
+    await expectFrame('.preview-stage',0);
+    await wait(q('#player-play')+'.ariaPressed==="false"','倒放分镜连续播放至尾部');
+    console.log('竖屏 MOV 自动适配、取消并重新应用倒放、主预览定位与连续播放蓝绿红画面及保存重开通过。');
   } finally { wc.debugger.detach(); win.destroy(); }
 }
 
