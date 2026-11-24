@@ -1449,18 +1449,18 @@ function renderMaterials() {
   if (hiddenFolder !== -1) materialFolderPath.splice(hiddenFolder);
   const folder = currentLibraryFolder();
   const organization = folderTree.rows.get(folder?.id);
+  // Older projects and direct track imports can introduce a source through its first placement.
   for (const shot of shots) {
     for (const clip of shot) {
       const source = originalMaterial(clip);
-      const { id, name, kind, sourceKey } = source;
-      if (excluded.has(sourceKey)) continue;
-      if (!catalog.has(id)) catalog.set(id, { id, name, kind, sourceKey, clip:clip.sourceEdit ? candidate(source) : clip });
-      bin.ids.add(id);
+      if (excluded.has(source.sourceKey)) continue;
+      if (!editAssets.has(source.id)) editAssets.set(source.id, source);
+      bin.ids.add(source.id);
     }
   }
   for (const id of bin.ids) {
     const asset=editAssets.get(id);
-    if (asset && !catalog.has(id)) catalog.set(id, {id,name:asset.name,kind:asset.kind,sourceKey:asset.sourceKey,clip:candidate(asset)});
+    if (asset) catalog.set(id, {id,name:asset.name,kind:asset.kind,sourceKey:asset.sourceKey,clip:candidate(asset)});
   }
   for(const [id,entry] of materialAliases)if(!catalog.has(id)&&editAssets.has(id))catalog.set(id,{...entry,clip:candidate(editAssets.get(id))});
   for (const [id, item] of selectedMaterials) {
@@ -2305,12 +2305,18 @@ function availableVideoSlots(shot,count,targetLane,videoSlot) {
   return slots;
 }
 
+function focusPlacedClip(clip) {
+  if ($('#timeline-view').value === 'cards') clipRows.get(clip)?.focus();
+  else timeline.focusCandidate(clip);
+}
+
 async function addLibraryMaterials(items, shot, targetIndex, targetLane, videoSlot, droppedOnShot=false) {
   if (operation || mode !== 'montage' || !items.length || (shot ? shot.length >= maxCandidates : shots.length >= maxShots)) return;
   operation = 'import';
   materialPreviewRequest += 1;
   say('');
   const slowImport = setTimeout(() => updateControls(), 180);
+  let placed;
   try {
     const resolved = await Promise.allSettled(items.map(async (item) => item.clip?.asset ?? await api.loadMaterialFile(item.id)));
     const clips = resolved.map((result, index) => {
@@ -2350,6 +2356,7 @@ async function addLibraryMaterials(items, shot, targetIndex, targetLane, videoSl
     for (const { id } of items) selectedMaterials.delete(id);
     activateTimelineTab($('#timeline-tracks-tab'));
     preview(clips[0], '轨道预览', items[0].id);
+    placed = clips[0];
   } catch (error) {
     say(error.message);
   } finally {
@@ -2357,6 +2364,7 @@ async function addLibraryMaterials(items, shot, targetIndex, targetLane, videoSl
     operation = '';
     renderLists();
   }
+  if (placed) focusPlacedClip(placed);
 }
 
 function chooseMaterialTarget(items) {
@@ -4864,6 +4872,7 @@ async function importDroppedMaterials(files, place) {
   operation = 'import';
   updateControls();
   const library = !place;
+  const added = [];
   if (library) materialMessage('正在导入素材…');
   try {
     const destination = library ? 'library' : place.audioRole ? 'audio' : 'visual';
@@ -4877,7 +4886,6 @@ async function importDroppedMaterials(files, place) {
       materialBrowseRequest++;
       $('#material-search').value = '';
     }
-    const added = [];
     let audioTrack = place?.track;
     for (const asset of assets) {
       if (materialAliases.has(asset.id)) asset.name = materialAliases.get(asset.id).name;
@@ -4928,6 +4936,7 @@ async function importDroppedMaterials(files, place) {
     if (library) { renderMaterials(); updateControls(); }
     else renderLists();
   }
+  if (added.length) focusPlacedClip(added[0]);
 }
 
 materialPanel.addEventListener('dragover', (event) => {
@@ -5763,16 +5772,38 @@ function toggleTimelinePlayback() {
 $('#timeline-play').addEventListener('click',()=>void toggleTimelinePlayback());
 player.addEventListener('play',()=>{if(!player.paused) timeline?.stopDraftPlayback();syncTimelinePlayButton();});
 player.addEventListener('pause',syncTimelinePlayButton);
-const timelineKeys=$('#timeline-tracks-panel');
-timelineKeys.addEventListener('keydown',(event)=>{
-  if(event.key!==' ' || mode!=='montage' || event.defaultPrevented || event.isComposing || event.altKey || event.ctrlKey || event.metaKey || event.shiftKey ||
-      event.target.isContentEditable || event.target.closest('input,textarea,select,[role="textbox"],[role="separator"],dialog,#timeline-cut-editor,.track-toolbar') ||
-      (event.target.closest('button,a') && !event.target.closest('#timeline-clock .sequence-block')) ||
-      document.querySelector('dialog[open], :popover-open, .app-frame[data-navigation="floating"]')) return;
+const editorWorkspace = $('#editor-workspace');
+let pointerActivatedControl = false, playbackSpaceHeld = false;
+// Track the input method because a track command can rebuild and refocus its button.
+document.addEventListener('pointerdown', ({target, button}) => {
+  const control = target.closest('label')?.control ?? target.closest('button, input, [role="tab"]');
+  pointerActivatedControl = button === 0 && editorWorkspace.contains(control)
+    && control.matches('button, input[type="checkbox"], input[type="radio"], [role="tab"]');
+}, true);
+document.addEventListener('keydown', event => {
+  if (event.key !== ' ') pointerActivatedControl = false;
+}, true);
+document.addEventListener('keydown', event => {
+  const target = event.target;
+  if (event.key !== ' ' || mode !== 'montage' || event.defaultPrevented || event.isComposing || event.altKey || event.ctrlKey || event.metaKey || event.shiftKey
+    || (target !== document.body && !editorWorkspace.contains(target)) || target.isContentEditable
+    || target.closest('textarea, select, [role="textbox"], input:not([type="checkbox"]):not([type="radio"])')
+    || (!pointerActivatedControl && target.closest('button, input, [role="tab"]') && !target.closest('#timeline-clock .sequence-block'))
+    || target.closest('a, [role="separator"], dialog, audio[controls], video[controls], .material-tile')
+    || document.querySelector('dialog[open], :popover-open:not(#player-pane):not(#player-more-menu), .app-frame[data-navigation="floating"]')) return;
   event.preventDefault();
-  event.stopPropagation();
-  if(!event.repeat) void toggleTimelinePlayback();
+  playbackSpaceHeld = true;
+  if (event.repeat || operation) return;
+  if (target.closest('#timeline-cut-editor') && cutEditor.toggleLocalPlayback()) return;
+  if (!playerTools.monitoringCut && target.closest('#timeline-tracks-panel, .track-toolbar, #timeline-view-actions')) toggleTimelinePlayback();
+  else void playerTools.togglePlay();
 });
+document.addEventListener('keyup', event => {
+  if (event.key !== ' ' || !playbackSpaceHeld) return;
+  playbackSpaceHeld = false;
+  event.preventDefault();
+});
+window.addEventListener('blur', () => { pointerActivatedControl = false; playbackSpaceHeld = false; });
 $('#timeline-clock').addEventListener('pointerdown',(event)=>{
   if(event.button===0 && !event.target.closest('button,input,select,textarea')) $('#timeline-clock').focus({preventScroll:true});
 },true);
