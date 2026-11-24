@@ -8,7 +8,7 @@ const { createInterface } = require('node:readline');
 const { promisify } = require('node:util');
 const { formatSubtitles, normalizeSubtitles, parseSubtitles } = require('./subtitles.cjs');
 const { normalizeShotSettings, normalizeRanges, normalizeSegmentVoiceCuts, sliceSource } = require('./shot-timing.cjs');
-const { candidateVideoLanes, pictureSpan, usesPlacedVideoSource, soloLaneSequence, joinedVideoSequence, videoGroupLeaders, normalizeVideoGaps, placedVideoSpeed, minVideoSpeed } = require('./ui/track-tools.js');
+const { candidateVideoLanes, pictureSpan, emptyVideoCells, usesPlacedVideoSource, soloLaneSequence, joinedVideoSequence, videoGroupLeaders, normalizeVideoGaps, placedVideoSpeed, minVideoSpeed } = require('./ui/track-tools.js');
 const trackControls = require('./ui/track-controls.js');
 const { preferSolo } = trackControls;
 const { normalizeCover, selectCover, publishCover } = require('./cover.cjs');
@@ -488,6 +488,112 @@ function visualPool(shot, selected) {
   return [selected, ...shot.filter((candidate) => candidate !== selected && candidate.mirror === selected.mirror)];
 }
 
+// Placements are saved on the editor's untrimmed narration ruler. A generated
+// take can shorten its seams or reorder its shots while leaving free clips fixed.
+function editorSpeechWindows(shots, segmented, fps) {
+  const firstRows = segmented.groups.map(() => 0);
+  let originalStart = 0;
+  return shots.map(([picture], index) => {
+    const voice = segmented.pick(firstRows, index);
+    const originalSpan = voice ? (voice.offset ?? 0) + voiceLength({
+      narration: voice.asset, narrationRanges: voice.ranges, narrationSpeed: voice.speed,
+    }) : withOutputFrames(picture, picture.shotDuration ?? picture.duration, fps).outputDuration;
+    const window = { originalStart, originalSpan };
+    originalStart += originalSpan;
+    return window;
+  });
+}
+
+function speechPlacementClocks(clips, windows, fps) {
+  const clocks = new Map();
+  let frame = 0;
+  for (const clip of clips) {
+    clocks.set(clip.shotIndex, { ...windows[clip.shotIndex], start: frame / fps, span: clip.outputFrames / fps });
+    frame += clip.outputFrames;
+  }
+  return clocks;
+}
+
+function alignSpeechPlacement(source, clock, fps) {
+  if (!clock || source.videoStart === undefined || source.videoFollowsShot === false) return source;
+  const offset = source.videoStart - clock.originalStart;
+  const window = source.videoWindow ?? source.videoDuration;
+  const sameFrame = (a,b) => Math.round(a * fps) === Math.round(b * fps);
+  const fillsShot = window !== undefined && sameFrame(source.videoStart, clock.originalStart)
+    && sameFrame(source.videoStart + window, clock.originalStart + clock.originalSpan);
+  // Older drafts may omit the binding flag. The entire fitted shot window is
+  // identifiable by both endpoints; older automatic fits also follow within it.
+  const follows = source.videoFollowsShot ?? (source.autoFitSpeed && offset >= -1e-7 && offset < clock.originalSpan - 1e-7);
+  if (!follows && !(source.videoFit === 'hold' && fillsShot)) return source;
+  const result = { ...source, videoStart: Math.max(0, clock.start + (fillsShot ? 0 : offset)) };
+  if (fillsShot && clock.span > 0) {
+    if (source.videoWindow !== undefined) result.videoWindow = clock.span;
+    else result.videoDuration = clock.span;
+    if (source.autoFitSpeed && source.asset.kind === 'video') {
+      result.speed = source.sourceDuration / clock.span;
+      result.duration = clock.span;
+    }
+  }
+  return result;
+}
+
+// A fixed candidate can play in another shot and still win its owner's draw.
+// Keep that placement and use an eligible sibling beneath the owner's uncovered frames.
+function completeDisplacedShots(clips, sourceShots, indices, placementClocks, fps) {
+  if (!clips.some(clip => clip.videoStart !== undefined && clip.videoFollowsShot !== true)) return clips;
+  const frame = seconds => Math.round(seconds * fps);
+  const occupied = [];
+  const displaced = [];
+  function reserve(start, end) {
+    const first = frame(start);
+    if (frame(end) > first) occupied.push({ start:first, span:frame(end)-first });
+  }
+  let time = 0;
+  for (const clip of clips) {
+    const span = clip.outputDuration ?? clip.duration;
+    const at = clip.videoStart ?? time;
+    const end = at + pictureSpan(clip, span);
+    if (!clip.hiddenVideo) reserve(at,end);
+    for (const gap of clip.videoGaps ?? []) reserve(gap.start,gap.start + gap.span);
+    const clock = placementClocks?.get(clip.shotIndex);
+    const ownerStart = clock?.originalStart ?? time;
+    const ownerSpan = clock?.originalSpan ?? span;
+    const selected = sourceShots[clip.shotIndex][indices[clip.shotIndex]];
+    const fixedStart = selected.videoStart;
+    if (span > 0 && fixedStart !== undefined && selected.videoFollowsShot !== true && !clip.hiddenVideo
+        && (frame(fixedStart + pictureSpan(selected,ownerSpan)) <= frame(ownerStart) || frame(fixedStart) >= frame(ownerStart + ownerSpan))) {
+      displaced.push({ clip, clock, start:frame(time), end:frame(time + span), visibleSpans:[] });
+    }
+    time += span;
+  }
+  if (!displaced.length) return clips;
+  const gaps = emptyVideoCells(occupied, displaced.map(slot => slot.start), displaced.map(slot => slot.end-slot.start));
+  for (const gap of gaps) {
+    const slot = displaced[gap.index];
+    slot.visibleSpans.push({ start:(gap.start-slot.start)/fps, end:(gap.start+gap.span-slot.start)/fps });
+  }
+  const extra = [];
+  for (const { clip, clock, start, end, visibleSpans } of displaced) {
+    if (!visibleSpans.length) continue;
+
+    const seconds = (end-start)/fps;
+    for (const source of sourceShots[clip.shotIndex]) {
+      if (source.mirror !== clip.mirror || source.hiddenVideo || source.videoGroup || source.videoGaps?.length) continue;
+      const candidate = alignSpeechPlacement(source,clock,fps);
+      const first = candidate.videoStart ?? start/fps;
+      // A partial or separately positioned edit does not offer a whole-shot replacement.
+      if (frame(first) !== start || frame(first + pictureSpan(candidate,seconds)) < end) continue;
+      const picture = { ...candidate, volume:0, layers:undefined };
+      const tempo = picture.videoFit === 'hold' ? 1 : Math.max(1,picture.duration/seconds);
+      const { visuals } = fitVisuals(picture,pieces(picture),tempo,end-start,fps);
+      extra.push({ ...picture, shotIndex:clip.shotIndex, videoStart:start/fps, videoWindow:undefined, videoDuration:seconds,
+        videoFit:'hold', visibleSpans, visuals, outputFrames:0, outputDuration:0, timelineDuration:0 });
+      break;
+    }
+  }
+  return clips.concat(extra);
+}
+
 function planMontage(config, catalog, random = Math.random, batchLimit = maxMontageBatch) {
   const checkLayerAsset = (id, kind) => {
     const expected = kind === 'sound' ? ['audio'] : kind === 'lut' ? ['lut'] : kind === 'sticker' ? ['image'] : ['image', 'video'];
@@ -546,6 +652,8 @@ function planMontage(config, catalog, random = Math.random, batchLimit = maxMont
       const laneKey = 'vis'+layers.videoLane;
       if (!visible(laneKey)) layers.hiddenVideo = true;
       if (clip.videoStart !== undefined) layers.videoStart = requireNumber(clip.videoStart, 0, Number.MAX_SAFE_INTEGER, '视频片段的时间轴落点');
+      if (clip.videoFollowsShot !== undefined) layers.videoFollowsShot = clip.videoFollowsShot;
+      if (clip.autoFitSpeed) layers.autoFitSpeed = true;
       if (clip.videoDuration !== undefined) layers.videoDuration = requireNumber(clip.videoDuration, Number.MIN_VALUE, Number.MAX_SAFE_INTEGER, '视频片段的时间轴裁切时长');
       if (clip.videoFit !== undefined) {
         if (clip.videoFit !== 'hold' || layers.videoStart === undefined || layers.videoDuration === undefined) throw new Error('视频片段的切点窗口无效。');
@@ -642,6 +750,7 @@ function planMontage(config, catalog, random = Math.random, batchLimit = maxMont
   const narrationVolume = config.narrationVolume === undefined ? 1 : requireNumber(config.narrationVolume, 0, 100, '口播音量') / 100;
   const priority = config.priority === undefined ? 'picture' : config.priority;
   if (!['picture', 'voice'].includes(priority)) throw new Error('请选择有效的混剪合成模式。');
+  const editorWindows = segmented && priority === 'voice' ? editorSpeechWindows(shots, segmented, config.fps) : null;
 
   const effectUseCounts = new Map();
   const gains = new Map(normalizeVolumeOverrides(config.volumeOverrides??[],(id)=>{requireAsset(catalog,id,'audio');return id;},shots.length)
@@ -738,6 +847,7 @@ function planMontage(config, catalog, random = Math.random, batchLimit = maxMont
     }
     // Only the primary clip owns the shot clock and its narration. Additional
     // pictures on a soloed lane carry just their own source sound and edits.
+    const placementClocks = editorWindows ? speechPlacementClocks(clips,editorWindows,config.fps) : null;
     const extraPictures=[];
     clips = clips.map(clip=>{
       const pool=allSourcePictures[clip.shotIndex];
@@ -745,19 +855,23 @@ function planMontage(config, catalog, random = Math.random, batchLimit = maxMont
       const shotSpan=clip.outputDuration || clip.shotDuration || clip.duration;
       const soloSequence=soloLaneSequence(pool,full,controls,shotSpan);
       const sequence=soloSequence.length ? soloSequence : joinedVideoSequence(pool,full);
+      const clock = placementClocks?.get(clip.shotIndex);
+      clip = alignSpeechPlacement(clip,clock,config.fps);
       const fillWindow=clip.videoWindow!==undefined && clip.outputDuration<clip.videoWindow-1e-7;
       if(!sequence.length && clip.videoFit!=='hold' && !fillWindow && !(clip.videoGaps?.length && clip.outputDuration===0)) return clip;
       function fitPicture(source,owner) {
+        source = alignSpeechPlacement(source,clock,config.fps);
         const videoDuration=pictureSpan(source,shotSpan);
         const {outputFrames}=withOutputFrames(source,videoDuration,config.fps);
         const {visuals}=fitVisuals(source,pieces(source),1,outputFrames,config.fps);
-        return {...owner,videoFit:'hold',videoDuration,visuals};
+        return {...owner,...(source.videoStart !== undefined && {videoStart:source.videoStart}),videoFit:'hold',videoDuration,visuals};
       }
       for(const other of sequence) {
         if(other!==full) extraPictures.push(fitPicture(other,{...other,shotIndex:clip.shotIndex,outputFrames:0,outputDuration:0,timelineDuration:0}));
       }
       return clip.videoFit==='hold' || soloSequence.length || fillWindow || clip.outputDuration===0 ? fitPicture(full,clip) : clip;
     }).concat(extraPictures);
+    clips = completeDisplacedShots(clips,fullSourceShots,indices,placementClocks,config.fps);
     clips = chooseLooks(clips,catalog,random,effectUseCounts);
     const pictureDuration = frameAligned ? clips.reduce((frames, clip) => frames + clip.outputFrames, 0) / config.fps : baseDuration;
     const sourceVisualDuration = segmented || voicePriority ? baseDuration : pictureDuration;
@@ -1067,8 +1181,18 @@ function montageArgs(plan, { intermediate = false } = {}) {
       const intervals = visibleSpans ? visibleSpans.filter(range=>range.start<span) : [{start:0,end:span}];
       if (hidden || !intervals.length) filters.push(video+'nullsink');
       else {
-        const active = intervals.map(range=>`gte(t,${time(start+range.start)})*lt(t,${time(start+Math.min(span,range.end))})`).join('+');
-        const position=row.hold ? `settb=1/${fps},setpts=N+${Math.ceil(start*fps-1e-7)}` : `setpts=PTS-STARTPTS+${time(start)}/TB`;
+        // Use the same output-frame boundary for the source PTS and the overlay gate.
+        // Decimal seconds can otherwise round in opposite directions at a shared cut.
+        const firstFrame = Math.round(start * fps);
+        const active = intervals.map(range => {
+          const begin = Math.round((start + range.start) * fps);
+          const until = start + Math.min(span, range.end);
+          // The canvas includes its final partial frame. Keep a picture that
+          // reaches the actual end visible throughout that frame as well.
+          const end = Math.abs(until - duration) < 1e-7 ? Math.ceil(until * fps - 1e-7) : Math.round(until * fps);
+          return `gte(n,${begin})*lt(n,${end})`;
+        }).join('+');
+        const position = `settb=1/${fps},setpts=N+${firstFrame}`;
         filters.push(`${video}${position}[placed${index}]`,
           `${canvas}[placed${index}]overlay=eof_action=${row.hold?'repeat:repeatlast=1':'pass:repeatlast=0'}:enable='${active}'[placedCanvas${index}]`);
         canvas = `[placedCanvas${index}]`;
