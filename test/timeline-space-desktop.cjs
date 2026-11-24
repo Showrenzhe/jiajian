@@ -80,14 +80,16 @@ async function check() {
       + "cells:Array.from(document.querySelectorAll('.sequence-video [data-drop-shot]'),e=>e.dataset.candidateIndex),priority:document.getElementById('priority').value,time:" + time + ',previewTime:' + preview + '.currentTime})');
     throw new Error(message + ' ' + JSON.stringify(info));
   }
-  async function click(selector, offset) {
+  async function click(selector, offset, clicks = 1) {
     const point = await read('(() => {const e=' + q(selector) + ';e.scrollIntoView({block:"nearest",inline:"nearest"});'
       + 'const r=e.getBoundingClientRect(), x=r.left+' + (offset || 'r.width*.5') + ',y=r.top+r.height*.45;'
       + 'return {x,y,hit:e.contains(document.elementFromPoint(x,y))};})()');
     assert.ok(point.hit, selector + ' 可点击');
-    for (const type of ['mousePressed', 'mouseReleased']) {
-      await send('dispatchMouseEvent', { type, x: point.x, y: point.y, button: 'left',
-        buttons: type === 'mousePressed' ? 1 : 0, clickCount: 1 });
+    for (let clickCount = 1; clickCount <= clicks; clickCount++) {
+      for (const type of ['mousePressed', 'mouseReleased']) {
+        await send('dispatchMouseEvent', { type, x: point.x, y: point.y, button: 'left',
+          buttons: type === 'mousePressed' ? 1 : 0, clickCount });
+      }
     }
   }
   async function seek(seconds) {
@@ -124,12 +126,50 @@ async function check() {
     assert.ok(Math.abs(await read(time) - before) < .04, '编辑文字时不移动时间线播放头');
     assert.ok(await read(preview + '.paused && !(' + live + ' && !' + live + '.paused)'), '编辑文字时不播放');
   }
+  async function checkControlSpace(selector, property, clickTarget = selector) {
+    const state = q(selector) + '.' + property;
+    const original = await read(state);
+    await click(clickTarget);
+    const clicked = await read(state);
+    assert.notEqual(clicked, original, '鼠标点击应切换按钮状态');
+    assert.ok(await read('document.activeElement===' + q(selector)), '鼠标点击后焦点应在该按钮上');
+    await space(true);
+    assert.equal(await read(state), clicked, '长按空格到松开后应保留按钮状态 ' + selector);
+    await wait('!!' + live + ' && !' + live + '.paused && ' + time + '>.15', '操作 ' + selector + ' 后空格应启动时间线播放');
+    await space();
+    await wait(live + '.paused', '再次按空格应暂停时间线');
+    assert.equal(await read(state), clicked, '暂停不应更改按钮状态 ' + selector);
+    await click(clickTarget);
+    assert.equal(await read(state), original, '再次点击应恢复按钮状态');
+  }
+  async function tabBackTo(selector) {
+    for (const modifiers of [8, 0]) {
+      const tab = {key:'Tab', code:'Tab', windowsVirtualKeyCode:9, modifiers};
+      await send('dispatchKeyEvent', {...tab, type:'keyDown'});
+      await send('dispatchKeyEvent', {...tab, type:'keyUp'});
+    }
+    await wait('document.activeElement===' + q(selector), 'Tab 应回到 ' + selector);
+  }
   try {
     await read(q('#home-open-project') + '.click()');
     await wait('!!' + q(videoCell), '打开双分镜工程');
     await click(videoCell);
     const duration = q('#player-duration') + '.textContent';
     await wait(duration + '==="00:00:01:15"', '单条 1.5 秒素材应按 30 fps 显示总帧码');
+    const trackMute = '[data-control-key="vis0"] [data-track-action="muted"]';
+    await read('window.originalMuteButton=' + q(trackMute) + '; void 0');
+    await checkControlSpace(trackMute, 'ariaPressed');
+    assert.ok(await read('!window.originalMuteButton.isConnected'), '鼠标点击后空格应能处理重绘替换的静音按钮');
+    await checkControlSpace('.sequence-video .track-kind', 'ariaExpanded');
+    await checkControlSpace('#keep-audio', 'checked', 'label:has(> #keep-audio)');
+    await tabBackTo('#keep-audio');
+    const keepAudio = q('#keep-audio');
+    const stopped = '!(' + live + ' && !' + live + '.paused)';
+    await space();
+    assert.ok(await read('!' + keepAudio + '.checked && ' + stopped), '键盘导航到开关时，空格仍可切换开关');
+    await space();
+    assert.ok(await read(keepAudio + '.checked && ' + stopped), '键盘可恢复原声并保持暂停');
+    await seek(.08);
     await click('#player-play');
     const meter = 'Array.from(document.querySelectorAll(".stereo-meter i"),e=>Number(e.dataset.level))';
     await wait('!!' + live + ' && !' + live + '.paused && ' + meter + '.every(v=>v>0)', '中央播放按钮应播放轨道混音，左右电平随红色素材原声点亮');
@@ -181,6 +221,17 @@ async function check() {
     await wait(live + '.paused', '播放器中央按钮应暂停时间线正在播出的画面');
     await click('#material-search');
     await ensurePaused('#material-search', '');
+    await click(videoCell, 'r.width*.35', 2);
+    const cutPreview = '#player-pane[data-cut-monitor] .video-cut-preview';
+    const cutVideo = q(cutPreview + ' video');
+    await wait('!!' + cutVideo + ' && ' + cutVideo + '.readyState>=2', '双击片段应进入原片剪辑');
+    await click(cutPreview);
+    await space();
+    await wait('!' + cutVideo + '.paused && ' + cutVideo + '.currentTime>.05', '剪辑预览上的空格应播放当前片段');
+    assert.ok(await read('!(' + live + ' && !' + live + '.paused)'), '片段播放独立于时间线播放');
+    await space();
+    await wait(cutVideo + '.paused', '再次按空格应暂停片段');
+    await click('#timeline-cut-editor [data-action="cancel"]');
     await read(q('#open-project') + '.click()');
     const textLayer = '.sequence-layer.kind-text .sequence-block';
     await wait('!!' + q(textLayer), '打开带全局文字包装的工程');
@@ -219,8 +270,17 @@ async function check() {
     await wait(meter+'.every(v=>v===0) && '+live+' && !'+live+'.paused','配乐静音后，播放继续而电平归零');
     await click(mute);
     await wait(meter+'[1]>0','解除静音后电平随声恢复');
+    await click('#player-play');
+    await wait(live+'.paused','验证键盘命令前应暂停时间线');
+    await read(q('#add-shot')+'.focus()');
+    await tabBackTo('#add-shot');
+    const candidateButtons = 'document.querySelectorAll(".add-candidate").length';
+    const beforeAdd = await read(candidateButtons);
+    await space();
+    await wait(candidateButtons+'==='+ (beforeAdd + 1), 'Tab 到新增分镜后空格应执行一次新增命令');
+    assert.ok(await read(stopped), '键盘激活新增分镜时应保持暂停');
     assert.deepEqual(projects, []);
-    console.log('时间线播放、左右声道电平、独立配乐轨静音与恢复、跨分镜、定位、暂停续播和文本输入均已通过。');
+    console.log('轨头静音与折叠、检查器开关、时间线与片段空格播停、文本输入、跨分镜、电平与配乐静音恢复均已通过。');
   } finally {
     win.webContents.debugger.detach();
     win.destroy();

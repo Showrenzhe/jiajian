@@ -111,6 +111,15 @@
         video.onloadedmetadata = () => { video.currentTime = t; };
       }
     }
+    function toggleLocalPlayback() {
+      const view = current;
+      if (!view || view.mode === 'cut') return false;
+      if (view.video.paused) view.video.play().catch(error => {
+        if (current === view && error.name !== 'AbortError') status(error.message);
+      });
+      else view.video.pause();
+      return true;
+    }
     function point() { return round(Number(current.position.value)); }
     function cutAt() {
       const s = current;
@@ -359,6 +368,10 @@
       status('片段可拖入分镜，或选择目标后加入。'); renderScenes();
       return true;
     }
+    host.addEventListener('click', event => {
+      // Selecting a range or scene rebuilds its button. Keep shortcuts on this editor.
+      if (current && !event.target.isConnected && document.activeElement === document.body) host.focus({preventScroll:true});
+    });
     host.addEventListener('keydown', (event) => {
       if (!current || current.mode === 'cut' || event.target.closest('input, select, textarea')) return;
       if (event.key === 'Delete') { event.preventDefault(); event.stopPropagation(); if (current.mode === 'scene') deletePoint(); else removeCut(); }
@@ -370,7 +383,7 @@
       event.preventDefault();
       if (current?.mode === 'scene') close(); else openScenes(lastScene);
     });
-    return { openCut, openVoice, openScenes, openSlices: (asset) => openScenes(asset,true), close, dropScene, refresh: renderScenes };
+    return { openCut, openVoice, openScenes, openSlices: (asset) => openScenes(asset,true), close, dropScene, toggleLocalPlayback, refresh: renderScenes };
   }
   window.createCutTrackEditor = createCutTrackEditor;
   window.trimRetainedRanges = trimRetainedRanges;

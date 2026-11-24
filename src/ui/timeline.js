@@ -2214,7 +2214,15 @@ window.mountEditTimeline = function (host, ctx) {
     if(draftTransport.state()) draftTransport.updatePlan(draftPlan());
     else if(videoVisibility) draftTransport.scrub(draftPlan,playTime);
   }
-  return {refresh,refreshMonitoring,syncPlayer,selectClip,locateMaterial,editCaptions,openCardMatchMenu,openCandidateActions,materialVideoDrop,showLibraryLane,clearLibraryLane,previewLibrarySlot,removeSelected:selection.removeSelection,clearSelection:selection.clear,get selectionCount(){return selection.size;},
+  function focusCandidate(clip) {
+    finishControlEdit();
+    const node = candidateNodes.get(clip);
+    if (!node?.isConnected) return;
+    selection.selectOnly(clip);
+    node.focus({preventScroll:true});
+    revealCandidateLane(node);
+  }
+  return {refresh,refreshMonitoring,syncPlayer,selectClip,focusCandidate,locateMaterial,editCaptions,openCardMatchMenu,openCandidateActions,materialVideoDrop,showLibraryLane,clearLibraryLane,previewLibrarySlot,removeSelected:selection.removeSelection,clearSelection:selection.clear,get selectionCount(){return selection.size;},
     get selectedCandidate(){return candidateSlots.get(selection.single())?.clip;},textSettings:()=>textSettings(ctx.state()),
     toggleDraftPlayback:()=>draftTransport.toggle(draftTransport.playing()?[]:draftPlan(),playTime),
     seekDraft:draftTransport.seek,draftState:draftTransport.state,

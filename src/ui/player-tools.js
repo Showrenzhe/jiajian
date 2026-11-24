@@ -522,7 +522,6 @@ window.mountPlayerTools = ({ panel, getClip, getTrackClock, seekTrackSource, isE
     if (key === '.' && !event.repeat) toggleFullscreen();
     else if (!cut && !getDraft() && !getIdleDraft()?.end && !ready(getClip())) return;
     else if (key === 'ArrowLeft' || key === 'ArrowRight') step(key === 'ArrowRight' ? 1 : -1);
-    else if (key === ' ' && !event.repeat && !event.target.closest?.('button, a')) togglePlay();
     else return;
     event.preventDefault();
   });
@@ -536,9 +535,9 @@ window.mountPlayerTools = ({ panel, getClip, getTrackClock, seekTrackSource, isE
     sync();
     const onKey = event => {
       if (menu.matches(':popover-open') || event.target.closest('input, select, textarea') ||
-          event.key === '.' || event.key === 'Tab' ||
+          event.key === '.' || event.key === 'Tab' || event.key === ' ' ||
           (event.key === 'Escape' && (document.fullscreenElement || panel.matches(':popover-open'))) ||
-          ((event.key === ' ' || event.key === 'Enter') && event.target.closest('button'))) return;
+          (event.key === 'Enter' && event.target.closest('button'))) return;
       controller.onKey(event);
     };
     panel.addEventListener('keydown', onKey);

@@ -9,7 +9,7 @@ const { setTimeout: delay } = require('node:timers/promises');
 const { app } = require('electron');
 const { launchDesktop } = require('../src/desktop.cjs');
 const { fixtures } = require('./fixtures.cjs');
-const { clickVisible } = require('./desktop-input.cjs');
+const { clickVisible, dragLibraryItem } = require('./desktop-input.cjs');
 
 app.disableHardwareAcceleration();
 
@@ -46,7 +46,7 @@ async function check() {
       if (await read(condition)) return;
       await delay(50);
     }
-    const state = await read('({notice:document.querySelector("#notice").textContent,focus:document.activeElement.outerHTML.slice(0,240),selected:document.querySelectorAll(".sequence-marked").length})');
+    const state = await read('({notice:document.querySelector("#notice").textContent,focus:document.activeElement.outerHTML.slice(0,240),selected:document.querySelectorAll(".sequence-marked").length,materialRemoval:document.querySelector("#material-remove-dialog").open})');
     throw new Error(label + ' ' + JSON.stringify(state));
   }
   win.webContents.debugger.attach();
@@ -455,13 +455,64 @@ async function check() {
     assert.ok(Math.abs(await read(fixedTimeRatio)-fixedAt)<.002,'独立字幕保持绝对时间');
     await undoKey();await wait(originalOrder+' && '+aligned(voice,1),'撤销恢复口播和视频');
     // A legacy free-positioned clip extends across the first cut on the lower lane.
+    const originalStart = config.shots[1][1].videoStart;
     config.shots[1][1].videoStart=1.25;
     await reopenFixture('跨越分镜边界的旧工程');
     await openVideoMenu(await pointerPoint(cell(0,0)));
     await chooseVideoCommand('right');
     await wait(query('#notice')+'.textContent.includes("跨过此分镜边界") && '+originalOrder,'跨界片段给出可执行的提示，原工程完整保留');
+
+    // Older projects can have pictures on the timeline without an explicit library bin.
+    delete config.materialBins;
+    delete config.libraryFolders;
+    delete config.materialFolderKeys;
+    config.shots[1][1].videoStart=originalStart;
+    await reopenFixture('仅从时间线恢复素材库的旧工程');
+    const redTile = tile(files.red);
+    const selectRed = redTile+' ~ input[type="checkbox"]';
+    const libraryHasRed = '!!'+query(redTile);
+    const libraryDialogClosed = '!'+query('#material-remove-dialog')+'.open';
+    const otherShots = owns(secondUpper,greenName)+' && '+owns(cell(2,0),path.basename(files.blue));
+    const tilePoint = await pointerPoint(redTile);
+    await mouse('mouseMoved',tilePoint.x,tilePoint.y);
+    await actualClick(selectRed);
+    await wait(query(selectRed)+'.checked && document.activeElement==='+query(selectRed),'素材库保留已勾选素材和键盘焦点');
+    await openVideoMenu(await pointerPoint(secondLower),[],true);
+    await chooseVideoCommand('delete');
+    await wait(count(video)+'===3 && !'+query(secondLower)+' && '+owns(cell(0,0),redName)+' && '+otherShots+
+      ' && '+libraryHasRed+' && '+libraryDialogClosed,'右键删除只影响第二镜的红色片段，仍可在素材库找到原片');
+    await actualClick(redTile);
+    await wait('document.activeElement==='+query(redTile),'按 Delete 前先在素材库预览同一源视频');
+    await actualClick(cell(0,0));
+    await pressDelete();
+    const lastRemoved = count(video)+'===2 && !'+query(cell(0,0))+' && '+otherShots+' && '+libraryHasRed+
+      ' && !'+query(redTile)+'.dataset.used && '+libraryDialogClosed;
+    await wait(lastRemoved,'Delete 移除最后一个红色实例后原片仍在库中，已用标记清除');
+    saveTarget=path.join(root,'仅移除轨道实例.sdworkbench');
+    await click('#save-project');
+    await wait(query('#notice')+'.textContent.includes("工程已保存")','保存删除最后实例后的工程');
+    picks.push({title:'打开工程',files:[saveTarget]});
+    await click('#open-project');
+    await wait(query('#notice')+'.textContent.includes("已打开工程") && '+lastRemoved,'重开工程保留未使用的素材和其他镜头');
+    await dragLibraryItem(win.webContents,await pointerPoint(redTile),()=>pointerPoint(blank(0)),
+      'application/x-sd-workbench-material',()=>wait(query(blank(0))+'?.dataset.materialDrop==="active"','素材库原片可再次拖入第一镜'));
+    const redRestored = count(video)+'===3 && '+owns(cell(0,0),redName)+' && '+otherShots+' && '+query(redTile)+'?.dataset.used==="true"';
+    await wait(redRestored,'重新拖入源视频后只新增一个实例并恢复已用标记');
+    await pressDelete();
+    await wait(lastRemoved,'素材卡拖放后直接按 Delete 只移除刚放入的片段');
+    await undoKey();
+    await wait(redRestored,'撤销恢复刚放入的红色实例');
+    const addPoint = await pointerPoint(redTile);
+    await mouse('mouseMoved',addPoint.x,addPoint.y);
+    await actualClick(redTile+' ~ .material-quick-add');
+    await wait(query('#material-add-dialog')+'.open','素材卡加号打开分镜选择器');
+    await actualClick('#material-add-confirm');
+    await wait(count(video)+'===4 && '+owns(cell(3,0),redName),'加号将同一原片加入新分镜');
+    await pressDelete();
+    await wait(redRestored+' && !'+query(cell(3,0))+' && '+libraryDialogClosed,'通过加号放入后直接按 Delete，移除新增片段并保留同源旧片段');
+    assert.deepEqual(await fs.readFile(files.red),original,'轨道删除和再次拖入均保留磁盘原视频');
     assert.deepEqual(picks,[]);
-    console.log('视频轨右键菜单、左右插入空分镜并填充、快捷撤销重做、框选删除和同源标记通过。');
+    console.log('视频轨右键菜单、空分镜插入、撤销重做、框选删除、保留同源素材及重新拖入后直接删除通过。');
   } finally {
     win.webContents.debugger.detach();
     win.destroy();
