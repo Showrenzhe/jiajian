@@ -31,11 +31,11 @@ npm run dist:win -- "-c.releaseInfo.releaseNotesFile=$notes"
 node scripts/verify-release.cjs $notes
 ```
 
-工具恢复脚本优先校验本地四个文件。首次构建从固定的 v0.6.2 官方离线包恢复 FFmpeg 8、FFprobe、LICENSE 和 README，先校验整个 ZIP 的 SHA-256，再逐项校验取出的文件。有该 ZIP 的本地副本时可运行 `./scripts/prepare-release-tools.ps1 -Archive <ZIP路径>`。仓库 vendor 目录提供 PySceneDetect 及其 Python 运行库、Whisper 模型、人声分离及前景模型。[离线包来源](https://github.com/Showrenzhe/jiajian/releases/tag/v0.6.2)
+GitHub Actions 从官方 v0.8.3 Windows x64 安装包恢复 FFmpeg 8、FFprobe、LICENSE 和 README.txt。工作流先核对安装包的 SHA-256，再解出这四个文件并逐项核对。首次在本地构建时，若缺少这些文件，可安装 7-Zip 并将 `7z.exe` 加入 PATH，在仓库根目录设置 `$env:RUNNER_TEMP = $env:TEMP`，然后执行工作流「恢复已校验的离线工具」中从下载安装包到 `./scripts/prepare-release-tools.ps1` 的命令。如果保存了原版 v0.6.2 离线 ZIP，也可用 `./scripts/prepare-release-tools.ps1 -Archive <ZIP路径>` 恢复。本地文件齐备后，准备脚本直接校验它们。仓库 vendor 目录提供 PySceneDetect 及其 Python 运行库、Whisper 模型、人声分离及前景模型。[v0.8.3 官方安装包](https://github.com/Showrenzhe/jiajian/releases/tag/v0.8.3) · [恢复步骤与固定校验值](../.github/workflows/release-windows.yml)
 
 ## 发布与重跑
 
-将正式版源码合入 main 后，在准备发布的提交上创建并推送 `v主版本.次版本.修订号` 标签。GitHub Actions 会启动「发布佳剪 Windows 正式版」，先确认标签提交已合入 main，再开始构建。也可在 Actions 页手动选择该工作流，填入已存在的正式标签。仓库的 Actions 需允许工作流使用 `contents: write` 创建发布草稿和上传附件。
+将正式版源码合入 main 后，在准备发布的提交上创建并推送 `v主版本.次版本.修订号` 标签。GitHub Actions 会启动「发布佳剪 Windows 正式版」，先确认标签提交已合入 main，再开始构建。修复构建流程后需要重跑既有标签时，在 Actions 页手动运行该工作流，为工作流选择已合入修复的 `main` 分支，在 `tag` 输入框填原正式标签。这样会使用更新后的工作流，从原标签构建并发布。仓库的 Actions 需允许工作流使用 `contents: write` 创建发布草稿和上传附件。
 
 工作流从标签重新检出完整历史、测试并生成下列三个文件。佳剪在安装前使用更新清单中的 SHA-512 核对安装包。
 

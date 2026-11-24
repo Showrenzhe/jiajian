@@ -4,12 +4,36 @@ const test = require('node:test');
 const assert = require('node:assert/strict');
 const { execFileSync } = require('node:child_process');
 const { createHash } = require('node:crypto');
+const { createRequire } = require('node:module');
 const { gzipSync } = require('node:zlib');
 const fs = require('node:fs/promises');
 const os = require('node:os');
 const path = require('node:path');
 const { releaseNotes } = require('../scripts/release-notes.cjs');
 const { verifyManifest } = require('../scripts/verify-release.cjs');
+const yaml = createRequire(require.resolve('electron-updater/package.json'))('js-yaml');
+
+test('a manual release builds the requested tag after checking the pinned tool installer', async () => {
+  const workflow = yaml.load(await fs.readFile(path.join(__dirname, '../.github/workflows/release-windows.yml'), 'utf8'));
+  assert.equal(workflow.on.workflow_dispatch.inputs.tag.required, true);
+  const { env, steps } = workflow.jobs.release;
+  assert.equal(env.RELEASE_TAG, '${{ inputs.tag || github.ref_name }}');
+  const checkout = steps.findIndex(step => step.uses?.startsWith('actions/checkout@'));
+  const recovery = steps.findIndex(step => step.run?.includes('prepare-release-tools.ps1'));
+  const build = steps.findIndex(step => step.run?.includes('npm run dist:win'));
+  const publish = steps.findIndex(step => step.run?.includes('publish-release.ps1'));
+  assert.ok(checkout >= 0 && checkout < recovery && recovery < build && build < publish);
+  assert.equal(steps[checkout].with.ref, 'refs/tags/${{ env.RELEASE_TAG }}');
+  assert.match(steps[publish].run, /-Tag\s+\$env:RELEASE_TAG\b/);
+
+  const restore = steps[recovery].run;
+  assert.ok(restore.includes('https://github.com/Showrenzhe/jiajian/releases/download/v0.8.3/Jiajian-Setup-0.8.3-x64.exe'));
+  const digest = /Get-FileHash[^\n]*\$installer[^\n]*SHA256[^\n]*-ne\s+'bbf42446e0f26d9064e33481d527853fe17364e3d6389ed73848cbc6f609d387'\)\s*\{\s*throw/i;
+  const verified = restore.search(digest);
+  const extract = restore.search(/^\s*7z\.exe\s+[ex]\s/m);
+  assert.ok(verified >= 0 && verified < extract && extract < restore.indexOf('./scripts/prepare-release-tools.ps1'),
+    'the installer hash must be checked before extraction, and restored files must pass the tagged verification script');
+});
 
 async function fixture(t) {
   const root = await fs.mkdtemp(path.join(os.tmpdir(), 'jiajian-release-'));
