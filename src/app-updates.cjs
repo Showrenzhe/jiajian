@@ -70,13 +70,17 @@ function createAppUpdates({ app, onState = () => {}, updater }) {
   function mayRetry(action) {
     return state.status === 'error' && state.retry === action;
   }
+  function markCurrent() {
+    return setState('current', { version: '', notes: '', percent: 0 });
+  }
   async function check() {
     if (!['idle', 'current', 'available'].includes(state.status) && !mayRetry('check')) return getState();
-    setState('checking', { version: '', notes: '', percent: 0 });
+    // Keep the last verified offer visible until the feed confirms a change.
+    setState('checking');
     try {
       const result = await updater.checkForUpdates();
       if (!result) throw new Error('Update checks disabled');
-      if (!result.isUpdateAvailable) return setState('current');
+      if (!result.isUpdateAvailable) return markCurrent();
       const { version, releaseNotes: notes } = result.updateInfo;
       // Only accept the matching stable tag from the configured GitHub feed.
       if (!semver.valid(version) || semver.prerelease(version) || !semver.gt(version, state.currentVersion)
@@ -89,7 +93,7 @@ function createAppUpdates({ app, onState = () => {}, updater }) {
       // manifest as current when the GitHub provider identified its stable tag.
       if (error?.code === 'ERR_UPDATER_CHANNEL_FILE_NOT_FOUND') {
         const tag = /^Cannot find latest\.yml in the latest release artifacts \(https:\/\/github\.com\/Showrenzhe\/jiajian\/releases\/download\/v(\d+\.\d+\.\d+)\/latest\.yml\)/i.exec(error.message)?.[1];
-        if (semver.valid(tag) && semver.lte(tag, state.currentVersion)) return setState('current');
+        if (semver.valid(tag) && semver.lte(tag, state.currentVersion)) return markCurrent();
         return fail('check', error, '该正式版尚未提供自动更新清单，请前往 GitHub 正式版下载页。');
       }
       return fail('check', error);

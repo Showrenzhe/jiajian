@@ -20,6 +20,7 @@ const { visualMotion } = require('./layer-motion.cjs');
 const { fontFamily } = require('./text-style.cjs');
 const { maxCandidates, minClipSeconds, minEdgeSilence, audioRate, withOutputFrames, voiceLength, pieces, repeatVisual, visualDuration, fitVisuals, placedVideoFrames, fitSegmentedVoice, fitWholeVoice, fitReferenceWhole } = require('./ui/voice-alignment.js');
 const vendorPath = require('./vendor-path.cjs');
+const { isMaterialPath } = require('./material-path.cjs');
 
 const ffmpegCommand = process.env.SUPERDIR_REPLICA_FFMPEG || 'ffmpeg';
 const ffmpeg = /[\\/]/.test(ffmpegCommand) ? path.resolve(ffmpegCommand) : ffmpegCommand;
@@ -181,9 +182,7 @@ function createVideoThumbnail(asset, options) {
 async function createFrameThumbnail(asset, { signal, time: requestedTime } = {}) {
   const file = asset?.path;
   const extensions = asset?.kind === 'image' ? imageExtensions : asset?.kind === 'video' ? videoExtensions : [];
-  if (typeof file !== 'string' || !path.isAbsolute(file) || file.includes('\0')
-      || /^[\\/]{2}/.test(file) || !extensions.includes(path.extname(file).slice(1).toLowerCase())
-      || (process.platform === 'win32' && (!/^[a-z]:[\\/]/i.test(file) || file.slice(2).includes(':')))
+  if (!isMaterialPath(file) || !extensions.includes(path.extname(file).slice(1).toLowerCase())
       || !Number.isInteger(asset.videoIndex) || asset.videoIndex < 0) return null;
   signal?.throwIfAborted();
   const info = await fs.stat(file).catch((error) => {
@@ -195,7 +194,7 @@ async function createFrameThumbnail(asset, { signal, time: requestedTime } = {})
     ? Math.max(0,Math.min(requestedTime,asset.duration-1/(asset.fps||30)))
     : Number.isFinite(asset.duration) && asset.duration >= 0.25 ? Math.min(1, asset.duration / 10) : 0;
   const { stdout } = await execFileAsync(ffmpeg, [
-    '-hide_banner', '-loglevel', 'error', '-nostdin', ...mediaInput,
+    '-hide_banner', '-loglevel', 'error', '-nostdin', ...(asset.kind === 'image' ? stillInput : mediaInput),
     '-ss', String(start), '-threads', '1', '-i', file, '-map', `0:${asset.videoIndex}`, '-frames:v', '1',
     '-filter_threads', '1', '-vf', 'scale=320:180:force_original_aspect_ratio=decrease:force_divisible_by=2:reset_sar=1',
     '-an', '-sn', '-dn', '-c:v', 'mjpeg', '-q:v', '4', '-threads', '1', '-f', 'image2pipe', 'pipe:1',

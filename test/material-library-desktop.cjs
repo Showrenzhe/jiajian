@@ -61,12 +61,12 @@ async function run() {
     await wait(coordinates, '控件被遮挡 ' + selector);
     return read(coordinates);
   }
-  async function mouseClick(selector, button = 'left', times = 1) {
+  async function mouseClick(selector, button = 'left', times = 1, modifiers = 0) {
     const coords = await point(selector);
     for (let clickCount = 1; clickCount <= times; clickCount++) {
       for (const type of ['mousePressed', 'mouseReleased']) {
         const buttons = type === 'mouseReleased' ? 0 : button === 'right' ? 2 : 1;
-        await send('dispatchMouseEvent', { type, ...coords, button, buttons, clickCount });
+        await send('dispatchMouseEvent', { type, ...coords, button, buttons, clickCount, modifiers });
       }
     }
   }
@@ -282,6 +282,9 @@ async function run() {
     await wait(el(green + ' img') + '?.naturalWidth > 0 && !!' + el(green + ' .material-duration') + '?.textContent', '素材卡片应有实帧和时长');
     const usedBadge = el(green + ' .material-used');
     assert.equal(await read(usedBadge), null, '未使用的素材没有已用徽标');
+    await mouseClick(green);
+    await wait(el(green) + '.ariaPressed==="true" && ' + count('#timeline-clock .material-instance') + '===0',
+      '选择未用素材应清除所有旧的轨道高亮');
     await wait(el(folder + ' .folder-preview img') + '?.naturalWidth > 0', '素材目录应有实帧封面');
     await read('window.savedTile=' + el(green) + '; window.savedImage=window.savedTile.querySelector("img")');
     await dropFiles('.sequence-video [data-drop-shot="0"]', [files.green]);
@@ -294,17 +297,34 @@ async function run() {
     await wait(tracks + '===3', '应可重新加入候选');
     await dropFiles('#new-shot-drop', [files.still, files.blue]);
     await wait(tracks + '===5 && ' + count('.shot') + '===4', '两个文件拖到空白区应建立两个分镜');
+    const greenBlock = '.sequence-video [data-move-candidate][data-candidate-index="1"][data-drop-shot="0"]';
+    await mouseClick(greenBlock);
+    await wait(el(greenBlock) + '.matches(".sequence-marked")', '先选中轨道上的绿色候选');
+    await read('window.greenBlock=' + el(greenBlock));
+    const cursorPosition = el('.sequence-cursor') + '.style.translate';
+    const beforeLocate = await read(cursorPosition);
     await mouseClick(green);
     await wait(count('.sequence-video .material-instance') + '===1', '切换选中素材应清除旧的高亮');
+    assert.equal(await read(el(greenBlock) + '===window.greenBlock && window.greenBlock.matches(".material-instance")'), true,
+      '定位素材应直接更新现有轨道对象');
+    assert.equal(await read('document.activeElement===' + el(green)), true, '定位后焦点应留在素材库');
+    assert.equal(await read(cursorPosition), beforeLocate, '定位不应移动播放头');
+    await mouseClick(greenBlock, 'left', 1, 2);
+    await wait('window.greenBlock.matches(".material-instance.sequence-marked")', 'Ctrl 加选轨道片段可与素材库定位同时显示');
     assert.equal(await read('getComputedStyle(' + el(green + ' .material-duration') + ').color'), 'rgb(255, 255, 255)');
     for (const theme of ['dark', 'light']) {
       await wc.debugger.sendCommand('Emulation.setEmulatedMedia', {
         features: [{ name: 'prefers-color-scheme', value: theme }, { name: 'prefers-reduced-motion', value: 'reduce' }],
       });
       await wait('document.documentElement.dataset.theme===' + JSON.stringify(theme), '素材卡应能切换主题');
-      const stripe = 'getComputedStyle(' + el('.sequence-video .material-instance') + ', "::after")';
-      assert.ok(await read(stripe + '.borderTopWidth === "3px" && ' + stripe + '.borderTopColor === ' + accent
-        + ' && ' + stripe + '.boxShadow === "none"'), '两种主题下同源标记都应为系统蓝顶线');
+      const frame = 'getComputedStyle(window.greenBlock, "::after")';
+      const tab = 'getComputedStyle(window.greenBlock.querySelector(".sequence-clip-label"))';
+      const edit = 'getComputedStyle(window.greenBlock, "::before")';
+      assert.ok(await read('["Top","Right","Bottom","Left"].every(edge => ' + frame + '["border"+edge+"Width"]==="3px" && '
+        + frame + '["border"+edge+"Color"]===' + accent + ') && ' + frame + '.pointerEvents==="none"'), '明暗主题都应显示不拦截鼠标的四边系统蓝框');
+      assert.equal(await read(tab + '.backgroundColor'), await read(accent), '文件名底色应与轨道高亮一致');
+      assert.notEqual(await read(tab + '.color'), await read(accent), '文件名需要可读的对比色');
+      assert.ok(await read(edit + '.borderLeftWidth==="3px" && ' + edit + '.borderLeftColor!==' + accent), '编辑选区应保留独立标记');
       assert.equal(await read('getComputedStyle(' + el(green + ' .material-thumbnail') + ').outlineColor'), await read(accent),
         '点选素材缩略图应使用同一系统蓝');
       assert.equal(await read('getComputedStyle(' + usedBadge + ').borderInlineStartColor'), await read(accent),
@@ -316,6 +336,16 @@ async function run() {
         await fs.writeFile(path.join(filename.dir, filename.name + '-' + theme + '.png'), Buffer.from(shot.data, 'base64'));
       }
     }
+    const zoom = el('#track-zoom');
+    await read(zoom + '.value=' + zoom + '.min;' + zoom + '.dispatchEvent(new Event("input"))');
+    await wait('window.greenBlock.offsetWidth<=112 && getComputedStyle(window.greenBlock.querySelector(".sequence-clip-duration")).display==="none"',
+      '窄片段应把标签空间留给文件名');
+    assert.ok(await read('window.greenBlock.querySelector(".sequence-clip-name").clientWidth>0'), '窄片段的文件名仍有可见空间');
+    await click('#timeline-fit');
+    await wait(el(greenBlock) + '.matches(".material-instance") && ' + el(greenBlock) + '!==window.greenBlock',
+      '适配导致重新绘制后，同源提示应跟随片段');
+    await mouseClick(greenBlock);
+    await wait(count('#timeline-clock .material-instance') + '===0', '转入轨道预览应清除素材库定位');
     await dropFiles('.sequence-voice [data-voice-row="0"]', [files.music]);
     await wait(el('.sequence-voice [data-voice-row="0"]') + '.textContent.includes(' + JSON.stringify(path.basename(files.music)) + ')', '本地音频应能直接放入口播轨');
     await dropFiles('#inspector-tab-music', [files.otherMusic]);

@@ -69,13 +69,32 @@ async function run() {
     await click('software-update-entry');
     await until('document.getElementById("update-dialog").open');
   };
+  async function expectBadge(expectedVersion) {
+    const details = await read(`(() => {
+      const entry = document.getElementById('software-update-entry');
+      const dot = entry.querySelector('#update-badge');
+      return { hidden: dot.hidden, visible: dot.checkVisibility(), decorative: !!dot.closest('[aria-hidden="true"]'),
+        title: entry.title, label: entry.getAttribute('aria-label') };
+    })()`);
+    assert.equal(details.hidden, !expectedVersion);
+    assert.equal(details.visible, !!expectedVersion);
+    assert.ok(details.decorative, 'The dot must be excluded from the accessibility tree');
+    assert.ok(details.label.includes('软件更新'));
+    if (expectedVersion) {
+      assert.ok(details.title.includes('佳剪 v' + expectedVersion));
+      assert.ok(details.label.includes(details.title));
+    } else {
+      assert.equal(details.label, '软件更新');
+      assert.doesNotMatch(details.title, /可更新|v\d/);
+    }
+  }
   const debuggerApi = win.webContents.debugger;
   debuggerApi.attach();
   await debuggerApi.sendCommand('Emulation.setFocusEmulationEnabled', { enabled: true });
-  async function press(key, windowsVirtualKeyCode) {
+  async function press(key, windowsVirtualKeyCode, modifiers = 0) {
     for (const type of ['keyDown', 'keyUp']) {
       await debuggerApi.sendCommand('Input.dispatchKeyEvent', {
-        type, key, code: key, windowsVirtualKeyCode, text: type === 'keyDown' && key === 'Enter' ? '\r' : '',
+        type, key, code: key, windowsVirtualKeyCode, modifiers, text: type === 'keyDown' && key === 'Enter' ? '\r' : '',
       });
     }
   }
@@ -96,8 +115,38 @@ async function run() {
       shortcuts.getBoundingClientRect().right <= settings.getBoundingClientRect().left;
   })()`), 'The title bar should show Updates, Shortcuts and Settings in order');
   assert.match(await textOf('update-notice'), /发现新版本 0\.6\.4/);
+  await expectBadge(version);
+  assert.equal(await read('document.getElementById("software-update-entry").title'), '佳剪 v0.6.4 可更新');
+  const [wide, height] = win.getContentSize();
+  for (const scheme of ['light', 'dark']) {
+    await debuggerApi.sendCommand('Emulation.setEmulatedMedia', { features: [
+      { name: 'prefers-color-scheme', value: scheme }, { name: 'prefers-reduced-motion', value: 'reduce' },
+    ] });
+    await until(`document.documentElement.dataset.theme === "${scheme}"`);
+    for (const width of [900, 1200]) {
+      win.setContentSize(width, height);
+      await until(`Math.abs(innerWidth - ${width}) <= 1`);
+      await expectBadge(version);
+      assert.equal(await read('document.getElementById("update-notice").checkVisibility()'), width === 1200);
+      assert.equal(await read('document.getElementById("update-notice-dismiss").checkVisibility()'), width === 1200);
+      assert.ok(await read(`(() => {
+        const entry = document.getElementById('software-update-entry').getBoundingClientRect();
+        const dot = document.getElementById('update-badge');
+        const rect = dot.getBoundingClientRect();
+        const ctx = document.createElement('canvas').getContext('2d');
+        ctx.fillStyle = getComputedStyle(dot).backgroundColor;
+        ctx.fillRect(0, 0, 1, 1);
+        const [r, g, b, a] = ctx.getImageData(0, 0, 1, 1).data;
+        return a === 255 && r > g * 1.5 && r > b * 1.5 && rect.width >= 4 && rect.height >= 4 &&
+          rect.left >= entry.left && rect.top >= entry.top && rect.right <= entry.right && rect.bottom <= entry.bottom;
+      })()`), scheme + ' ' + width + 'px must display a red dot inside the update button');
+    }
+  }
+  win.setContentSize(wide, height);
+  await until(`Math.abs(innerWidth - ${wide}) <= 1`);
   await click('update-notice-dismiss');
   assert.equal(await read('document.getElementById("update-notice").hidden'), true);
+  await expectBadge(version);
   assert.equal(await read('document.activeElement.id'), 'software-update-entry');
   await press('Enter', 13);
   await until('document.getElementById("update-dialog").open');
@@ -115,8 +164,15 @@ async function run() {
   } finally { shell.openExternal = originalOpen; }
   await press('Escape', 27);
   await until('!document.getElementById("update-dialog").open && document.activeElement.id === "software-update-entry"');
+  await expectBadge(version);
   await press('Tab', 9);
   assert.equal(await read('document.activeElement.id'), 'cut-shortcuts-entry');
+  await press('Tab', 9, 8); // Shift+Tab moves back to the update entry.
+  assert.ok(await read(`(() => {
+    const entry = document.querySelector('#software-update-entry:focus-visible');
+    return entry && getComputedStyle(entry, '::after').content.includes(entry.title);
+  })()`), 'A keyboard user should see the available version on focus');
+  await press('Tab', 9);
   await press('Tab', 9);
   assert.equal(await read('document.activeElement.id'), 'app-settings');
   await press('Enter', 13);
@@ -125,6 +181,12 @@ async function run() {
   assert.equal(await read('document.querySelector("#cloud-settings-dialog #software-update-entry")'), null);
   await press('Escape', 27);
   await until('!document.getElementById("cloud-settings-dialog").open');
+  send('checking');
+  await until('document.getElementById("update-status").textContent.includes("正在检查")');
+  await expectBadge(version);
+  send('error', { retry: 'check', message: '测试复查网络失败' });
+  await until('document.getElementById("update-status").textContent === "测试复查网络失败"');
+  await expectBadge(version);
   clock += fourHours - 1;
   win.emit('focus');
   assert.equal(checks, 1);
@@ -140,8 +202,10 @@ async function run() {
   await click('update-action');
   await until('document.getElementById("update-action").textContent === "重试下载" && !document.getElementById("update-action").disabled');
   assert.equal(await textOf('update-status'), '测试下载失败');
+  await expectBadge(version);
   await clickVisible(win.webContents, '#update-action');
   await until('document.getElementById("update-progress").value === 37');
+  await expectBadge(version);
   assert.equal(await read('document.activeElement.id'), 'update-close', '下载时键盘应停在仍可用的关闭按钮');
   clock += fourHours;
   win.emit('focus');
@@ -149,6 +213,7 @@ async function run() {
   await click('update-close');
   download.resolve();
   await until('document.getElementById("update-notice").checkVisibility() && document.getElementById("update-notice").textContent.includes("更新已就绪")');
+  await expectBadge(version);
   await openToolbarUpdate();
   await until('document.getElementById("update-action").textContent === "保存并重启更新" && !document.getElementById("update-action").disabled');
 
@@ -202,6 +267,7 @@ async function run() {
   await fs.unlink(drafts);
   await click('update-action');
   await until('document.getElementById("update-action").textContent === "重试保存并重启" && !document.getElementById("update-action").disabled');
+  await expectBadge(version);
   const files = (await fs.readdir(drafts)).filter((name) => name.endsWith('.sdworkbench'));
   assert.equal(files.length, 1);
   const saved = JSON.parse(await fs.readFile(path.join(drafts, files[0]), 'utf8'));
@@ -212,6 +278,10 @@ async function run() {
 
   send('current', { version: '', notes: '' });
   await until('document.getElementById("update-action").textContent === "再次检查"');
+  await expectBadge(null);
+  send('error', { retry: 'check', message: '测试无已知更新时检查失败' });
+  await until('document.getElementById("update-action").textContent === "重新检查"');
+  await expectBadge(null);
   await click('update-action');
   await until('document.getElementById("update-action").textContent === "下载更新"');
   assert.equal(checks, 3);
@@ -220,6 +290,7 @@ async function run() {
   assert.equal(checks, 4, 'A window kept open should check again when it regains focus');
   send('unsupported', { canManageInstallation: false });
   await until('document.getElementById("update-action").textContent === "打开官方发布页"');
+  await expectBadge(null);
   assert.match(await textOf('update-status'), /Windows 安装版/);
   assert.equal(await read('document.getElementById("update-manage-installation").checkVisibility()'), false);
   assert.match(await read('workbench.openInstalledApps().then(() => "", e => e.message)'), /Windows 安装版/);
@@ -238,7 +309,7 @@ async function run() {
   clock += fourHours;
   powerMonitor.emit('resume');
   assert.equal(checks, 4, 'Installing must never trigger another automatic check');
-  console.log('标题栏软件更新、键盘导航、下载重试、草稿与运行中任务保护通过。');
+  console.log('标题栏更新红点、浅深与紧凑布局、键盘版本提示、下载重试、草稿与运行中任务保护通过。');
 }
 
 run().then(() => app.exit(0), (error) => { console.error(error); app.exit(1); });

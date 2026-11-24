@@ -68,9 +68,11 @@ contextBridge.exposeInMainWorld('workbench', {
   detectSceneCuts: (assetId, options) => invoke('workbench:detect-scene-cuts', { assetId, options }),
   pickLut: () => invoke('workbench:pick-lut'),
   previewLook: (value) => invoke('workbench:preview-look',value),
-  importDroppedMaterials: (files, destination) => invoke('workbench:drop-materials', {
-    paths: files.map((file) => webUtils.getPathForFile(file)), destination,
-  }),
+  importDroppedMaterials: (files, destination) => {
+    if (!Array.isArray(files)) throw new Error('拖入的文件无效。');
+    const paths = Array.prototype.map.call(files, file => webUtils.getPathForFile(file));
+    return invoke('workbench:drop-materials', {paths, destination});
+  },
   materialTilePreview: (id) => invoke('workbench:material-tile-preview', id),
   pickMaterialFolder: () => invoke('workbench:pick-material-folder'),
   browseMaterialFolder: (folderId) => invoke('workbench:browse-material-folder', folderId),

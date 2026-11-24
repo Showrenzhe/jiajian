@@ -104,3 +104,30 @@ test('a manifest cannot offer a prerelease, mismatched tag, or downgrade', { ski
     assert.equal((await service.download()).status, 'error');
   }
 });
+
+test('rechecks retain the verified offer until a successful check confirms it is gone', { skip: !windows }, async () => {
+  const updater = new EventEmitter();
+  const service = createAppUpdates({ app, updater });
+  updater.checkForUpdates = async () => { throw new Error('offline'); };
+  assert.equal((await service.check()).version, '', 'A first network error has no verified offer');
+
+  updater.checkForUpdates = async () => ({ isUpdateAvailable: true, updateInfo });
+  const offer = await service.check();
+  assert.equal(offer.status, 'available');
+  const network = Promise.withResolvers();
+  updater.checkForUpdates = () => network.promise;
+  const recheck = service.check();
+  assert.equal(service.getState().status, 'checking');
+  assert.equal(service.getState().version, offer.version);
+  network.reject(new Error('offline'));
+  const offline = await recheck;
+  assert.equal(offline.retry, 'check');
+  assert.equal(offline.version, offer.version);
+  assert.equal(offline.notes, offer.notes);
+
+  updater.checkForUpdates = async () => ({ isUpdateAvailable: false });
+  const current = await service.check();
+  assert.equal(current.status, 'current');
+  assert.equal(current.version, '');
+  assert.equal(current.notes, '');
+});

@@ -34,6 +34,7 @@ const { createCreativeSettings, runCreative } = require('./creative-service.cjs'
 const { createWaveformCache } = require('./waveform-cache.cjs');
 const { createPerformanceCache } = require('./performance-cache.cjs');
 const { createAppUpdates } = require('./app-updates.cjs');
+const { isLocalPath, isMaterialPath, isSharedMaterialPath, materialPathKey, checkedMaterialPath } = require('./material-path.cjs');
 
 const scheme = 'sd-workbench';
 const page = `${scheme}://app/index.html`;
@@ -62,6 +63,7 @@ const maxMaterialLoads = 64;
 const maxMaterialWorkers = 2;
 const projectFilter = { name: '佳剪工程', extensions: ['sdworkbench'] };
 const mediaTypes = new Map(Object.entries({
+  jpg: 'image/jpeg', jpeg: 'image/jpeg', png: 'image/png', bmp: 'image/bmp', webp: 'image/webp',
   mp4: 'video/mp4', m4v: 'video/mp4', mov: 'video/quicktime', webm: 'video/webm',
   mkv: 'video/x-matroska', avi: 'video/x-msvideo', mpg: 'video/mpeg', mpeg: 'video/mpeg',
   ts: 'video/mp2t', mts: 'video/mp2t', m2ts: 'video/mp2t',
@@ -80,16 +82,6 @@ function describeAsset(id, asset) {
   return { id, kind, name, duration, width, height, codec, fps, ...(asset.path && {sourceKey: materialSourceKey(asset.path)}), ...(asset.alpha && { alpha: true }), hasAudio: audioIndex !== null, url: `${scheme}://asset/${id}` };
 }
 
-function localMaterialPath(file) {
-  return typeof file === 'string' && path.isAbsolute(file) && !file.includes('\0') && !/^[\\/]{2}/.test(file)
-    && (process.platform !== 'win32' || (/^[a-z]:[\\/]/i.test(file) && !file.slice(2).includes(':')));
-}
-
-function materialPathKey(file) {
-  const normalized = path.normalize(file);
-  return process.platform === 'win32' ? normalized.toLowerCase() : normalized;
-}
-
 function materialSourceKey(file) {
   return createHash('sha256').update(materialPathKey(file)).digest('hex');
 }
@@ -104,21 +96,6 @@ function materialKind(file) {
   if (videoExtensions.includes(extension)) return 'video';
   if (audioExtensions.includes(extension)) return 'audio';
   return null;
-}
-
-async function checkedMaterialPath(record) {
-  try {
-    if (!record || !localMaterialPath(record.path)) throw new Error();
-    const relative = path.relative(record.root, record.path);
-    if (relative === '..' || relative.startsWith(`..${path.sep}`) || path.isAbsolute(relative)) throw new Error();
-    const info = await fs.lstat(record.path);
-    if (info.isSymbolicLink() || !(record.kind === 'folder' ? info.isDirectory() : info.isFile())) throw new Error();
-    const resolved = await fs.realpath(record.path);
-    if (materialPathKey(resolved) !== materialPathKey(record.path)) throw new Error();
-    return record.path;
-  } catch {
-    throw new Error('素材文件夹或文件已不可用，请重新选择。');
-  }
 }
 
 async function mediaResponse(file, range) {
@@ -197,7 +174,15 @@ async function launchDesktop({
   const recent = await readHistory(dataDirectory);
   const projects = await readProjectLibrary(dataDirectory);
   let boundProject;
-  const resolveOutputFile=(file)=>resolveOutput(recent,file);
+  const folderGrantDirectory = path.join(dataDirectory, 'material-folders');
+  const sharedFileGrantDirectory = path.join(dataDirectory, 'shared-material-files');
+  async function resolveOutputFile(file) {
+    if (!isSharedMaterialPath(file)) return resolveOutput(recent, file);
+    const grant = path.join(sharedFileGrantDirectory, materialSourceKey(file));
+    const selected = await fs.readFile(grant, 'utf8').catch(() => '');
+    if (!selected || materialPathKey(selected) !== materialPathKey(file)) throw new Error('请先将这项共享素材拖入素材库，再重新打开工程。');
+    return checkedMaterialPath({path:selected, root:selected, kind:materialKind(selected)});
+  }
   const performanceCache = createPerformanceCache(dataDirectory, {inspect:inspectAsset, thumbnail:createVideoThumbnail, encode:createTrackProxy});
   const sourceEditDirectory = path.join(dataDirectory, 'source-edits');
   const drafts = createDraftStore(path.join(dataDirectory, 'drafts'),resolveOutputFile,performanceCache.inspectCached,sourceEditDirectory);
@@ -265,7 +250,7 @@ async function launchDesktop({
         const kind = entry.isDirectory() ? 'folder' : entry.isFile() ? materialKind(entry.name) : null;
         if (!kind) continue;
         const child = path.join(file, entry.name);
-        if (!localMaterialPath(child)) continue;
+        if (!isMaterialPath(child)) continue;
         if (kind === 'folder' ? record.depth >= maxFolderDepth || folders.length >= maxListedFolders : files.length >= maxListedFiles) {
           limited = true;
           continue;
@@ -313,6 +298,7 @@ async function launchDesktop({
     if (catalog.size >= maxCatalog) throw new Error('本次会话的素材已达到上限。');
     const asset = await inspectFolderFile(file, record.kind, signal);
     await checkedMaterialPath(record);
+    if (isSharedMaterialPath(file)) await rememberMaterialGrant(sharedFileGrantDirectory, file);
     signal.throwIfAborted();
     const existing = lookupByPath.get(key);
     if (existing) return describeAsset(existing, catalog.get(existing));
@@ -468,6 +454,7 @@ async function launchDesktop({
     if (cached) {
       const record = thumbnailFolderRecord(asset);
       const available = record ? await checkedMaterialPath(record).then(() => true, () => false)
+        : draftThumbnailSource(id) ? await checkedDraftCover(asset).then(() => true, () => false)
         : await fs.stat(asset.path).then((info) => info.isFile(), () => false);
       if (signal.aborted || thumbnailSource(id) !== asset) return null;
       thumbnails.delete(key);
@@ -514,7 +501,7 @@ async function launchDesktop({
       const stored = await drafts.thumbnail(id, revision);
       if (stored) return jpegResponse(stored);
       if (!source) return jpegResponse(null);
-      if (source.kind === 'image') return await net.fetch(pathToFileURL(await checkedDraftCover(source)).href);
+      if (source.kind === 'image') return mediaResponse(await checkedDraftCover(source));
       const key = `draft:${id}:${revision}`;
       return jpegResponse(await videoThumbnail(key) ? thumbnails.get(key) : null);
     } catch { return new Response(null, { status: 404 }); }
@@ -550,13 +537,13 @@ async function launchDesktop({
       if (url.pathname.startsWith('/folder-image/')) {
         const record = materialFiles.get(url.pathname.slice('/folder-image/'.length));
         if (record?.kind === 'image') return checkedMaterialPath(record)
-          .then((file) => net.fetch(pathToFileURL(file).href)).catch(() => new Response(null, { status: 404 }));
+          .then((file) => mediaResponse(file, request.headers.get('range'))).catch(() => new Response(null, { status: 404 }));
         return new Response(null, { status: 404 });
       }
       const id = url.pathname.slice(1);
       const asset = activePreview?.id === id ? activePreview.asset : catalog.get(id) ?? voiceSamples.get(id);
       if (asset) {
-        const serve = (file) => asset.kind === 'video' || asset.kind === 'audio' ? mediaResponse(file, request.headers.get('range'))
+        const serve = (file) => ['image', 'video', 'audio'].includes(asset.kind) ? mediaResponse(file, request.headers.get('range'))
           : net.fetch(pathToFileURL(file).href);
         const record = folderAssetOrigins.get(asset);
         return record ? checkedMaterialPath(record).then(serve).catch(() => new Response(null, { status: 404 })) : serve(asset.path);
@@ -846,7 +833,7 @@ async function launchDesktop({
     const result = await dialogs.showOpenDialog(win,{title:'选择代理缓存目录',properties:['openDirectory','createDirectory']});
     if (result.canceled || !result.filePaths[0]) return performanceCache.view();
     const parent = result.filePaths[0];
-    if (!localMaterialPath(parent)) throw new Error('请选择本地的代理目录。');
+    if (!isLocalPath(parent)) throw new Error('请选择本地的代理目录。');
     const location=path.basename(parent)==='佳剪代理' ? parent : path.join(parent,'佳剪代理');
     clearTrackProxies();
     return performanceCache.change({location});
@@ -929,11 +916,9 @@ async function launchDesktop({
       finishJob();
     }
   });
-  const folderGrantDirectory = path.join(dataDirectory, 'material-folders');
-
-  async function rememberFolderGrant(file, sourceKey) {
-    await fs.mkdir(folderGrantDirectory, { recursive: true });
-    const grant = path.join(folderGrantDirectory, sourceKey);
+  async function rememberMaterialGrant(directory, file) {
+    await fs.mkdir(directory, { recursive: true });
+    const grant = path.join(directory, materialSourceKey(file));
     const stage = grant + '-' + randomUUID();
     try {
       await fs.writeFile(stage, file, { flag: 'wx', mode: 0o600 });
@@ -942,7 +927,7 @@ async function launchDesktop({
   }
 
   async function registerMaterialFolder(selected) {
-    if (!localMaterialPath(selected)) throw new Error('请选择本机素材文件夹。');
+    if (!isMaterialPath(selected)) throw new Error('请选择本机或 Windows 共享素材文件夹。');
     const file = path.resolve(selected);
     const key = materialPathKey(file);
     const existing = materialRoots.get(key);
@@ -977,7 +962,7 @@ async function launchDesktop({
       });
       if (canceled || !filePaths[0]) return null;
       const listing = await registerMaterialFolder(filePaths[0]);
-      await rememberFolderGrant(filePaths[0], listing.sourceKey);
+      await rememberMaterialGrant(folderGrantDirectory, path.resolve(filePaths[0]));
       return listing;
     } finally {
       pickerOpen = false;
@@ -1320,6 +1305,7 @@ async function launchDesktop({
     for (const [id, asset] of assets) {
       catalog.set(ids.get(id), asset);
       lookupByPath.set(assetPathKey(asset.kind, asset.path), ids.get(id));
+      if (isSharedMaterialPath(asset.path)) folderAssetOrigins.set(asset, {path:asset.path, root:asset.path, kind:asset.kind});
     }
     previewBatch = undefined;
     await discardPreview();
@@ -1327,7 +1313,7 @@ async function launchDesktop({
     for (const key of config.materialFolderKeys ?? []) {
       try {
         const file = await fs.readFile(path.join(folderGrantDirectory, key), 'utf8');
-        if (!localMaterialPath(file) || materialSourceKey(file) !== key) continue;
+        if (!isMaterialPath(file) || materialSourceKey(file) !== key) continue;
         const { id, name, sourceKey } = await registerMaterialFolder(file);
         folders.push({ id, name, sourceKey });
       } catch { /* A moved folder can be added again without blocking the project. */ }
@@ -1405,11 +1391,19 @@ async function launchDesktop({
   });
 
   async function importLocalFile(file, fileKind) {
+    if (!isMaterialPath(file)) throw new Error('请选择本机或 Windows 共享素材。');
+    const shared = isSharedMaterialPath(file) && { path: file, root: file, kind: fileKind };
+    if (shared) await checkedMaterialPath(shared);
     const key = assetPathKey(fileKind, file);
     let id = lookupByPath.get(key);
     if (!id) {
       if (catalog.size >= maxCatalog) throw new Error('本次会话的素材已达到上限。');
       const asset = await performanceCache.inspectCached(file, fileKind);
+      if (shared) {
+        await checkedMaterialPath(shared);
+        await rememberMaterialGrant(sharedFileGrantDirectory, file);
+        folderAssetOrigins.set(asset, shared);
+      }
       id = randomUUID();
       catalog.set(id, asset);
       lookupByPath.set(key, id);
@@ -1426,11 +1420,11 @@ async function launchDesktop({
       const selected = paths.slice(0, maxCandidates);
       for (const file of destination === 'visual' ? selected : new Set(selected)) {
         try {
-          if (!localMaterialPath(file)) throw new Error('请选择本机文件。');
-          const info = await fs.lstat(file);
+          if (!isMaterialPath(file)) throw new Error('请从资源管理器拖入本机或 Windows 共享素材。');
+          const info = await fs.lstat(file).catch(() => { throw new Error('无法访问素材，请检查文件位置、共享连接和读取权限后重试。'); });
           if (info.isDirectory() && destination === 'library') {
             const listing = await registerMaterialFolder(file);
-            await rememberFolderGrant(file, listing.sourceKey);
+            await rememberMaterialGrant(folderGrantDirectory, path.resolve(file));
             folders.push(listing);
           } else {
             const kind = materialKind(file);
@@ -1705,16 +1699,21 @@ async function launchDesktop({
 
   await win.loadURL(page);
   if (show) {
+    async function* preloadMaterials(rows) {
+      for await (const row of rows) {
+        if (row.kind === 'lut') continue;
+        const file = await resolveOutputFile(row.path).catch(() => null);
+        if (file) yield {...row, path:file};
+      }
+    }
     const timer=setTimeout(() => {
       performanceCache.preload(async function* () {
-        for await (const row of drafts.assetReferences()) {
-          if (row.kind !== 'lut') yield {...row,path:await resolveOutputFile(row.path)};
-        }
+        yield* preloadMaterials(drafts.assetReferences());
         for (const recentProject of projects) {
           let manifest;
           try { manifest=projectReferences(await readProject(recentProject.path)); } catch { continue; }
-          for (const row of manifest.rows) {
-            if (row.kind !== 'lut') yield {...row,path:await resolveOutputFile(row.path),proxyEnabled:manifest.config.proxyEnabled};
+          for await (const row of preloadMaterials(manifest.rows)) {
+            yield {...row, proxyEnabled:manifest.config.proxyEnabled};
           }
         }
       }).catch(() => {});

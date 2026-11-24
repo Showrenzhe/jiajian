@@ -90,14 +90,54 @@
   border: 1px solid var(--system-blue);
   background: color-mix(in srgb, var(--system-blue) 15%, transparent);
 }
-/* An inset stripe remains visible above footage and waveforms in folded rows. */
+/* Frame the footage without tinting the image or waveform. */
+#timeline-clock .sequence-block.material-instance {
+  container: material-instance / inline-size;
+}
 #timeline-clock .sequence-block.material-instance::after {
   content: "";
   position: absolute;
-  inset: 0 0 auto;
-  border-top: 3px solid var(--system-blue);
+  inset: 0;
+  border: 3px solid var(--system-blue);
+  border-radius: inherit;
+  box-shadow: inset 0 0 0 1px #0009;
   z-index: 2;
   pointer-events: none;
+}
+/* The timeline edit selection can coexist with a library match. */
+#timeline-clock .sequence-block.material-instance.sequence-marked::before {
+  content: "";
+  position: absolute;
+  inset: 0 1px;
+  height: min(10px, 50%);
+  margin-block: auto;
+  border: 0;
+  border-inline: 3px solid contrast-color(var(--system-blue));
+  z-index: 3;
+  pointer-events: none;
+}
+#timeline-clock .material-instance :is(.sequence-clip-label, .wave-clip-title) {
+  inset: 3px auto auto 3px;
+  width: max-content;
+  max-width: calc(100% - 6px);
+  padding-inline: 4px;
+  border-radius: 0 0 3px 0;
+  background: var(--system-blue);
+  color: contrast-color(var(--system-blue));
+  font-weight: 600;
+}
+#timeline-clock .material-instance .sequence-clip-duration { color: inherit; font-weight: 400; }
+@container material-instance (max-width: 112px) {
+  .sequence-clip-duration { display: none; }
+}
+@media (forced-colors: active) {
+  #timeline-clock .sequence-block.material-instance::after { border-color: Highlight; }
+  #timeline-clock .sequence-block.material-instance.sequence-marked::before { border-color: HighlightText; }
+  #timeline-clock .material-instance :is(.sequence-clip-label, .wave-clip-title) {
+    forced-color-adjust: none;
+    background: Highlight;
+    color: HighlightText;
+  }
 }
 #timeline-clock .sequence-block.sequence-disabled {opacity:.48;filter:grayscale(.9);}
 #timeline-clock .sequence-block.material-instance.sequence-disabled { opacity: 1; filter: none; }

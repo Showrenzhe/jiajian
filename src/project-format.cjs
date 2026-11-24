@@ -4,6 +4,7 @@ const { randomUUID } = require('node:crypto');
 const fs = require('node:fs/promises');
 const path = require('node:path');
 const os = require('node:os');
+const { isLocalPath, isMaterialPath, isSharedMaterialPath, checkedMaterialPath } = require('./material-path.cjs');
 const { normalizeSourceEditRanges, prepareSourceEdit } = require('./source-edit.cjs');
 const {
   audioExtensions, imageExtensions, videoExtensions, maxShots, maxCandidates, maxMontageBatch, maxWholeTracks,
@@ -26,13 +27,8 @@ const maxScriptBytes = 256 * 1024;
 const maxScriptRows = 1000;
 const extensions = { audio: audioExtensions, image: imageExtensions, video: videoExtensions, lut:['cube'] };
 
-function localPath(file) {
-  if (typeof file !== 'string' || !path.isAbsolute(file) || file.includes('\0') || /^[\\/]{2}/.test(file)) return false;
-  return process.platform !== 'win32' || (/^[a-z]:[\\/]/i.test(file) && !file.slice(2).includes(':'));
-}
-
 function requireProjectPath(file) {
-  if (!localPath(file) || path.extname(file).toLowerCase() !== '.sdworkbench') {
+  if (!isLocalPath(file) || path.extname(file).toLowerCase() !== '.sdworkbench') {
     throw new Error('请选择本地的 .sdworkbench 工程文件。');
   }
 }
@@ -299,7 +295,7 @@ function mediaDeclaration(id, asset, role) {
   const kind = asset?.kind;
   const validKind = role === 'library' ? ['image','video','audio'].includes(kind) :
     role === 'visual' ? ['image','video'].includes(kind) : role === kind;
-  if (!role || !validKind || !localPath(file) || !extensions[kind].includes(path.extname(file).slice(1).toLowerCase())) {
+  if (!role || !validKind || !(kind === 'lut' ? isLocalPath(file) : isMaterialPath(file)) || !extensions[kind].includes(path.extname(file).slice(1).toLowerCase())) {
     throw new Error(`工程素材 ${id} 缺失或类型不匹配，请重新选择素材。`);
   }
   return { id, kind, path: file };
@@ -371,6 +367,10 @@ async function projectThumbnail(config, catalog, declarations) {
     || declarations.find((item) => item.kind === 'video' || item.kind === 'image');
   const asset = first && catalog.get(first.id);
   if (!asset) return null;
+  if (isSharedMaterialPath(asset.path)) {
+    const source = await checkedMaterialPath({path:asset.path, root:asset.path, kind:asset.kind}).catch(() => null);
+    if (!source) return null;
+  }
   const time = chosen ? chosen.time : first.ranges?.[0]?.start ?? first.start;
   const info = await fs.stat(asset.path).catch(() => null);
   if (!info?.isFile()) return null;
@@ -480,6 +480,7 @@ async function loadProject(file,resolvePath,inspect=inspectAsset,sourceEditDirec
       const signal = AbortSignal.any([cancellation.signal, AbortSignal.timeout(60_000)]);
       const batch = await Promise.all(rows.slice(index, index + 4).map(async (row) => {
         try {
+          if (isSharedMaterialPath(row.path) && !resolvePath) throw new Error('请先在素材库中导入这项共享素材。');
           const source=resolvePath ? await resolvePath(row.path) : row.path;
           return [row.id, row.kind==='lut' ? await inspectLut(source) : await inspect(source, row.kind, { signal })];
         } catch (error) {
