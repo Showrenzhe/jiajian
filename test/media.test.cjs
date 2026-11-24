@@ -166,6 +166,100 @@ async function frameColor(file, seconds) {
   return { red, green, blue };
 }
 
+async function assertExportFrames(file, runs) {
+  const rgb = await ffmpeg(['-i', file, '-an', '-vf', 'crop=8:8,scale=1:1',
+    '-fps_mode', 'passthrough', '-pix_fmt', 'rgb24', '-f', 'rawvideo', 'pipe:1']);
+  const expected = runs.flatMap(([color, frames]) => Array(frames).fill(color));
+  assert.equal(rgb.length / 3, expected.length, 'the last frame ends with the final shot');
+  for (const [frame, name] of expected.entries()) {
+    const channels = [...rgb.subarray(frame * 3, frame * 3 + 3)];
+    const primary = ['red', 'green', 'blue'].indexOf(name);
+    const matches = name === 'black' ? Math.max(...channels) < 12
+      : channels[primary] > 90 && channels[primary] > Math.max(...channels.filter((_, i) => i !== primary)) * 3;
+    assert.ok(matches, `${path.basename(file)}, frame ${frame} should be ${name}, got RGB ${channels}`);
+  }
+}
+
+test('exported frames follow the selected shots across shortened narration seams', async t => {
+  const { catalog, output } = await fixtureDirectory(t);
+  const voice = path.join(output, 'trailing-silence.wav');
+  await ffmpeg(['-f', 'lavfi', '-i', 'sine=frequency=440:duration=0.43', '-af', 'apad',
+    '-t', '0.805', '-c:a', 'pcm_s16le', voice]);
+  catalog.set('voice', await inspectAsset(voice, 'audio'));
+
+  const secondShot = { start: 0, end: 0.8, speed: 2, autoFitSpeed: true,
+    videoStart: 0.805, videoDuration: 0.4, videoFit: 'hold' };
+  const config = { ...montage, fps: 60, ratio: '9:16', backgroundColor: '#ffffff', musicIds: [],
+    priority: 'voice', narrationMode: 'segmented', voiceAlignment: 'fill',
+    segmentNarrationIds: [['voice'], ['music'], ['music']],
+    shots: [
+      [{ id: 'red', start: 0, end: 0.805 }],
+      [{ ...secondShot, id: 'green', videoFollowsShot: true }, { ...secondShot, id: 'blue' }],
+      [{ id: 'red', start: 0, end: 0.4 }],
+    ],
+  };
+  const plans = await prepareMontagePlans(config, catalog, { random: () => 0 });
+  assert.equal(new Set(plans.map(plan => plan.clips[1].asset)).size, 2);
+  assert.ok(plans.every(plan => plan.clips[0].outputDuration < 0.5), 'the first narration seam must be shortened');
+  const batch = await exportBatch(plans, output);
+  assert.deepEqual(batch.failures, []);
+
+  for (const [i, plan] of plans.entries()) {
+    const expected = plan.clips.map(clip => [
+      ['red', 'green', 'blue'].find(id => catalog.get(id) === clip.asset), clip.outputFrames]);
+    await assertExportFrames(batch.results[i].path, expected);
+  }
+});
+
+test('a fixed picture in another shot preserves the selected footage and intentional gaps in the export', async t => {
+  const { catalog, output } = await fixtureDirectory(t);
+  const fixed = { id: 'green', start: 0, end: 0.2, videoLane: 0,
+    videoStart: 0, videoFollowsShot: false, videoDuration: 0.2, videoFit: 'hold' };
+  const alternative = { id: 'blue', start: 0, end: 0.4, videoLane: 1 };
+  const red = { id: 'red', start: 0, end: 0.4, videoLane: 2 };
+  const config = { ...montage, fps: 60, ratio: '9:16', backgroundColor: '#000000', count: 1,
+    priority: 'voice', narrationMode: 'segmented', segmentNarrationIds: [['music'], ['music']],
+    musicIds: [], shots: [[red], [fixed, alternative]] };
+  const arrange = (shots, controls) => prepareMontagePlans({ ...config, shots, trackControls: controls },
+    catalog, { random: () => 0 });
+  const cases = [
+    [await arrange(config.shots), [['green', 12], ['red', 12], ['blue', 24]]],
+    [await arrange(config.shots, { vis1: { disabled: true } }), [['green', 12], ['red', 12], ['black', 24]]],
+    [await arrange(config.shots, { vis0: { solo: true } }), [['green', 12], ['black', 36]]],
+    [await arrange([[red], [fixed]]), [['green', 12], ['red', 12], ['black', 24]]],
+    [await arrange([[red], [{ ...fixed, videoStart: 0.3 }, alternative]]),
+      [['red', 18], ['green', 12], ['black', 18]]],
+    [await arrange([[red], [{ ...fixed, videoGaps: [{ start: 0.5, span: 0.1 }] }, alternative]]),
+      [['green', 12], ['red', 12], ['blue', 6], ['black', 6], ['blue', 12]]],
+  ];
+  const batch = await exportBatch(cases.flatMap(([plans]) => plans), output);
+  assert.deepEqual(batch.failures, []);
+  for (const [index, [, expected]] of cases.entries()) await assertExportFrames(batch.results[index].path, expected);
+});
+
+test('alternate narration takes reposition bound pictures from the editor narration row', async t => {
+  const { catalog, output } = await fixtureDirectory(t);
+  const longer = path.join(output, '较长的第二轨.wav');
+  await ffmpeg(['-f','lavfi','-i','sine=frequency=880:duration=0.87',longer]);
+  catalog.set('longer',await inspectAsset(longer,'audio'));
+  const bound = (id,videoStart) => ({id,start:0,end:1,videoStart,videoDuration:0.4,
+    videoFollowsShot:true,videoFit:'hold',autoFitSpeed:true});
+  const config = {...montage,ratio:'16:9',fps:60,priority:'voice',narrationMode:'segmented',musicIds:[],
+    segmentNarrationIds:[['music','longer'],['music','music']],shots:[[bound('red',0)],[bound('green',0.4)]]};
+  const plans = await prepareMontagePlans(config,catalog);
+  const alternate = plans.find(plan=>plan.clips[0].narration.path===longer);
+  const cut = Math.round(0.87 * config.fps) / config.fps;
+  assert.equal(alternate.clips[0].videoDuration,cut);
+  assert.equal(alternate.clips[1].videoStart,cut);
+  const {results,failures} = await exportBatch([alternate],output);
+  assert.deepEqual(failures,[]);
+  const before = await frameColor(results[0].path,cut-1/60);
+  const after = await frameColor(results[0].path,cut+1/60);
+  assert.ok(before.red > before.green*3 && after.green > after.red*3);
+  assert.ok(Math.abs(await toneAt(results[0].path,'0.65')-880)<60);
+  assert.ok(Math.abs(await toneAt(results[0].path,'1.0')-660)<60);
+});
+
 test('filled video insertions reopen and play in lane order in an ordinary montage export',async t=>{
   const {catalog,output}=await fixtureDirectory(t);
   const {saveProject,loadProject}=require('../src/project-format.cjs');
