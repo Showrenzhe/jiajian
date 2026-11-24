@@ -50,7 +50,7 @@ async function check() {
   ]},catalog);
   const fastSource = path.join(root,'三色长素材.mp4');
   await ffmpeg(['-f','lavfi','-i',"color=lime:s=320x180:r=30:d=12,drawbox=color=red:t=fill:enable='lt(t,3)',drawbox=color=blue:t=fill:enable='gte(t,10)'",
-    '-c:v','libx264','-threads','1',fastSource]);
+    '-f','lavfi','-i','sine=frequency=440:duration=12','-c:v','libx264','-c:a','aac','-threads','1',fastSource]);
   const speech=path.join(root,'半秒口播.wav');
   await ffmpeg(['-f','lavfi','-i','sine=frequency=660:duration=0.5',speech]);
   const fastProject=path.join(root,'自动倍速分镜.sdworkbench');
@@ -58,7 +58,14 @@ async function check() {
     shotSettings:[{duration:.5}],shots:[[
     {id:'fast',start:0,end:12,speed:24,autoFitSpeed:true,videoStart:0,videoDuration:.5,videoFit:'hold'}
   ]]},new Map([['fast',await inspectAsset(fastSource,'video')],['voice',await inspectAsset(speech,'audio')]]));
-  const projects=[project,plain,layered,fastProject];
+  const twoSeconds=path.join(root,'两秒口播.wav');
+  await ffmpeg(['-f','lavfi','-i','sine=frequency=550:duration=2',twoSeconds]);
+  const continuousProject=path.join(root,'倍速画面与连续音轨.sdworkbench');
+  await saveProject(continuousProject,{...config,keepAudio:true,priority:'voice',narrationMode:'segmented',segmentNarrationIds:[['speech']],
+    musicIds:['speech'],shotSettings:[{duration:2}],shots:[[
+      {id:'video',start:0,end:11.34,speed:5.67,autoFitSpeed:true,videoStart:0,videoDuration:2,videoFit:'hold'}
+    ]]},new Map([['video',await inspectAsset(fastSource,'video')],['speech',await inspectAsset(twoSeconds,'audio')]]));
+  const projects=[project,plain,layered,fastProject,continuousProject];
   const win = await launchDesktop({show:false, dataDirectory:path.join(root,'profile'), dialogs:{
     async showOpenDialog() { return {canceled:false,filePaths:[projects.shift()]}; },
   }});
@@ -304,6 +311,72 @@ async function check() {
     assert.ok(samples.slice(from).some(s=>s.c==='green'),'middle of long source is presented during playback');
     assert.ok(elapsed>=340 && elapsed<1500,'half-second slot completes near its timeline duration: '+elapsed);
     results.autoFit24x={elapsedMs:Math.round(elapsed),finalColor:'blue'};
+    await read("document.querySelector('#open-project').click()");
+    await waitFor(()=>read("document.querySelector('#notice').textContent.includes('倍速画面与连续音轨')"),'5.67× project');
+    from=samples.length;
+    await read("document.querySelector('#timeline-play').click()");
+    await waitFor(()=>read(`(() => {
+      const overlay=document.querySelector('.draft-transport-preview:not([hidden])');
+      const picture=overlay?.querySelector('video');
+      return picture?.playbackRate===1 && !picture.muted && picture.currentSrc.includes('/track-proxy/') &&
+        picture.videoWidth===320 && Math.abs(picture.duration-12/5.67)<.08 &&
+        [...overlay.querySelectorAll('audio')].filter(audio=>!audio.paused && audio.currentTime>.15).length===2;
+    })()`),'fitted playback with independent narration and music');
+    const continuity=await read(`(async () => {
+      const overlay=document.querySelector('.draft-transport-preview:not([hidden])');
+      const video=overlay.querySelector('video');
+      const sounds=[...overlay.querySelectorAll('audio')], starts=sounds.map(node=>node.currentTime);
+      const pauses=[0,0];
+      sounds.forEach((node,i)=>node.addEventListener('pause',()=>pauses[i]++));
+      const native=Object.getOwnPropertyDescriptor(HTMLMediaElement.prototype,'currentTime');
+      let seeks=0;
+      // 60 ms of timeline jitter is 340 ms in the original 5.67× source.
+      Object.defineProperty(video,'currentTime',{configurable:true,
+        get(){return native.get.call(this)-.06*this.playbackRate;},
+        set(value){seeks++;native.set.call(this,value);}
+      });
+      const wait=ms=>new Promise(resolve=>setTimeout(resolve,ms));
+      try {
+        await wait(240);
+        // One decoder waiting for pictures must not stop the ready sound lanes.
+        Object.defineProperty(video,'readyState',{configurable:true,get:()=>1});
+        await wait(180);
+      } finally {
+        delete video.readyState;delete video.currentTime;
+      }
+      return {pauses,seeks,soundSeconds:sounds.map((node,i)=>node.currentTime-starts[i])};
+    })()`);
+    assert.deepEqual(continuity.pauses,[0,0],'narration and music keep running while video buffers');
+    assert.equal(continuity.seeks,0,'normal frame jitter must not seek a 5.67× clip');
+    assert.ok(continuity.soundSeconds.every(seconds=>seconds>.33),'both audio clocks advance through the video wait');
+    results.autoFitContinuity=continuity;
+    const recovery=await read(`(async () => {
+      const overlay=document.querySelector('.draft-transport-preview:not([hidden])');
+      const video=overlay.querySelector('video'), sound=overlay.querySelector('audio');
+      const native=Object.getOwnPropertyDescriptor(HTMLMediaElement.prototype,'currentTime');
+      // A genuine half-second loss needs one seek back to the composition.
+      video.currentTime=Math.max(0,video.currentTime-.5*video.playbackRate);
+      let corrections=0;
+      Object.defineProperty(video,'currentTime',{configurable:true,get(){return native.get.call(this);},
+        set(value){corrections++;native.set.call(this,value);}
+      });
+      const until=performance.now()+650;
+      const drift=()=>Math.abs(video.currentTime/video.playbackRate-sound.currentTime);
+      try {
+        while((!corrections || video.seeking || drift()>.14) && performance.now()<until) {
+          await new Promise(requestAnimationFrame);
+        }
+        return {corrections,drift:drift(),soundPlaying:!sound.paused};
+      } finally { delete video.currentTime; }
+    })()`);
+    assert.equal(recovery.corrections,1,'large drift resynchronizes only the lagging video');
+    assert.ok(recovery.drift<=.14 && recovery.soundPlaying,'video catches up with the uninterrupted audio');
+    results.autoFitRecovery=recovery;
+    await waitFor(()=>read("document.querySelector('#timeline-play').ariaPressed==='false'"),'5.67× slot end');
+    await waitFor(()=>stable('blue'),'5.67× source tail');
+    for(const expected of ['red','green','blue']) {
+      assert.ok(samples.slice(from).some(frame=>frame.c===expected),'presents 5.67× source colour '+expected);
+    }
     console.log(JSON.stringify(results));
     assert.deepEqual(failures,[]);
   } finally {

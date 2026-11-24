@@ -137,13 +137,19 @@ function createPerformanceCache(directory, {inspect,thumbnail,encode,bootTime=re
     options.signal?.throwIfAborted();
     return posterBytes;
   }
-  async function proxy(asset, {readyOnly=false,background=false}={}) {
+  async function proxy(asset, {readyOnly=false,background=false,retime}={}) {
     const order = ++sequence;
     await writes;
-    const edge={smart:640,smooth:480,quality:1280}[state.optimization];
-    if(closing || (background && warmScope.signal.aborted) || asset.kind!=='video' || asset.alpha || Math.max(asset.width,asset.height)<=edge) return null;
+    const sourceEdge=Math.max(asset.width,asset.height);
+    const edge=retime?.original ? sourceEdge : {smart:640,smooth:480,quality:1280}[state.optimization];
+    if(closing || (background && warmScope.signal.aborted) || asset.kind!=='video' || asset.alpha) return null;
+    if (retime) {
+      if (typeof retime.original !== 'boolean' || !Number.isFinite(retime.rate) || retime.rate < 4 || retime.rate > 16
+        || ![24,25,30,60].includes(retime.fps) || !(asset.duration / retime.rate >= 1/retime.fps)) return null;
+    } else if (sourceEdge<=edge) return null;
     const dir=state.location, signal=proxyScope.signal;
-    const key=await fingerprint(asset.path,['proxy-v1',edge]), file=path.join(dir,'jj-'+key+'.mp4');
+    const variant=retime ? ['retimed-v1',edge,retime.rate,retime.fps,retime.original] : ['proxy-v1',edge];
+    const key=await fingerprint(asset.path,variant), file=path.join(dir,'jj-'+key+'.mp4');
     const cached = (await fs.stat(file).catch(()=>null))?.size;
     if (closing || signal.aborted) return null;
     if (cached || readyOnly) return cached ? file : null;
@@ -153,9 +159,9 @@ function createPerformanceCache(directory, {inspect,thumbnail,encode,bootTime=re
       await fs.mkdir(dir,{recursive:true});
       const temp=path.join(dir,'.jj-'+randomUUID()+'.mp4');
       try {
-        await encode(asset,temp,signal,edge);
+        await encode(asset,temp,signal,retime ? Math.min(sourceEdge,edge) : edge,retime);
         signal.throwIfAborted();
-        if (await fingerprint(asset.path,['proxy-v1',edge])!==key) return null;
+        if (await fingerprint(asset.path,variant)!==key) return null;
         signal.throwIfAborted();
         await fs.rename(temp,file);
         return file;

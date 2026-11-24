@@ -336,6 +336,10 @@
 .draft-transport-preview .draft-main {width:100%;height:100%;object-fit:contain;grid-area:1/1;}
 .draft-transport-preview .draft-layer {position:absolute;height:auto;max-height:100%;object-fit:contain;transform:translate(-50%,-50%);}
 .draft-transport-preview span {grid-area:1/1;font-size:12px;text-align:center;}
+.draft-transport-preview > .draft-preparing {
+  position:absolute; z-index:110000; inset:auto auto 12px; padding:4px 9px;
+  border-radius:6px; background:rgba(24,25,28,.82); color:#fff; pointer-events:none;
+}
 .app-frame[data-mode="montage"] .draft-transport-preview { container-type:size; }
 .draft-text-overlay {position:absolute;z-index:102000;width:max-content;max-width:100%;white-space:pre-wrap;overflow-wrap:anywhere;pointer-events:none;line-height:1.16;}
 #timeline-clock .sequence-block:hover .sequence-edge {background:rgba(255,255,255,.2);}

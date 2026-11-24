@@ -90,6 +90,7 @@ const captionInspector = window.mountCaptionInspector({
 const playerTools = window.mountPlayerTools({
   panel: $('.editor-player'), getClip: () => selected, isEditor: () => mode === 'montage',
   getTrackClock: () => trackPreviewClock, seekTrackSource: seekTimelineVideo,
+  isLibraryVideo: () => $('#preview-heading').textContent === '素材预览' && selected?.asset.kind === 'video',
   isTrack: () => $('#preview-heading').textContent === '轨道预览', validClip, notify: say,
   onImageTime:(clip,time)=>timeline?.syncPlayer(clip,time),
   getDraft:()=>timeline?.draftState(),
@@ -484,22 +485,22 @@ function updatePreviewMetadata(clip) {
   $('#preview-meta').textContent = clip.asset.kind === 'image' ? '图片' : `${label} · ${seconds.toFixed(2)} 秒`;
 }
 
-function seekTimelineVideo(clip, time) {
+function seekTimelineVideo(clip, time, holdFrame = true) {
   const target=Math.max(clip.start,Math.min(clip.end,time));
   if(proxyResume?.clip===clip) proxyResume.time=target;
   if(player.seeking) {
     // Keep the latest pointer position while the decoder finishes its in-flight seek.
-    pendingTimelineSeek={clip,time:target};
+    pendingTimelineSeek={clip,time:target,holdFrame};
     return;
   }
   if(player.readyState && player.currentSrc===player.getAttribute('src')) {
     pendingTimelineSeek=undefined;
     if(Math.abs(player.currentTime-target)>1e-6) {
-      previewHandoff.capture();
+      if (holdFrame) previewHandoff.capture();
       player.currentTime=target;
     }
-  } else pendingTimelineSeek={clip,time:target};
-  previewHandoff.revealWhen(player);
+  } else pendingTimelineSeek={clip,time:target,holdFrame};
+  if (holdFrame) previewHandoff.revealWhen(player);
 }
 
 function canProxyPreview(asset) {
@@ -510,6 +511,22 @@ function usePreviewProxy(asset, track) {
   if (mode !== 'montage' || !canProxyPreview(asset)) return false;
   const quality = $('#player-quality').value;
   return quality === 'proxy' || (quality === 'auto' && projectProxyEnabled && track);
+}
+
+function timelinePreviewSource(asset, retimeRate, playing) {
+  const reduced=usePreviewProxy(asset,true);
+  function standardSource() {
+    if(!reduced) return null;
+    const proxy=$('#player-quality').value==='proxy' ? api.trackProxy(asset.id) : api.playbackProxy(asset.id);
+    return proxy.then(url=>url && {url,reduced:true});
+  }
+  if(retimeRate>1) {
+    const fps=Number($('#fps').value);
+    // A paused scrub can immediately show the original while priming the next playback.
+    const prepared=api.retimedPreview(asset.id,{rate:retimeRate,fps,original:!reduced}).catch(()=>null);
+    if(playing) return prepared.then(url=>url ? {url,sourceScale:retimeRate,reduced,fps} : standardSource());
+  }
+  return standardSource();
 }
 
 function switchPreviewSource(clip, url, proxy) {
@@ -662,7 +679,7 @@ still.addEventListener('load', () => {
 });
 player.addEventListener('seeked', () => {
   if(pendingTimelineSeek && pendingTimelineSeek.clip===selected && player.currentSrc===player.getAttribute('src')) {
-    seekTimelineVideo(selected,pendingTimelineSeek.time);
+    seekTimelineVideo(selected,pendingTimelineSeek.time,pendingTimelineSeek.holdFrame);
   }
   if (trackPreviewClock) timeline?.syncPlayer(selected,player.currentTime);
   updateTrackPlayhead();
@@ -5556,6 +5573,12 @@ function createSourceCommit(clip, sessionActive) {
 cutEditor = window.createCutTrackEditor({
   container: $('#timeline-cut-editor'), getSceneCuts:()=>sceneCuts, getShots:()=>shots.map((_,i)=>({name:shotLabel(i)})),
   mountMonitor: playerTools.mountCutMonitor,
+  previewProxy:asset=>usePreviewProxy(asset,true) ? api.trackProxy(asset.id) : null,
+  retimedPreview:async(asset,rate)=>{
+    const original=!usePreviewProxy(asset,true);
+    const url=await api.retimedPreview(asset.id,{rate,fps:Number($('#fps').value),original});
+    return url ? {url,rate,original} : null;
+  },
   setSceneCuts:(records)=>{sceneCuts=records;renderLists();},
   sourceRanges:sourceRangesForClip,
   prepareSourceEdit:(asset,ranges)=>api.prepareSourceEdit(asset.id,ranges),
@@ -5571,8 +5594,7 @@ cutEditor = window.createCutTrackEditor({
   },
 });
 timeline = window.mountEditTimeline($('#timeline-clock'), {
-  previewHandoff, previewSource:asset=>usePreviewProxy(asset,true)
-    ? ($('#player-quality').value === 'proxy' ? api.trackProxy(asset.id) : api.playbackProxy(asset.id)) : null,
+  previewHandoff, previewSource:timelinePreviewSource,
   draftPlaybackChanged:()=>{syncTimelinePlayButton(); playerTools.sync();},
   draftTick:()=>playerTools.updatePosition(),
   toggleTrackControl,

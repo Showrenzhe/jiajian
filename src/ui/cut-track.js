@@ -184,6 +184,8 @@
       current = window.mountVideoCutTimeline(host, clip, {
         sourceRanges: options.sourceRanges?.(clip),
         mountMonitor: options.mountMonitor,
+        previewProxy: options.previewProxy,
+        retimedPreview: options.retimedPreview,
         commit: options.createCommit?.(clip, isCurrent) ?? ((ranges, speed, autoFit) => options.commitRanges(clip, ranges, isCurrent, speed, autoFit)),
         prepareSourceEdit: options.prepareSourceEdit,
         close: () => {

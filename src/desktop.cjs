@@ -381,7 +381,7 @@ async function launchDesktop({
   let proxyGeneration = 0;
   function clearTrackProxies() { proxyGeneration++; trackProxies.clear(); }
 
-  async function trackProxyUrl(id, readyOnly=false) {
+  async function trackProxyUrl(id, readyOnly=false, retime) {
     const asset = catalog.get(id);
     const generation = proxyGeneration;
     if (asset?.kind !== 'video') return null;
@@ -389,10 +389,11 @@ async function launchDesktop({
       const record = folderAssetOrigins.get(asset);
       if (record) await checkedMaterialPath(record);
       if (generation !== proxyGeneration) return null;
-      const file = await performanceCache.proxy(asset,{readyOnly});
+      const file = await performanceCache.proxy(asset,{readyOnly,retime});
       if (!file || generation !== proxyGeneration || catalog.get(id) !== asset) return null;
-      trackProxies.set(id,{file});
-      return `${scheme}://asset/track-proxy/${id}`;
+      const key = retime ? id + '/' + path.basename(file, '.mp4') : id;
+      trackProxies.set(key,{file});
+      return `${scheme}://asset/track-proxy/${key}`;
     } catch { return null; }
   }
   const thumbnailPending = new Map();
@@ -517,8 +518,8 @@ async function launchDesktop({
     }
     if (url.hostname === 'asset') {
       if (url.pathname.startsWith('/track-proxy/')) {
-        const id = url.pathname.slice('/track-proxy/'.length);
-        const proxy = catalog.has(id) && trackProxies.get(id);
+        const key = url.pathname.slice('/track-proxy/'.length);
+        const proxy = catalog.has(key.split('/')[0]) && trackProxies.get(key);
         return proxy ? mediaResponse(proxy.file, request.headers.get('range')) : new Response(null, { status: 404 });
       }
       const projectCover = /^\/project-cover\/([a-f0-9-]{36})$/.exec(url.pathname);
@@ -816,6 +817,7 @@ async function launchDesktop({
   });
   handle('workbench:audio-waveform', audioWaveform);
   handle('workbench:track-proxy', trackProxyUrl);
+  handle('workbench:retimed-preview', ({id,options}) => options ? trackProxyUrl(id,false,options) : null);
   handle('workbench:playback-proxy', async (id) => {
     const generation = proxyGeneration;
     const url = await trackProxyUrl(id,true);

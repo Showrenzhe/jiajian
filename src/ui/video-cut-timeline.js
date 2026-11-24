@@ -26,6 +26,7 @@ window.mountVideoCutTimeline = function mountVideoCutTimeline(host, clip, option
   let starts, total, selected = 0, head = 0, drag;
   let disposed = false, applying = false, playing = false, preparing = false, playIndex = 0;
   let renderKey = 0, run = 0, raf, renderedAsset, usingRender = false, pendingSeek, cropDialog, monitor;
+  let proxyUrl, baked, bakeRequest, requestedRate, mediaScale = 1;
   let scanStart, scanHead, scanTimer;
 
   const header = node('header');
@@ -176,7 +177,14 @@ window.mountVideoCutTimeline = function mountVideoCutTimeline(host, clip, option
     const previous = speed;
     speed = next;
     speedSelect.value = autoFit ? 'auto' : String(next);
-    const nativeRate = window.sampleVideoRate(next) ? 1 : next;
+    if (previous !== next && preparing) pause();
+    if (requestedRate !== next && !drag?.edge) requestSpeedPreview();
+    if (mediaScale !== 1 && mediaScale !== speed) {
+      setSource(false);
+      previewAt();
+      if (playing && !window.sampleVideoRate(speed)) startMedia(run);
+    }
+    const nativeRate = window.sampleVideoRate(next) ? 1 : next / mediaScale;
     if (video.defaultPlaybackRate !== nativeRate) video.defaultPlaybackRate = nativeRate;
     if (video.playbackRate !== nativeRate) video.playbackRate = nativeRate;
     if (playing && previous !== next) {
@@ -190,6 +198,20 @@ window.mountVideoCutTimeline = function mountVideoCutTimeline(host, clip, option
         startMedia(run);
       }
     }
+  }
+  function requestSpeedPreview() {
+    requestedRate = speed;
+    baked = undefined;
+    bakeRequest = undefined;
+    if (!window.shouldRetimeVideo(asset,speed) || !options.retimedPreview) return;
+    const request = Promise.resolve(options.retimedPreview(asset,speed)).catch(() => null);
+    bakeRequest = request;
+    request.then(result => {
+      if (disposed || request !== bakeRequest) return;
+      bakeRequest = undefined;
+      if (!result || result.rate !== speed) return;
+      baked = result;
+    });
   }
   function indexAt(time) {
     let lo = 0, hi = ranges.length - 1;
@@ -217,14 +239,19 @@ window.mountVideoCutTimeline = function mountVideoCutTimeline(host, clip, option
     // same edit time is also the next clip's in point.
     return head >= starts[selected] && head <= starts[selected + 1] ? selected : indexAt(head);
   }
-  function setSource(transformed) {
-    if (usingRender === transformed) return;
+  function setSource(transformed, timed = false) {
+    const fast = timed && baked?.rate === speed ? baked : undefined;
+    const url = transformed ? renderedAsset.url : fast?.url ?? proxyUrl ?? asset.url;
+    if (video.getAttribute('src') === url) return;
     usingRender = transformed;
-    video.src = transformed ? renderedAsset.url : asset.url;
+    mediaScale = fast?.rate ?? 1;
+    video.defaultPlaybackRate = window.sampleVideoRate(speed) ? 1 : speed / mediaScale;
+    video.src = url;
+    video.playbackRate = video.defaultPlaybackRate;
   }
   function flushSeek() {
     if (pendingSeek == null || !video.readyState || video.seeking) return;
-    const source = pendingSeek;
+    const source = pendingSeek / mediaScale;
     pendingSeek = undefined;
     if (Math.abs(video.currentTime - source) > 0.00001) video.currentTime = source;
   }
@@ -235,6 +262,8 @@ window.mountVideoCutTimeline = function mountVideoCutTimeline(host, clip, option
   watch(video, 'loadedmetadata', flushSeek);
   watch(video, 'seeked', flushSeek);
   function previewAt(source) {
+    // Frame edits need the original source cadence even when playback uses a retimed cache.
+    if (!playing && !preparing && mediaScale !== 1) setSource(false);
     const index = source !== undefined ? selected : playheadIndex();
     framePreview?.update(usingRender ? {} : ranges[index]);
     seekMedia(usingRender ? Math.min(head, Math.max(0, total - frame / 2)) : source ?? frameAt(index, head));
@@ -515,7 +544,7 @@ window.mountVideoCutTimeline = function mountVideoCutTimeline(host, clip, option
       return;
     }
     if (video.seeking || !video.readyState) return;
-    const source = video.currentTime;
+    const source = video.currentTime * mediaScale;
     if (usingRender) {
       if (video.ended || source >= total) { pause(); follow(total); }
       else follow(source);
@@ -561,6 +590,15 @@ window.mountVideoCutTimeline = function mountVideoCutTimeline(host, clip, option
         }
         if (token !== run) return;
         setSource(true);
+      } else {
+        if (bakeRequest) {
+          preparing = true;
+          showTransport();
+          status('正在准备倍速预览…');
+          await bakeRequest;
+        }
+        if (token !== run || disposed) return;
+        setSource(false,true);
       }
       if (token !== run || disposed) return;
       preparing = false;
@@ -599,7 +637,15 @@ window.mountVideoCutTimeline = function mountVideoCutTimeline(host, clip, option
   const advanceNative = () => { if (!window.sampleVideoRate(speed)) advance(); };
   watch(video, 'ended', advanceNative);
   watch(video, 'timeupdate', advanceNative);
-  watch(video, 'error', () => { if (playing) playbackError(video.error, run); });
+  watch(video, 'error', () => {
+    if ((baked && video.src === baked.url) || (proxyUrl && video.src === proxyUrl)) {
+      if (baked && video.src === baked.url) baked = undefined;
+      else proxyUrl = undefined;
+      setSource(false);
+      previewAt();
+      if (playing && !window.sampleVideoRate(speed)) startMedia(run);
+    } else if (playing) playbackError(video.error, run);
+  });
 
   function scrubSource(source) {
     // Source intervals may be repeated, out of order, or separated by gaps.
@@ -769,12 +815,24 @@ window.mountVideoCutTimeline = function mountVideoCutTimeline(host, clip, option
   layout();
   monitor = options.mountMonitor(preview, {
     asset, get time() { return head / speed; }, get end() { return total / speed; },
+    get proxy() { return video.readyState >= 1 && Boolean((baked && !baked.original && video.currentSrc === baked.url)
+      || (proxyUrl && video.currentSrc === proxyUrl)); },
     get playing() { return playing || preparing; }, get busy() { return applying; },
     togglePlay, pause, seek: time => { if (!applying && !drag) scrub(time * speed); }, onKey,
   });
   refreshShortcuts();
   showTransport();
   previewAt();
+  Promise.resolve(!window.shouldRetimeVideo(asset,speed) && options.previewProxy?.(asset)).then(url => {
+    if (!url || disposed) return;
+    proxyUrl = url;
+    // Keep the current decoder running until the next playback if the proxy arrives mid-shot.
+    if (!playing && !preparing && !usingRender && !drag) {
+      setSource(false);
+      previewAt();
+    }
+  }).catch(() => {});
+  watch(video, 'loadedmetadata', () => monitor?.updatePosition());
   playhead.focus({preventScroll: true});
   return {
     mode: 'cut', video,

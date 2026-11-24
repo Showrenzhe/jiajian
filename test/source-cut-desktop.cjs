@@ -668,6 +668,24 @@ async function check() {
     await wait(q(speedPicker)+'.value==="1" && '+approx(end,2.02),'重新打开后保留手动原速');
     await click(tool('cancel'));
     console.log('2.02 秒原片慢放到 3 秒，拖入、原片角标、重开、主预览、导出画面与原声，以及手动改回原速通过。');
+    openFile=path.join(directory,'高速分镜.sdworkbench');
+    await saveProject(openFile,{...empty.config,shots:[[{id:'video',start:0,end:6,speed:6,autoFitSpeed:true,
+      videoStart:0,videoDuration:1,videoFit:'hold'}]],shotSettings:[{duration:1}],
+      segmentVoiceCuts:[[]],segmentNarrationIds:[[]]},empty.assets);
+    await click('#open-project');
+    await wait(q('#notice')+'.textContent.includes("已打开工程：高速分镜")','打开高速分镜');
+    await dblclick(mainClip(0));
+    await click('#player-play');
+    await wait(localVideo+'.currentSrc.includes("/jj-") && !'+localVideo+'.paused && '+time+'>.12','高速缓存按剪后时间播放');
+    assert.equal(await read(localVideo+'.playbackRate'),1);
+    assert.ok(Math.abs(await read(localVideo+'.duration')-1)<.05);
+    assert.equal(await read(q('.player-quality-label')+'.textContent'),'原画');
+    await wait(localVideo+'.paused && '+approx(time,1)+' && '+q('#player-play')+'.ariaPressed==="false"','高速片段播放至尾部');
+    const mid=await point(ruler,.5);
+    await mouse('mousePressed',mid);await mouse('mouseReleased',mid);
+    await wait(approx(localVideo+'.currentTime',3,.08)+' && !'+localVideo+'.currentSrc.includes("/jj-")','停止后仍可精确定位到原素材第 3 秒');
+    await expectFrame('.video-cut-preview video',1);
+    await click(tool('cancel'));
     console.log('真实时间线双击、拖动、前后修剪、局部与工程撤销、同源实例、倒放预览和两次工程重开后的画面与原声导出均通过。');
   } finally { wc.debugger.detach(); win.destroy(); }
 }

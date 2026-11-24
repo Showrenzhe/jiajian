@@ -87,6 +87,7 @@ contextBridge.exposeInMainWorld('workbench', {
   processAudio: (request) => invoke('workbench:process-audio',request),
   trackProxy: (assetId) => invoke('workbench:track-proxy', assetId),
   playbackProxy: (id) => invoke('workbench:playback-proxy',id),
+  retimedPreview: (id, options) => invoke('workbench:retimed-preview',{id,options}),
   proxyDefault: () => invoke('workbench:proxy-default'),
   pickSubtitles: () => invoke('workbench:pick-subtitles'),
   recognizeSpeech: (id) => invoke('workbench:recognize-speech',id),

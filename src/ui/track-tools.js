@@ -87,6 +87,10 @@
     return rate > 16 || (rate > 0 && rate < 0.0625);
   }
 
+  function shouldRetimeVideo(asset, rate) {
+    return asset?.kind === 'video' && !asset.alpha && rate >= 4 && rate <= 16;
+  }
+
   function nativeVideoRate(rate) {
     return Number.isFinite(rate) && rate > 0 ? Math.max(.0625,Math.min(16,rate)) : 1;
   }
@@ -183,7 +187,7 @@
     return !voicePriority && clip?.asset?.kind === 'video' && clip.videoStart !== undefined
       && clip.videoDuration !== undefined && clip.matchedDuration === undefined;
   }
-  const tools = { splitRanges, candidateVideoLanes, pinCandidateLanes, minVideoSpeed, fitVideoSpeed, placedVideoSpeed, sampleVideoRate, nativeVideoRate, pictureSpan, videoLaneCells, emptyVideoCells,
+  const tools = { splitRanges, candidateVideoLanes, pinCandidateLanes, minVideoSpeed, fitVideoSpeed, placedVideoSpeed, sampleVideoRate, shouldRetimeVideo, nativeVideoRate, pictureSpan, videoLaneCells, emptyVideoCells,
     reservedVideoCells, normalizeVideoGaps, videoGroupLeaders, joinedVideoSequence, soloLaneSequence, usesPlacedVideoSource };
   if (typeof module === 'object' && module.exports) module.exports = tools;
   else Object.assign(window, tools);
