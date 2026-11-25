@@ -138,9 +138,25 @@ async function run() {
   async function point(s, portion = .5) {
     const point = await read(`(() => {
       const el = ${selector(s)}, r = el.getBoundingClientRect();
-      const x = Math.round(r.left + r.width * ${portion}), y = Math.round(r.top + r.height / 2);
+      let left = Math.max(r.left, 0), top = Math.max(r.top, 0);
+      let right = Math.min(r.right, document.documentElement.clientWidth);
+      let bottom = Math.min(r.bottom, document.documentElement.clientHeight);
+      for (let parent = el.parentElement; parent; parent = parent.parentElement) {
+        const style = getComputedStyle(parent), rect = parent.getBoundingClientRect();
+        if (style.overflowX !== 'visible') {
+          left = Math.max(left, rect.left + parent.clientLeft);
+          right = Math.min(right, rect.left + parent.clientLeft + parent.clientWidth);
+        }
+        if (style.overflowY !== 'visible') {
+          top = Math.max(top, rect.top + parent.clientTop);
+          bottom = Math.min(bottom, rect.top + parent.clientTop + parent.clientHeight);
+        }
+      }
+      const visible = {left, top, right, bottom};
+      if (right <= left || bottom <= top) return {matched:false, visible, bounds:r.toJSON()};
+      const x = Math.floor(left + (right - left) * ${portion}), y = Math.floor((top + bottom) / 2);
       const hit = document.elementFromPoint(x,y);
-      return {x,y,matched:el.contains(hit),hit:hit?.className,bounds:r.toJSON()};
+      return {x,y,matched:el.contains(hit),hit:hit?.className,visible,bounds:r.toJSON()};
     })()`);
     assert.ok(point.matched, '基准控件未命中 ' + s + ' ' + JSON.stringify(point));
     return {x:point.x,y:point.y};
@@ -207,7 +223,8 @@ async function run() {
   try {
     await makeProject();
     const display = screen.getDisplayMatching(win.getBounds());
-    win.setContentSize(Math.min(1400, display.workAreaSize.width - 24), Math.min(900, display.workAreaSize.height - 60));
+    const [widthLimit, heightLimit] = process.argv.includes('--compact') ? [1000, 660] : [1400, 900];
+    win.setContentSize(Math.min(widthLimit, display.workAreaSize.width - 24), Math.min(heightLimit, display.workAreaSize.height - 60));
     win.center();
     win.show();
     win.focus();
