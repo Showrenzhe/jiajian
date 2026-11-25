@@ -31,6 +31,7 @@ contextBridge.exposeInMainWorld('workbench', {
   checkUpdate: () => invoke('workbench:check-update'),
   downloadUpdate: () => invoke('workbench:download-update'),
   installUpdate: () => invoke('workbench:install-update'),
+  openUpdatePage: () => invoke('workbench:open-update-page'),
   setUpdatePreferences: preferences => invoke('workbench:set-update-preferences', preferences),
   openInstalledApps: () => invoke('workbench:open-installed-apps'),
   onUpdate: (callback) => {

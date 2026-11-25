@@ -11,9 +11,9 @@ const path = require('node:path');
 
 // Read update metadata with the same YAML parser the pinned updater uses.
 const yaml = createRequire(require.resolve('electron-updater/package.json'))('js-yaml');
-const { updateFeed } = require('../src/update-feed.cjs');
+const { releaseConfig } = require('../src/update-feed.cjs');
 
-async function verifyManifest(dist, version, notes, manifestFile = path.join(dist, require('semver').prerelease(version) ? 'preview.yml' : 'latest.yml')) {
+async function verifyManifest(dist, version, notes, manifestFile = path.join(dist, releaseConfig(version).channel + '.yml')) {
   const file = `Jiajian-Setup-${version}-x64.exe`;
   const manifest = yaml.load(await fs.readFile(manifestFile, 'utf8'));
   assert.equal(manifest.version, version, '更新清单版本与标签不符');
@@ -36,26 +36,21 @@ async function verifyManifest(dist, version, notes, manifestFile = path.join(dis
   assert.equal(blocks.sizes.reduce((total, length) => total + length, 0), size, '差分映射范围与安装包不符');
 }
 
-async function verifyUpdateMode(resources, version, feed) {
+async function verifyUpdateMode(resources, version) {
   const asar = require('@electron/asar');
-  const metadata = JSON.parse(asar.extractFile(path.join(resources,'app.asar'),'package.json'));
+  const metadata = JSON.parse(asar.extractFile(path.join(resources, 'app.asar'), 'package.json'));
   assert.equal(metadata.version, version, '安装包内应用版本不一致');
-  assert.equal(metadata.jiajianUpdateFeed ?? null, feed, '安装包内更新源与构建配置不一致');
-  const file = path.join(resources,'app-update.yml');
-  if (!feed) {
-    await assert.rejects(fs.access(file), {code:'ENOENT'}, '离线安装包不可内置在线更新配置');
-    return;
-  }
-  const config = yaml.load(await fs.readFile(file,'utf8'));
-  assert.equal(config.provider, 'generic');
-  assert.equal(config.url, feed);
-  assert.equal(config.channel ?? 'latest', require('semver').prerelease(version) ? 'preview' : 'latest');
+  assert.equal(metadata.jiajianUpdateFeed, undefined, '安装包内仍有旧更新源配置');
+  const provider = yaml.load(await fs.readFile(path.join(resources, 'app-update.yml'), 'utf8'));
+  delete provider.updaterCacheDirName;
+  delete provider.publisherName;
+  assert.deepEqual(provider, releaseConfig(version), '安装包应使用佳剪官方 GitHub 发布通道');
 }
 
-async function verifyPackagedResources(dist, version = require('../package.json').version, feed = updateFeed(process.env.JIAJIAN_UPDATE_URL)) {
+async function verifyPackagedResources(dist, version = require('../package.json').version) {
   const resources = path.join(dist, 'win-unpacked', 'resources');
   assert.ok((await fs.stat(path.join(resources,'ProjectThumbnail.dll'))).size > 0, '缺少 Windows 工程缩略图处理器');
-  await verifyUpdateMode(resources, version, feed);
+  await verifyUpdateMode(resources, version);
   const installer = await fs.open(path.join(dist,`Jiajian-Setup-${version}-x64.exe`), 'r');
   try {
     const signature = Buffer.alloc(2);
@@ -82,10 +77,9 @@ if (require.main === module) {
   (async () => {
     const version = require('../package.json').version;
     const dist = path.resolve(process.env.JIAJIAN_DIST_DIR || 'dist');
-    const feed = updateFeed(process.env.JIAJIAN_UPDATE_URL);
-    if (feed) await verifyManifest(dist, version, await fs.readFile(process.argv[2], 'utf8'));
-    await verifyPackagedResources(dist,version,feed);
-    console.log(`v${version} ${feed ? '内部更新清单与安装包' : '离线安装包'}、打包资源和本地工具已通过检查。`);
+    await verifyManifest(dist, version, await fs.readFile(process.argv[2], 'utf8'));
+    await verifyPackagedResources(dist, version);
+    console.log(`v${version} 官方 GitHub 更新清单与安装包、打包资源和本地工具已通过检查。`);
   })().catch((error) => { console.error(error); process.exitCode = 1; });
 }
 

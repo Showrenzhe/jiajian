@@ -1,46 +1,67 @@
-name: 构建内部 Windows 安装包
+name: 发布佳剪 Windows 版本
+
 on:
+  push:
+    tags: ['v*.*.*']
   workflow_dispatch:
     inputs:
       tag:
-        description: 已合入 main 的版本标签
-        type: string
+        description: 已存在的标签，例如 v0.9.0 或 v0.9.1-preview.1
         required: true
+        type: string
+
 permissions:
-  contents: read
+  contents: write
+
+concurrency:
+  group: release-windows-${{ inputs.tag || github.ref_name }}
+  cancel-in-progress: false
+
 jobs:
   release:
-    if: github.event.repository.private
-    runs-on: windows-latest
+    runs-on: windows-2022
     timeout-minutes: 75
     env:
-      RELEASE_TAG: ${{ inputs.tag }}
-      JIAJIAN_UPDATE_URL: ${{ vars.JIAJIAN_UPDATE_URL }}
+      RELEASE_TAG: ${{ inputs.tag || github.ref_name }}
     steps:
-      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+      - name: 校验版本标签
+        shell: pwsh
+        run: |
+          if ($env:RELEASE_TAG -cnotmatch '^v(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)(?:-preview\.(0|[1-9]\d*))?$') {
+            throw '请输入 v主版本.次版本.修订号，可添加 -preview.序号。'
+          }
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
         with:
-          ref: refs/tags/${{ inputs.tag }}
+          ref: refs/tags/${{ env.RELEASE_TAG }}
           fetch-depth: 0
           persist-credentials: false
-      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020
+      - name: 确认标签提交已经合入 main
+        run: |
+          git merge-base --is-ancestor HEAD refs/remotes/origin/main
+          if ($LASTEXITCODE -ne 0) { throw '正式标签必须指向已合入 main 的提交。' }
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
         with:
           node-version: '24'
           cache: npm
-      - run: |
-          if (!$env:JIAJIAN_UPDATE_URL) { throw '请配置内部 HTTPS 更新目录 JIAJIAN_UPDATE_URL。' }
-          git merge-base --is-ancestor HEAD refs/remotes/origin/main
-          if ($LASTEXITCODE) { throw '标签尚未合入 main。' }
       - run: npm ci
-      - run: node scripts/release-notes.cjs $env:RELEASE_TAG "$env:RUNNER_TEMP/notes.md"
-      - run: ./scripts/prepare-release-tools.ps1
-      - run: npm run dist:win -- "-c.releaseInfo.releaseNotesFile=$env:RUNNER_TEMP/notes.md"
-      - run: node scripts/verify-release.cjs "$env:RUNNER_TEMP/notes.md"
-      - uses: actions/upload-artifact@v4
-        with:
-          name: internal-windows-${{ inputs.tag }}
-          path: |
-            dist/*.exe
-            dist/*.blockmap
-            dist/*.yml
-            !dist/builder*.yml
-          if-no-files-found: error
+      - name: 生成此版本的更新说明
+        run: node scripts/release-notes.cjs $env:RELEASE_TAG "$env:RUNNER_TEMP/release-notes.md"
+      - name: 恢复已校验的离线工具
+        run: |
+          ./scripts/prepare-release-tools.ps1
+          $bin = (Resolve-Path 'tools/ffmpeg-8.0-full_build/bin').Path
+          "SUPERDIR_REPLICA_FFMPEG=$bin\ffmpeg.exe" >> $env:GITHUB_ENV
+          "SUPERDIR_REPLICA_FFPROBE=$bin\ffprobe.exe" >> $env:GITHUB_ENV
+          $bin >> $env:GITHUB_PATH
+      - run: npm test
+      - run: npm run test:updates
+      - run: node --test test/release-workflow.test.cjs
+      - run: ./test/release-publish.test.ps1
+      - name: 构建安装包与自动更新清单
+        run: npm run dist:win -- "-c.releaseInfo.releaseNotesFile=$env:RUNNER_TEMP/release-notes.md"
+      - name: 核对安装包、更新说明与离线引擎
+        run: node scripts/verify-release.cjs "$env:RUNNER_TEMP/release-notes.md"
+      - name: 上传到草稿，校验全部附件后发布
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: ./scripts/publish-release.ps1 -Tag $env:RELEASE_TAG -Notes "$env:RUNNER_TEMP/release-notes.md"

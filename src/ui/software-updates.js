@@ -31,7 +31,7 @@ window.bindSoftwareUpdates = (api) => {
       idle: '检查是否有新版本。', checking: '正在检查更新…', current: '已是最新版本。',
       available: '发现新版本 ' + version, downloading: '正在下载 ' + version,
       downloaded: '版本 ' + version + ' 已下载，可以保存草稿并重启。', installing: '正在启动安装程序…',
-      unsupported: message || '请向管理员获取内部安装包。',
+      unsupported: message || '可从佳剪的 GitHub 发布页获取安装程序。',
       error: '更新失败，请重试。',
     };
     $('update-channel').value = state?.channel ?? 'stable';
@@ -53,6 +53,7 @@ window.bindSoftwareUpdates = (api) => {
     const commands = {
       idle: ['检查更新', 'checkUpdate'], current: ['再次检查', 'checkUpdate'],
       available: ['下载更新', 'downloadUpdate'], downloaded: ['保存并重启更新', 'installUpdate'],
+      unsupported: ['打开官方发布页', 'openUpdatePage'],
       error: { download: ['重试下载', 'downloadUpdate'], install: ['重试保存并重启', 'installUpdate'] }[retry] || ['重新检查', 'checkUpdate'],
     };
     const command = commands[status];
@@ -60,7 +61,7 @@ window.bindSoftwareUpdates = (api) => {
     action.disabled = submitting || !command;
     action.textContent = command?.[0] || '';
     action.dataset.method = command?.[1] || '';
-    // The service only supplies a version after verifying a newer stable release.
+    // The service only supplies a version after verifying a newer release.
     const updateHints = {
       available: '可更新', downloading: '正在下载', downloaded: '已下载，等待安装',
       installing: '正在安装', checking: '可更新，正在重新检查',

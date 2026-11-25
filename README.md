@@ -1,5 +1,7 @@
 **内部专用，禁止外传**
 
+员工安装版通过公开的 GitHub Releases 分发。工程、素材和配音凭据保存在本地。
+
 # 佳剪
 
 佳剪是一款 Windows x64 桌面剪辑软件。把素材按分镜分组，配上口播和字幕，即可预览并批量导出 MP4。
@@ -8,7 +10,9 @@
 
 ## 安装
 
-运行团队分发的 `Jiajian-Setup-版本号-x64.exe`，从 Windows 开始菜单打开「佳剪」。[升级与回退指南](docs/migration.md)
+首次安装请在正式版发布页下载 Windows x64 的 `Jiajian-Setup-版本号-x64.exe`，安装后从开始菜单打开「佳剪」。[正式版发布页](https://github.com/Showrenzhe/jiajian/releases/latest)
+
+公开安装版 0.8.x 的同事可在「软件更新」中检查并安装新版。此前已安装离线版 0.9.0 的同事，请保存草稿、退出佳剪，手动运行公开版 0.9.0 安装包覆盖一次。此后可在应用内更新。[升级与回退指南](docs/migration.md)
 
 ## 第一次混剪
 

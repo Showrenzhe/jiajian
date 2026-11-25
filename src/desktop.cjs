@@ -712,6 +712,7 @@ async function launchDesktop({
   handle('workbench:get-update', () => updates.getState());
   handle('workbench:check-update', checkUpdates);
   handle('workbench:download-update', () => updates.download());
+  handle('workbench:open-update-page', () => shell.openExternal('https://github.com/Showrenzhe/jiajian/releases/latest'));
   handle('workbench:set-update-preferences', preferences => updates.setPreferences(preferences));
   handle('workbench:open-installed-apps', () => {
     if (!updates.getState().canManageInstallation) throw new Error('此功能仅适用于 Windows 安装版。');

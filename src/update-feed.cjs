@@ -1,12 +1,17 @@
 'use strict';
 
-function updateFeed(value) {
-  if (!value) return null;
-  const url = new URL(value);
-  if (url.protocol !== 'https:' || url.username || url.password || url.search || url.hash) {
-    throw Error('内部更新地址必须是 HTTPS 目录，不可携带凭据或查询参数。');
+const githubRepository = Object.freeze({ provider: 'github', owner: 'Showrenzhe', repo: 'jiajian' });
+
+function releaseConfig(version) {
+  const prerelease = require('semver').prerelease(version);
+  if (prerelease && prerelease[0] !== 'preview') {
+    throw new Error('预览版标签应使用 vX.Y.Z-preview.N。');
   }
-  if (!url.pathname.endsWith('/')) url.pathname += '/';
-  return url.href;
+  return {
+    ...githubRepository,
+    channel: prerelease ? 'preview' : 'latest',
+    releaseType: prerelease ? 'prerelease' : 'release',
+  };
 }
-module.exports = { updateFeed };
+
+module.exports = { githubRepository, releaseConfig };

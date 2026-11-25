@@ -13,21 +13,37 @@ const { releaseNotes } = require('../scripts/release-notes.cjs');
 const { verifyManifest } = require('../scripts/verify-release.cjs');
 const yaml = createRequire(require.resolve('electron-updater/package.json'))('js-yaml');
 
-test('CI runs Windows checks and internal release builds only retain a private artifact', async () => {
+test('标签触发 Windows 构建，安装包通过校验后发布到 GitHub 草稿', async () => {
   const workflow = yaml.load(await fs.readFile(path.join(__dirname, '../.github/workflows/release-windows.yml'), 'utf8'));
+  assert.deepEqual(workflow.on.push.tags, ['v*.*.*']);
   assert.equal(workflow.on.workflow_dispatch.inputs.tag.required, true);
-  assert.equal(workflow.jobs.release.if,'github.event.repository.private');
-  assert.equal(workflow.permissions.contents,'read');
-  const steps = workflow.jobs.release.steps;
-  assert.equal(steps.find(step=>step.uses?.startsWith('actions/checkout@')).with.ref,'refs/tags/${{ inputs.tag }}');
-  const commands=steps.map(step=>step.run??'').join('\n');
-  assert.match(commands,/prepare-release-tools/);
-  assert.match(commands,/verify-release/);
-  assert.doesNotMatch(commands,/gh release|publish-release/);
-  const ci=yaml.load(await fs.readFile(path.join(__dirname,'../.github/workflows/ci.yml'),'utf8'));
-  assert.ok(Object.hasOwn(ci.on,'pull_request'));
-  assert.deepEqual(ci.jobs.checks.steps.filter(s=>['npm ci','npm test','npm run test:smoke'].includes(s.run)).map(s=>s.run),
-    ['npm ci','npm test','npm run test:smoke']);
+  assert.equal(workflow.permissions.contents, 'write');
+  assert.equal(workflow.concurrency['cancel-in-progress'], false);
+  assert.match(workflow.concurrency.group, /inputs.tag .* github.ref_name/);
+  const { steps, env } = workflow.jobs.release;
+  assert.equal(env.RELEASE_TAG, '${{ inputs.tag || github.ref_name }}');
+  const checkout = steps.find(step => step.uses?.startsWith('actions/checkout@'));
+  assert.equal(checkout.with.ref, 'refs/tags/${{ env.RELEASE_TAG }}');
+  assert.equal(checkout.with['persist-credentials'], false);
+  const commands = steps.map(step => step.run || '').join('\n');
+  const sequence = ['merge-base --is-ancestor', 'npm ci', 'release-notes.cjs', 'prepare-release-tools.ps1',
+    'npm test', 'npm run test:updates', './test/release-publish.test.ps1', 'npm run dist:win', 'verify-release.cjs', 'publish-release.ps1 -Tag'];
+  let last = -1;
+  for (const command of sequence) {
+    const current = commands.indexOf(command);
+    assert.ok(current > last, command);
+    last = current;
+  }
+  assert.equal(steps.filter(step => step.env?.GH_TOKEN).length, 1);
+  assert.equal(steps.at(-1).env.GH_TOKEN, '${{ github.token }}');
+  const ci = yaml.load(await fs.readFile(path.join(__dirname, '../.github/workflows/ci.yml'), 'utf8'));
+  assert.ok(Object.hasOwn(ci.on, 'pull_request'));
+  const baseline = ci.jobs.benchmark.steps.find(step => step.id === 'baseline').run;
+  assert.match(baseline, /actions\/runs["] -f branch=/);
+  assert.match(baseline, /\.github\/workflows\/ci\.yml/);
+  assert.match(baseline, /artifacts\.artifacts/);
+  assert.deepEqual(ci.jobs.checks.steps.filter(s => ['npm ci', 'npm test', 'npm run test:smoke'].includes(s.run)).map(s => s.run),
+    ['npm ci', 'npm test', 'npm run test:smoke']);
 });
 
 async function fixture(t) {
@@ -36,23 +52,28 @@ async function fixture(t) {
   return root;
 }
 
-test('离线安装包检查 asar 版本且拒绝嵌入更新源，在线包检查通道', async t => {
+test('安装包的版本、公开仓库和稳定或预览清单必须对应', async t => {
   const root = await fixture(t);
-  const source = path.join(root,'source');
+  const source = path.join(root, 'source');
   await fs.mkdir(source);
   const asar = require('@electron/asar');
-  const archive = path.join(root,'app.asar');
-  const {verifyUpdateMode} = require('../scripts/verify-release.cjs');
-  await fs.writeFile(path.join(source,'package.json'),JSON.stringify({version:'1.0.0'}));
-  await asar.createPackage(source,archive);
-  await verifyUpdateMode(root,'1.0.0',null);
-  const feed = 'https://updates.example.invalid/';
-  await fs.writeFile(path.join(root,'app-update.yml'),JSON.stringify({provider:'generic',url:feed,channel:'preview'}));
-  await assert.rejects(verifyUpdateMode(root,'1.0.0',null),/离线安装包/);
-  await fs.writeFile(path.join(source,'package.json'),JSON.stringify({version:'1.0.1-preview.1',jiajianUpdateFeed:feed}));
-  asar.uncache(archive);
-  await asar.createPackage(source,archive);
-  await verifyUpdateMode(root,'1.0.1-preview.1',feed);
+  const archive = path.join(root, 'app.asar');
+  const { verifyUpdateMode } = require('../scripts/verify-release.cjs');
+  const { releaseConfig } = require('../src/update-feed.cjs');
+  for (const [version, channel, releaseType] of [
+    ['1.0.0', 'latest', 'release'], ['1.0.1-preview.1', 'preview', 'prerelease'],
+  ]) {
+    const config = { provider: 'github', owner: 'Showrenzhe', repo: 'jiajian', channel, releaseType };
+    assert.deepEqual(releaseConfig(version), config);
+    await fs.writeFile(path.join(source, 'package.json'), JSON.stringify({ version }));
+    asar.uncache(archive);
+    await asar.createPackage(source, archive);
+    const file = path.join(root, 'app-update.yml');
+    await fs.writeFile(file, JSON.stringify({ ...config, updaterCacheDirName: 'jiajian-updater' }));
+    await verifyUpdateMode(root, version);
+    await fs.writeFile(file, JSON.stringify({ ...config, repo: 'wrong' }));
+    await assert.rejects(verifyUpdateMode(root, version), /官方 GitHub/);
+  }
 });
 
 test('generate notes from commits since the previous stable tag, or use the edited version', async (t) => {

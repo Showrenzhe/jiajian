@@ -1,10 +1,10 @@
 'use strict';
 
 const { existsSync, readFileSync, writeFileSync, renameSync } = require('node:fs');
-const { updateFeed } = require('./update-feed.cjs');
+const { githubRepository } = require('./update-feed.cjs');
 const path = require('node:path');
 
-// Internal release notes may contain Markdown or HTML. Display plain text.
+// GitHub release notes may contain Markdown or HTML. Display plain text.
 function releaseNotes(value) {
   const body = Array.isArray(value) ? value.map(entry => entry?.note).filter(Boolean).join('\n\n') : value;
   if (typeof body !== 'string') return '';
@@ -21,13 +21,12 @@ function releaseNotes(value) {
 }
 
 const failureMessages = {
-  check: '无法获取内部更新信息。请检查网络后重试。',
+  check: '无法获取 GitHub 版本信息。请检查网络后重试。',
   download: '下载或校验更新包失败。请检查网络和磁盘空间后重试。',
-  install: '无法启动更新安装程序。请重试或联系管理员。',
+  install: '无法启动更新安装程序。请重试或前往 GitHub 发布页下载安装包。',
 };
 
-function createAppUpdates({ app, onState = () => {}, updater, dataDirectory, feed = require('../package.json').jiajianUpdateFeed }) {
-  const url = updateFeed(feed);
+function createAppUpdates({ app, onState = () => {}, updater, dataDirectory }) {
   const preferencesFile = dataDirectory && path.join(dataDirectory, 'update-preferences.json');
   const validPreferences = value => value && ['stable','preview'].includes(value.channel)
     && [0,24,72,168].includes(value.intervalHours);
@@ -40,10 +39,10 @@ function createAppUpdates({ app, onState = () => {}, updater, dataDirectory, fee
   }
   const supported = app.isPackaged && process.platform === 'win32' && process.arch === 'x64';
   let state = {
-    status: supported && url ? 'idle' : 'unsupported', ...preferences, currentVersion: app.getVersion(),
+    status: supported ? 'idle' : 'unsupported', ...preferences, currentVersion: app.getVersion(),
     canManageInstallation: supported && existsSync(path.join(path.dirname(process.execPath), 'Uninstall ' + path.basename(process.execPath))),
     version: '', notes: '', percent: 0, retry: null,
-    message: !supported ? '自动更新适用于 Windows x64 安装版。' : url ? '' : '此安装包未配置内部更新地址，请联系管理员。',
+    message: supported ? '' : '自动更新适用于 Windows x64 安装版。可从佳剪的 GitHub 发布页获取安装程序。',
   };
   const getState = () => ({ ...state });
   function setState(status, changes = {}) {
@@ -56,16 +55,15 @@ function createAppUpdates({ app, onState = () => {}, updater, dataDirectory, fee
     return setState('error', { message, retry: action });
   }
   let semver;
-  if (supported && url) {
+  if (supported) {
     // Existing offline launchers can run a source checkout using their own
     // Electron runtime, without the installer's npm dependencies.
     semver = require('semver');
     updater ??= require('electron-updater').autoUpdater;
     updater.autoDownload = false;
     updater.autoInstallOnAppQuit = false;
-    updater.setFeedURL({ provider:'generic', url, channel:preferences.channel === 'preview' ? 'preview' : 'latest' });
-    updater.allowPrerelease = preferences.channel === 'preview';
-    updater.allowDowngrade = false;
+    updater.setFeedURL({ ...githubRepository });
+    selectChannel(preferences.channel);
     updater.disableWebInstaller = true;
     updater.on('download-progress', ({ percent }) => {
       if (state.status === 'downloading' && Number.isFinite(percent)) {
@@ -78,6 +76,13 @@ function createAppUpdates({ app, onState = () => {}, updater, dataDirectory, fee
     updater.on('error', error => {
       if (state.status === 'installing') fail('install', error);
     });
+  }
+  function selectChannel(channel) {
+    // GitHub selects the Atom entry from updater.channel and the prerelease tag prefix.
+    updater.channel = channel === 'preview' ? 'preview' : 'latest';
+    updater.allowPrerelease = channel === 'preview';
+    // electron-updater enables downgrades as a side effect of setting channel.
+    updater.allowDowngrade = false;
   }
   function mayRetry(action) {
     return state.status === 'error' && state.retry === action;
@@ -96,13 +101,19 @@ function createAppUpdates({ app, onState = () => {}, updater, dataDirectory, fee
       const { version, releaseNotes: notes } = result.updateInfo;
       // Only the selected channel's versioned installer can be downloaded.
       if (!semver.valid(version) || (state.channel === 'stable' && semver.prerelease(version)) || !semver.gt(version, state.currentVersion)
-          || (result.updateInfo.tag !== undefined && result.updateInfo.tag !== 'v' + version)
+          || result.updateInfo.tag !== 'v' + version
           || result.updateInfo.files?.length !== 1 || result.updateInfo.files[0].url !== `Jiajian-Setup-${version}-x64.exe`) {
-        throw new Error('Invalid stable release metadata');
+        throw new Error('Invalid GitHub release metadata');
       }
       return setState('available', { version, notes: releaseNotes(notes) });
     } catch (error) {
-      if (error?.code === 'ERR_UPDATER_CHANNEL_FILE_NOT_FOUND') return fail('check', error, '内部更新服务器缺少该通道的更新清单。');
+      if (state.channel === 'preview' && error?.code === 'ERR_UPDATER_NO_PUBLISHED_VERSIONS') return markCurrent();
+      if (error?.code === 'ERR_UPDATER_CHANNEL_FILE_NOT_FOUND') {
+        // Early official releases offered only a ZIP and never published latest.yml.
+        const tag = /^Cannot find latest\.yml in the latest release artifacts \(https:\/\/github\.com\/Showrenzhe\/jiajian\/releases\/download\/v(\d+\.\d+\.\d+)\/latest\.yml\)/i.exec(error.message)?.[1];
+        if (state.channel === 'stable' && semver.valid(tag) && semver.lte(tag, state.currentVersion)) return markCurrent();
+        return fail('check', error, '该 GitHub 版本缺少更新清单，请前往佳剪发布页查看安装包。');
+      }
       return fail('check', error);
     }
   }
@@ -136,10 +147,8 @@ function createAppUpdates({ app, onState = () => {}, updater, dataDirectory, fee
     }
     const switched = preferences.channel !== next.channel;
     preferences = next;
-    if (switched && supported && url) {
-      updater.setFeedURL({ provider:'generic', url, channel:next.channel === 'preview' ? 'preview' : 'latest' });
-      updater.allowPrerelease = next.channel === 'preview';
-      updater.allowDowngrade = false;
+    if (switched && supported) {
+      selectChannel(next.channel);
       return setState('idle', { ...next, version:'', notes:'', percent:0 });
     }
     state = { ...state, ...next };

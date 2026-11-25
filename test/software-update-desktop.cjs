@@ -290,7 +290,8 @@ async function run() {
   win.emit('focus');
   assert.equal(checks, 4, 'A window kept open should check again when it regains focus');
   send('unsupported', { canManageInstallation: false });
-  await until('document.getElementById("update-action").hidden');
+  await until('document.getElementById("update-action").textContent === "打开官方发布页"');
+  assert.equal(await read('document.getElementById("update-action").dataset.method'), 'openUpdatePage');
   await expectBadge(null);
   assert.equal(await read('document.getElementById("update-manage-installation").checkVisibility()'), false);
   assert.match(await read('workbench.openInstalledApps().then(() => "", e => e.message)'), /Windows 安装版/);
