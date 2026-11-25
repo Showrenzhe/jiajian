@@ -1,4 +1,4 @@
-name: 发布佳剪 Windows 正式版
+name: 发布佳剪 Windows 版本
 
 on:
   push:
@@ -6,7 +6,7 @@ on:
   workflow_dispatch:
     inputs:
       tag:
-        description: 已存在的正式版标签，例如 v0.6.3
+        description: 已存在的标签，例如 v0.9.0 或 v0.9.1-preview.1
         required: true
         type: string
 
@@ -24,11 +24,11 @@ jobs:
     env:
       RELEASE_TAG: ${{ inputs.tag || github.ref_name }}
     steps:
-      - name: 校验正式版标签
+      - name: 校验版本标签
         shell: pwsh
         run: |
-          if ($env:RELEASE_TAG -cnotmatch '^v(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)$') {
-            throw '仅接受 v主版本.次版本.修订号'
+          if ($env:RELEASE_TAG -cnotmatch '^v(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)(?:-preview\.(0|[1-9]\d*))?$') {
+            throw '请输入 v主版本.次版本.修订号，可添加 -preview.序号。'
           }
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
         with:
@@ -43,50 +43,16 @@ jobs:
         with:
           node-version: '24'
           cache: npm
+      - run: npm ci
       - name: 生成此版本的更新说明
         run: node scripts/release-notes.cjs $env:RELEASE_TAG "$env:RUNNER_TEMP/release-notes.md"
       - name: 恢复已校验的离线工具
         run: |
-          $ErrorActionPreference = 'Stop'
-          $installer = Join-Path $env:RUNNER_TEMP 'Jiajian-Setup-0.8.3-x64.exe'
-          $url = 'https://github.com/Showrenzhe/jiajian/releases/download/v0.8.3/Jiajian-Setup-0.8.3-x64.exe'
-          curl.exe --fail --location --silent --show-error --retry 3 --output $installer $url
-          if ($LASTEXITCODE -ne 0) { throw '下载 v0.8.3 官方安装包失败。' }
-          if ((Get-FileHash -LiteralPath $installer -Algorithm SHA256).Hash -ne 'bbf42446e0f26d9064e33481d527853fe17364e3d6389ed73848cbc6f609d387') {
-            throw 'v0.8.3 官方安装包 SHA-256 不符。'
-          }
-
-          $files = [ordered]@{
-            'bin/ffmpeg.exe'  = '81b5832f6c548d64feba0ec7d643397e2351d9f3460a65c6c296956045eebaea'
-            'bin/ffprobe.exe' = '421dbc81a3d758dfe114534ff48ef47a61ef91896eb4b9e819609a8752ab8272'
-            'LICENSE'         = '8ceb4b9ee5adedde47b31e975c1d90c73ad27b6b165a1dcd80c7c545eb65b903'
-            'README.txt'      = '3f887c5c1c7f1e4f5699f50939a7c9afd84e36324132d7352bf551c51f8e930e'
-          }
-          $staging = Join-Path $env:RUNNER_TEMP ([guid]::NewGuid().ToString())
-          $toolDir = 'tools/ffmpeg-8.0-full_build'
-          $entries = @($files.Keys | ForEach-Object { "resources/$toolDir/$_" })
-          # Read the NSIS installer without executing it, then extract only the four tool files.
-          7z.exe e '-tNSIS' "-o$staging" $installer '$PLUGINSDIR/app-64.7z'
-          if ($LASTEXITCODE -ne 0) { throw '提取 v0.8.3 安装包内的应用归档失败。' }
-          $payload = Join-Path $staging 'app-64.7z'
-          if (!(Test-Path -LiteralPath $payload -PathType Leaf)) { throw '安装包缺少 app-64.7z。' }
-          7z.exe x '-t7z' "-o$staging" $payload @entries
-          if ($LASTEXITCODE -ne 0) { throw '提取 v0.8.3 离线工具失败。' }
-          foreach ($name in $files.Keys) {
-            $source = Join-Path $staging "resources/$toolDir/$name"
-            if (!(Test-Path -LiteralPath $source -PathType Leaf) -or (Get-FileHash -LiteralPath $source -Algorithm SHA256).Hash -ne $files[$name]) {
-              throw "v0.8.3 离线工具缺失或校验失败：$name"
-            }
-            $destination = Join-Path $toolDir $name
-            [void](New-Item -ItemType Directory -Force -Path (Split-Path -Parent $destination))
-            Copy-Item -LiteralPath $source -Destination $destination -Force
-          }
           ./scripts/prepare-release-tools.ps1
           $bin = (Resolve-Path 'tools/ffmpeg-8.0-full_build/bin').Path
           "SUPERDIR_REPLICA_FFMPEG=$bin\ffmpeg.exe" >> $env:GITHUB_ENV
           "SUPERDIR_REPLICA_FFPROBE=$bin\ffprobe.exe" >> $env:GITHUB_ENV
           $bin >> $env:GITHUB_PATH
-      - run: npm ci
       - run: npm test
       - run: npm run test:updates
       - run: node --test test/release-workflow.test.cjs

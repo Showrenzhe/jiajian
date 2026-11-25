@@ -9,7 +9,7 @@ const path = require('node:path');
 const { Readable } = require('node:stream');
 const { pathToFileURL } = require('node:url');
 const {
-  audioExtensions, imageExtensions, videoExtensions, maxExports, maxShots, maxCandidates, maxWholeTracks,
+  audioExtensions, imageExtensions, videoExtensions, maxShots, maxCandidates, maxWholeTracks,
   inspectAsset, createVideoThumbnail, createTrackProxy, extractAudioWaveform, previewSubtitleStyle, planExtraction, exportBatch,
 } = require('./media.cjs');
 const { readHistory, remember, renameOutputs, resolveOutput } = require('./history.cjs');
@@ -34,6 +34,7 @@ const { createCreativeSettings, runCreative } = require('./creative-service.cjs'
 const { createWaveformCache } = require('./waveform-cache.cjs');
 const { createPerformanceCache } = require('./performance-cache.cjs');
 const { createAppUpdates } = require('./app-updates.cjs');
+const { checkExportDirectory } = require('./export-preflight.cjs');
 const { isLocalPath, isMaterialPath, isSharedMaterialPath, materialPathKey, checkedMaterialPath } = require('./material-path.cjs');
 
 const scheme = 'sd-workbench';
@@ -41,15 +42,15 @@ const page = `${scheme}://app/index.html`;
 const uiFiles = new Set(['/index.html', '/app.js', '/styles.css', '/dialog-focus.js', '/creative-service.js', '/script-workspace.js', '/script-workspace.css',
   '/editor-text.js', '/text-presets.js', '/caption-inspector.js', '/caption-inspector.css', '/audio-tools.js', '/waveform.js', '/voice-alignment.js', '/draft-transport.js',
   '/track-organizer.js', '/cover-editor.js', '/visual-editor.js', '/batch-edit.js',
-  '/timeline.js', '/timeline-selection.js', '/timeline.css', '/cut-filmstrip.js', '/cut-picture-view.js', '/video-cut-timeline.js', '/cut-track.js', '/cut-track.css', '/layer-motion.js', '/layer-motion.css', '/subprojects.js',
+  '/editor-controls.js', '/material-library-view.js', '/timeline-packaging-state.js', '/timeline.js', '/timeline-selection.js', '/timeline.css', '/cut-filmstrip.js', '/cut-picture-view.js', '/video-cut-timeline.js', '/cut-track.js', '/cut-track.css', '/layer-motion.js', '/layer-motion.css', '/subprojects.js',
   '/track-workspace.css', '/edit-history.js', '/track-tools.js', '/track-controls.js', '/track-tools.css', '/cloud-tts-dialog.js', '/cloud-tts-dialog.css',
-  '/cloud-tts-settings.js', '/cut-shortcuts.js', '/cloud-tts-settings.css', '/split-view.js', '/panel-layout.js', '/material-folders.js', '/draft-workspace.js', '/player-tools.js', '/assets/jiajian-logo.png', '/assets/project-cover.jpg',
+  '/cloud-tts-settings.js', '/cut-shortcuts.js', '/messages-zh-cn.js', '/editing-help.js', '/editing-help.css', '/cloud-tts-settings.css', '/split-view.js', '/panel-layout.js', '/material-folders.js', '/draft-workspace.js', '/player-tools.js', '/assets/jiajian-logo.png', '/assets/project-cover.jpg',
   '/glass-material.css', '/inspector-controls.css', '/editor-surfaces.css', '/player-controls.css', '/appearance.js', '/appearance.css', '/software-updates.js',
   '/color-wheel.js', '/color-wheel.css', '/menu-motion.js', '/menu-motion.css']);
 const maxCatalog = (maxShots + 1) * (maxCandidates + maxWholeTracks);
 const maxSubtitleBatchBytes = 1024 * 1024;
 const maxSpeechJobs = maxShots;
-const updateCheckInterval = 4 * 60 * 60 * 1000;
+const hourMs = 60 * 60 * 1000;
 const maxThumbnailCache = 96;
 const maxThumbnailRequests = 64;
 const maxThumbnailWorkers = 2;
@@ -61,7 +62,7 @@ const maxListedFolders = 96;
 const maxListedFiles = 320;
 const maxMaterialLoads = 64;
 const maxMaterialWorkers = 2;
-const projectFilter = { name: '佳剪工程', extensions: ['sdworkbench'] };
+const projectFilter = { name: '佳剪工程', extensions: ['jiajian', 'sdworkbench'] };
 const mediaTypes = new Map(Object.entries({
   jpg: 'image/jpeg', jpeg: 'image/jpeg', png: 'image/png', bmp: 'image/bmp', webp: 'image/webp',
   mp4: 'video/mp4', m4v: 'video/mp4', mov: 'video/quicktime', webm: 'video/webm',
@@ -78,6 +79,7 @@ try {
 }
 
 function describeAsset(id, asset) {
+  if (asset.missing) return {id, missing:true, name:'缺失 · '+asset.name, kind:asset.kind, duration:asset.duration, width:0, height:0, hasAudio:false, url:'',sourceKey:materialSourceKey(asset.missingPath)};
   const { kind, name, duration, width, height, codec, fps, audioIndex } = asset;
   return { id, kind, name, duration, width, height, codec, fps, ...(asset.path && {sourceKey: materialSourceKey(asset.path)}), ...(asset.alpha && { alpha: true }), hasAudio: audioIndex !== null, url: `${scheme}://asset/${id}` };
 }
@@ -150,6 +152,12 @@ async function launchDesktop({
   dataDirectory = path.resolve(__dirname, '../run-data'),
   cloudTts,
   updateFactory = createAppUpdates,
+  openInstalledApps = () => new Promise((resolve,reject) => {
+    const child=require('node:child_process').spawn(path.join(process.env.SystemRoot, 'explorer.exe'),
+      ['ms-settings:appsfeatures'], {windowsHide:true,stdio:'ignore',shell:false});
+    child.once('error',reject);
+    child.once('spawn',()=>{child.unref();resolve();});
+  }),
   checkOnStartup = show,
   updateClock = Date.now,
 } = {}) {
@@ -162,6 +170,14 @@ async function launchDesktop({
   }
   app.commandLine.appendSwitch('disable-background-networking');
   app.commandLine.appendSwitch('disable-component-update');
+  const rendering = require('./rendering-policy.cjs').createRenderingPolicy(dataDirectory);
+  const diagnostics = require('./diagnostics.cjs').createDiagnostics(dataDirectory);
+  if (rendering.active && !app.isReady()) app.disableHardwareAcceleration();
+  const onChildExit = (_event, details) => {
+    diagnostics.processExit(details.type, details);
+    try { rendering.processGone(details); } catch (error) { console.warn('未能保存 GPU 兼容模式', error.code); }
+  };
+  app.on('child-process-gone', onChildExit);
   if (!schemeRegistered) {
     protocol.registerSchemesAsPrivileged([{ scheme, privileges: { standard: true, secure: true, stream: true, corsEnabled: true } }]);
     schemeRegistered = true;
@@ -185,9 +201,10 @@ async function launchDesktop({
   }
   const performanceCache = createPerformanceCache(dataDirectory, {inspect:inspectAsset, thumbnail:createVideoThumbnail, encode:createTrackProxy});
   const sourceEditDirectory = path.join(dataDirectory, 'source-edits');
-  const drafts = createDraftStore(path.join(dataDirectory, 'drafts'),resolveOutputFile,performanceCache.inspectCached,sourceEditDirectory);
+  const drafts = createDraftStore(path.join(dataDirectory, 'drafts'),resolveOutputFile,performanceCache.inspectCached,sourceEditDirectory,{allowMissing:true});
   const published = new Set(recent.map((item) => item.path));
   let job;
+  let exportDiagnostic = null;
   let pickerOpen = false;
   let closing = false;
   let draftCloseReady = false;
@@ -543,7 +560,7 @@ async function launchDesktop({
       }
       const id = url.pathname.slice(1);
       const asset = activePreview?.id === id ? activePreview.asset : catalog.get(id) ?? voiceSamples.get(id);
-      if (asset) {
+      if (asset && !asset.missing) {
         const serve = (file) => ['image', 'video', 'audio'].includes(asset.kind) ? mediaResponse(file, request.headers.get('range'))
           : net.fetch(pathToFileURL(file).href);
         const record = folderAssetOrigins.get(asset);
@@ -588,7 +605,7 @@ async function launchDesktop({
     draftCloseAllowed = false;
     if (!win.isDestroyed()) win.setEnabled(true);
   }
-  const updates = updateFactory({ app, onState(state) {
+  const updates = updateFactory({ app, dataDirectory, onState(state) {
     if (state.status === 'error' && updateLocked) unlockUpdate();
     if (!win.isDestroyed()) win.webContents.send('workbench:update-state', state);
   } });
@@ -600,14 +617,15 @@ async function launchDesktop({
     return updates.check();
   }
   function checkUpdatesIfDue() {
-    const { status, retry } = updates.getState();
-    if (win.isDestroyed() || updateLocked || !(status === 'idle' || status === 'current'
+    const { status, retry, intervalHours = 24 } = updates.getState();
+    if (intervalHours === 0 || win.isDestroyed() || updateLocked || !(status === 'idle' || status === 'current'
         || status === 'available' || (status === 'error' && retry === 'check'))) return;
     const elapsed = updateClock() - lastUpdateCheck;
-    if (elapsed >= 0 && elapsed < updateCheckInterval) return;
+    if (elapsed >= 0 && elapsed < intervalHours * hourMs) return;
     Promise.resolve(checkUpdates()).catch(() => {});
   }
   win.webContents.setWindowOpenHandler(() => ({ action: 'deny' }));
+  win.webContents.on('render-process-gone', (_event, details) => diagnostics.processExit('Renderer',details));
   win.webContents.on('will-navigate', (event) => event.preventDefault());
   win.webContents.on('will-attach-webview', (event) => event.preventDefault());
   app.on('window-all-closed', () => {
@@ -667,6 +685,7 @@ async function launchDesktop({
     win.webContents.send('workbench:before-draft-close', token);
   });
   win.once('closed', () => {
+    app.off('child-process-gone', onChildExit);
     draftCloseRequest?.finishUpdate?.(false);
     clearDraftClose();
   });
@@ -694,9 +713,10 @@ async function launchDesktop({
   handle('workbench:check-update', checkUpdates);
   handle('workbench:download-update', () => updates.download());
   handle('workbench:open-update-page', () => shell.openExternal('https://github.com/Showrenzhe/jiajian/releases/latest'));
+  handle('workbench:set-update-preferences', preferences => updates.setPreferences(preferences));
   handle('workbench:open-installed-apps', () => {
     if (!updates.getState().canManageInstallation) throw new Error('此功能仅适用于 Windows 安装版。');
-    return shell.openExternal('ms-settings:appsfeatures');
+    return openInstalledApps().then(()=>undefined);
   });
   handle('workbench:install-update', async () => {
     const { status, retry } = updates.getState();
@@ -825,7 +845,24 @@ async function launchDesktop({
     return url;
   });
   handle('workbench:proxy-default', () => performanceCache.settings.defaultProxy);
-  handle('workbench:performance-settings', () => performanceCache.view());
+  const withRendering = data => ({ ...data, softwareRendering: rendering.software });
+  handle('workbench:performance-settings', async () => withRendering(await performanceCache.view()));
+  handle('workbench:diagnostic-summary', () => diagnostics.snapshot(app));
+  handle('workbench:copy-export-diagnostics', async () => {
+    const summary = await diagnostics.snapshot(app);
+    require('electron').clipboard.writeText(JSON.stringify({ ...summary, export: exportDiagnostic }, null, 2));
+  });
+  handle('workbench:export-diagnostics', async () => {
+    const selected = await dialogs.showSaveDialog(win,{title:'导出诊断包',defaultPath:'佳剪诊断-'+new Date().toISOString().slice(0,10)+'.json',filters:[{name:'诊断信息',extensions:['json']}]});
+    if (selected.canceled || !selected.filePath) return false;
+    if (!isLocalPath(selected.filePath) || path.extname(selected.filePath).toLowerCase()!=='.json') throw Error('请选择本地 JSON 文件。');
+    await fs.writeFile(selected.filePath,JSON.stringify(await diagnostics.snapshot(app),null,2),'utf8');
+    return true;
+  });
+  handle('workbench:rendering-mode', async value => {
+    rendering.set(value);
+    return withRendering(await performanceCache.view());
+  });
   handle('workbench:performance-save', (patch) => {
     if (!patch || Object.keys(patch).some(key => !['optimization','defaultProxy'].includes(key))) throw new Error('性能设置无效。');
     if (patch.optimization && patch.optimization !== performanceCache.settings.optimization) clearTrackProxies();
@@ -856,6 +893,11 @@ async function launchDesktop({
     return publicDraft(await drafts.save(value, new Map(catalog)));
   });
   handle('workbench:draft-close-ready', () => { draftCloseReady = true; return true; });
+  handle('workbench:await-cut-close-decision', token => {
+    if (!draftCloseRequest || token !== draftCloseRequest.token || draftCloseRequest.finishUpdate) return false;
+    clearTimeout(draftCloseRequest.timer);
+    return true;
+  });
   handle('workbench:complete-draft-close', (value) => {
     if (!draftCloseRequest || value?.token !== draftCloseRequest.token || typeof value.ok !== 'boolean') return false;
     if (draftCloseRequest.finishUpdate) {
@@ -1235,7 +1277,7 @@ async function launchDesktop({
     pickerOpen = true;
     try {
       const { canceled, filePath } = await dialogs.showSaveDialog(win, {
-        title: '保存工程', defaultPath: '未命名工程.sdworkbench', filters: [projectFilter],
+        title: '保存工程', defaultPath: '未命名工程.jiajian', filters: [projectFilter],
       });
       if (canceled || !filePath) return null;
       try {
@@ -1306,6 +1348,7 @@ async function launchDesktop({
     lookupByPath.clear();
     for (const [id, asset] of assets) {
       catalog.set(ids.get(id), asset);
+      if (asset.missing) continue;
       lookupByPath.set(assetPathKey(asset.kind, asset.path), ids.get(id));
       if (isSharedMaterialPath(asset.path)) folderAssetOrigins.set(asset, {path:asset.path, root:asset.path, kind:asset.kind});
     }
@@ -1323,6 +1366,34 @@ async function launchDesktop({
     return { config: restoredConfig, assets: descriptions, folders };
   }
 
+  handle('workbench:relink-materials', async config => {
+    if (job || pickerOpen) throw Error('请先完成当前操作。');
+    const {missingReferences,validateCuts,restoreLocatedEdits} = require('./project-format.cjs');
+    const missing = new Map(missingReferences(config,catalog).map(id => [id,catalog.get(id)]));
+    if (!missing.size) return [];
+    pickerOpen = true;
+    try {
+      const picked = await dialogs.showOpenDialog(win,{title:'选择缺失素材所在的目录',properties:['openDirectory']});
+      if (picked.canceled || !picked.filePaths[0]) return null;
+      const root = picked.filePaths[0];
+      const found = await require('./relink.cjs').locateMissing(root,missing,(file,kind) =>
+        kind==='lut' ? inspectLut(file) : performanceCache.inspectCached(file,kind));
+      await restoreLocatedEdits(config,catalog,found,sourceEditDirectory,performanceCache.inspectCached);
+      if (found.size===missing.size) validateCuts(config,new Map([...catalog,...found]));
+      for (const asset of found.values()) if (isSharedMaterialPath(asset.path)) await rememberMaterialGrant(sharedFileGrantDirectory,asset.path);
+      for (const [id,asset] of found) {
+        catalog.set(id,asset); lookupByPath.set(assetPathKey(asset.kind,asset.path),id);
+        if (isSharedMaterialPath(asset.path)) folderAssetOrigins.set(asset,{root,path:asset.path,kind:asset.kind});
+      }
+      previewBatch=undefined;
+      return [...found].map(([id,asset])=>describeAsset(id,asset));
+    } finally {pickerOpen=false;}
+  });
+  function requireOnline(config) {
+    if (![...catalog.values()].some(asset=>asset.missing)) return;
+    const ids = require('./project-format.cjs').missingReferences(config,catalog);
+    if (ids.length) throw Error('请先重新定位缺失素材：'+ids.map(id=>catalog.get(id).name).join('、'));
+  }
   handle('workbench:open-draft', async (id) => {
     if (job || pickerOpen) throw new Error('请先完成当前操作。');
     pickerOpen = true;
@@ -1351,7 +1422,7 @@ async function launchDesktop({
         projectPath = projects.find((project) => project.id === id)?.path;
         if (!projectPath) throw new Error('找不到这个本地项目。');
       }
-      const { config, assets } = await loadProject(projectPath,resolveOutputFile,performanceCache.inspectCached,sourceEditDirectory);
+      const { config, assets } = await loadProject(projectPath,resolveOutputFile,performanceCache.inspectCached,sourceEditDirectory,{allowMissing:true});
       const restored = await restoreCatalog(config, assets);
       const libraryWarning = await trackProject(projectPath);
       boundProject = { token: randomUUID(), filePath: projectPath };
@@ -1387,7 +1458,7 @@ async function launchDesktop({
     lookRequest?.abort();const request=new AbortController();lookRequest=request;
     const at=asset.kind==='image'?0:Math.max(0,Math.min(value.time,asset.duration-1/(asset.fps||30)));
     try{
-      return await previewLook(process.env.SUPERDIR_REPLICA_FFMPEG||'ffmpeg',asset,look,catalog,at,value.ratio,request.signal,Number.isFinite(value.origin)?Math.max(0,value.origin):0);
+      return await previewLook(process.env.JIAJIAN_FFMPEG || process.env.SUPERDIR_REPLICA_FFMPEG || 'ffmpeg',asset,look,catalog,at,value.ratio,request.signal,Number.isFinite(value.origin)?Math.max(0,value.origin):0);
     }catch(error){if(request.signal.aborted)return null;throw error;}
     finally{if(lookRequest===request)lookRequest=undefined;}
   });
@@ -1607,6 +1678,7 @@ async function launchDesktop({
     const { signal } = job;
     try {
       const { config, scope } = request?.scope === undefined ? { config: request } : request;
+      requireOnline(config);
       const plans = scope === undefined ? await prepareMontagePlans(config, catalog, { signal })
         : await prepareSubprojectPlans(config, scope, catalog, { signal });
       if (signal.aborted) return null;
@@ -1658,7 +1730,9 @@ async function launchDesktop({
   handle('workbench:export', async (value) => {
     if (job || pickerOpen) throw new Error('请先完成当前操作。');
     const { mode, config, selection: chosen } = value || {};
+    exportDiagnostic = { phase: 'planning' };
     if (!['montage', 'audio'].includes(mode)) throw new Error('导出模式无效。');
+    if (mode==='montage') requireOnline(config);
     job = new AbortController();
     const { signal } = job;
     try {
@@ -1668,6 +1742,9 @@ async function launchDesktop({
       const selection = await dialogs.showOpenDialog(win, { title: '选择导出目录', properties: ['openDirectory', 'createDirectory'] });
       if (selection.canceled) return null;
       await checkPlanFolderFiles(plans, signal);
+      exportDiagnostic = { phase: 'preflight', count: plans.length };
+      await checkExportDirectory(selection.filePaths[0], plans, signal);
+      exportDiagnostic.phase = 'encoding';
       const result = await exportBatch(plans, selection.filePaths[0], {
         signal,
         onUpdate: (data) => {
@@ -1675,6 +1752,15 @@ async function launchDesktop({
         },
       });
       for (const file of result.results) published.add(file.path);
+      exportDiagnostic = { phase: result.cancelled ? 'cancelled' : 'finished', count: plans.length,
+        saved: result.results.length, failed: result.failures.length };
+      if (show && !result.cancelled && result.results.length) {
+        const { Notification } = require('electron');
+        try {
+          if (Notification.isSupported()) new Notification({title:'佳剪导出完成',
+            body:`已保存 ${result.results.length} 条${result.failures.length ? '，失败 '+result.failures.length+' 条' : ''}。`}).show();
+        } catch { /* A system notification is optional after the files have been saved. */ }
+      }
       if (result.results.length) {
         try {
           await remember(dataDirectory, recent, result.results);
@@ -1700,6 +1786,9 @@ async function launchDesktop({
   });
 
   await win.loadURL(page);
+  if (show && rendering.consumeNotice()) void dialogs.showMessageBox(win, {
+    type:'info', title:'已开启兼容模式', message:'上次运行期间 GPU 进程连续退出，佳剪已改用软件渲染。可在设置的「性能与代理」中调整。',
+  });
   if (show) {
     async function* preloadMaterials(rows) {
       for await (const row of rows) {
@@ -1724,7 +1813,7 @@ async function launchDesktop({
   }
   if (checkOnStartup && updates.getState().status !== 'unsupported') {
     checkUpdatesIfDue();
-    updateTimer = setInterval(checkUpdatesIfDue, updateCheckInterval);
+    updateTimer = setInterval(checkUpdatesIfDue, hourMs);
     win.on('focus', checkUpdatesIfDue);
     powerMonitor.on('resume', checkUpdatesIfDue);
     win.once('closed', () => {

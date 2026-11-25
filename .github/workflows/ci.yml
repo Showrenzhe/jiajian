@@ -1,0 +1,112 @@
+name: CI
+on:
+  pull_request:
+  push:
+    branches: [main]
+  workflow_dispatch:
+    inputs:
+      integrated_gpu:
+        description: 同时在已登记的内部 Windows 集成显卡机器上采样
+        type: boolean
+        default: false
+  schedule:
+    - cron: '17 3 * * *'
+permissions:
+  contents: read
+jobs:
+  checks:
+    name: Windows / 单元与桌面冒烟
+    runs-on: windows-latest
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020
+        with:
+          node-version: '24'
+          cache: npm
+      - run: npm ci
+      - run: npm run lint
+      - run: npm run typecheck
+      - run: |
+          ./scripts/prepare-release-tools.ps1
+          (Resolve-Path tools/ffmpeg-8.0-full_build/bin).Path >> $env:GITHUB_PATH
+      - run: npm test
+      - run: npm run test:smoke
+      - if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
+        run: npm run test:desktop
+      - if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: desktop-diagnostics
+          path: run-data/test-artifacts/
+          if-no-files-found: ignore
+          retention-days: 7
+  benchmark:
+    name: Windows / 大工程帧间隔
+    runs-on: windows-latest
+    timeout-minutes: 30
+    permissions:
+      contents: read
+      actions: read
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020
+        with:
+          node-version: '24'
+          cache: npm
+      - run: npm ci
+      - run: |
+          ./scripts/prepare-release-tools.ps1
+          (Resolve-Path tools/ffmpeg-8.0-full_build/bin).Path >> $env:GITHUB_PATH
+      - run: npm run bench:large
+      - uses: actions/upload-artifact@v4
+        with:
+          name: benchmark-large
+          path: run-data/benchmarks/large.json
+          retention-days: 30
+      - name: 找上一次主线基准
+        id: baseline
+        env:
+          GH_TOKEN: ${{ github.token }}
+          BASE_BRANCH: ${{ github.base_ref || github.event.repository.default_branch }}
+        run: |
+          $runIds = gh api --paginate --method GET "repos/$env:GITHUB_REPOSITORY/actions/runs" -f branch="$env:BASE_BRANCH" -f event=push -f status=success -F per_page=100 --jq '.workflow_runs[] | select(.path == ".github/workflows/ci.yml") | .id'
+          if ($LASTEXITCODE) { exit $LASTEXITCODE }
+          foreach ($runId in $runIds) {
+            $artifacts = gh api --method GET "repos/$env:GITHUB_REPOSITORY/actions/runs/$runId/artifacts" -f name=benchmark-large | ConvertFrom-Json
+            if ($LASTEXITCODE) { exit $LASTEXITCODE }
+            if ($artifacts.artifacts | Where-Object { !$_.expired }) {
+              "run=$runId" >> $env:GITHUB_OUTPUT
+              break
+            }
+          }
+      - if: steps.baseline.outputs.run
+        uses: actions/download-artifact@v4
+        with:
+          github-token: ${{ github.token }}
+          run-id: ${{ steps.baseline.outputs.run }}
+          name: benchmark-large
+          path: run-data/benchmarks/previous
+      - if: steps.baseline.outputs.run
+        run: node scripts/compare-bench.cjs run-data/benchmarks/previous/large.json run-data/benchmarks/large.json
+  integrated-graphics:
+    if: github.event_name == 'workflow_dispatch' && inputs.integrated_gpu && github.event.repository.private && github.ref_name == github.event.repository.default_branch
+    runs-on: [self-hosted, Windows, integrated-graphics]
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          persist-credentials: false
+      - run: npm ci
+      - run: |
+          ./scripts/prepare-release-tools.ps1
+          (Resolve-Path tools/ffmpeg-8.0-full_build/bin).Path >> $env:GITHUB_PATH
+      - run: npm run bench:large
+      - uses: actions/upload-artifact@v4
+        with:
+          name: benchmark-integrated-graphics
+          path: run-data/benchmarks/large.json

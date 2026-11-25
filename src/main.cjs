@@ -8,8 +8,8 @@ const path = require('node:path');
 let dataDirectory;
 if (app.isPackaged) {
   const tools = path.join(process.resourcesPath, 'tools', 'ffmpeg-8.0-full_build', 'bin');
-  process.env.SUPERDIR_REPLICA_FFMPEG ||= path.join(tools, 'ffmpeg.exe');
-  process.env.SUPERDIR_REPLICA_FFPROBE ||= path.join(tools, 'ffprobe.exe');
+  process.env.JIAJIAN_FFMPEG ||= process.env.SUPERDIR_REPLICA_FFMPEG || path.join(tools, 'ffmpeg.exe');
+  process.env.JIAJIAN_FFPROBE ||= process.env.SUPERDIR_REPLICA_FFPROBE || path.join(tools, 'ffprobe.exe');
   dataDirectory = path.join(app.getPath('appData'), '佳剪', 'run-data');
 }
 

@@ -35,7 +35,10 @@ async function fingerprint(file, variant) {
 function createPerformanceCache(directory, {inspect,thumbnail,encode,bootTime=readBootIdentity}) {
   let state = readPerformance(directory), writes = Promise.resolve();
   const meta = path.join(directory,'material-cache-v1'), pending = new Map();
+  const budget = require('./cache-budget.cjs').createCacheBudget(meta);
+  budget.track(state.location).catch(()=>{});
   let proxyScope = new AbortController(), warmScope = new AbortController(), closing = false;
+  let metadataEpoch=0;
   const lifetime = new AbortController();
   let activeEncode, queuedPreview, queuedWarm, sequence = 0;
   function serializeChange(fn) {
@@ -58,7 +61,7 @@ function createPerformanceCache(directory, {inspect,thumbnail,encode,bootTime=re
     const snapshot = state;
     let bytes=0;
     for(const file of await proxyEntries(snapshot.location)) bytes+=(await fs.stat(file).catch(()=>null))?.size ?? 0;
-    return {...snapshot,bytes};
+    return {...snapshot,bytes,cacheBytes:await budget.bytes(snapshot.location)};
   }
   function change(patch) {
     return serializeChange(async()=>{
@@ -108,6 +111,7 @@ function createPerformanceCache(directory, {inspect,thumbnail,encode,bootTime=re
   }
   async function inspectCached(file,kind,{signal}={}) {
     signal?.throwIfAborted();
+    const epoch=metadataEpoch;
     const key=await fingerprint(file,kind), dest=path.join(meta,key+'.json');
     const asset=await once(dest,async()=>{
       try {
@@ -117,7 +121,7 @@ function createPerformanceCache(directory, {inspect,thumbnail,encode,bootTime=re
       // Preloading and opening a draft can share this probe. Cancelling one caller
       // must not cancel the other caller's metadata read.
       const probed=await inspect(file,kind,{signal:lifetime.signal});
-      if (await fingerprint(file,kind) === key) await atomicWrite(dest,JSON.stringify(probed)).catch(()=>{});
+      if (await fingerprint(file,kind) === key && epoch===metadataEpoch) await atomicWrite(dest,JSON.stringify(probed)).then(()=>budget.track(state.location,dest)).catch(()=>{});
       return probed;
     });
     signal?.throwIfAborted();
@@ -125,13 +129,14 @@ function createPerformanceCache(directory, {inspect,thumbnail,encode,bootTime=re
   }
   async function poster(asset,options={}) {
     if(asset.kind!=='video') return null;
+    const epoch=metadataEpoch;
     const key=await fingerprint(asset.path,['poster',options.time ?? null]);
     const dest=path.join(meta,key+'.jpg');
     options.signal?.throwIfAborted();
     const posterBytes = await once(dest,async()=>{
       try { return await fs.readFile(dest); } catch {}
       const bytes=await thumbnail(asset,{...options,signal:lifetime.signal});
-      if(bytes && await fingerprint(asset.path,['poster',options.time ?? null]) === key) await atomicWrite(dest,bytes).catch(()=>{});
+      if(bytes && await fingerprint(asset.path,['poster',options.time ?? null]) === key && epoch===metadataEpoch) await atomicWrite(dest,bytes).then(()=>budget.track(state.location,dest)).catch(()=>{});
       return bytes;
     });
     options.signal?.throwIfAborted();
@@ -164,15 +169,17 @@ function createPerformanceCache(directory, {inspect,thumbnail,encode,bootTime=re
         if (await fingerprint(asset.path,variant)!==key) return null;
         signal.throwIfAborted();
         await fs.rename(temp,file);
-        return file;
+        return await budget.track(dir,file) ? file : null;
       } finally { await fs.rm(temp,{force:true}).catch(()=>{}); }
     },background,order);
   }
   function clear() {
     return serializeChange(async () => {
       warmScope.abort();
+      metadataEpoch++;
       await resetProxies();
-      for(const file of await proxyEntries(state.location)) await fs.rm(file,{force:true});
+      await Promise.allSettled([...pending.values()]);
+      await budget.clear(state.location);
       await atomicWrite(path.join(meta,'last-boot.json'),JSON.stringify(await bootTime()));
       return view();
     });

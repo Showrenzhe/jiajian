@@ -1,0 +1,12 @@
+{
+  "compilerOptions": {
+    "allowJs": true,
+    "checkJs": false,
+    "noEmit": true,
+    "target": "ES2024",
+    "module": "Node16",
+    "skipLibCheck": true,
+    "types": ["node"]
+  },
+  "files": ["src/project-format.cjs", "src/shot-timing.cjs", "src/media.cjs", "src/source-edit.cjs"]
+}

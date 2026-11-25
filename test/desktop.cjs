@@ -391,9 +391,11 @@ async function run() {
     await waitForInspector(name);
   }
   async function openBatch(count) {
-    await waitFor(`document.querySelectorAll('.batch-select').length === ${count} && !document.querySelector('#timeline-batch-tab').disabled`, '应生成可打开的混剪组合');
+    await waitFor(`document.querySelector('#preview-batch-summary').textContent.includes(' / ${count} 条') && !document.querySelector('#timeline-batch-tab').disabled`, '应生成可打开的混剪组合');
     await runInWindow('document.querySelector("#timeline-batch-tab").click()');
     await waitFor('document.querySelector("#timeline-tracks-panel").hidden && document.querySelector("#preview-batch").getClientRects().length > 0', '批量预览标签应显示成片组合');
+    await runInWindow('{ const filter=document.querySelector("#batch-reuse-filter"); filter.value="all"; filter.dispatchEvent(new Event("change")); }');
+    assert.equal(await runInWindow('document.querySelectorAll("#preview-batch-list .batch-select").length'),count);
   }
 
   assert.equal(await runInWindow('document.title'), '佳剪');

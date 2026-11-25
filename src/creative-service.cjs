@@ -63,7 +63,7 @@ async function runCreative({ baseUrl, apiKey }, request, catalog, directory, { s
   const action = request?.action;
   if (!['avatar', 'cover', 'replicate'].includes(action)) throw new Error('创作任务类型无效。');
   const base = new URL(baseUrl.endsWith('/') ? baseUrl : baseUrl + '/');
-  if (base.protocol !== 'https:' && !(base.protocol === 'http:' && base.hostname === '127.0.0.1')) throw new Error('创作服务地址无效。');
+  if (base.protocol !== 'https:' && !(require('./cloud-transport-policy.cjs').allowedLocalTest() && base.protocol === 'http:' && base.hostname === '127.0.0.1')) throw new Error('创作服务地址无效。');
   const headers = apiKey ? { Authorization: 'Bearer ' + apiKey } : {};
   const form = new FormData();
   form.set('prompt', cleanText(request.prompt ?? '', 4096));

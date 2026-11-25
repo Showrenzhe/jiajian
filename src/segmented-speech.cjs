@@ -151,7 +151,7 @@ async function synthesizeSegmented({ provider, jobs, speed, volume, pitch, trimP
     if (!ranges) throw new Error('无法可靠对齐每段原文。请检查台词、段间停顿或选择能返回词级时间码的音色服务。');
     await fs.mkdir(directory, { recursive: true });
     folder = await fs.mkdtemp(path.join(directory, '分段-'));
-    const ffmpeg = process.env.SUPERDIR_REPLICA_FFMPEG || 'ffmpeg';
+    const ffmpeg = process.env.JIAJIAN_FFMPEG || process.env.SUPERDIR_REPLICA_FFMPEG || 'ffmpeg';
     const splitTimes = ranges.slice(1).map(range => range.start / 1000);
     progress('正在切分配音片段');
     const name = n => '配音-' + String(n).padStart(4, '0') + '.wav';

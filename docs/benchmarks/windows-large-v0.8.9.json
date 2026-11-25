@@ -1,0 +1,93 @@
+{
+  "environment": {
+    "appVersion": "0.8.9",
+    "electron": "45.2.3",
+    "platform": "10.0.26200",
+    "cpu": "12th Gen Intel(R) Core(TM) i7-12700KF",
+    "refreshHz": 60,
+    "scaleFactor": 1,
+    "windowDip": [
+      1400,
+      900
+    ],
+    "gpu": "enabled",
+    "adapters": [
+      {
+        "active": false,
+        "vendorId": 4318,
+        "deviceId": 10370
+      },
+      {
+        "active": false,
+        "vendorId": 4318,
+        "deviceId": 9351
+      },
+      {
+        "active": false,
+        "vendorId": 5140,
+        "deviceId": 140
+      }
+    ],
+    "tracks": 10,
+    "shots": 200,
+    "candidateClips": 1000,
+    "videoLanes": 5,
+    "narrationSeconds": 200,
+    "durationMs": 2000,
+    "metric": "renderer requestAnimationFrame timestamps",
+    "sourceSha256": "0c0b7530fae91f46b586fef40403cf4af9ac0d8cbef42ae1d5781eacf6647adc",
+    "driverSha256": "5b07df4b5d8db6e1d5c8f796869503305620837c5eee0d3d11dff4465daa569e"
+  },
+  "results": {
+    "idle": {
+      "elapsedMs": 2033,
+      "trustedEvents": 0,
+      "intervals": 111,
+      "medianMs": 16.7,
+      "p95Ms": 33.4,
+      "maxMs": 50,
+      "over16_67Ms": 66,
+      "over25Ms": 10
+    },
+    "candidateDrag": {
+      "elapsedMs": 2500,
+      "trustedEvents": 60,
+      "intervals": 64,
+      "medianMs": 16.8,
+      "p95Ms": 100,
+      "maxMs": 399.9,
+      "over16_67Ms": 50,
+      "over25Ms": 28
+    },
+    "playheadScrub": {
+      "elapsedMs": 2517,
+      "trustedEvents": 41,
+      "intervals": 28,
+      "medianMs": 66.8,
+      "p95Ms": 150.1,
+      "maxMs": 333.3,
+      "over16_67Ms": 27,
+      "over25Ms": 26
+    },
+    "panelResize": {
+      "elapsedMs": 2350,
+      "trustedEvents": 69,
+      "intervals": 62,
+      "medianMs": 33.3,
+      "p95Ms": 66.7,
+      "maxMs": 199.7,
+      "over16_67Ms": 55,
+      "over25Ms": 49
+    },
+    "timelineZoom": {
+      "elapsedMs": 2533,
+      "trustedEvents": 15,
+      "intervals": 17,
+      "medianMs": 150,
+      "p95Ms": 483.3,
+      "maxMs": 483.3,
+      "over16_67Ms": 15,
+      "over25Ms": 14
+    }
+  }
+}

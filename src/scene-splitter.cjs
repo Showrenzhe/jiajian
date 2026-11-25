@@ -21,7 +21,7 @@ function executablePath() {
 
 function mediaEnvironment() {
   const env = { ...process.env };
-  const ffmpeg = env.SUPERDIR_REPLICA_FFMPEG;
+  const ffmpeg = env.JIAJIAN_FFMPEG || env.SUPERDIR_REPLICA_FFMPEG;
   if (ffmpeg && path.isAbsolute(ffmpeg)) {
     env.PATH = [path.dirname(ffmpeg), env.PATH].filter(Boolean).join(path.delimiter);
   }
@@ -123,7 +123,7 @@ async function splitOne(input, options, { signal, onProgress } = {}) {
     '--output', output,
     '--filename', '$VIDEO_NAME-Scene-$SCENE_NUMBER',
   ];
-  const text = await spawnDetector(args, { signal, onProgress });
+  await spawnDetector(args, { signal, onProgress });
   const csv = path.join(output, `${path.parse(input).name}-Scenes.csv`);
   const csvText = await fs.readFile(csv, 'utf8');
   const scenes = parseScenes(csvText);

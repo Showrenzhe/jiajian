@@ -7,7 +7,7 @@ const { promisify } = require('node:util');
 const execFileAsync = promisify(execFile);
 
 async function ffmpeg(args) {
-  const { stdout } = await execFileAsync(process.env.SUPERDIR_REPLICA_FFMPEG || 'ffmpeg', [
+  const { stdout } = await execFileAsync(process.env.JIAJIAN_FFMPEG || process.env.SUPERDIR_REPLICA_FFMPEG || 'ffmpeg', [
     '-hide_banner', '-loglevel', 'error', '-nostdin', ...args,
   ], { encoding: 'buffer', windowsHide: true, maxBuffer: 1024 * 1024, timeout: 20000 });
   return stdout;

@@ -1,3 +1,4 @@
+// @ts-check
 'use strict';
 
 const { execFile, spawn } = require('node:child_process');
@@ -22,10 +23,13 @@ const { maxCandidates, minClipSeconds, minEdgeSilence, audioRate, withOutputFram
 const vendorPath = require('./vendor-path.cjs');
 const { isMaterialPath } = require('./material-path.cjs');
 
-const ffmpegCommand = process.env.SUPERDIR_REPLICA_FFMPEG || 'ffmpeg';
+const ffmpegCommand = process.env.JIAJIAN_FFMPEG || process.env.SUPERDIR_REPLICA_FFMPEG || 'ffmpeg';
 const ffmpeg = /[\\/]/.test(ffmpegCommand) ? path.resolve(ffmpegCommand) : ffmpegCommand;
-const ffprobe = process.env.SUPERDIR_REPLICA_FFPROBE || 'ffprobe';
+const ffprobe = process.env.JIAJIAN_FFPROBE || process.env.SUPERDIR_REPLICA_FFPROBE || 'ffprobe';
 const execFileAsync = promisify(execFile);
+/** @typedef {Awaited<ReturnType<typeof inspectAsset>>} InspectedAsset */
+/** @typedef {{signal?: AbortSignal}} MediaReadOptions */
+/** @typedef {{size?: number, textColor?: string, outlineColor?: string, position?: string, font?: string, align?: string, enabled?: boolean, bold?: boolean, italic?: boolean, underline?: boolean, outlineWidth?: number, spacing?: number, margin?: number, x?: number, y?: number}} SubtitleStyle */
 const subtitleFileName = 'subtitles.srt';
 // libass force_style sets the alignment flags directly, with horizontal center = 2.
 const subtitleAlignments = { bottom: 2, middle: 8 | 2, top: 4 | 2, custom: 8 | 2 };
@@ -47,6 +51,12 @@ const dimensions = {
   '1:1': { 720: [720, 720], 1080: [1080, 1080] },
 };
 
+/**
+ * @param {string} executable
+ * @param {string[]} args
+ * @param {{signal?: AbortSignal, timeout?: number, onProgress?: (seconds: number) => void, onLine?: (line: string) => void, cwd?: string}} [options]
+ * @returns {Promise<string>}
+ */
 function runTool(executable, args, { signal, timeout = 0, onProgress, onLine, cwd } = {}) {
   signal?.throwIfAborted();
 
@@ -63,7 +73,7 @@ function runTool(executable, args, { signal, timeout = 0, onProgress, onLine, cw
     }, timeout) : null;
 
     child.on('error', (error) => {
-      failure = error.code === 'ENOENT'
+      failure = 'code' in error && error.code === 'ENOENT'
         ? new Error(`找不到 ${path.basename(executable)}，请检查 FFmpeg 和 FFprobe。`)
         : error;
     });
@@ -91,6 +101,7 @@ function runTool(executable, args, { signal, timeout = 0, onProgress, onLine, cw
       clearTimeout(timer);
       signal?.removeEventListener('abort', stop);
       if (signal?.aborted) return reject(signal.reason);
+      if (failure || code !== 0) require('./diagnostics.cjs').logToolFailure(executable,args,errors,code);
       if (failure) return reject(failure);
       if (code !== 0) return reject(new Error(errors.trim() || `媒体工具退出（${code}）。`));
       resolve(output);
@@ -98,13 +109,15 @@ function runTool(executable, args, { signal, timeout = 0, onProgress, onLine, cw
   });
 }
 
+/** @param {string} file @param {string} kind @param {MediaReadOptions} [options] */
 async function inspectAsset(file, kind, { signal } = {}) {
   const extensions = { video: videoExtensions, audio: audioExtensions, image: imageExtensions };
   const allowed = Object.hasOwn(extensions, kind) ? extensions[kind] : [];
   if (!path.isAbsolute(file) || !allowed.includes(path.extname(file).slice(1).toLowerCase())) {
     throw new Error('请选择受支持的媒体文件。');
   }
-  if (!(await fs.stat(file)).isFile()) throw new Error('所选路径不是文件。');
+  const fileInfo = await fs.stat(file);
+  if (!fileInfo.isFile()) throw new Error('所选路径不是文件。');
 
   const data = JSON.parse(await runTool(ffprobe, [
     '-v', 'error', ...(kind === 'image' ? stillInput : mediaInput),
@@ -128,7 +141,7 @@ async function inspectAsset(file, kind, { signal } = {}) {
   const [frames, seconds] = (video?.avg_frame_rate || '').split('/').map(Number);
   return {
     path: file,
-    name: path.basename(file),
+    name: path.basename(file), size: fileInfo.size,
     kind,
     duration: kind === 'image' ? null : Math.floor((duration + 1e-9) * 1000) / 1000,
     codec: stream.codec_name || '',
@@ -141,6 +154,7 @@ async function inspectAsset(file, kind, { signal } = {}) {
   };
 }
 
+/** @param {InspectedAsset} asset @param {{start?: number,end?: number}} range @param {MediaReadOptions} [options] */
 async function extractAudioWaveform(asset, range, {signal} = {}) {
   if (!['audio','video'].includes(asset?.kind) || !Number.isInteger(asset.audioIndex) || asset.audioIndex < 0) return null;
   const {duration} = asset;
@@ -179,6 +193,7 @@ function createVideoThumbnail(asset, options) {
   return asset?.kind === 'video' ? createFrameThumbnail(asset, options) : Promise.resolve(null);
 }
 
+/** @param {InspectedAsset} asset @param {{signal?: AbortSignal, time?: number}} [options] */
 async function createFrameThumbnail(asset, { signal, time: requestedTime } = {}) {
   const file = asset?.path;
   const extensions = asset?.kind === 'image' ? imageExtensions : asset?.kind === 'video' ? videoExtensions : [];
@@ -221,6 +236,7 @@ async function createTrackProxy(asset, output, signal, edge = 640, retime) {
   await runTool(ffmpeg, args, { signal, timeout: retime ? Math.min(300000,Math.max(30000,asset.duration * 1000)) : 0 });
 }
 
+/** @param {InspectedAsset} asset @param {MediaReadOptions} [options] */
 async function analyzeNarrationSilence(asset, { signal } = {}) {
   if (asset?.kind !== 'audio' || !Number.isInteger(asset.audioIndex) || asset.audioIndex < 0
       || !Number.isFinite(asset.duration) || asset.duration < minClipSeconds
@@ -275,12 +291,14 @@ function normalizeMutedVideoTracks(value = []) {
   return [...value].sort((a, b) => a - b);
 }
 
+/** @param {SubtitleStyle} [value] @returns {SubtitleStyle} */
 function normalizeSubtitleStyle(value = {}) {
   if (!value || typeof value !== 'object' || Array.isArray(value)) throw new Error('字幕样式无效。');
   const { size = 18, textColor = '#ffffff', outlineColor = '#000000', position = 'bottom' } = value;
   if (!Number.isInteger(size) || size < 8 || size > 72) throw new Error('字幕字号应在 8 到 72 之间。');
   if (!isRgbColor(textColor) || !isRgbColor(outlineColor)) throw new Error('字幕颜色须为 #RRGGBB。');
   if (typeof position !== 'string' || !Object.hasOwn(subtitleAlignments, position)) throw new Error('字幕位置无效。');
+  /** @type {SubtitleStyle} */
   const style = { size, textColor: textColor.toLowerCase(), outlineColor: outlineColor.toLowerCase(), position };
   if (value.font !== undefined) {
     if (typeof value.font !== 'string' || !fontFamily(value.font)) throw new Error('请选择有效字幕字体。');
@@ -295,7 +313,7 @@ function normalizeSubtitleStyle(value = {}) {
     if (typeof value[key] !== 'boolean') throw new Error('字幕样式开关无效。');
     style[key] = value[key];
   }
-  for (const [key, max] of [['outlineWidth',8],['spacing',12],['margin',64],['x',100],['y',100]]) {
+  for (const [key, max] of Object.entries({outlineWidth: 8, spacing: 12, margin: 64, x: 100, y: 100})) {
     if (value[key] === undefined) continue;
     if (!Number.isInteger(value[key]) || value[key] < 0 || value[key] > max) throw new Error('字幕位置、边距、字距或描边宽度无效。');
     style[key] = value[key];
@@ -889,7 +907,7 @@ function planMontage(config, catalog, random = Math.random, batchLimit = maxMont
     const anchorIndex=followShot==null ? 0 : clips.findIndex((c)=>c.shotIndex===followShot);
     if(anchorIndex<0) throw new Error('整段口播跟随的分镜不存在。');
     const voiceStart=clips.slice(0,anchorIndex).reduce((sum,c)=>sum+(c.outputDuration ?? c.duration),0);
-    const scheduled = chooseLooks(scheduleLayers({ pack, selection, catalog, clips, duration, fps: config.fps, wholeIndex: wholeTrackIndex, narration,voiceStart,narrationSpeed }),catalog,random,effectUseCounts);
+    const scheduled = chooseLooks(scheduleLayers({ pack, selection, catalog, clips, duration, wholeIndex: wholeTrackIndex, narration,voiceStart,narrationSpeed }),catalog,random,effectUseCounts);
     const importedSubtitles = narration && subtitles && narrationSpeed !== 1 ? generatedSubtitleTrack({
       segmented:false, clips, narration, caption:subtitles, duration, narrationSpeed,
     }) : subtitles;
@@ -1406,6 +1424,12 @@ async function exportOne(plan, directory, stem, { signal, onProgress }) {
   }
 }
 
+/**
+ * @typedef {{index: number, count: number, fraction: number, results: {index: number, name: string, path: string}[], failures: {index: number, message: string}[]}} ExportProgress
+ * @param {Array<(ReturnType<typeof planMontage>[number] | ReturnType<typeof planExtraction>[number]) & {subproject?: {id: string, name: string}}>} plans
+ * @param {string} directory
+ * @param {{signal?: AbortSignal, onUpdate?: (item: ExportProgress) => void}} [options]
+ */
 async function exportBatch(plans, directory, { signal, onUpdate = () => {} } = {}) {
   if (!path.isAbsolute(directory) || !(await fs.stat(directory)).isDirectory()) {
     throw new Error('请选择有效的输出目录。');
@@ -1434,6 +1458,7 @@ async function exportBatch(plans, directory, { signal, onUpdate = () => {} } = {
   return { results, failures, cancelled: Boolean(signal?.aborted) };
 }
 
+/** @param {InspectedAsset} asset @param {MediaReadOptions} [options] */
 async function recognizeLocalSpeech(asset, {signal} = {}) {
   if (!asset || !['video','audio'].includes(asset.kind) || (asset.kind==='video' && asset.audioIndex==null)) throw new Error('所选素材没有音轨。');
   const model=vendorPath('whisper', 'ggml-base-q5_1.bin');

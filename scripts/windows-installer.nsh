@@ -7,6 +7,8 @@
   WriteRegStr HKCU "Software\Classes\CLSID\${JJ_THUMB}\InprocServer32" "ThreadingModel" "Apartment"
   WriteRegStr HKCU "Software\Classes\.sdworkbench\ShellEx\${JJ_THUMB_SLOT}" "" "${JJ_THUMB}"
   WriteRegStr HKCU "Software\Classes\.sdworkbench\DefaultIcon" "" '"$INSTDIR\${APP_EXECUTABLE_FILENAME}",0'
+  WriteRegStr HKCU "Software\Classes\.jiajian\ShellEx\${JJ_THUMB_SLOT}" "" "${JJ_THUMB}"
+  WriteRegStr HKCU "Software\Classes\.jiajian\DefaultIcon" "" '"$INSTDIR\${APP_EXECUTABLE_FILENAME}",0'
   System::Call 'shell32::SHChangeNotify(i 0x08000000, i 0, p 0, p 0)'
   CreateShortCut "$SMPROGRAMS\卸载${SHORTCUT_NAME}.lnk" "$INSTDIR\${UNINSTALL_FILENAME}" "/currentuser"
 !macroend
@@ -24,6 +26,14 @@
     ReadRegStr $R0 HKCU "Software\Classes\.sdworkbench\DefaultIcon" ""
     ${If} $R0 == '"$INSTDIR\${APP_EXECUTABLE_FILENAME}",0'
       DeleteRegKey HKCU "Software\Classes\.sdworkbench\DefaultIcon"
+    ${EndIf}
+    ReadRegStr $R0 HKCU "Software\Classes\.jiajian\ShellEx\${JJ_THUMB_SLOT}" ""
+    ${If} $R0 == "${JJ_THUMB}"
+      DeleteRegKey HKCU "Software\Classes\.jiajian\ShellEx\${JJ_THUMB_SLOT}"
+    ${EndIf}
+    ReadRegStr $R0 HKCU "Software\Classes\.jiajian\DefaultIcon" ""
+    ${If} $R0 == '"$INSTDIR\${APP_EXECUTABLE_FILENAME}",0'
+      DeleteRegKey HKCU "Software\Classes\.jiajian\DefaultIcon"
     ${EndIf}
     System::Call 'shell32::SHChangeNotify(i 0x08000000, i 0, p 0, p 0)'
     ; The installed version's cached setup and block map are rebuilt on install.

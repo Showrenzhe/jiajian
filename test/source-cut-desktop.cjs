@@ -82,7 +82,12 @@ async function check() {
   wc.debugger.attach();
   const read = script => wc.executeJavaScript(script,true);
   const q = selector => 'document.querySelector('+JSON.stringify(selector)+')';
-  const click = selector => clickVisible(wc,selector);
+  async function click(selector) {
+    await clickVisible(wc,selector);
+    if (selector.endsWith('[data-action="cancel"]') && await read('!!document.querySelector(".cut-leave-dialog:modal")')) {
+      await clickVisible(wc,'[data-cut-leave="discard"]');
+    }
+  }
   const host = '#timeline-cut-editor[data-mode="cut"]';
   const ruler = host+' .video-cut-ruler';
   const slider = host+' .video-cut-playhead[role="slider"]';
@@ -313,6 +318,8 @@ async function check() {
     await key('w',87);
     await wait(count+'===2','W 分割');
     await key('Escape',27);
+    await wait('!!document.querySelector(".cut-leave-dialog:modal")','Esc 保护未应用裁剪');
+    await click('[data-cut-leave="discard"]');
     await wait('!'+q('#timeline-cut-editor')+'.checkVisibility()','Esc 取消');
     assert.equal(await read(q(monitor)),null,'取消应归还主播放器');
     const canceled=await save('已取消剪辑');
@@ -320,8 +327,19 @@ async function check() {
     await dblclick(mainClip(0));
     await seek(.8);
     await key('w',87);
+    await dblclick(mainClip(1));
+    await wait('!!document.querySelector(".cut-leave-dialog:modal")','切换剪辑片段前确认');
+    await click('dialog:modal [data-cut-leave="cancel"]');
+    await wait('!document.querySelector(".cut-leave-dialog")','取消后关闭确认');
+    assert.equal(await read(count),2,'取消切换必须保留已分割片段');
+    await click('#title-home');
+    await click('dialog:modal [data-cut-leave="cancel"]');
+    await wait('!document.querySelector(".cut-leave-dialog")','返回首页前确认');
+    assert.equal(await read(count),2,'取消返回必须保留未应用修改');
     await click('#open-project');
+    await click('dialog:modal [data-cut-leave="discard"]');
     await wait('!'+q(monitor)+' && !'+q('#timeline-cut-editor')+'.checkVisibility() && !!'+q(mainClip(1)),'打开另一个工程应释放剪辑监看');
+    await wait(q('#notice')+'.textContent.includes("已打开工程") && !'+q('#save-project')+'.disabled','工程已从磁盘重新打开');
     // The project catalog assigns fresh IDs on each open.
     const original = await save('重开后的原始状态');
     await dblclick(mainClip(0));

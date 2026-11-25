@@ -17,12 +17,14 @@
         <div class="cloud-settings-body">
           <fieldset id="appearance-settings" hidden>
             <legend>外观</legend>
+            <p class="cloud-settings-muted">剪辑台的面板位置、宽度和布局预设保存在本机，对这台电脑上的所有工程生效。</p>
             <div class="appearance-options">
               <label><input type="radio" name="appearance" value="light"><span class="appearance-preview" aria-hidden="true"></span><span>浅色</span></label>
               <label><input type="radio" name="appearance" value="dark"><span class="appearance-preview" aria-hidden="true"></span><span>深色</span></label>
               <label><input type="radio" name="appearance" value="system"><span class="appearance-preview" aria-hidden="true"></span><span>跟随系统</span></label>
             </div>
           </fieldset>
+          <button type="button" id="update-settings-entry">软件更新与通道</button>
           <details id="performance-settings" hidden>
             <summary>性能与代理</summary>
             <fieldset id="performance-options" aria-label="性能与代理设置" disabled>
@@ -31,16 +33,18 @@
                 <select id="performance-optimization"><option value="smart">智能</option><option value="smooth">优先流畅</option><option value="quality">优先画质</option></select>
               </div>
               <label class="cloud-settings-check"><input id="performance-default-proxy" type="checkbox">新草稿默认开启代理</label>
+              <label class="cloud-settings-check"><input id="performance-software" type="checkbox">兼容模式（软件渲染）</label>
+              <small>画面闪烁、黑屏或卡顿时可开启，重启佳剪后生效。</small>
               <div class="cloud-settings-field">
                 <strong>代理位置</strong><span id="performance-location"></span>
                 <div class="performance-actions"><button id="performance-folder" type="button">选择文件夹…</button></div>
               </div>
               <div class="performance-cache">
-                <span>代理大小 <strong id="performance-size">—</strong></span>
-                <button id="performance-clear" type="button">清理代理</button>
+                <span>缓存占用 <strong id="performance-size">—</strong></span>
+                <button id="performance-clear" type="button">清理缓存</button>
               </div>
               <div id="performance-confirm" hidden>
-                <p>清理此位置的代理文件？再次预览时可以重新生成。</p>
+                <p>清理当前代理、缩略图和素材信息缓存？缓存上限为 2 GiB，再次预览时会重新生成。</p>
                 <div class="performance-actions">
                   <button id="performance-keep" type="button">取消</button>
                   <button id="performance-confirm-clear" type="button">确认清理</button>
@@ -48,6 +52,7 @@
               </div>
             </fieldset>
             <p id="performance-status" role="status" hidden></p>
+            <button id="performance-diagnostics" type="button">导出诊断包…</button>
             <button id="performance-retry" type="button" hidden>重新读取</button>
           </details>
           <h3 id="cloud-settings-section" hidden>云端配音</h3>
@@ -111,13 +116,15 @@
     let session;
 
     function showPerformance(data) {
+      if (typeof data.softwareRendering === 'boolean') perf('software').checked = data.softwareRendering;
       perf('optimization').value = data.optimization;
       perf('default-proxy').checked = data.defaultProxy;
       perf('location').textContent = data.location;
-      const unit = Math.min(3, Math.floor(Math.log(Math.max(1, data.bytes)) / Math.log(1024)));
-      perf('size').textContent = new Intl.NumberFormat('zh-CN', { maximumFractionDigits: unit ? 1 : 0 }).format(data.bytes / 1024 ** unit)
+      const bytes=data.cacheBytes ?? data.bytes;
+      const unit = Math.min(3, Math.floor(Math.log(Math.max(1, bytes)) / Math.log(1024)));
+      perf('size').textContent = new Intl.NumberFormat('zh-CN', { maximumFractionDigits: unit ? 1 : 0 }).format(bytes / 1024 ** unit)
         + ' ' + ['B', 'KiB', 'MiB', 'GiB'][unit];
-      perf('clear').disabled = !data.bytes;
+      perf('clear').disabled = false;
     }
 
     async function changePerformance(action, value) {
@@ -127,15 +134,15 @@
       perf('retry').hidden = true;
       perf('options').disabled = true;
       perf('confirm').hidden = true;
-      perf('status').textContent = action === 'load' ? '正在读取代理位置和大小…' : action === 'clear' ? '正在清理代理…' : '';
+      perf('status').textContent = action === 'load' ? '正在读取缓存设置…' : action === 'clear' ? '正在清理缓存…' : '';
       perf('status').classList.remove('cloud-settings-error');
       perf('status').hidden = !perf('status').textContent;
       try {
         const data = await performance[action](value);
         if (session !== state) return;
-        state.performance = data;
+        state.performance = {...state.performance,...data};
         showPerformance(data);
-        perf('status').textContent = action === 'clear' ? '代理已清理。' : action === 'save' ? '已保存。' : '';
+        perf('status').textContent = action === 'rendering' ? '兼容模式已保存，重启佳剪后生效。' : action === 'clear' ? '缓存已清理。' : action === 'save' ? '已保存。' : '';
       } catch (error) {
         if (session !== state) return;
         if (state.performance) showPerformance(state.performance);
@@ -152,6 +159,14 @@
     }
     perf('settings').addEventListener('toggle', () => { if (perf('settings').open) void changePerformance('load'); });
     perf('retry').addEventListener('click', () => changePerformance('load'));
+    perf('diagnostics').addEventListener('click', async () => {
+      try {
+        if (!await window.workbench.exportDiagnostics()) return;
+        perf('status').textContent='诊断包已保存。';
+      } catch(error) {perf('status').textContent=error.message;}
+      perf('status').hidden=false;
+    });
+    perf('software').addEventListener('change', () => changePerformance('rendering', perf('software').checked));
     for (const [id, key] of [['default-proxy', 'defaultProxy'], ['optimization', 'optimization']]) {
       perf(id).addEventListener('change', () => changePerformance('save', { [key]: key === 'optimization' ? perf(id).value : perf(id).checked }));
     }

@@ -14,7 +14,7 @@ function projectPath(file) {
   if (typeof file !== 'string' || !path.isAbsolute(file) || file.includes('\0') || /^[\\/]{2}/.test(file)) return null;
   if (process.platform === 'win32' && (!/^[a-z]:[\\/]/i.test(file) || file.slice(2).includes(':'))) return null;
   const normalized = path.normalize(file);
-  return path.extname(normalized).toLowerCase() === '.sdworkbench' ? normalized : null;
+  return ['.jiajian', '.sdworkbench'].includes(path.extname(normalized).toLowerCase()) ? normalized : null;
 }
 
 function pathKey(file) {
@@ -67,7 +67,7 @@ async function readProjectLibrary(directory) {
 
 async function writeProject(directory, rows, file) {
   const normalized = projectPath(file);
-  if (!normalized) throw new Error('请选择本地的 .sdworkbench 工程文件。');
+  if (!normalized) throw new Error('请选择本地的 .jiajian 或 .sdworkbench 工程文件。');
   const key = pathKey(normalized);
   const existing = rows.find((row) => pathKey(row.path) === key);
   const project = {

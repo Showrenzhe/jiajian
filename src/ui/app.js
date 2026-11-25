@@ -103,90 +103,7 @@ const playerTools = window.mountPlayerTools({
 const notice = $('#notice');
 const countField = $('#count');
 
-// Discrete wheel notches and precision touchpad deltas drive the same zoom controls.
-function bindWheelZoom(element, onZoom) {
-  const isMac = navigator.platform.startsWith('Mac');
-  let pending = 0, previousTime = -Infinity, frame;
-  let steps = [], pointer;
-  function queue(amount,event) {
-    steps.push(amount);
-    pointer={clientX:event.clientX,clientY:event.clientY};
-    if(frame!==undefined) return;
-    frame=requestAnimationFrame(()=>{
-      frame=undefined;
-      const batch=steps;
-      steps=[];
-      // Clamp each notch in order so reversing at a limit still moves one step.
-      const levelAfter=(current,min,max,direction=1)=>batch.reduce(
-        (level,amount)=>Math.max(min,Math.min(max,level+direction*amount)),current);
-      if(element.clientWidth) onZoom(levelAfter,pointer);
-    });
-  }
-  element.addEventListener('wheel', (event) => {
-    const mode = event.deltaMode;
-    if (!(event.ctrlKey || (isMac && event.metaKey)) || event.altKey || event.shiftKey
-        || !event.deltaY || Math.abs(event.deltaX) > Math.abs(event.deltaY)) {
-      pending = 0;
-      return;
-    }
-    event.preventDefault();
-    const unit = mode === WheelEvent.DOM_DELTA_PAGE ? 100 : mode === WheelEvent.DOM_DELTA_LINE ? 100 / 3 : 1;
-    const distance = -event.deltaY * unit;
-    if (Math.abs(distance) >= 80 || (mode !== WheelEvent.DOM_DELTA_PIXEL && Math.abs(event.deltaY) >= 1)) {
-      pending = 0;
-      queue(Math.sign(distance) * Math.max(1, Math.round(Math.abs(distance) / 100)), event);
-    } else {
-      if (event.timeStamp - previousTime > 220 || pending * distance < 0) pending = 0;
-      pending += distance;
-      const steps = Math.trunc(pending / 48);
-      if (steps) {
-        pending -= steps * 48;
-        queue(steps, event);
-      }
-    }
-    previousTime = event.timeStamp;
-  }, { passive: false });
-}
-
-function setupTabs(tablist, onChange) {
-  const tabs = [...tablist.querySelectorAll('[role="tab"]')];
-  const segmented = tablist.classList.contains('p-segmented');
-  if (segmented) {
-    tablist.style.setProperty('--p-seg-count', tabs.length);
-    tablist.style.setProperty('--p-seg-index', Math.max(0, tabs.findIndex((tab) => tab.getAttribute('aria-selected') === 'true')));
-  }
-  function activate(tab, focus = false) {
-    if (tab.disabled) return;
-    for (const item of tabs) {
-      const active = item === tab;
-      item.setAttribute('aria-selected', String(active));
-      item.tabIndex = active ? 0 : -1;
-      document.getElementById(item.getAttribute('aria-controls')).hidden = !active;
-    }
-    if (segmented) tablist.style.setProperty('--p-seg-index', tabs.indexOf(tab));
-    onChange?.();
-    if (focus) tab.focus();
-  }
-  tablist.addEventListener('click', (event) => {
-    const tab = event.target.closest('[role="tab"]');
-    if (tab) activate(tab);
-  });
-  tablist.addEventListener('keydown', (event) => {
-    if (event.altKey || event.ctrlKey || event.metaKey) return;
-    if (!['ArrowLeft', 'ArrowRight', 'Home', 'End'].includes(event.key)) return;
-    const available = tabs.filter((tab) => !tab.disabled);
-    const current = available.indexOf(event.target);
-    if (current < 0) return;
-    event.preventDefault();
-    const step = event.key === 'ArrowLeft' ? -1 : 1;
-    const next = event.key === 'Home' ? 0 : event.key === 'End' ? available.length - 1
-      : (current + step + available.length) % available.length;
-    activate(available[next], true);
-  });
-  return activate;
-}
-
-const activateInspectorTab = setupTabs($('#inspector-tabs'));
+const activateInspectorTab = setupTabs($('#inspector-tabs'), () => updateMontageSteps());
 const activateTimelineTab = setupTabs($('.timeline-header [role="tablist"]'), updateTrackScrollbar);
 const shotViewport = $('#shots');
 const visualTrackLane = $('#visual-track-lane');
@@ -312,7 +229,13 @@ const draftAutosave = window.createDraftAutosave({
     status.title = error?.message ?? status.textContent;
   },
 });
-api.onBeforeDraftClose(async (purpose) => {
+api.onBeforeDraftClose(async (purpose, awaitDecision) => {
+  if (cutEditor?.dirty()) {
+    if (purpose === 'update') throw new Error('请先应用或放弃当前片段的裁剪，再重启更新。');
+    await awaitDecision();
+    if (!await cutEditor.confirmLeave()) return false;
+    draftAutosave.stage(draftTitle(), JSON.stringify(montageConfig()));
+  }
   if (purpose === 'update') {
     if (operation) throw new Error('请等待当前任务完成后，再重启更新。');
     if (cloudTtsSettingsDialog?.hasUnsavedChanges()) throw new Error('请先保存或关闭配音设置，再重启更新。');
@@ -453,6 +376,7 @@ function originalMaterialKey(clip) {
 function namedRender(asset, source) { return { ...asset, get name() { return source.name; } }; }
 
 function describe(asset) {
+  if (asset.missing) return '素材缺失，可从素材库重新定位';
   const size = `${asset.width} × ${asset.height}`;
   if (asset.kind === 'image') return `${size} · 图片`;
   return `${size} · ${asset.duration.toFixed(2)} 秒 · ${asset.codec.toUpperCase()}${asset.hasAudio ? '' : ' · 无音轨'}`;
@@ -563,6 +487,11 @@ function changePreviewQuality() {
 }
 
 function preview(clip, heading, materialId) {
+  if (clip.asset.missing) {
+    clearPreview();
+    say('素材缺失，请在素材库的缺失清单中重新定位。');
+    return;
+  }
   const request = ++materialPreviewRequest;
   proxyResume = undefined;
   pendingTimelineSeek = undefined;
@@ -733,7 +662,7 @@ function template(id) {
 function bindTrackPreview(button, clip) {
   trackPreviewButtons.set(button, clip);
   if (clip.asset.kind === 'video') {
-    const hint = '选中后，空格播放或暂停，左右键微调播放头';
+    const hint = '双击进入裁剪，空格播放或暂停，左右键微调播放头';
     button.title = `${clip.asset.name} · ${hint}`;
     button.setAttribute('aria-description', hint);
     button.setAttribute('aria-keyshortcuts', 'Space ArrowLeft ArrowRight');
@@ -1340,9 +1269,11 @@ window.mountSubprojectFill({api,shots,subprojects,shotName:(s,i)=>shotProperties
   },
 });
 
-$('#subproject-select').addEventListener('change', (event) => {
+$('#subproject-select').addEventListener('change', async (event) => {
   if (operation) return;
-  subprojects.select(event.target.value || null);
+  const next = event.target.value;
+  if (cutEditor?.dirty() && !await cutEditor.confirmLeave()) { event.target.value=subprojects.active?.id ?? ''; return; }
+  subprojects.select(next || null);
   changedSubproject();
 });
 function describeSubprojectShot() {
@@ -1378,229 +1309,6 @@ $('#subproject-replace').addEventListener('click', () => {
     preview(shot[0], '轨道预览');
   });
 });
-
-function libraryTime(duration) {
-  const seconds = Math.max(0, Math.round(duration));
-  return Math.floor(seconds / 60) + ':' + String(seconds % 60).padStart(2, '0');
-}
-
-function updateMaterialUsage(button, used) {
-  const old = button.querySelector('.material-used');
-  if (!used) {
-    old?.remove();
-    delete button.dataset.used;
-    button.removeAttribute('aria-label');
-    return;
-  }
-  const shotNumbers = [...used].filter(Number.isInteger);
-  const labels = [...used].filter(label => typeof label === 'string');
-  if (shotNumbers.length) labels.unshift('分镜 ' + shotNumbers.join('、'));
-  const description = '已用于' + labels.join('、');
-  if (old?.title === description) return;
-  const badge = old ?? document.createElement('span');
-  badge.className = 'material-used';
-  badge.textContent = '已用';
-  badge.title = description;
-  button.dataset.used = 'true';
-  button.setAttribute('aria-label', button.title + '，' + badge.title);
-  if (!old) button.append(badge);
-}
-
-function reconcileMaterialRows(list, rows) {
-  const next = new Set(rows);
-  for (const old of [...list.children]) {
-    if (next.has(old)) continue;
-    thumbnailObserver.unobserve(old.firstElementChild);
-    old.remove();
-  }
-  rows.forEach((row, index) => {
-    if (list.children[index] !== row) list.insertBefore(row, list.children[index] ?? null);
-  });
-}
-
-function materialUsage() {
-  const usage = new Map();
-  function mark(asset, label) {
-    if (!asset) return;
-    const key = asset.sourceKey ?? asset.id;
-    if (!usage.has(key)) usage.set(key, new Set());
-    usage.get(key).add(label);
-  }
-  function layers(items, label) {
-    for (const item of items ?? []) {
-      if (Array.isArray(item)) layers(item, label);
-      else if (item?.id) mark(editAssets.get(item.id), label);
-    }
-  }
-  const segmented = $('#narration-mode').value === 'segmented';
-  shots.forEach((shot, i) => {
-    const label = '分镜 ' + (i + 1);
-    for (const clip of shot) { mark(originalMaterial(clip), i+1); layers(clip.layers, i+1); }
-    if (segmented) segmentNarrations.get(shot)?.forEach(asset => mark(asset, label + '口播'));
-  });
-  if (!segmented) {
-    mark(narration, '整段口播');
-    extraWholeTracks.forEach(track => mark(track.narration, '整段口播'));
-  }
-  music.forEach(asset => mark(asset, '配乐'));
-  if (editCover?.mode === 'library') {
-    for (const item of editCover.items ?? []) mark(editAssets.get(item.id), '封面');
-  }
-  const pack = packaging.forShots(shots);
-  layers(pack.global, '全局轨道');
-  layers(pack.composites, '复合轨道');
-  layers(pack.textGroups, '文字组');
-  layers(segmented ? pack.segmentNarration : pack.wholeNarration, '口播轨道');
-  return usage;
-}
-
-function renderMaterials() {
-  cancelMaterialMarquee();
-  if (materialMenu.matches(':popover-open')) materialMenu.hidePopover();
-  const query = $('#material-search').value.trim().toLocaleLowerCase();
-  const catalog = new Map();
-  const usage = materialUsage();
-  const bin = currentMaterialBin();
-  const excluded = bin.hidden;
-  const hiddenFolder = materialFolderPath.findIndex((entry) => excluded.has(entry.sourceKey));
-  if (hiddenFolder !== -1) materialFolderPath.splice(hiddenFolder);
-  const folder = currentLibraryFolder();
-  const organization = folderTree.rows.get(folder?.id);
-  // Older projects and direct track imports can introduce a source through its first placement.
-  for (const shot of shots) {
-    for (const clip of shot) {
-      const source = originalMaterial(clip);
-      if (excluded.has(source.sourceKey)) continue;
-      if (!editAssets.has(source.id)) editAssets.set(source.id, source);
-      bin.ids.add(source.id);
-    }
-  }
-  for (const id of bin.ids) {
-    const asset=editAssets.get(id);
-    if (asset) catalog.set(id, {id,name:asset.name,kind:asset.kind,sourceKey:asset.sourceKey,clip:candidate(asset)});
-  }
-  for(const [id,entry] of materialAliases)if(!catalog.has(id)&&editAssets.has(id))catalog.set(id,{...entry,clip:candidate(editAssets.get(id))});
-  for (const [id, item] of selectedMaterials) {
-    if (item.clip && !catalog.has(id)) selectedMaterials.delete(id);
-  }
-  const assigned = new Set();
-  for (const row of folderTree.rows.values()) if (row.scope === libraryScope()) for (const id of row.assetIds) assigned.add(id);
-  renderProcessedMaterials(usage, assigned);
-  const assignedKeys = new Set([...assigned].map(id => editAssets.get(id)?.sourceKey).filter(Boolean));
-  const linkedFiles = organization ? folderTree.files.get(organization.id) ?? [] : folder?.files ?? [];
-  const files = linkedFiles.filter(item => !organization?.hiddenKeys?.includes(item.sourceKey) && !assignedKeys.has(item.sourceKey))
-    .map(item => ({...item, name: materialAliases.get(item.assetId)?.name ?? item.name}));
-  if (organization) {
-    for (const id of organization.assetIds) if (catalog.has(id)) files.push(catalog.get(id));
-  } else if (!folder) {
-    for (const [id,item] of catalog) if (!assigned.has(id)) files.push(item);
-  }
-  const folders = visibleLibraryFolders();
-  const matches = ({ name }) => name.toLocaleLowerCase().includes(query);
-  const availableFiles = files.filter((item)=>!excluded.has(item.sourceKey ?? item.clip?.asset.sourceKey));
-  const visibleFiles = availableFiles.filter(matches);
-  const visibleFolders = folders.filter((entry) => !excluded.has(entry.sourceKey) && matches(entry));
-  const folderCount = visibleFolders.length ? ` · ${visibleFolders.length} 个文件夹` : '';
-  $('#material-status').textContent = (query ? `${visibleFiles.length} / ${availableFiles.length} 个素材` : `${availableFiles.length} 个素材`) + folderCount;
-  $('#material-empty').hidden = visibleFiles.length > 0 || visibleFolders.length > 0;
-  $('#material-empty-title').textContent = query ? '没有匹配的素材' : folder ? '这个文件夹没有可用素材' : '暂无素材';
-  $('#material-empty-hint').textContent = query ? '试试搜索其他文件名。' : folder
-    ? '请选择包含视频或图片的文件夹。' : '从本机或局域网共享文件夹拖入视频、图片、音频或文件夹。';
-  renderMaterialFolders(folder, visibleFolders);
-  const previous = new Map([...materialList.children].map((row) => [row.firstElementChild.dataset.materialId, row]));
-  const canPlace = canPlaceMaterial();
-  reconcileMaterialRows(materialList, visibleFiles.map((item) => {
-    const { id, name: fileName, kind, clip, previewUrl } = item;
-    const old = previous.get(id);
-    const used = usage.get(item.sourceKey ?? clip?.asset.sourceKey ?? item.assetId ?? id);
-    if (old?.firstElementChild.title === fileName) {
-      materialItems.set(old.firstElementChild, item);
-      updateMaterialUsage(old.firstElementChild, used);
-      return old;
-    }
-    const row = document.createElement('li');
-    const button = document.createElement('button');
-    const check = document.createElement('input');
-    const add = document.createElement('button');
-    const thumbnail = document.createElement('span');
-    const name = document.createElement('strong');
-    const detail = document.createElement('span');
-    button.type = 'button';
-    button.className = 'material-tile';
-    button.dataset.materialId = id;
-    materialItems.set(button, item);
-    button.dataset.kind = kind;
-    button.title = fileName;
-    const browsingHint = kind === 'image' ? '方向键浏览素材' : '点击播放，空格暂停或继续，方向键浏览素材';
-    button.setAttribute('aria-description', browsingHint);
-    button.setAttribute('aria-keyshortcuts', 'Delete Shift+F10 ArrowLeft ArrowRight ArrowUp ArrowDown Home End' + (kind === 'video' ? ' Space' : ''));
-    button.setAttribute('aria-haspopup', 'menu');
-    button.draggable = true;
-    thumbnail.className = 'material-thumbnail';
-    if (clip) setMaterialAspect(thumbnail, clip.asset.width, clip.asset.height);
-    thumbnail.title = `${fileName} · ${browsingHint}`;
-    thumbnail.setAttribute('aria-hidden', 'true');
-    name.textContent = fileName;
-    detail.className = 'material-duration';
-    detail.textContent = kind === 'image' ? '图片' : clip ? libraryTime(clip.asset.duration) : '';
-    const imageUrl = kind === 'image' ? clip?.asset.url ?? previewUrl : undefined;
-    if (imageUrl) {
-      const image = document.createElement('img');
-      image.alt = '';
-      image.loading = 'lazy';
-      image.draggable = false;
-      image.addEventListener('load', () => setMaterialAspect(thumbnail, image.naturalWidth, image.naturalHeight), { once: true });
-      image.src = imageUrl;
-      thumbnail.append(image);
-    } else thumbnail.textContent = kind === 'video' ? '▶' : kind === 'audio' ? '♫' : '▧';
-    button.append(thumbnail, name, detail);
-    updateMaterialUsage(button, used);
-    button.addEventListener('click', (event) => {
-      const item = materialItems.get(button);
-      if (event.ctrlKey || event.metaKey) selectMaterial(item, !selectedMaterials.has(id));
-      else {
-        selectedMaterials.clear();
-        updateMaterialBatchControls();
-        previewLibraryMaterial(item);
-      }
-    });
-    button.addEventListener('dragstart', (event) => {
-      if (!event.dataTransfer || operation) {
-        event.preventDefault();
-        return;
-      }
-      const items=selectedMaterials.has(id) ? [...selectedMaterials.values()] : [materialItems.get(button)];
-      const firstTile=items[0].id===id ? button : materialList.querySelector('[data-material-id="'+CSS.escape(items[0].id)+'"]');
-      materialDrag = {id,items,visual:items.every(item=>item.kind==='video' || item.kind==='image'),
-        sourceDuration:Number(firstTile?.querySelector('.material-duration')?.dataset.sourceSeconds),
-        thumbnail:button.querySelector('.material-thumbnail img')?.currentSrc};
-      event.dataTransfer.setData(materialDragType, id);
-      if (items.length === 1 && items[0].kind === 'audio') event.dataTransfer.setData(processedAudioDrag, items[0].clip?.asset.id ?? items[0].id);
-      event.dataTransfer.effectAllowed = 'copyMove';
-      activateTimelineTab($('#timeline-tracks-tab'));
-      if(materialDrag.visual) timeline.showLibraryLane(materialDrag,maxCandidates);
-    });
-    button.addEventListener('dragend', clearMaterialDrag);
-    check.type = 'checkbox';
-    check.className = 'material-select';
-    check.title = '多选素材';
-    check.setAttribute('aria-label', `选择 ${fileName}`);
-    check.addEventListener('change', () => selectMaterial(materialItems.get(button), check.checked));
-    add.type = 'button';
-    add.className = 'material-quick-add';
-    add.hidden = kind === 'audio';
-    add.textContent = '＋';
-    add.disabled = !canPlace;
-    add.title = '添加到分镜';
-    add.setAttribute('aria-label', `添加 ${fileName} 到分镜`);
-    add.addEventListener('click', () => chooseMaterialTarget([materialItems.get(button)]));
-    row.append(button, check, add);
-    if (kind === 'video') thumbnailObserver.observe(button);
-    return row;
-  }));
-  updateMaterialSelection();
-  updateMaterialBatchControls();
-}
 
 function updateMaterialSelection() {
   const activeId=previewedMaterial ?? (selected && originalMaterial(selected).id);
@@ -2636,6 +2344,18 @@ async function flushCurrentDraft() {
   return false;
 }
 
+function updateMontageSteps() {
+  const steps = $('#montage-steps');
+  steps.hidden = mode !== 'montage';
+  if (steps.hidden) return;
+  const voiceTab = $('#inspector-tab-narration').ariaSelected === 'true' || $('#inspector-tab-subtitles').ariaSelected === 'true';
+  const stage = previewBatch || operation === 'export' ? 3 : voiceTab ? 1 : !$('#prepare-preview').disabled ? 2 : 0;
+  for (const [i, item] of Array.from(steps.children).entries()) {
+    if (i === stage) item.setAttribute('aria-current', 'step');
+    else item.removeAttribute('aria-current');
+  }
+}
+
 function updateControls(group, keepDraftPlayback = false) {
   monitoredLanes=undefined;
   if (applyingEdit) return;
@@ -2789,6 +2509,7 @@ function updateControls(group, keepDraftPlayback = false) {
       : '整段口播保持原速。画面不足先从各自分镜补候选，仍不足则复用同组素材，画面较长时统一加速对齐。')
     : `${segmented ? '每组分镜' : ''}保留完整画面，超出的口播会被裁剪。`;
   $('#prepare-preview').disabled = busy || !validMontage;
+  updateMontageSteps();
   $('#timeline-play').disabled=busy || !(validMontage || timeline?.canPlayDraft());
   syncTimelinePlayButton();
   $('#voice-alignment-row').hidden = $('#priority').value !== 'voice';
@@ -2812,7 +2533,8 @@ function updateControls(group, keepDraftPlayback = false) {
   $('#track-clean').disabled = busy || !shots.some(canRemoveEmptyShot);
   if (previewBatch) {
     const { entries, selected: selectedEntries } = previewBatch;
-    const visible = entries.filter(matchesPreviewFilters);
+    const visible = previewBatch.filtered ?? entries;
+    $('#invert-preview-selection').disabled = busy || !visible.length;
     $('#preview-batch-summary').textContent = `已选 ${selectedEntries.size} / ${entries.length} 条 · 当前显示 ${visible.length} 条`;
     $('#select-all-previews').disabled = busy || !visible.length || (visible.length === selectedEntries.size && visible.every((item) => selectedEntries.has(item.index)));
     $('#clear-preview-selection').disabled = busy || selectedEntries.size === 0;
@@ -2870,6 +2592,7 @@ function navigateWorkspace(value, change) {
 }
 
 function setMode(value) {
+  if (value !== mode && cutEditor?.dirty()) return cutEditor.confirmLeave().then(allowed=>allowed && setMode(value));
   return navigateWorkspace(value, () => commitMode(value));
 }
 
@@ -2885,6 +2608,7 @@ function commitMode(value, { focusDraft = false, workflowId = activeWorkflow } =
   const selectionOrigin = workspaceNavigation.selectionBounds();
   const savingDraft = mode === 'montage' ? draftAutosave.flush() : null;
   mode = value;
+  showMissingMaterials();
   if (mode === 'workflow') activeWorkflow = workflowId;
   const home = mode === 'home' || mode === 'drafts';
   const audio = mode === 'audio';
@@ -3063,7 +2787,7 @@ function attachScript(model) {
 }
 
 async function newProject() {
-  if (operation) return;
+  if (operation || (cutEditor?.dirty() && !await cutEditor.confirmLeave())) return;
   operation = 'project';
   updateControls();
   try {
@@ -3178,6 +2902,7 @@ async function runSceneSplit() {
 }
 
 async function showWorkflow(id) {
+  if (cutEditor?.dirty() && !await cutEditor.confirmLeave()) return;
   if (operation) return;
   const request = ++navigationRequest;
   try {
@@ -3414,7 +3139,7 @@ function openCloudTtsSettings({ showAppearance = false } = {}) {
   cloudTtsSettingsDialog ??= window.mountCloudTtsSettings($('#cloud-tts-settings-workspace'), {
     load: api.cloudTtsSettings,
     save: api.saveCloudTtsSettings,
-    performance: { load: api.performanceSettings, save: api.savePerformanceSettings, folder: api.chooseProxyFolder, clear: api.clearProxyCache },
+    performance: { load: api.performanceSettings, rendering: api.setRenderingMode, save: api.savePerformanceSettings, folder: api.chooseProxyFolder, clear: api.clearProxyCache },
     verify: api.verifyBreezeAccess,
     openKeys: api.openBreezeKeys,
     onSaved: () => cloudTtsDialog?.refreshVoices(),
@@ -3978,6 +3703,8 @@ function discardPreviewBatch() {
 function matchesPreviewFilters(entry) {
   const project = $('#batch-project-filter').value;
   if (project && entry.subproject?.id !== project) return false;
+  const query = $('#batch-search').value.trim().toLocaleLowerCase();
+  if (query && !entry.searchText.includes(query)) return false;
   const { percent, kind } = entry.reuse;
   switch ($('#batch-reuse-filter').value) {
     case 'none': return kind === 'none';
@@ -3991,20 +3718,30 @@ function matchesPreviewFilters(entry) {
 
 function filterPreviews() {
   if (!previewBatch) return;
-  for (const row of $('#preview-batch-list').children) row.hidden = !matchesPreviewFilters(previewBatch.entries[Number(row.dataset.index)]);
+  $('#preview-batch-list').scrollTop = 0;
+  rebuildPreviewList();
   updateControls();
 }
 $('#batch-reuse-filter').addEventListener('change', filterPreviews);
 $('#batch-project-filter').addEventListener('change', filterPreviews);
+$('#batch-sort').addEventListener('change',filterPreviews);
+$('#batch-search').addEventListener('input',filterPreviews);
+$('#invert-preview-selection').addEventListener('click',()=>{
+  if (!previewBatch || operation) return;
+  for(const {index} of previewBatch.filtered) {
+    if (previewBatch.selected.has(index)) previewBatch.selected.delete(index);
+    else previewBatch.selected.add(index);
+  }
+  rebuildPreviewList();
+  updateControls();
+});
 
-function renderPreviewBatch() {
-  const batch = previewBatch;
-  const segmented = $('#narration-mode').value === 'segmented';
-  const rows = batch.entries.map((entry) => {
+function createPreviewRow(entry) {
+    const batch = previewBatch;
+    const segmented = $('#narration-mode').value === 'segmented';
     const row = template('#preview-batch-template');
     const number = entry.index + 1;
     row.dataset.index = entry.index;
-    row.hidden = !matchesPreviewFilters(entry);
     const checkbox = row.querySelector('.batch-select');
     checkbox.checked = batch.selected.has(entry.index);
     checkbox.addEventListener('change', () => {
@@ -4015,7 +3752,7 @@ function renderPreviewBatch() {
     row.querySelector('.batch-title').textContent = `${entry.subproject ? entry.subproject.name + ' · ' : ''}第 ${number} 条`;
     row.querySelector('.batch-reuse').textContent = entry.reuse.kind === 'none' ? '素材重复估值 0%'
       : `${entry.reuse.kind === 'same' ? '画面素材完全相同' : '部分画面素材重合'} · ${entry.reuse.percent}% · 对比第 ${entry.reuse.peer + 1} 条`;
-    row.querySelector('.batch-duration').textContent = `${entry.duration.toFixed(2)} 秒`;
+    row.querySelector('.batch-duration').textContent = `${entry.duration.toFixed(2)} 秒 · 约 ${(entry.estimatedBytes/1048576).toFixed(1)} MiB`;
     if (entry.wholeTrack) {
       const track = row.querySelector('.batch-whole-track');
       track.textContent = `整段口播轨 ${entry.wholeTrack}`;
@@ -4041,9 +3778,56 @@ function renderPreviewBatch() {
     const button = row.querySelector('.preview-composition');
     button.setAttribute('aria-label', `播放第 ${number} 条预览`);
     button.addEventListener('click', () => playComposition(entry.index));
+    checkbox.disabled = button.disabled = Boolean(operation);
+    row.querySelector('.batch-clips').title = row.querySelector('.batch-clips').textContent;
     return row;
-  });
-  $('#preview-batch-list').replaceChildren(...rows);
+}
+
+const batchList = $('#preview-batch-list');
+const virtualRowHeight = 144;
+function rebuildPreviewList() {
+  const batch = previewBatch;
+  const sort = $('#batch-sort').value;
+  batch.filtered = batch.entries.filter(matchesPreviewFilters);
+  if (sort !== 'index') batch.filtered.sort((a,b) => (sort==='duration' ? a.duration-b.duration : a.reuse.percent-b.reuse.percent) || a.index-b.index);
+  batch.virtual = batch.filtered.length>50;
+  batchList.classList.toggle('virtual',batch.virtual);
+  batchList.style.setProperty('--batch-row',virtualRowHeight+'px');
+  batch.range = null;
+  drawPreviewWindow();
+}
+function drawPreviewWindow() {
+  const batch=previewBatch;
+  if (!batch?.filtered) return;
+  const start = batch.virtual ? Math.max(0,Math.floor(batchList.scrollTop/virtualRowHeight)-3) : 0;
+  const end = batch.virtual ? Math.min(batch.filtered.length,start+Math.ceil((batchList.clientHeight || 350)/virtualRowHeight)+7) : batch.filtered.length;
+  if (batch.range===start+':'+end) return;
+  batch.range=start+':'+end;
+  const focused = document.activeElement;
+  const focusIndex = focused?.closest('.batch-entry')?.dataset.index;
+  const focusType = focused?.classList.contains('batch-select') ? '.batch-select' : '.preview-composition';
+  const spacer = height => {
+    const el=document.createElement('li');
+    el.setAttribute('aria-hidden','true');
+    el.style.height=height+'px';
+    return el;
+  };
+  const rows=batch.filtered.slice(start,end).map(createPreviewRow);
+  batchList.replaceChildren(...(start ? [spacer(start*virtualRowHeight)] : []),...rows,
+    ...(end<batch.filtered.length ? [spacer((batch.filtered.length-end)*virtualRowHeight)] : []));
+  if (focusIndex !== undefined) {
+    const target=batchList.querySelector('[data-index="'+focusIndex+'"] '+focusType);
+    (target ?? batchList).focus({preventScroll:true});
+  }
+}
+let listFrame=0;
+batchList.tabIndex=0;
+batchList.addEventListener('scroll',()=>{
+  if (listFrame || !previewBatch?.virtual) return;
+  listFrame=requestAnimationFrame(()=>{ listFrame=0; drawPreviewWindow(); });
+});
+function renderPreviewBatch() {
+  rebuildPreviewList();
   const tab = $('#timeline-batch-tab');
   tab.disabled = false;
   activateTimelineTab(tab, document.activeElement === document.body);
@@ -4052,7 +3836,7 @@ function renderPreviewBatch() {
 function selectPreviews(selectAll) {
   if (operation || !previewBatch) return;
   previewBatch.selected = new Set(selectAll ? previewBatch.entries.filter(matchesPreviewFilters).map(({ index }) => index) : []);
-  for (const row of $('#preview-batch-list').children) row.querySelector('.batch-select').checked = previewBatch.selected.has(Number(row.dataset.index));
+  for (const row of batchList.querySelectorAll('.batch-entry')) row.querySelector('.batch-select').checked = previewBatch.selected.has(Number(row.dataset.index));
   updateControls();
 }
 
@@ -4081,6 +3865,12 @@ async function preparePreview(scope) {
     const projects = new Map(result.entries.filter((entry) => entry.subproject).map((entry) => [entry.subproject.id, entry.subproject.name]));
     projectFilter.replaceChildren(new Option('全部子工程', ''), ...[...projects].map(([id, name]) => new Option(name, id)));
     projectFilter.hidden = !projects.size;
+    $('#batch-search').value = '';
+    $('#batch-sort').value = 'index';
+    for (const entry of result.entries) {
+      entry.searchText = [String(entry.index+1),`第 ${entry.index+1} 条`,entry.subproject?.name,entry.music,entry.narration,entry.subtitles,
+        ...entry.clips.flatMap(clip=>[clip.name,clip.narration,...(clip.visuals??[]).map(part=>part.name)])].filter(Boolean).join(' ').toLocaleLowerCase();
+    }
     previewBatch = {
       ...result,
       configKey: JSON.stringify(config),
@@ -4176,7 +3966,7 @@ async function saveProject() {
 
 async function quickSaveProject() {
   if (operation || mode !== 'montage') return;
-  const cutNote = playerTools.monitoringCut ? '当前片段的调整需点“应用裁剪”。' : '';
+  const cutNote = cutEditor?.dirty() ? '当前片段需先应用裁剪。' : '';
   operation = 'quick-save';
   try {
     const config = montageConfig();
@@ -4211,7 +4001,7 @@ function restoreProject({ name, config, assets = [], folders = [], projectToken:
   materialAliases.clear();
   materialBins.clear();
   for (const {scope,ids,hidden} of config.materialBins ?? []) materialBins.set(scope,{ids:new Set(ids),hidden:new Set(hidden)});
-  for(const item of config.assetAliases??[]){if(byId.has(item.id)){materialAliases.set(item.id,{...item});byId.get(item.id).name=item.name;}}
+  for(const item of config.assetAliases??[]){if(byId.has(item.id)){materialAliases.set(item.id,{...item});byId.get(item.id).name=(byId.get(item.id).missing?'缺失 · ':'')+item.name;}}
   const findAsset = (id) => {
     if (!byId.has(id)) throw new Error('打开的工程缺少素材。');
     return byId.get(id);
@@ -4327,11 +4117,45 @@ function restoreProject({ name, config, assets = [], folders = [], projectToken:
     editHistory.reset(editBaseline);
   }
   applyingEdit = false;
+  showMissingMaterials();
   if (!retainHistory) updateControls();
 }
 
+function showMissingMaterials() {
+  const missing=[...editAssets.values()].filter(asset=>asset.missing);
+  const box=$('#missing-materials');
+  box.hidden=mode!=='montage' || !missing.length;
+  box.querySelector('summary').textContent=missing.length+' 项素材缺失';
+  box.querySelector('ul').replaceChildren(...missing.map(asset=>{
+    const li=document.createElement('li'); li.textContent=asset.name; return li;
+  }));
+}
+$('#relink-materials').addEventListener('click',async()=>{
+  if (operation || mode!=='montage') return;
+  operation='relink'; updateControls();
+  try {
+    const items=await api.relinkMaterials(montageConfig());
+    if (!items) return;
+    for (const item of items) {
+      const asset=editAssets.get(item.id);
+      if (asset) {
+        delete asset.missing;
+        Object.assign(asset,item);
+        sourceNames.set(item.id,item.name);
+        if (materialAliases.has(item.id)) asset.name=materialAliases.get(item.id).name;
+      }
+    }
+    if (items.length) {
+      draftAutosave.invalidate();
+      renderLists(); renderMusic(); renderNarration(); renderWholeTracks();
+      draftAutosave.stage(draftTitle(),JSON.stringify(montageConfig()),{ensureDraft:true});
+    }
+    sayProject(items.length ? '已重新定位 '+items.length+' 项素材。' : '未找到可唯一确认的匹配，请选择更具体的目录。');
+  } catch(error) {sayProject(error.message);}
+  finally {operation='';showMissingMaterials();updateControls();}
+});
 async function openEditorProject(load, { fromDraft = false } = {}) {
-  if (operation) return;
+  if (operation || (cutEditor?.dirty() && !await cutEditor.confirmLeave())) return;
   const opener = document.activeElement;
   operation = 'project';
   sayProject(fromDraft ? '正在打开草稿并检查素材…' : '正在打开工程并检查素材…');
@@ -4344,7 +4168,7 @@ async function openEditorProject(load, { fromDraft = false } = {}) {
       const opened = await navigateWorkspace('montage', () => {
         restoreProject(result, { draft: fromDraft ? result : undefined });
         const firstShot = shots.findIndex((shot) => shot.length);
-        if (firstShot >= 0) preview(shots[firstShot][0]);
+        if (firstShot >= 0 && !shots[firstShot][0].asset.missing) preview(shots[firstShot][0]);
         sayProject([`已打开${fromDraft ? '草稿' : '工程'}：${result.name}`, result.libraryWarning].filter(Boolean).join(' · '));
       });
       if (opened && mode === 'montage') return result;
@@ -4379,6 +4203,13 @@ async function openDraft(id) {
   };
 }
 
+let exportProgressStart;
+$('#copy-export-diagnostics').addEventListener('click', async () => {
+  try {
+    await api.copyExportDiagnostics();
+    say('已复制本机诊断信息。');
+  } catch (error) { say(error.message); }
+});
 async function startExport() {
   if (operation || $('#start-export').disabled) return;
   const config = mode === 'audio' ? audioTargets.map((clip) => clip.asset.id) : montageConfig();
@@ -4387,6 +4218,8 @@ async function startExport() {
     indices: previewBatch.entries.map(({ index }) => index).filter((index) => previewBatch.selected.has(index)),
   } : null;
   operation = 'export';
+  exportProgressStart = undefined;
+  $('#copy-export-diagnostics').hidden = true;
   say('');
   $('#output').hidden = false;
   $('#output-status').textContent = !selection && config.priority === 'voice' && config.narrationMode === 'segmented'
@@ -4402,12 +4235,14 @@ async function startExport() {
       return;
     }
     const status = result.cancelled ? '已取消' : result.failures.length ? '导出结束' : '导出完成';
+    $('#copy-export-diagnostics').hidden = !result.failures.length;
     $('#output-status').textContent = `${status} · 已保存 ${result.results.length} 条${result.failures.length ? ` · 失败 ${result.failures.length} 条` : ''}`;
     if (!result.cancelled) $('#progress').value = 1;
     renderResults(result, true);
     if (result.historyWarning) say(result.historyWarning);
   } catch (error) {
     $('#output-status').textContent = '无法开始导出。';
+    $('#copy-export-diagnostics').hidden = false;
     say(error.message);
   } finally {
     operation = '';
@@ -4442,8 +4277,13 @@ api.onProgress((data) => {
     return;
   }
   if (operation !== 'export') return;
-  $('#progress').value = (data.index + data.fraction) / data.count;
-  $('#output-status').textContent = `处理第 ${data.index + 1} / ${data.count} 条 · 已保存 ${data.results.length} 条`;
+  exportProgressStart ??= performance.now();
+  const fraction = Math.max(0, Math.min(1, (data.index + data.fraction) / data.count));
+  const elapsed = (performance.now() - exportProgressStart) / 1000;
+  const remaining = fraction > 0 && elapsed >= 1 ? Math.ceil(elapsed * (1 - fraction) / fraction) : null;
+  const eta = remaining === null ? '正在估算剩余时间' : `约剩 ${Math.floor(remaining/60)} 分 ${remaining%60} 秒`;
+  $('#progress').value = fraction;
+  $('#output-status').textContent = `总进度 ${Math.round(fraction*100)}% · 处理第 ${data.index + 1} / ${data.count} 条 · 已保存 ${data.results.length} 条 · ${eta}`;
   renderResults(data, false);
 });
 
@@ -5104,6 +4944,13 @@ for (const id of ['cancel-export', 'cancel-preview']) {
     }
   });
 }
+$('#apply-narration-recommendation').addEventListener('click',()=>{
+  $('#priority').value='voice';
+  $('#voice-alignment').value='fill';
+  if ($('#narration-mode').value==='segmented') $('#segment-narration-selection').value='ordered';
+  $('#priority').dispatchEvent(new Event('change',{bubbles:true}));
+  sayProject('已应用口播推荐设置。');
+});
 $('#montage-settings').addEventListener('input', (event) => {
   if(!event.target.closest('#voice-follow-settings')) updateControls(event.target.type === 'number' ? event.target : undefined, event.target.id === 'ratio');
 }, true);

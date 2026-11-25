@@ -4,14 +4,18 @@ param([Parameter(Mandatory)][string]$Tag, [Parameter(Mandatory)][string]$Notes)
 $ErrorActionPreference = 'Stop'
 $PSNativeCommandUseErrorActionPreference = $true
 $version = (Get-Content -Raw -Encoding utf8 'package.json' | ConvertFrom-Json).version
-if ($Tag -cnotmatch '^v(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)$' -or $Tag -cne "v$version") { throw '版本或标签不符。' }
+if ($Tag -cnotmatch '^v(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)(?:-preview\.(0|[1-9]\d*))?$' -or $Tag -cne "v$version") { throw '版本或标签不符。' }
 $headCommit = git rev-parse HEAD
 $tagCommit = git rev-parse "refs/tags/$Tag^{commit}"
 if ($headCommit -cne $tagCommit) { throw '发布工作树与标签提交不一致。' }
 $body = (Get-Content -Raw -Encoding utf8 -LiteralPath $Notes).Replace("`r`n","`n").Trim()
 if (!$body) { throw '更新说明为空。' }
 $setup = "Jiajian-Setup-$version-x64.exe"
-$names = @($setup, "$setup.blockmap", 'latest.yml')
+$preview = $version.Contains('-preview.')
+$manifest = if ($preview) { 'preview.yml' } else { 'latest.yml' }
+$releaseFlag = if ($preview) { '--prerelease' } else { '--prerelease=false' }
+$latestFlag = if ($preview) { '--latest=false' } else { '--latest' }
+$names = @($setup, "$setup.blockmap", $manifest)
 $assets = @($names | ForEach-Object { (Get-Item -LiteralPath (Join-Path 'dist' $_)).FullName })
 
 function Get-Release {
@@ -24,7 +28,15 @@ function Get-Release {
     }
 }
 
+function Assert-KnownAssets($release) {
+    if (@($release.assets | Where-Object { $_.name -cnotin $names }).Count) {
+        throw 'GitHub 发布记录包含额外附件，请先核对。'
+    }
+}
+
 function Assert-Assets($release, [switch]$CheckLocalHash) {
+    Assert-KnownAssets $release
+    if ([bool]$release.prerelease -ne $preview) { throw 'GitHub 发布通道与标签不一致。' }
     foreach ($name in $names) {
         $found = @($release.assets | Where-Object { $_.name -ceq $name })
         if ($found.Count -ne 1 -or $found[0].state -ne 'uploaded' -or $found[0].size -le 0 -or
@@ -41,22 +53,19 @@ function Assert-Assets($release, [switch]$CheckLocalHash) {
 
 $release = Get-Release
 if ($release -and !$release.draft) {
-    if ($release.prerelease) { throw '此标签已有预发行版本。' }
     Assert-Assets $release
-    Write-Output "$Tag 的正式版已发布。"
+    Write-Output "$Tag 已发布，已复核附件及更新说明。"
     return
 }
 
 if ($release) {
-    if (@($release.assets | Where-Object { $_.name -cnotin $names }).Count) {
-        throw '已有草稿包含额外附件，请先核对草稿。'
-    }
-    gh release edit $Tag --draft --prerelease=false --title "佳剪 $Tag" --notes-file $Notes
+    Assert-KnownAssets $release
+    gh release edit $Tag --draft $releaseFlag --title "佳剪 $Tag" --notes-file $Notes
 } else {
-    gh release create $Tag --verify-tag --draft --title "佳剪 $Tag" --notes-file $Notes
+    gh release create $Tag --verify-tag --draft $releaseFlag --title "佳剪 $Tag" --notes-file $Notes
 }
 gh release upload $Tag @assets --clobber
 $staged = Get-Release
 if (!$staged -or !$staged.draft) { throw '未找到待校验的发布草稿。' }
 Assert-Assets $staged -CheckLocalHash
-gh release edit $Tag --draft=false --verify-tag
+gh release edit $Tag --draft=false $releaseFlag $latestFlag

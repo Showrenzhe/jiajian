@@ -55,7 +55,7 @@ function estimateDuration(config) {
   return Number.isFinite(seconds) && seconds > 0 ? Math.round(seconds * 1000) / 1000 : undefined;
 }
 
-function createDraftStore(directory,resolvePath,inspect,sourceEditDirectory) {
+function createDraftStore(directory,resolvePath,inspect,sourceEditDirectory,loadOptions) {
   const records = new Map();
   let ready;
   let writes = Promise.resolve();
@@ -252,7 +252,7 @@ function createDraftStore(directory,resolvePath,inspect,sourceEditDirectory) {
       const file = snapshotPath(id);
       if (await fileStamp(file)!==record.stamp) await scan();
       const {meta}=find(id);
-      const project = await loadProject(file,resolvePath,inspect,sourceEditDirectory);
+      const project = await loadProject(file,resolvePath,inspect,sourceEditDirectory,loadOptions);
       // Reconcile the source of truth after an interrupted rename or save.
       mirrored.delete(id);
       try { await mirror(id,project.config,() => undefined); }

@@ -21,8 +21,10 @@ async function run() {
   const disableAcceleration = mock.method(app, 'disableHardwareAcceleration');
   const video = path.join(root, '样本.mp4');
   const chosen = path.join(root, '选择的目录');
+  const report = path.join(root, '诊断.json');
   let folderRequests = 0;
   const win = await launchDesktop({ show: false, dataDirectory: profile, dialogs: {
+    async showSaveDialog() {return {filePath:report};},
     async showOpenDialog(_win, options) {
       if (!options.properties.includes('openDirectory')) return { canceled: false, filePaths: [video] };
       folderRequests++;
@@ -45,16 +47,25 @@ async function run() {
     await js('Promise.all(document.querySelector("#cloud-settings-dialog").getAnimations({subtree:true}).map(a=>a.finished.catch(()=>{})))');
   };
   try {
-    assert.equal(disableAcceleration.mock.callCount(), 0, '旧设置升级后应由 Electron 选择可用的合成方式');
+    assert.equal(disableAcceleration.mock.callCount(), 1, '旧配置选择关闭 GPU 后启动应继续使用软件渲染');
     disableAcceleration.mock.restore();
     await fs.mkdir(chosen);
     await ffmpeg(['-f', 'lavfi', '-i', 'color=teal:s=960x540:r=24:d=2', '-c:v', 'libx264', '-threads', '2', video]);
     win.setContentSize(1100, 740);
     await open();
     const before = await read();
-    assert.equal(await js('Boolean(document.querySelector("#performance-gpu"))'), false);
+    assert.equal(await js('document.querySelector("#performance-software").checked'), true);
     await assert.rejects(js('window.workbench.savePerformanceSettings({gpu:false})'), /性能设置无效/);
     assert.deepEqual(await read(), before);
+    await click('#performance-software');
+    await wait(async () => !(await read()).softwareRendering, '下次启动应启用硬件渲染');
+    await click('#performance-software');
+    await wait(async () => (await read()).softwareRendering, '兼容模式应可恢复');
+    await click('#performance-diagnostics');
+    await wait(()=>js('document.querySelector("#performance-status").textContent.includes("诊断包已保存")'),'应可导出诊断包');
+    const exported=JSON.parse(await fs.readFile(report,'utf8'));
+    assert.equal(exported.platform,process.platform);
+    assert.ok(Array.isArray(exported.graphics) && Array.isArray(exported.events));
     await click('#performance-default-proxy');
     await wait(async () => (await read()).defaultProxy === !before.defaultProxy, '新草稿代理默认值应保存');
     await js("const select=document.querySelector('#performance-optimization'); select.value='smooth'; select.dispatchEvent(new Event('change',{bubbles:true}))");

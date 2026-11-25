@@ -212,6 +212,37 @@ test('independent instances of one video save, reopen and export at the same tim
   for (const result of results) assert.ok((await inspectAsset(result.path, 'video')).duration >= .5);
 });
 
+test('recent drafts retain auto-fit cuts below 0.5x and above 3x when opened and saved again', async t => {
+  const root = await testDirectory(t);
+  const video = path.join(root, '片段.mp4');
+  await ffmpeg(['-f', 'lavfi', '-i', 'testsrc2=size=128x72:rate=30', '-t', '4', '-c:v', 'libx264', '-threads', '1', video]);
+  const catalog = new Map([['video', await inspectAsset(video, 'video')]]);
+  const spans = [1.4460000000000015, .9990000000000023];
+  const shots = [.7, 3.466].map((end, index) => [{
+    id: 'video', start: 0, end, videoLane: 1, videoStart: index ? spans[0] : 0,
+    videoFollowsShot: true, videoDuration: spans[index], videoFit: 'hold',
+    speed: end / spans[index], autoFitSpeed: true,
+  }]);
+  const config = editingConfig({ shots, shotSettings: spans.map(duration => ({ duration })), useMirrors: false, unordered: false });
+  const folder = path.join(root, '草稿');
+  const draft = await createDraftStore(folder).create({ name: '自动倍速', config }, catalog);
+  const cold = createDraftStore(folder);
+  const [recent] = await cold.list();
+  assert.equal(recent.id, draft.id);
+  const opened = await cold.open(recent.id);
+  assert.deepEqual(opened.config.shots, shots);
+  const saved = await cold.save({ id: recent.id, expectedRevision: opened.revision, config: opened.config }, opened.assets);
+  const restored = await createDraftStore(folder).open(saved.id);
+  assert.deepEqual(restored.config.shots, shots);
+  const [plan] = planMontage(restored.config, restored.assets);
+  assert.deepEqual(plan.clips.map(clip => clip.speed), shots.map(([clip]) => clip.speed));
+  for (const speed of [0, -1, Infinity, '0.48']) {
+    const invalid = { ...config, shots: [[{ ...shots[0][0], speed }], shots[1]] };
+    await assert.rejects(cold.save({ id: saved.id, expectedRevision: saved.revision, config: invalid }, catalog), /素材速度无效/);
+  }
+  assert.deepEqual((await cold.open(saved.id)).config.shots, shots);
+});
+
 test('deleting inherited footage in one store persists its empty shot without removing the shared footage', async (t) => {
   const {createSubprojects}=require('../src/ui/subprojects.js');
   const {resolveSubprojectShots}=require('../src/subprojects.cjs');
@@ -633,7 +664,7 @@ test('reports missing media and rejects incompatible or undeclared asset referen
   await assert.rejects(loadProject(file), /素材清单与引用不一致/);
   await fs.writeFile(file, JSON.stringify({ ...saved, assets: [{ ...saved.assets[0], path: '../relative.mp4' }] }));
   await assert.rejects(loadProject(file), /缺失或类型不匹配/);
-  await fs.writeFile(file, JSON.stringify({ ...saved, version: 2 }));
+  await fs.writeFile(file, JSON.stringify({ ...saved, version: 3 }));
   await assert.rejects(loadProject(file), /不支持此工程文件格式或版本/);
 });
 

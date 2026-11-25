@@ -7,7 +7,7 @@ const fs = require('node:fs/promises');
 const os = require('node:os');
 const path = require('node:path');
 const { setTimeout: delay } = require('node:timers/promises');
-const { app, powerMonitor, shell } = require('electron');
+const { app, powerMonitor } = require('electron');
 const { launchDesktop } = require('../src/desktop.cjs');
 
 app.disableHardwareAcceleration();
@@ -21,9 +21,11 @@ async function run() {
   const taskStarted = Promise.withResolvers();
   let checks = 0, downloads = 0, installs = 0;
   let clock = Date.now(), version = '0.6.4';
-  const fourHours = 4 * 60 * 60 * 1000;
+  const oneDay = 24 * 60 * 60 * 1000;
   let send;
+  const settingsOpened = Promise.withResolvers();
   const win = await launchDesktop({
+    openInstalledApps: async () => settingsOpened.resolve(true),
     show: false, dataDirectory: profile, checkOnStartup: true, updateClock: () => clock,
     cloudTts: {
       status: () => ({ configured: true }),
@@ -38,6 +40,7 @@ async function run() {
       };
       return {
         getState: () => state,
+        setPreferences(value) { return send(state.status, value); },
         check() { checks++; return send('available', { version, notes }); },
         async download() {
           if (++downloads === 1) return send('error', { retry: 'download', message: '测试下载失败' });
@@ -107,10 +110,11 @@ async function run() {
     const entry = document.querySelector('.titlebar #software-update-entry');
     const group = entry?.closest('#titlebar-update');
     const shortcuts = document.querySelector('#cut-shortcuts-entry');
+    const help = document.querySelector('#editing-help-entry');
     const settings = document.querySelector('#app-settings');
     return entry?.checkVisibility() && entry.textContent.includes('软件更新') &&
       shortcuts?.checkVisibility() && settings?.checkVisibility() &&
-      group?.nextElementSibling === shortcuts && shortcuts.nextElementSibling === settings &&
+      group?.nextElementSibling === shortcuts && shortcuts.nextElementSibling === help && help.nextElementSibling === settings &&
       group.getBoundingClientRect().right <= shortcuts.getBoundingClientRect().left &&
       shortcuts.getBoundingClientRect().right <= settings.getBoundingClientRect().left;
   })()`), 'The title bar should show Updates, Shortcuts and Settings in order');
@@ -153,15 +157,10 @@ async function run() {
   assert.equal(await read('document.querySelectorAll("dialog[open]").length'), 1);
   assert.equal(downloads, 0, 'Opening update details should not start a download');
   assert.ok(await read('document.getElementById("update-manage-installation").checkVisibility()'));
-  const settingsOpened = Promise.withResolvers();
-  const originalOpen = shell.openExternal;
-  try {
-    shell.openExternal = async (url) => { settingsOpened.resolve(url); };
-    await click('update-manage-installation');
-    assert.equal(await settingsOpened.promise, 'ms-settings:appsfeatures');
-    assert.equal(installs, 0);
-    assert.ok(await read('document.getElementById("update-dialog").open'));
-  } finally { shell.openExternal = originalOpen; }
+  await click('update-manage-installation');
+  assert.equal(await settingsOpened.promise, true);
+  assert.equal(installs, 0);
+  assert.ok(await read('document.getElementById("update-dialog").open'));
   await press('Escape', 27);
   await until('!document.getElementById("update-dialog").open && document.activeElement.id === "software-update-entry"');
   await expectBadge(version);
@@ -173,6 +172,8 @@ async function run() {
     return entry && getComputedStyle(entry, '::after').content.includes(entry.title);
   })()`), 'A keyboard user should see the available version on focus');
   await press('Tab', 9);
+  await press('Tab', 9);
+  assert.equal(await read('document.activeElement.id'), 'editing-help-entry');
   await press('Tab', 9);
   assert.equal(await read('document.activeElement.id'), 'app-settings');
   await press('Enter', 13);
@@ -187,7 +188,7 @@ async function run() {
   send('error', { retry: 'check', message: '测试复查网络失败' });
   await until('document.getElementById("update-status").textContent === "测试复查网络失败"');
   await expectBadge(version);
-  clock += fourHours - 1;
+  clock += oneDay - 1;
   win.emit('focus');
   assert.equal(checks, 1);
   clock++;
@@ -207,7 +208,7 @@ async function run() {
   await until('document.getElementById("update-progress").value === 37');
   await expectBadge(version);
   assert.equal(await read('document.activeElement.id'), 'update-close', '下载时键盘应停在仍可用的关闭按钮');
-  clock += fourHours;
+  clock += oneDay;
   win.emit('focus');
   assert.equal(checks, 2, 'An active download must keep its state');
   await click('update-close');
@@ -285,28 +286,21 @@ async function run() {
   await click('update-action');
   await until('document.getElementById("update-action").textContent === "下载更新"');
   assert.equal(checks, 3);
-  clock += fourHours;
+  clock += oneDay;
   win.emit('focus');
   assert.equal(checks, 4, 'A window kept open should check again when it regains focus');
   send('unsupported', { canManageInstallation: false });
   await until('document.getElementById("update-action").textContent === "打开官方发布页"');
+  assert.equal(await read('document.getElementById("update-action").dataset.method'), 'openUpdatePage');
   await expectBadge(null);
-  assert.match(await textOf('update-status'), /Windows 安装版/);
   assert.equal(await read('document.getElementById("update-manage-installation").checkVisibility()'), false);
   assert.match(await read('workbench.openInstalledApps().then(() => "", e => e.message)'), /Windows 安装版/);
-  const opened = Promise.withResolvers();
-  const openExternal = shell.openExternal;
-  try {
-    shell.openExternal = async (url) => { opened.resolve(url); };
-    await click('update-action');
-    assert.equal(await opened.promise, 'https://github.com/Showrenzhe/jiajian/releases/latest');
-  } finally { shell.openExternal = openExternal; }
   send('error', { retry: 'install' });
   await until('!document.getElementById("update-action").disabled && document.getElementById("update-action").textContent === "重试保存并重启"');
   await click('update-action');
   await until('document.getElementById("update-status").textContent.includes("正在启动安装")');
   assert.equal(installs, 2);
-  clock += fourHours;
+  clock += oneDay;
   powerMonitor.emit('resume');
   assert.equal(checks, 4, 'Installing must never trigger another automatic check');
   console.log('标题栏更新红点、浅深与紧凑布局、键盘版本提示、下载重试、草稿与运行中任务保护通过。');

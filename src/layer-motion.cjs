@@ -33,7 +33,7 @@ function maskAlpha(mask, clock) {
   return mask.invert ? `(1-${visible})` : visible;
 }
 
-function visualMotion({ layer, index, canvas, fps, source, font, filters, video, active }) {
+function visualMotion({ layer, index, canvas, fps, source, font = undefined, filters, video, active }) {
   const [width, height] = canvas;
   const { asset, start, end, mediaStart, tempo } = layer;
   // Crop/priority fitting can enter the middle of an animation. All keyframes

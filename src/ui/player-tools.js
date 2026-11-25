@@ -6,11 +6,17 @@ function createPreviewFrameHandoff(stage) {
   const canvas = document.createElement('canvas');
   canvas.className = 'preview-frame-hold';
   canvas.setAttribute('aria-hidden', 'true');
-  let pendingFrame, videoCallback, incoming, generation = 0;
+  const pixels=canvas.getContext('2d',{alpha:false,willReadFrequently:true});
+  let pendingFrame, videoCallback, incoming, resumePaused, generation = 0;
 
   function cancelReveal() {
     generation++;
     cancelAnimationFrame(pendingFrame);
+    if (resumePaused) {
+      incoming.removeEventListener('play',resumePaused);
+      incoming.removeEventListener('seeking',resumePaused);
+      resumePaused=undefined;
+    }
     if (videoCallback !== undefined) incoming.cancelVideoFrameCallback(videoCallback);
     videoCallback = undefined;
     incoming = undefined;
@@ -30,7 +36,7 @@ function createPreviewFrameHandoff(stage) {
       devicePixelRatio * fitScale(rect.width / width, rect.height / height));
     canvas.width = Math.max(1, Math.round(width * scale));
     canvas.height = Math.max(1, Math.round(height * scale));
-    try { canvas.getContext('2d').drawImage(source, 0, 0, canvas.width, canvas.height); }
+    try { pixels.drawImage(source, 0, 0, canvas.width, canvas.height); }
     catch { return false; }
     canvas.style.objectFit = fit;
     return true;
@@ -75,14 +81,26 @@ function createPreviewFrameHandoff(stage) {
       if (request !== generation) return;
       if (ready()) {
         const copied = copiedSrc === source.currentSrc;
-        // A paused decoder may have delivered its only presentation callback
-        // before registration. Reveal after the decoded target has remained
-        // ready through a paint with its own frame already covering the cut.
-        const pausedFrame = video && source.paused && copiedTime === source.currentTime;
-        // At native EOS the decoder may withdraw its surface. Keep this last
-        // decoded frame until presentation resumes or a new seek takes over.
-        if (copied && pausedFrame && source.ended && !presented) return;
-        if (copied && (presented || pausedFrame)) { clear(); return; }
+        // On Windows the decoded target can be ready while the paused native
+        // surface still shows an older seek. Keep the sampled target on screen
+        // until playback resumes or the user seeks again.
+        if (copied && video && source.paused && copiedTime === source.currentTime) {
+          if (videoCallback !== undefined) source.cancelVideoFrameCallback(videoCallback);
+          videoCallback=undefined;
+          resumePaused=()=>{
+            source.removeEventListener('play',resumePaused);
+            source.removeEventListener('seeking',resumePaused);
+            resumePaused=undefined;
+            if (request!==generation) return;
+            presented=false;
+            videoCallback=source.requestVideoFrameCallback(onPresented);
+            pendingFrame=requestAnimationFrame(check);
+          };
+          source.addEventListener('play',resumePaused);
+          source.addEventListener('seeking',resumePaused);
+          return;
+        }
+        if (copied && presented && (!video || !source.paused)) { clear(); return; }
         if ((!copied || (video && source.paused && copiedTime !== source.currentTime)) && copyFrame(source)) {
           copiedSrc = source.currentSrc;
           copiedTime = source.currentTime;
