@@ -2,15 +2,18 @@
 
 (() => {
   const storageKey = 'jiajian.cut-shortcuts.v1';
+  const labels = window.editorMessages.keys;
   const commands = {
-    undo: ['撤销', 'Ctrl+Z'], redo: ['重做', 'Ctrl+Shift+Z'],
-    split: ['分割', 'W', 'Ctrl+B'], 'trim-left': ['剪掉左侧', 'Q'], 'trim-right': ['剪掉右侧', 'E'],
-    reverse: ['倒放', null], mirror: ['镜像', null], crop: ['裁剪画面', null], rotate: ['旋转', null],
-    'quick-save': ['快速保存', 'Ctrl+S'],
+    undo: [labels.undo, 'Ctrl+Z'], redo: [labels.redo, 'Ctrl+Shift+Z'],
+    split: [labels.split, 'W', 'Ctrl+B'], 'trim-left': [labels.trimLeft, 'Q'], 'trim-right': [labels.trimRight, 'E'],
+    reverse: [labels.reverse, null], mirror: [labels.mirror, null], crop: [labels.crop, null], rotate: [labels.rotate, null],
+    'quick-save': [labels.save, 'Ctrl+S'],
+    'frame-back': [labels.back, ','], 'frame-forward': [labels.forward, '.'],
+    'frames-back': [labels.backTen, 'Shift+,'], 'frames-forward': [labels.forwardTen, 'Shift+.'],
   };
   const defaults = () => Object.fromEntries(Object.entries(commands).map(([id, [, ...keys]]) => [id, keys]));
   const reserved = new Set([
-    'Ctrl+A', 'Ctrl+C', 'Ctrl+X', 'Ctrl+V', 'Ctrl+F', 'Ctrl+L', 'Ctrl+\\', '.',
+    'Ctrl+A', 'Ctrl+C', 'Ctrl+X', 'Ctrl+V', 'Ctrl+F', 'Ctrl+L', 'Ctrl+\\', 'Ctrl+/', 'Shift+/',
     'Ctrl+R', 'Ctrl+W', 'Ctrl+Shift+I', 'Ctrl+Shift+R', 'Alt+F4', 'F5', 'F10', 'F11',
   ]);
   const punctuation = {
@@ -44,18 +47,19 @@
       if (data?.version !== 1) return initial;
       for (const [id, slots] of Object.entries(initial)) {
         const saved = data.bindings?.[id];
-        if (id === 'quick-save' && saved === undefined) {
+        if (saved === undefined && (id === 'quick-save' || id.startsWith('frame'))) {
           // Earlier settings could already assign Ctrl+S to a clip command.
           initial[id] = slots.map(key => owned.has(key) ? null : key);
           continue;
         }
         if (!Array.isArray(saved) || saved.length !== slots.length) return defaults();
-        for (const key of saved) {
+        const migrated = saved.map(key => key === 'Shift+/' || key === 'Ctrl+/' ? null : key);
+        for (const key of migrated) {
           if (key === null) continue;
           if (!allowed(key) || owned.has(key)) return defaults();
           owned.add(key);
         }
-        initial[id] = saved;
+        initial[id] = migrated;
       }
     } catch { return defaults(); }
     return initial;
@@ -191,5 +195,5 @@
     paint();
     dialog.showModal();
   }
-  window.cutShortcuts = {actionFor, labelFor, openSettings};
+  window.cutShortcuts = {actionFor, labelFor, openSettings, entries: () => Object.entries(commands).map(([id,[label]]) => ({label, keys:labelFor(id)}))};
 })();

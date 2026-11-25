@@ -119,13 +119,18 @@ async function run() {
     await previewVideo();
 
     // A project can refer to an existing sibling the user never dropped or selected.
-    // Opening it must report the missing grant, and leave the current edit available.
+    // Keep the edit available while the unapproved reference remains offline.
     declared.path = unc(unselected);
     await fs.writeFile(otherProject, JSON.stringify(saved));
     picks.push({ title: '打开工程', file: otherProject });
     await click('#open-project');
-    await wait(el('#notice') + '.textContent.includes("请先将这项共享素材拖入素材库")', '未取得许可的共享文件须重新选择');
-    assert.equal(await read(el(tile(file)) + '?.checkVisibility()'), true);
+    await wait(el('#notice') + '.textContent.includes("已打开工程") && !' + el('#missing-materials') + '.hidden', '未取得许可的共享文件须显示为缺失');
+    const offline=await read('shots[0][0].asset');
+    assert.equal(offline.missing,true);
+    assert.equal(offline.url,'');
+    assert.equal((await wc.session.fetch('sd-workbench://asset/'+offline.id,{headers:{Range:'bytes=8-39'}})).status,404);
+    await assert.rejects(read('workbench.preparePreview(montageConfig())'),/重新定位/);
+    await assert.rejects(read('workbench.export("montage",montageConfig())'),/重新定位/);
     assert.deepEqual(picks, []);
     console.log('SMB 回环桌面回归通过。共享文件与目录拖放、普通本地文件、缩略图、字节范围、图像/视频解码、保存重开、缺失文件和未授权文件均已覆盖。');
   } finally {

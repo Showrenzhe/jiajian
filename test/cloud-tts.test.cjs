@@ -1,4 +1,5 @@
 'use strict';
+process.env.JIAJIAN_TEST_LOOPBACK = '1';
 
 const assert = require('node:assert/strict');
 const { EventEmitter } = require('node:events');

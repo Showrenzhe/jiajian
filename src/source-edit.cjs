@@ -1,3 +1,4 @@
+// @ts-check
 'use strict';
 
 const { createHash } = require('node:crypto');
@@ -8,8 +9,10 @@ const path = require('node:path');
 const pending = new Map();
 const digests = new Map();
 let renderQueue = Promise.resolve();
-const ffmpeg = process.env.SUPERDIR_REPLICA_FFMPEG || 'ffmpeg';
+const ffmpeg = process.env.JIAJIAN_FFMPEG || process.env.SUPERDIR_REPLICA_FFMPEG || 'ffmpeg';
 
+/** @typedef {{start:number,end:number,reverse?:boolean,mirror?:boolean,rotation?:number,crop?:{x:number,y:number,width:number,height:number}}} SourceRange */
+/** @param {SourceRange[]} ranges @param {number} duration @returns {SourceRange[]} */
 function normalizeSourceEditRanges(ranges, duration) {
   if (!(duration>0)) throw Error('素材时长无效。');
   if (!Array.isArray(ranges) || !ranges.length || ranges.length>2000) throw Error('候选需要有效的裁剪片段。');
@@ -72,6 +75,8 @@ async function sourceDigest(file,stamp,signal) {
   return digest;
 }
 
+/** @param {Record<string,any>} asset @param {SourceRange[]} ranges @param {string} directory
+ * @param {string} sourceSignature @param {{signal?:AbortSignal}} options */
 async function render(asset,ranges,directory,sourceSignature,{signal}) {
   const { runTool,inspectAsset } = require('./media.cjs');
   signal?.throwIfAborted();
@@ -178,6 +183,9 @@ async function render(asset,ranges,directory,sourceSignature,{signal}) {
   }
 }
 
+/** Renders and atomically caches a validated source edit.
+ * @param {Record<string,any>} asset @param {SourceRange[]} ranges @param {string} directory
+ * @param {{signal?:AbortSignal}} [options] @returns {Promise<string>} */
 async function prepareSourceEdit(asset,ranges,directory,options={}) {
   if (asset?.kind!=='video' || !path.isAbsolute(asset.path)) throw Error('请先选择一段已载入的视频。');
   const normalized=normalizeSourceEditRanges(ranges,asset.duration);

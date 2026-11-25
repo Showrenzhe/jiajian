@@ -1,5 +1,7 @@
 'use strict';
 
+if (process.type === 'browser' && process.env.JIAJIAN_TEST_SCREENSHOT) require('./desktop-failure-hook.cjs');
+
 const assert = require('node:assert/strict');
 const { setTimeout: delay } = require('node:timers/promises');
 

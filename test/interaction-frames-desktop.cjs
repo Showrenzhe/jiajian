@@ -9,7 +9,7 @@
 // and the time between discrete wheel notches need not produce new display frames.
 const assert = require('node:assert/strict');
 const { createHash } = require('node:crypto');
-const { readdirSync, readFileSync } = require('node:fs');
+const { mkdirSync, readdirSync, readFileSync, writeFileSync } = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
 const { setTimeout: delay } = require('node:timers/promises');
@@ -17,14 +17,18 @@ const { app, screen } = require('electron');
 const { launchDesktop } = require('../src/desktop.cjs');
 const { inspectAsset } = require('../src/media.cjs');
 const { saveProject } = require('../src/project-format.cjs');
-const { fixtures } = require('./fixtures.cjs');
+const { fixtures, ffmpeg } = require('./fixtures.cjs');
 const { clickVisible } = require('./desktop-input.cjs');
 
 const durationMs = 2000;
+const large = process.argv.includes('--large');
+const shotsCount = large ? 200 : 24;
+const laneCount = large ? 5 : 3;
 const budget = 1000 / 60;
 const root = process.env.JIAJIAN_FRAME_BENCH_ROOT;
 assert.ok(root, '请从 npm run bench:frames 或 node test/run-interaction-frames.cjs 启动');
 const project = path.join(root, '基准.sdworkbench');
+const batchProject = path.join(root, '批量基准.sdworkbench');
 const profile = path.join(root, 'profile');
 app.setPath('userData', profile);
 
@@ -42,15 +46,24 @@ async function makeProject() {
   const ids = ['red', 'green', 'blue'];
   const catalog = new Map(await Promise.all([...ids, 'music'].map(async id =>
     [id, await inspectAsset(files[id], id === 'music' ? 'audio' : 'video')])));
-  const shots = Array.from({ length: 24 }, (_, index) => [0, 1, 2].map(lane =>
+  const shots = Array.from({ length: shotsCount }, (_, index) => Array.from({length:laneCount},(_,lane) =>
     ({ id: ids[(index + lane) % ids.length], start: 0, end: 1, videoLane: lane })));
-  await saveProject(project, {
+  const config = {
     shots, ratio: '16:9', resolution: 720, fps: 30, fit: 'fit', keepAudio: true,
     priority: 'picture', unordered: false, useOriginal: true, useMirrors: false, count: 1,
     musicIds: ['music'], musicVolume: 50, narrationMode: 'segmented',
     segmentNarrationIds: shots.map(() => ['music']),
     timelineCaptions: { name: '字幕', cues: shots.map((_, i) => ({ start: i * 1000, end: i * 1000 + 800, text: String(i + 1) })) },
-  }, catalog);
+  };
+  if (large) {
+    const longVoice = path.join(root,'整段口播.wav');
+    await ffmpeg(['-f','lavfi','-i','sine=frequency=440:sample_rate=16000:duration=200','-c:a','pcm_s16le',longVoice]);
+    catalog.set('voice', await inspectAsset(longVoice,'audio'));
+    delete config.segmentNarrationIds;
+    Object.assign(config,{narrationMode:'whole',narrationId:'voice'});
+    await saveProject(batchProject, {...config,shots:shots.slice(0,5),count:1000,narrationId:null,timelineCaptions:null}, catalog);
+  }
+  await saveProject(project,config,catalog);
 }
 
 function summarize({ timestamps, events, elapsedMs }) {
@@ -103,8 +116,9 @@ async function presentationFeedback(client, names) {
 
 async function run() {
   const sourceSha256 = sourceFingerprint();
+  let chosenProject = project;
   const win = await launchDesktop({ show: true, dataDirectory: profile, checkOnStartup: false,
-    dialogs: { async showOpenDialog() { return { canceled: false, filePaths: [project] }; } },
+    dialogs: { async showOpenDialog() { return { canceled: false, filePaths: [chosenProject] }; } },
   });
   const wc = win.webContents;
   const read = code => wc.executeJavaScript(code, true);
@@ -115,19 +129,21 @@ async function run() {
   const selector = s => 'document.querySelector(' + JSON.stringify(s) + ')';
   const size = (s, key) => read(selector(s) + '.getBoundingClientRect().' + key);
   async function waitFor(expression) {
-    const until = Date.now() + 20000;
+    const until = Date.now() + (large ? 90000 : 20000);
     while (!await read(expression)) {
       if (Date.now() > until) throw Error('等候超时 ' + expression);
       await delay(40);
     }
   }
   async function point(s, portion = .5) {
-    return read(`(() => {
+    const point = await read(`(() => {
       const el = ${selector(s)}, r = el.getBoundingClientRect();
       const x = Math.round(r.left + r.width * ${portion}), y = Math.round(r.top + r.height / 2);
-      if (!el.contains(document.elementFromPoint(x,y))) throw Error('基准控件未命中 ' + el.className);
-      return { x, y };
+      const hit = document.elementFromPoint(x,y);
+      return {x,y,matched:el.contains(hit),hit:hit?.className,bounds:r.toJSON()};
     })()`);
+    assert.ok(point.matched, '基准控件未命中 ' + s + ' ' + JSON.stringify(point));
+    return {x:point.x,y:point.y};
   }
 
   // Timestamp collection happens inside the renderer, independently of input dispatch.
@@ -153,7 +169,7 @@ async function run() {
     })`);
     await gesture();
     const recorded = await read('window.finishSample()');
-    if (name !== 'idle') assert.ok(recorded.events >= 10, name + ' 实际收到的输入不足 ' + recorded.events);
+    if (name !== 'idle') assert.ok(recorded.events >= (large ? 1 : 10), name + ' 实际收到的输入不足 ' + recorded.events);
     const result = summarize(recorded);
     results[name] = result;
     console.log(name + ' ' + JSON.stringify(result));
@@ -197,8 +213,8 @@ async function run() {
     win.focus();
     wc.debugger.attach();
     await clickVisible(wc, '#home-open-project');
-    await waitFor('document.querySelectorAll(".sequence-video .sequence-block[data-selectable]").length === 72');
-    await read(selector('#timeline-fit') + '.click()');
+    await waitFor('document.querySelectorAll(".sequence-video .sequence-block[data-selectable]").length >= 3');
+    if (!large) await read(selector('#timeline-fit') + '.click()');
     await delay(700);
     const displayNow = screen.getDisplayMatching(win.getBounds());
     const gpuInfo = await app.getGPUInfo('basic');
@@ -208,7 +224,8 @@ async function run() {
       scaleFactor: displayNow.scaleFactor, windowDip: win.getContentSize(), gpu: app.getGPUFeatureStatus().gpu_compositing,
       adapters: gpuInfo.gpuDevice?.map(({ active, vendorId, deviceId }) => ({ active, vendorId, deviceId })),
       tracks: await read('document.querySelectorAll(".sequence-row").length'),
-      shots: 24, candidateClips: 72, durationMs, metric: 'renderer requestAnimationFrame timestamps',
+      shots: shotsCount, candidateClips: shotsCount*laneCount, videoLanes:laneCount, narrationSeconds: large ? 200 : 0.4,
+      durationMs, metric: 'renderer requestAnimationFrame timestamps',
       sourceSha256, driverSha256: createHash('sha256').update(readFileSync(__filename)).digest('hex'),
     };
     console.log('environment ' + JSON.stringify(info));
@@ -219,13 +236,16 @@ async function run() {
     await sample('idle', () => delay(durationMs));
 
     const cell = (shot, lane) => '.sequence-block[data-drop-shot="' + shot + '"][data-candidate-index="' + lane + '"]';
-    const source = cell(2, 0), target = cell(9, 1);
+    const source = cell(2, 0), target = cell(large ? 4 : 9, 1);
     const before = await read(selector(source) + '.title');
     const from = await point(source), to = await point(target);
     await sample('candidateDrag', () => drag(from, to, () => waitFor('!!document.querySelector(".candidate-moving")')));
     await waitFor(selector(target) + '.title === ' + JSON.stringify(before));
-
     const ruler = '.sequence-ruler .sequence-content';
+    if (large) {
+      await read(selector('#timeline-fit') + '.click()');
+      await waitFor(selector(ruler) + '.clientWidth <= '+selector('#timeline-clock')+'.clientWidth');
+    }
     const start = await point(ruler, .12), end = await point(ruler, .76);
     const cursor = '.sequence-cursor';
     const oldPosition = await size(cursor, 'left');
@@ -248,8 +268,47 @@ async function run() {
       if (t < .12) peakZoom = Math.max(peakZoom, await zoom());
     }, 40), 'wheel');
     assert.ok(peakZoom > initialZoom, '滚轮应确实放大工程时间线');
+    if (large) {
+      chosenProject = batchProject;
+      await clickVisible(wc,'#open-project');
+      await waitFor('document.querySelector("#count").value === "1000" && !document.querySelector("#prepare-preview").disabled');
+      await clickVisible(wc,'#inspector-tab-montage');
+      const started = performance.now();
+      await clickVisible(wc,'#prepare-preview');
+      await waitFor('document.querySelector("#preview-batch").checkVisibility() && document.querySelector("#preview-batch-summary").textContent.includes("1000")');
+      const populated = await read(`(async () => {
+        const filter=document.querySelector('#batch-reuse-filter');
+        const start=performance.now();
+        filter.value='all';
+        filter.dispatchEvent(new Event('change'));
+        await new Promise(resolve=>requestAnimationFrame(()=>requestAnimationFrame(resolve)));
+        return Math.round(performance.now()-start);
+      })()`);
+      info.batchRows = 1000;
+      info.batchReadyMs = Math.round(performance.now()-started);
+      info.batchListRenderMs = populated;
+      const list = '#preview-batch-list';
+      await read(selector(list) + '.scrollIntoView({block:"center"})');
+      const listPoint = await point(list);
+      await sample('batchScroll', () => sweep(() => send('mouseWheel',listPoint,{deltaX:0,deltaY:120}),30),'wheel');
+      assert.ok(await read(selector(list) + '.scrollTop') > 500, '列表须响应真实滚轮');
+      const rendered = await read(selector(list) + '.querySelectorAll(".batch-entry").length');
+      assert.ok(rendered > 0 && rendered < 35, '只挂载视口附近的预览行');
+      await read('const sort=document.querySelector("#batch-sort"); sort.value="reuse"; sort.dispatchEvent(new Event("change"));');
+      const percentages=await read('Array.from(document.querySelectorAll("#preview-batch-list .batch-reuse"),el=>Number(el.textContent.match(/(\\d+)%/)[1]))');
+      assert.deepEqual(percentages,[...percentages].sort((a,b)=>a-b),'重复度升序须反映在可见行');
+      await read('const search=document.querySelector("#batch-search"); search.value="第 999 条"; search.dispatchEvent(new Event("input"));');
+      assert.equal(await read(selector(list) + '.querySelector(".batch-title").textContent'), '第 999 条');
+      await clickVisible(wc,'#select-all-previews');
+      await clickVisible(wc,'#invert-preview-selection');
+      assert.equal(await read(selector(list) + '.querySelector(".batch-select").checked'),false);
+    }
     if (trace) await presentationFeedback(wc.debugger, Object.keys(results));
     assert.equal(sourceFingerprint(), sourceSha256, '采样期间源码有改动，请重跑以便比较同一版本');
+    const report = path.resolve(process.env.JIAJIAN_BENCH_REPORT || ('run-data/benchmarks/'+(large?'large':'standard')+'.json'));
+    mkdirSync(path.dirname(report),{recursive:true});
+    writeFileSync(report,JSON.stringify({environment:info,results},null,2)+'\n');
+    console.log('JSON',report);
     console.log('rAF measures renderer scheduling. --presentation adds Chromium Viz presentation feedback. Physical scanout is unmeasured.');
     console.log('over16_67Ms includes timestamp rounding; over25Ms counts larger stalls.');
     if (process.argv.includes('--strict')) {
@@ -262,5 +321,5 @@ async function run() {
   }
 }
 
-const watchdog = setTimeout(() => { console.error('基准超时，检查可见窗口和显示刷新'); app.exit(1); }, 120000);
+const watchdog = setTimeout(() => { console.error('基准超时，检查可见窗口和显示刷新'); app.exit(1); }, large ? 300000 : 120000);
 run().then(() => { clearTimeout(watchdog); app.exit(0); }, error => { console.error(error); app.exit(1); });

@@ -91,7 +91,18 @@
     choose.setAttribute('aria-label', '选择要移动的面板');
     const live = create('span', { id: 'panel-layout-status', className: 'panel-layout-status' });
     live.setAttribute('role', 'status');
-    controls.append(toggle, choose, resetButton, live);
+    const presets = {
+      '剪辑优先': {materials:.19,inspector:.21,timeline:.50},
+      '口播优先': {materials:.17,inspector:.31,timeline:.41,'dock-inspector':true},
+      '预览优先': {materials:.15,inspector:.18,timeline:.32},
+    };
+    const preset = create('select',{id:'panel-layout-preset',title:'选择布局预设'});
+    preset.setAttribute('aria-label','选择布局预设');
+    preset.append(new Option('布局预设',''),...Object.keys(presets).map(name=>new Option(name,name)));
+    const banner = create('span',{className:'layout-editing-banner',textContent:'布局调整中 · Esc 撤销',hidden:true});
+    const access=create('button',{type:'button',id:'panel-layout-access',textContent:'面板尺寸…',hidden:true});
+    access.setAttribute('popovertarget','accessible-layout-controls');
+    controls.append(preset,toggle,banner,choose,access,resetButton,live);
     actions.append(controls);
 
     const layer = create('div', { id: 'panel-layout-layer' });
@@ -114,6 +125,24 @@
       refreshControls();
     });
     const dividers = [...workspace.querySelectorAll('.workspace-divider')];
+    const inspector = workspace.querySelector('#montage-inspector');
+    const compact = matchMedia('(max-width: 900px) and (max-height: 740px), (max-width: 800px)');
+    const inspectorToggle = create('button',{type:'button',id:'compact-inspector-toggle',className:'secondary'});
+    inspectorToggle.setAttribute('aria-controls','montage-settings');
+    inspector.querySelector('.panel-heading').append(inspectorToggle);
+    function collapseInspector(collapse) {
+      inspector.toggleAttribute('data-compact-folded',collapse);
+      inspectorToggle.setAttribute('aria-expanded',String(!collapse));
+      inspectorToggle.textContent = collapse ? '展开设置' : '收起设置';
+    }
+    function compactChanged() {
+      inspectorToggle.hidden = !compact.matches;
+      collapseInspector(compact.matches);
+    }
+    inspectorToggle.onclick = () => collapseInspector(!inspector.hasAttribute('data-compact-folded'));
+    inspector.querySelector('#inspector-tabs').addEventListener('click',() => collapseInspector(false));
+    compact.addEventListener('change',compactChanged);
+    compactChanged();
     const saved = readLayout();
     let slots = saved.slots ?? { ...defaultSlots };
     let editing = false;
@@ -222,6 +251,11 @@
       toggle.textContent = editing ? '完成布局' : '调整布局';
       toggle.title = editing ? '保留本次调整并退出。按 Esc 可取消本次调整。' : '拖动面板交换位置，拖动分隔线调大小。拖动上下两行两侧的箭头可跨列展开或收回。';
       choose.hidden = !editing;
+      banner.hidden = !editing;
+      access.hidden = !editing;
+      const split=splitView.snapshot();
+      preset.value=swapped() ? '' : Object.keys(presets).find(name=>Object.keys(split).length===Object.keys(presets[name]).length &&
+        Object.entries(presets[name]).every(([key,value])=>split[key]===value)) || '';
       choose.value = active;
       const modified = swapped() || splitView.modified;
       resetButton.hidden = !editing && !modified;
@@ -579,6 +613,18 @@
       sync();
     }
 
+    preset.addEventListener('change',()=>{
+      const name=preset.value;
+      if (!presets[name]) return;
+      releaseDrag();
+      stopArrivals();
+      slots={...defaultSlots};
+      splitView.restore(presets[name]);
+      applySlots();
+      save();
+      live.textContent='已切换到'+name+'布局。';
+      sync();
+    });
     toggle.addEventListener('click', () => {
       if (editing) return endEditing(false);
       beforeEdit = { slots: { ...slots }, active, split: splitView.snapshot() };

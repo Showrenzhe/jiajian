@@ -14,7 +14,7 @@ function onBeforeDraftClose(callback) {
   const listener = async (_event, token, purpose) => {
     let ok = false;
     let reason;
-    try { ok = await callback(purpose) === true; } catch (error) { reason = error?.message; }
+    try { ok = await callback(purpose, () => invoke('workbench:await-cut-close-decision', token)) === true; } catch (error) { reason = error?.message; }
     await invoke('workbench:complete-draft-close', { token, ok, reason }).catch(() => {});
   };
   draftCloseListener = listener;
@@ -31,13 +31,18 @@ contextBridge.exposeInMainWorld('workbench', {
   checkUpdate: () => invoke('workbench:check-update'),
   downloadUpdate: () => invoke('workbench:download-update'),
   installUpdate: () => invoke('workbench:install-update'),
-  openUpdatePage: () => invoke('workbench:open-update-page'),
+  setUpdatePreferences: preferences => invoke('workbench:set-update-preferences', preferences),
   openInstalledApps: () => invoke('workbench:open-installed-apps'),
   onUpdate: (callback) => {
     ipcRenderer.on('workbench:update-state', (_event, state) => callback(state));
   },
   setWindowAppearance: (theme) => invoke('workbench:window-appearance', theme),
   performanceSettings: () => invoke('workbench:performance-settings'),
+  relinkMaterials: config => invoke('workbench:relink-materials',config),
+  setRenderingMode: (value) => invoke('workbench:rendering-mode', value),
+  diagnosticSummary: () => invoke('workbench:diagnostic-summary'),
+  copyExportDiagnostics: () => invoke('workbench:copy-export-diagnostics'),
+  exportDiagnostics: () => invoke('workbench:export-diagnostics'),
   savePerformanceSettings: (patch) => invoke('workbench:performance-save', patch),
   chooseProxyFolder: () => invoke('workbench:performance-folder'),
   clearProxyCache: () => invoke('workbench:performance-clear'),

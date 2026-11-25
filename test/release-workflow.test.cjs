@@ -13,26 +13,21 @@ const { releaseNotes } = require('../scripts/release-notes.cjs');
 const { verifyManifest } = require('../scripts/verify-release.cjs');
 const yaml = createRequire(require.resolve('electron-updater/package.json'))('js-yaml');
 
-test('a manual release builds the requested tag after checking the pinned tool installer', async () => {
+test('CI runs Windows checks and internal release builds only retain a private artifact', async () => {
   const workflow = yaml.load(await fs.readFile(path.join(__dirname, '../.github/workflows/release-windows.yml'), 'utf8'));
   assert.equal(workflow.on.workflow_dispatch.inputs.tag.required, true);
-  const { env, steps } = workflow.jobs.release;
-  assert.equal(env.RELEASE_TAG, '${{ inputs.tag || github.ref_name }}');
-  const checkout = steps.findIndex(step => step.uses?.startsWith('actions/checkout@'));
-  const recovery = steps.findIndex(step => step.run?.includes('prepare-release-tools.ps1'));
-  const build = steps.findIndex(step => step.run?.includes('npm run dist:win'));
-  const publish = steps.findIndex(step => step.run?.includes('publish-release.ps1'));
-  assert.ok(checkout >= 0 && checkout < recovery && recovery < build && build < publish);
-  assert.equal(steps[checkout].with.ref, 'refs/tags/${{ env.RELEASE_TAG }}');
-  assert.match(steps[publish].run, /-Tag\s+\$env:RELEASE_TAG\b/);
-
-  const restore = steps[recovery].run;
-  assert.ok(restore.includes('https://github.com/Showrenzhe/jiajian/releases/download/v0.8.3/Jiajian-Setup-0.8.3-x64.exe'));
-  const digest = /Get-FileHash[^\n]*\$installer[^\n]*SHA256[^\n]*-ne\s+'bbf42446e0f26d9064e33481d527853fe17364e3d6389ed73848cbc6f609d387'\)\s*\{\s*throw/i;
-  const verified = restore.search(digest);
-  const extract = restore.search(/^\s*7z\.exe\s+[ex]\s/m);
-  assert.ok(verified >= 0 && verified < extract && extract < restore.indexOf('./scripts/prepare-release-tools.ps1'),
-    'the installer hash must be checked before extraction, and restored files must pass the tagged verification script');
+  assert.equal(workflow.jobs.release.if,'github.event.repository.private');
+  assert.equal(workflow.permissions.contents,'read');
+  const steps = workflow.jobs.release.steps;
+  assert.equal(steps.find(step=>step.uses?.startsWith('actions/checkout@')).with.ref,'refs/tags/${{ inputs.tag }}');
+  const commands=steps.map(step=>step.run??'').join('\n');
+  assert.match(commands,/prepare-release-tools/);
+  assert.match(commands,/verify-release/);
+  assert.doesNotMatch(commands,/gh release|publish-release/);
+  const ci=yaml.load(await fs.readFile(path.join(__dirname,'../.github/workflows/ci.yml'),'utf8'));
+  assert.ok(Object.hasOwn(ci.on,'pull_request'));
+  assert.deepEqual(ci.jobs.checks.steps.filter(s=>['npm ci','npm test','npm run test:smoke'].includes(s.run)).map(s=>s.run),
+    ['npm ci','npm test','npm run test:smoke']);
 });
 
 async function fixture(t) {
@@ -40,6 +35,25 @@ async function fixture(t) {
   t.after(() => fs.rm(root, { recursive: true, force: true }));
   return root;
 }
+
+test('离线安装包检查 asar 版本且拒绝嵌入更新源，在线包检查通道', async t => {
+  const root = await fixture(t);
+  const source = path.join(root,'source');
+  await fs.mkdir(source);
+  const asar = require('@electron/asar');
+  const archive = path.join(root,'app.asar');
+  const {verifyUpdateMode} = require('../scripts/verify-release.cjs');
+  await fs.writeFile(path.join(source,'package.json'),JSON.stringify({version:'1.0.0'}));
+  await asar.createPackage(source,archive);
+  await verifyUpdateMode(root,'1.0.0',null);
+  const feed = 'https://updates.example.invalid/';
+  await fs.writeFile(path.join(root,'app-update.yml'),JSON.stringify({provider:'generic',url:feed,channel:'preview'}));
+  await assert.rejects(verifyUpdateMode(root,'1.0.0',null),/离线安装包/);
+  await fs.writeFile(path.join(source,'package.json'),JSON.stringify({version:'1.0.1-preview.1',jiajianUpdateFeed:feed}));
+  asar.uncache(archive);
+  await asar.createPackage(source,archive);
+  await verifyUpdateMode(root,'1.0.1-preview.1',feed);
+});
 
 test('generate notes from commits since the previous stable tag, or use the edited version', async (t) => {
   const root = await fixture(t);
@@ -60,7 +74,7 @@ test('generate notes from commits since the previous stable tag, or use the edit
   assert.throws(() => releaseNotes(root, 'v1.0.2'), /与 package.json 版本/);
 });
 
-test('publishing rejects stale notes, corrupted installers and missing update assets', async (t) => {
+test('internal staging verifies immutable installers and publishes the manifest last', async (t) => {
   const root = await fixture(t);
   const artifact = 'Jiajian-Setup-1.0.1-x64.exe';
   const content = Buffer.from('installer');
@@ -72,6 +86,11 @@ test('publishing rejects stale notes, corrupted installers and missing update as
   const blockmap = { version: '2', files: [{ offset: 0, sizes: [content.length], checksums: ['test'] }] };
   await fs.writeFile(path.join(root, artifact + '.blockmap'), gzipSync(JSON.stringify(blockmap)));
   await verifyManifest(root, '1.0.1', '新功能');
+  const destination = path.join(root,'internal');
+  const {stageUpdate} = require('../scripts/stage-update.cjs');
+  await stageUpdate(root,destination,'1.0.1','新功能');
+  await stageUpdate(root,destination,'1.0.1','新功能');
+  await verifyManifest(destination,'1.0.1','新功能');
   blockmap.files[0].sizes = [content.length - 1];
   await fs.writeFile(path.join(root, artifact + '.blockmap'), gzipSync(JSON.stringify(blockmap)));
   await assert.rejects(verifyManifest(root, '1.0.1', '新功能'), /差分映射范围/);

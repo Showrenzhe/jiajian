@@ -231,7 +231,7 @@
       if (event?.type === 'pointerup') {
         drag.move(event.clientX, event.clientY);
         if (drag.tapped && Math.hypot(event.clientX - drag.startX, event.clientY - drag.startY) <= 3) {
-          const { areaHandle: kind, side } = handle.dataset;
+          const { areaHandle: kind, side } = drag.primary.dataset;
           setSpan(kind, side, position(side) !== spanPosition[kind]);
         }
       }
@@ -244,8 +244,8 @@
       else { preferred = before; render(); }
     }
 
-    for (const handle of handles) {
-      const { split: id, areaHandle, side } = handle.dataset;
+    function bindHandle(handle,primary) {
+      const { split: id, areaHandle, side } = primary.dataset;
       const horizontal = areaHandle === 'junction' ? side : sides.includes(id) ? id : undefined;
       const vertical = areaHandle === 'dock' ? side : (id === 'timeline' || areaHandle === 'junction') ? 'timeline' : undefined;
       handle.addEventListener('pointerdown', (event) => {
@@ -257,8 +257,8 @@
         cursorSurface.style.cursor = getComputedStyle(handle).cursor;
         handle.dataset.pointerFocus = '';
         const move = spanPosition[areaHandle] ? spanGesture(areaHandle, side, event) : gesture(horizontal, vertical, event);
-        drag = { handle, pointerId: event.pointerId, before: { ...preferred },
-          tapped: handle.classList.contains('workspace-span-handle'),
+        drag = { handle, primary, pointerId: event.pointerId, before: { ...preferred },
+          tapped: primary.classList.contains('workspace-span-handle'),
           startX: event.clientX, startY: event.clientY, move };
         handle.dataset.dragging = '';
         cursorSurface.hidden = false;
@@ -316,11 +316,38 @@
     }
     window.addEventListener('keydown', (event) => {
       if (!drag || event.key !== 'Escape' || event.isComposing || event.altKey || event.ctrlKey || event.metaKey || event.shiftKey) return;
-      if (workspace.hasAttribute('data-layout-editing')) return;
+      if (workspace.hasAttribute('data-layout-editing') && drag.handle===drag.primary) return;
       event.preventDefault();
       event.stopImmediatePropagation();
       finish();
     }, true);
+    const accessMenu=document.getElementById('accessible-layout-controls');
+    const choice=document.getElementById('accessible-split-choice');
+    const gripList=document.getElementById('accessible-split-grips');
+    for (const [index,primary] of handles.entries()) {
+      bindHandle(primary,primary);
+      const grip=document.createElement('button');
+      grip.type='button';
+      grip.textContent='拖动调整';
+      grip.dataset.grip=String(index);
+      bindHandle(grip,primary);
+      gripList.append(grip);
+      choice.append(new Option('',String(index)));
+    }
+    function syncAccessible() {
+      const item=handles[choice.selectedIndex];
+      for(const [i,handle] of handles.entries()) {
+        choice.options[i].textContent=handle.getAttribute('aria-label') || handle.title;
+        const grip=gripList.children[i];
+        grip.hidden=item!==handle;
+        if(!grip.hidden) {
+          grip.setAttribute('aria-label','拖动调整：'+choice.options[i].textContent);
+          grip.style.cursor=getComputedStyle(handle).cursor;
+        }
+      }
+    }
+    choice.addEventListener('change',syncAccessible);
+    accessMenu.addEventListener('beforetoggle',event=>{if(event.newState==='open') syncAccessible();});
     window.addEventListener('pointermove', (event) => {
       if (!drag || drag.pointerId !== event.pointerId) return;
       if (!(event.buttons & 1)) return finish();

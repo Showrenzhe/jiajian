@@ -31,7 +31,10 @@
   <script src="./track-tools.js" defer></script>
   <script src="./track-controls.js" defer></script>
   <script src="./cloud-tts-dialog.js" defer></script>
+  <link rel="stylesheet" href="./editing-help.css">
+  <script src="./messages-zh-cn.js" defer></script>
   <script src="./cut-shortcuts.js" defer></script>
+  <script src="./editing-help.js" defer></script>
   <script src="./cloud-tts-settings.js" defer></script>
   <script src="./software-updates.js" defer></script>
   <script src="./split-view.js" defer></script>
@@ -56,6 +59,9 @@
   <script src="./layer-motion.js" defer></script>
   <script src="./creative-service.js" defer></script>
   <script src="./timeline-selection.js" defer></script>
+  <script src="./timeline-packaging-state.js" defer></script>
+  <script src="./material-library-view.js" defer></script>
+  <script src="./editor-controls.js" defer></script>
   <script src="./timeline.js" defer></script>
   <script src="./editor-text.js" defer></script>
   <script src="./material-folders.js" defer></script>
@@ -143,6 +149,7 @@
       <button type="button" id="update-notice-dismiss" title="收起本次更新提醒" aria-label="收起本次更新提醒" hidden>×</button>
     </span>
     <button type="button" id="cut-shortcuts-entry" title="自定义剪辑快捷键" aria-haspopup="dialog"><svg class="ui-icon" aria-hidden="true"><use href="#icon-keyboard"></use></svg>快捷键</button>
+    <button type="button" id="editing-help-entry" title="剪辑帮助与快捷键（? 或 Ctrl+/）" aria-haspopup="dialog">帮助</button>
     <button type="button" id="app-settings" title="打开设置" aria-haspopup="dialog"><svg class="ui-icon" aria-hidden="true"><use href="#icon-settings"></use></svg>设置</button>
   </header>
   <div class="app-frame" data-mode="home">
@@ -175,7 +182,7 @@
           <h1 id="home-heading" tabindex="-1">剪辑工作台</h1>
           <div class="home-hero-actions">
             <button type="button" id="home-create"><svg class="ui-icon" aria-hidden="true"><use href="#icon-plus"></use></svg>新建剪辑</button>
-            <button type="button" id="home-open-project" class="glass-clear" title="打开已保存的 .sdworkbench 工程"><svg class="ui-icon" aria-hidden="true"><use href="#icon-folderOpen"></use></svg>打开工程</button>
+            <button type="button" id="home-open-project" class="glass-clear" title="打开已保存的佳剪工程"><svg class="ui-icon" aria-hidden="true"><use href="#icon-folderOpen"></use></svg>打开工程</button>
           </div>
         </header>
         <div class="home-content">
@@ -302,6 +309,9 @@
             <span id="draft-save-status" class="muted compact" role="status"></span>
           </div>
         </div>
+        <ol id="montage-steps" aria-label="混剪步骤" hidden>
+          <li aria-current="step">准备素材</li><li>口播字幕</li><li>生成预览</li><li>勾选导出</li>
+        </ol>
         <div id="workbench-actions" class="workbench-actions" hidden>
           <div class="project-actions" role="group" aria-label="工程操作">
             <button type="button" id="open-project" class="secondary"><svg class="ui-icon" aria-hidden="true"><use href="#icon-folderOpen"></use></svg>打开工程</button>
@@ -314,6 +324,7 @@
       </div>
 
       <p id="notice" role="status" hidden></p>
+
 
       <div id="montage-pane">
         <div class="timeline-header">
@@ -345,6 +356,7 @@
               <button type="button" id="match-all-voice-duration" class="secondary" aria-label="一键匹配口播" title="一键匹配口播 · 按各分镜第一条有音频的口播轨匹配全部候选时长"><svg class="ui-icon" aria-hidden="true"><use href="#icon-audio"></use></svg><span>一键匹配口播</span></button>
             </div>
             <div id="track-more-options" popover="auto" role="group" aria-label="编辑工具">
+              <button type="button" class="track-tools-command" popovertarget="accessible-layout-controls">调整轨高与面板尺寸…</button>
               <button type="button" class="secondary track-tools-command" id="clip-actions" aria-haspopup="dialog" disabled>候选操作<svg class="ui-icon" aria-hidden="true"><use href="#icon-chevron"></use></svg></button>
               <div class="track-tools-slice">
                 <label for="track-slice-interval">每段时长</label>
@@ -421,16 +433,19 @@
         <section id="preview-batch" class="preview-batch panel" role="tabpanel" aria-labelledby="timeline-batch-tab" tabindex="0" hidden>
           <div class="list-heading batch-heading">
             <div>
-              <h2 id="preview-batch-heading">批量混剪预览</h2>
+              <h2 id="preview-batch-heading">生成预览</h2>
               <p id="preview-batch-summary" class="muted compact" role="status"></p>
             </div>
             <div class="project-actions">
+              <input id="batch-search" type="search" aria-label="搜索预览组合" placeholder="搜索编号或素材">
+              <select id="batch-sort" aria-label="排序"><option value="index">编号顺序</option><option value="duration">时长从短到长</option><option value="reuse">重复度从低到高</option></select>
               <select id="batch-reuse-filter" aria-label="画面素材重复估值筛选">
                 <option value="low">重复度 0–70%</option><option value="medium">重复度 70%以上至95%以下</option><option value="high">重复度 95–99%</option>
                 <option value="same">画面素材完全相同</option><option value="none">无重复画面素材</option><option value="all">全部重复度</option>
               </select>
               <select id="batch-project-filter" aria-label="按子工程筛选" hidden></select>
               <button type="button" id="select-all-previews" class="quiet">仅选筛选结果</button>
+              <button type="button" id="invert-preview-selection" class="quiet">反选筛选结果</button>
               <button type="button" id="clear-preview-selection" class="quiet">清空</button>
             </div>
           </div>
@@ -452,6 +467,7 @@
 
     <section id="materials-pane" class="panel editor-materials" aria-labelledby="materials-heading" hidden>
       <div class="panel-heading"><h2 id="materials-heading" title="按住 Ctrl 滚动可缩放缩略图（macOS 也可用 ⌘）。拖动空白处可框选素材。">素材库</h2><span id="material-status" class="material-count muted compact" role="status"></span></div>
+      <details id="missing-materials" hidden><summary></summary><ul></ul><button type="button" id="relink-materials">选择新目录自动匹配…</button></details>
       <div class="subproject-picker">
         <select id="subproject-select" aria-label="当前素材工程"><option value="">主工程 · 公共素材</option></select>
         <button type="button" class="secondary" id="subproject-materials" hidden>替换素材</button>
@@ -583,6 +599,20 @@
               </fieldset>
             </div>
             <div id="inspector-panel-narration" data-inspector-panel role="tabpanel" aria-labelledby="inspector-tab-narration" tabindex="0" hidden>
+              <details id="narration-guide"><summary>口播选项说明与推荐设置</summary>
+                <p>以口播为主的成片推荐使用口播优先、佳剪规则。分段模式按同轨号匹配。</p>
+                <button type="button" id="apply-narration-recommendation" class="secondary">应用推荐设置</button>
+                <dl>
+                  <dt>整段口播</dt><dd><span aria-hidden="true">① ━━━ ③</span> 一条录音贯穿整片。</dd>
+                  <dt>分段口播</dt><dd><span aria-hidden="true">① ▏② ▏③</span> 每组分镜单独放置口播。</dd>
+                  <dt>画面优先</dt><dd><span aria-hidden="true">画面 → 声音</span> 保留完整画面，裁掉超出的口播。</dd>
+                  <dt>口播优先</dt><dd><span aria-hidden="true">声音 → 画面</span> 保持口播原速，让画面对齐台词。</dd>
+                  <dt>佳剪规则</dt><dd><span aria-hidden="true">A + B → 对齐</span> 画面短时补候选，长时均匀加速。</dd>
+                  <dt>教程规则</dt><dd><span aria-hidden="true">A → 对齐</span> 裁短较长画面，慢放较短画面。</dd>
+                  <dt>同轨号匹配</dt><dd><span aria-hidden="true">①A · ②A</span> 每个分镜使用同一轨号的口播。</dd>
+                  <dt>分镜内随机</dt><dd><span aria-hidden="true">①B · ②A</span> 每个分镜独立抽取一条已添加的口播。</dd>
+                </dl>
+              </details>
               <button type="button" class="secondary" id="selected-voice-settings" hidden>所选口播设置</button>
               <div class="narration-section">
                 <h3 class="inspector-section-title">口播来源</h3>
@@ -701,6 +731,7 @@
                 <details id="caption-preview-pane" open>
                   <summary>样式预览</summary>
                   <div id="caption-sample-stage" data-ratio="16:9"><canvas id="caption-preview-canvas" aria-label="当前画幅下的字幕位置和样式"></canvas></div>
+                  <label class="line-field">预览背景<select id="caption-preview-background"><option value="source">当前画面</option><option value="light">浅色</option><option value="dark">深色</option></select></label>
                   <button type="button" id="caption-enlarge" class="quiet">放大预览</button>
                   <input id="caption-preview-text" type="text" maxlength="320" aria-label="更换预览文字" placeholder="输入预览文字">
                 </details>
@@ -757,6 +788,7 @@
           <div id="output" hidden>
             <p id="output-status" class="compact" role="status"></p>
             <progress id="progress" max="1" value="0" aria-label="导出进度"></progress>
+            <button type="button" id="copy-export-diagnostics" class="quiet" hidden>复制诊断信息</button>
             <ul id="results" class="results"></ul>
           </div>
         </section>
@@ -772,6 +804,8 @@
     <header class="cloud-settings-heading"><h2 id="update-title" tabindex="-1" autofocus>软件更新</h2></header>
     <div class="cloud-settings-body">
       <p id="update-version" class="cloud-settings-muted"></p>
+      <label>更新通道 <select id="update-channel"><option value="stable">稳定</option><option value="preview">预览</option></select></label>
+      <label>自动检查 <select id="update-interval"><option value="24">启动时及每 24 小时</option><option value="72">启动时及每 3 天</option><option value="168">启动时及每周</option><option value="0">仅手动</option></select></label>
       <p id="update-status" role="status"></p>
       <progress id="update-progress" aria-label="更新下载进度" max="100" hidden></progress>
       <section id="update-details" hidden><h3>更新说明</h3><p id="update-notes"></p></section>
@@ -984,10 +1018,24 @@
       <button type="button" class="remove-asset quiet">移除</button>
     </div>
   </template>
+  <div id="accessible-layout-controls" popover="auto" aria-label="轨高与面板尺寸">
+    <header><strong>轨高与面板尺寸</strong><button type="button" popovertarget="accessible-layout-controls" popovertargetaction="hide" aria-label="关闭尺寸调整">关闭</button></header>
+    <fieldset id="accessible-track-height"><legend>轨道高度</legend>
+      <label>轨道<select id="accessible-track-choice"></select></label>
+      <label>高度（像素）<input type="number" id="accessible-track-value" min="17" max="4096" step="1"></label>
+      <button type="button" id="accessible-track-apply">应用轨高</button><button type="button" id="accessible-track-reset">默认高度</button>
+    </fieldset>
+    <fieldset><legend>面板尺寸</legend>
+      <label>调整位置<select id="accessible-split-choice"></select></label>
+      <div id="accessible-split-grips"></div>
+      <p>拖动所选把手或按方向键调整。双击恢复默认，拖动中按 Esc 撤销。</p>
+    </fieldset>
+  </div>
   <dialog id="caption-zoom-dialog" aria-labelledby="caption-zoom-title">
     <div class="caption-section-head"><h3 id="caption-zoom-title">字幕预览</h3><button type="button" class="quiet" id="caption-zoom-close">关闭</button></div>
     <canvas id="caption-zoom-canvas" aria-label="点按或拖动可设置字幕中心点"></canvas>
-    <p class="muted compact">点按或拖动可设置字幕中心点。</p>
+    <label><input type="checkbox" id="caption-guides" checked> 安全区与吸附线</label>
+    <p class="muted compact">拖动设置字幕中心。靠近中心或 10% 安全边距时自动吸附。</p>
   </dialog>
 </body>
 </html>

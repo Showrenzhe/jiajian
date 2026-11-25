@@ -1,0 +1,64 @@
+/* Opaque fallbacks retain label contrast over both black and white video. */
+:root { --menu-accessible-bg:rgba(252,252,253,.94); --menu-accessible-fg:#24262b; --menu-accessible-secondary:#424850; }
+:root[data-theme="dark"] { --menu-accessible-bg:rgba(32,34,39,.96); --menu-accessible-fg:#f3f4f6; --menu-accessible-secondary:#ced1d7; }
+:is(#draft-context-menu,#material-context-menu,#video-track-menu) { background:var(--menu-accessible-bg); color:var(--menu-accessible-fg); }
+:is(#material-context-menu,#video-track-menu) button:enabled { color:var(--menu-accessible-fg); }
+#video-track-menu button[data-menu-key]::after { color:var(--menu-accessible-secondary); }
+:is(#draft-context-menu,#material-context-menu,#video-track-menu) button,
+#editing-help-dialog button, .cut-leave-dialog button, .cut-precision input, .titlebar button, #panel-layout-preset { min-height:32px; min-width:32px; }
+@media (prefers-reduced-transparency:reduce) {
+  :is(#draft-context-menu,#material-context-menu,#video-track-menu) { background:var(--surface); backdrop-filter:none; }
+}
+@media (prefers-reduced-motion:reduce) {
+  *,*::before,*::after { animation-duration:0s !important; transition-duration:0s !important; scroll-behavior:auto !important; }
+}
+#accessible-layout-controls { margin:auto; max-width:min(440px,92vw); max-height:82vh; overflow:auto; border:1px solid var(--hairline); border-radius:12px; padding:14px; color:var(--ink); background:var(--surface); box-shadow:var(--glass-shadow); }
+#accessible-layout-controls header { display:flex; align-items:center; justify-content:space-between; gap:16px; }
+#accessible-layout-controls fieldset { margin:8px 0 0; padding:8px; border:1px solid var(--hairline); }
+#accessible-layout-controls label { display:flex; gap:10px; align-items:center; justify-content:space-between; margin-bottom:5px; }
+#accessible-layout-controls select { max-width:65%; }
+#accessible-layout-controls p { font-size:12px; color:var(--secondary-ink); margin:5px 0; }
+#accessible-layout-controls :is(button,select,input) { min-width:32px; min-height:32px; }
+#accessible-split-grips button { width:100%; min-height:44px; touch-action:none; cursor:move; user-select:none; }
+#narration-guide dl { display:grid; grid-template-columns:auto 1fr; gap:6px 8px; font-size:12px; }
+#narration-guide dd { margin:0; }
+#narration-guide dd span { display:block; color:var(--secondary-ink); font-weight:600; }
+/* Time-positioned clips and adjoining splitters keep their exact geometry. */
+body :is(button,select,a[href],input[type="text"],input[type="number"],input[type="search"],summary):not(
+  #timeline-clock *, .cut-source-marker, .video-cut-playhead, .video-cut-segment, .panel-layout-handle,
+  .workspace-area-handle, .p-color-wheel *, .color-wheel-panel *, .video-cut-ruler *) {
+  min-block-size:32px; min-inline-size:32px;
+}
+.cut-track-editor[data-mode="cut"] .cut-source-marker { width:32px; }
+#timeline-clock { --track-head-width:206px; }
+#timeline-clock .sequence-row[data-lane-key]:not(.sequence-folded) { min-height:39px; }
+#timeline-clock .sequence-row:not(.sequence-folded) .sequence-head :is(.track-kind,[data-track-action]) { height:32px; }
+.app-frame[data-mode="montage"] #montage-pane .timeline-header :is(#timeline-more,#track-more,#timeline-play,#add-shot,#timeline-view,#track-undo,#track-redo), #background-color {
+  min-height:32px; min-width:32px;
+}
+.app-frame[data-mode="montage"] .material-list .material-select { width:32px; height:32px; }
+#panel-layout-preset { width:auto; max-width:8em; font:inherit; }
+#montage-inspector[data-compact-folded] #montage-settings { display:none; }
+.layout-editing-banner { color:var(--ink); font-size:12px; font-weight:600; }
+[data-layout-editing] .panel-layout-pane { outline:1px solid var(--system-blue); outline-offset:-2px; }
+#editing-help-dialog dl { display:grid; grid-template-columns:auto 1fr; column-gap:2rem; row-gap:.45rem; margin:0; }
+#editing-help-dialog dd { margin:0; text-align:right; color:var(--secondary-ink); }
+#editing-help-dialog .cloud-settings-body { overflow:auto; }
+#editing-tour { margin:4px 0 10px; padding:9px 12px; color:var(--ink); background:var(--well); border-radius:8px; }
+#editing-tour p { margin:4px 0; font-size:12px; }
+#editing-tour > div { display:flex; justify-content:flex-end; gap:4px; }
+#editing-tour button { min-height:32px; }
+.editing-tour-target { outline:2px solid var(--accent,#3674d7); outline-offset:1px; }
+.cut-precision { padding:2px 8px; font-size:12px; color:var(--ink); }
+.cut-precision summary { cursor:pointer; }
+.cut-precision label { display:inline-flex; gap:4px; align-items:center; margin:4px 8px 2px 0; }
+.cut-precision input { width:11ch; font-variant-numeric:tabular-nums; }
+.cut-precision input[aria-invalid="true"] { outline:2px solid var(--danger,#ce554e); }
+.cut-pending-label { font-size:11px; font-weight:600; padding:2px 5px; border:1px solid currentColor; border-radius:5px; }
+.cut-has-changes { box-shadow:inset 0 0 0 2px var(--accent,#3674d7); font-weight:700; }
+.sequence-content[data-empty-hint]::after { content:attr(data-empty-hint); position:absolute; inset-inline-start:10px; top:50%; transform:translateY(-50%); pointer-events:none; color:var(--secondary-ink); font-size:11px; white-space:nowrap; }
+#video-track-menu button[data-menu-key]::after { content:attr(data-menu-key); margin-inline-start:auto; padding-inline-start:12px; color:var(--menu-accessible-secondary); }
+#timeline-clock .sequence-shots [data-reorder-shot] { padding-inline-start:min(34px,36%); cursor:pointer; }
+.shot-reorder-handle { position:absolute; inset:0 auto 0 0; width:min(32px,35%); cursor:grab; touch-action:none; display:grid; place-items:center; }
+.shot-reorder-handle::before { content:""; width:7px; height:12px; background:radial-gradient(circle at 1.5px 1.5px,currentColor 1px, transparent 1.3px) 0 0 / 4px 4px; }
+.shot-reorder-ghost { position:fixed; top:0; left:0; z-index:10000; pointer-events:none; padding:4px 10px; border-radius:6px; background:var(--surface); border:1px solid var(--hairline); color:var(--ink); opacity:.82; font-size:12px; }

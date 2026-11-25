@@ -1,6 +1,7 @@
 'use strict';
 
 const { randomUUID } = require('node:crypto');
+const { estimatedBytes } = require('./export-preflight.cjs');
 const { planMontage, analyzeNarrationSilence } = require('./media.cjs');
 const { measureBatchReuse } = require('./visual-similarity.cjs');
 const { normalizeSubprojects, resolveSubprojectShots,projectVoiceConfig } = require('./subprojects.cjs');
@@ -101,6 +102,7 @@ function createPreviewBatch(config, catalog, plans = planMontage(config, catalog
       reuse: reuse[index],
       ...(plan.subproject && { subproject: plan.subproject }),
       duration: plan.duration,
+      estimatedBytes: estimatedBytes(plan),
       clips: plan.clips.map(describeClip),
       music: plan.music?.name ?? null,
       narration: plan.narration?.name ?? null,

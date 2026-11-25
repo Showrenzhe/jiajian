@@ -6,7 +6,7 @@ const { execFileSync } = require('node:child_process');
 
 function releaseNotes(root, tag) {
   const version = JSON.parse(fs.readFileSync(path.join(root, 'package.json'), 'utf8')).version;
-  if (!/^\d+\.\d+\.\d+$/.test(version) || tag !== `v${version}`) {
+  if (!require('semver').valid(version) || tag !== `v${version}`) {
     throw new Error(`正式版标签 ${tag} 与 package.json 版本 ${version} 不符`);
   }
   const curated = path.join(root, 'release-notes', `${tag}.md`);
@@ -20,7 +20,7 @@ function releaseNotes(root, tag) {
   const stableTag = /^v(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)$/;
   const previous = git('tag', '--merged', 'HEAD', '--sort=-version:refname').split('\n').find((entry) => {
     if (!stableTag.test(entry)) return false;
-    const current = version.split('.').map(Number);
+    const current = require('semver').coerce(version).version.split('.').map(Number);
     const parts = entry.slice(1).split('.').map(Number);
     const firstDifference = parts.findIndex((n, index) => n !== current[index]);
     return firstDifference !== -1 && parts[firstDifference] < current[firstDifference];

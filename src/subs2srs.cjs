@@ -14,7 +14,7 @@ function localFile(file, extensions) {
 }
 
 function ffmpegCommand() {
-  const configured = process.env.SUPERDIR_REPLICA_FFMPEG || 'ffmpeg';
+  const configured = process.env.JIAJIAN_FFMPEG || process.env.SUPERDIR_REPLICA_FFMPEG || 'ffmpeg';
   return /[\\/]/.test(configured) ? path.resolve(configured) : configured;
 }
 

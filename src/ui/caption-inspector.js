@@ -71,9 +71,10 @@ window.mountCaptionInspector = ({ api, sourceCue, player, still }) => {
     const [width,height] = ratio === '9:16' ? [720,1280] : ratio === '1:1' ? [720,720] : [1280,720];
     if (canvas.width !== width || canvas.height !== height) { canvas.width = width; canvas.height = height; }
     get('caption-sample-stage').dataset.ratio = ratio;
-    ctx.fillStyle = '#252b32'; ctx.fillRect(0,0,width,height);
+    const background = get('caption-preview-background').value;
+    ctx.fillStyle = background==='light' ? '#f3f3f2' : '#252b32'; ctx.fillRect(0,0,width,height);
     const source = !still.hidden && still.naturalWidth ? still : !player.hidden && player.readyState >= 2 ? player : null;
-    if (source) {
+    if (source && background==='source') {
       const w = source.videoWidth || source.naturalWidth, h = source.videoHeight || source.naturalHeight;
       const scale = (get('fit').value === 'fill' ? Math.max : Math.min)(width/w,height/h);
       ctx.drawImage(source,(width-w*scale)/2,(height-h*scale)/2,w*scale,h*scale);
@@ -86,7 +87,22 @@ window.mountCaptionInspector = ({ api, sourceCue, player, still }) => {
     }
     if (zoom.open) {
       if (largeCanvas.width !== width || largeCanvas.height !== height) { largeCanvas.width = width; largeCanvas.height = height; }
-      largeCanvas.getContext('2d').drawImage(canvas,0,0);
+      const large = largeCanvas.getContext('2d');
+      large.drawImage(canvas,0,0);
+      if (get('caption-guides').checked) {
+        large.save();
+        large.setLineDash([width/140,width/190]);
+        const lineWidth=Math.max(1,width/640);
+        for(const [color,weight] of [['#202020',lineWidth*2.5],['#ffffff',lineWidth]]) {
+          large.strokeStyle=color; large.lineWidth=weight;
+          large.strokeRect(.1*width,.1*height,.8*width,.8*height);
+          large.beginPath();
+          large.moveTo(width/2,0);large.lineTo(width/2,height);
+          large.moveTo(0,height/2);large.lineTo(width,height/2);
+          large.stroke();
+        }
+        large.restore();
+      }
     }
   }
   function request() {
@@ -234,10 +250,19 @@ window.mountCaptionInspector = ({ api, sourceCue, player, still }) => {
     event.stopPropagation();
   });
   get('caption-enlarge').addEventListener('click',() => { zoom.showModal(); draw(); refresh(); });
+  get('caption-guides').addEventListener('change',draw);
+  get('caption-preview-background').addEventListener('change',draw);
   get('caption-zoom-close').addEventListener('click',() => zoom.close());
   function pointerPosition(stage,event) {
     const rect = stage.getBoundingClientRect();
-    const coordinate = (offset,span) => Math.max(0,Math.min(100,Math.round(100*offset/span)));
+    const coordinate = (offset,span) => {
+      const value = Math.max(0,Math.min(100,100*offset/span));
+      if (stage===largeCanvas && get('caption-guides').checked) {
+        const anchor=[10,50,90].find(at=>Math.abs(value-at)*span/100<=6);
+        if (anchor!==undefined) return anchor;
+      }
+      return Math.round(value);
+    };
     return {position:'custom', x:coordinate(event.clientX-rect.left,rect.width), y:coordinate(event.clientY-rect.top,rect.height)};
   }
   function endDrag(event) {

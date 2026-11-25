@@ -1,48 +1,59 @@
-# 发布佳剪 Windows 正式版
+# Windows 内部更新
 
-安装程序面向 Windows x64，更新源是公开仓库 Showrenzhe/jiajian 的正式 Release。安装版、应用内更新和 GitHub 发布说明共用版本标签。普通源码提交和分支推送用于开发。旧离线 ZIP 用户的迁移步骤见 [README](../README.md#启动)。
+安装包与工程材料仅供内部使用。发布负责人为一个版本开一个发布 PR，把同类小修复合并写入 `release-notes/v版本.md`，合并后再为该提交创建与 package.json 相同的标签。稳定版采用正常语义版本，预览版采用例如 `0.9.0-preview.1` 的预发布版本。
 
-## 准备版本和说明
+## 构建
 
-1. 在 Windows 上安装 Node.js 24 或更新版本和 Git。确定版本号后，使用 `npm version <版本号> --no-git-tag-version` 同步修改 package.json 与锁文件，将功能改动和这两个文件一起提交。
-2. 运行 `node scripts/release-notes.cjs v<版本号>` 预览更新说明。默认取当前提交历史中低于本版的最高正式标签，汇总此后已合入的非合并提交标题。请用中文在提交标题里写清用户能看到的变化，例如「修复口播轨移动后波形位置未同步」。
-3. 若要合并同类条目或补充迁移步骤，可将预览保存为 `release-notes/v<版本号>.md` 后编辑并提交。该文件优先于提交标题。构建从同一份正文生成应用内更新说明与 GitHub Release 正文，适合在打标签前审阅。
-
-## 在本地验证
-
-从仓库根目录打开 PowerShell 7。下列命令使用 package.json 的版本，仅在本机生成安装包。
+在 Windows 安装 Node.js 24、Visual Studio C++ 构建工具与 Windows SDK，执行以下命令。
 
 ```powershell
 npm ci
 ./scripts/prepare-release-tools.ps1
-$bin = (Resolve-Path 'tools/ffmpeg-8.0-full_build/bin').Path
-$env:SUPERDIR_REPLICA_FFMPEG = Join-Path $bin 'ffmpeg.exe'
-$env:SUPERDIR_REPLICA_FFPROBE = Join-Path $bin 'ffprobe.exe'
-$env:PATH = "$bin;$env:PATH"
 npm test
-npm run test:desktop
-npm run test:updates
-node --test test/release-workflow.test.cjs
-./test/release-publish.test.ps1
-$tag = 'v' + (Get-Content -Raw package.json | ConvertFrom-Json).version
-$notes = Join-Path $env:TEMP "jiajian-$tag.md"
-node scripts/release-notes.cjs $tag $notes
-npm run dist:win -- "-c.releaseInfo.releaseNotesFile=$notes"
-node scripts/verify-release.cjs $notes
+npm run test:smoke
+npm run dist:win
+node scripts/verify-release.cjs
 ```
 
-GitHub Actions 从官方 v0.8.3 Windows x64 安装包恢复 FFmpeg 8、FFprobe、LICENSE 和 README.txt。工作流先核对安装包的 SHA-256，再解出这四个文件并逐项核对。首次在本地构建时，若缺少这些文件，可安装 7-Zip 并将 `7z.exe` 加入 PATH，在仓库根目录设置 `$env:RUNNER_TEMP = $env:TEMP`，然后执行工作流「恢复已校验的离线工具」中从下载安装包到 `./scripts/prepare-release-tools.ps1` 的命令。如果保存了原版 v0.6.2 离线 ZIP，也可用 `./scripts/prepare-release-tools.ps1 -Archive <ZIP路径>` 恢复。本地文件齐备后，准备脚本直接校验它们。仓库 vendor 目录提供 PySceneDetect 及其 Python 运行库、Whisper 模型、人声分离及前景模型。[v0.8.3 官方安装包](https://github.com/Showrenzhe/jiajian/releases/tag/v0.8.3) · [恢复步骤与固定校验值](../.github/workflows/release-windows.yml)
+未配置更新地址时可以离线安装。自定义打包输出目录时，用 `JIAJIAN_DIST_DIR` 指定校验目录。需要联网更新时，在构建进程中把 `JIAJIAN_UPDATE_URL` 设为管理员提供的内部 HTTPS 目录。该目录的访问控制由公司网关、VPN 或服务器负责。地址不能包含用户名、密码或查询串。请在测试安装机上先确认可以访问该目录，再构建安装包。
 
-## 发布与重跑
+为正式构建准备更新说明，并传给 electron-builder。
 
-将正式版源码合入 main 后，在准备发布的提交上创建并推送 `v主版本.次版本.修订号` 标签。GitHub Actions 会启动「发布佳剪 Windows 正式版」，先确认标签提交已合入 main，再开始构建。修复构建流程后需要重跑既有标签时，在 Actions 页手动运行该工作流，为工作流选择已合入修复的 `main` 分支，在 `tag` 输入框填原正式标签。这样会使用更新后的工作流，从原标签构建并发布。仓库的 Actions 需允许工作流使用 `contents: write` 创建发布草稿和上传附件。
+```powershell
+$version = (Get-Content package.json -Raw | ConvertFrom-Json).version
+node scripts/release-notes.cjs "v$version" "$env:TEMP/jiajian-notes.md"
+npm run dist:win -- "-c.releaseInfo.releaseNotesFile=$env:TEMP/jiajian-notes.md"
+node scripts/verify-release.cjs "$env:TEMP/jiajian-notes.md"
+```
 
-工作流从标签重新检出完整历史、测试并生成下列三个文件。佳剪在安装前使用更新清单中的 SHA-512 核对安装包。
+## 分发与回退
 
-| 附件 | 用途 |
-| --- | --- |
-| `Jiajian-Setup-版本号-x64.exe` | 首次安装和升级 |
-| `Jiajian-Setup-版本号-x64.exe.blockmap` | 差分下载使用的分块映射 |
-| `latest.yml` | 安装包名称、体积、SHA-512、版本和本版更新说明 |
+管理员检查安装包后运行 `scripts/publish-release.ps1 -Tag v版本 -Notes 说明文件 -Destination 内部服务器对应的目录绝对路径`。该命令先校验安装包与差分映射，然后替换稳定通道的 `latest.yml` 或预览通道的 `preview.yml`，并保留以前的安装包。私有仓库也可以手动运行内部构建工作流，下载校验后的 Actions 产物，再用同一流程在内网分发。
 
-工作流检查本地安装包、清单、更新正文和离线引擎后，将三项附件上传到发布草稿。GitHub 返回的三个 SHA-256 都与本地一致后，工作流才公开该版本。上传中断时，可在 Actions 中重跑同一标签，工作流会补齐草稿。如果正式版已经成功公开，重跑会核对现有附件与正文后结束。正式版已公开后，需要修正程序或说明时，请用新版本号发布。
+更新入口在「设置 → 软件更新与通道」。默认稳定通道，在启动时及每 24 小时检查。可选每 3 天、每周或仅手动。发现版本后由用户选择下载、保存并重启。需要回退时，先备份工程和素材，退出佳剪，从内部历史目录安装上一个稳定版；避免使用旧版保存新版创建的工程，直至确认兼容。
+
+## 内网试通与仓库切换
+
+1. 在公司网内用内部地址构建一版测试安装包，确认带有相应的稳定或预览通道配置。用旧版本测试安装机验证检查、下载、校验、保存草稿并重启到新版本。
+2. 核实团队已保留当前及上一版安装包。原公开更新器不能自动发现新地址，先向同事分发已带内网地址的安装包。
+3. 由仓库管理员按约定切换为私有，退出账号检查仓库和旧发布页面返回 404。
+4. 在 main 分支规则启用必须经 PR 合并、至少一人批准并要求通过 `Windows / 单元与桌面冒烟`。管理员用临时 PR 提交一个确定失败的测试，确认合并受阻，恢复测试后验证检查通过并关闭演练 PR。
+
+## 公开安装包检查记录
+
+2026-11-24 检查了当日仍公开的十个 Windows x64 安装包。逐包核对发布清单的 SHA-256、解开安装包和 app.asar，检查自有源码及包清单中的常见密钥特征、内网 IPv4 地址，以及工程、证书、环境配置和常见测试媒体文件名。
+
+| 版本 | 核对的自有文本文件数 | 规则命中 |
+| --- | ---: | ---: |
+| v0.8.9 | 94 | 0 |
+| v0.8.8 | 94 | 0 |
+| v0.8.7 | 94 | 0 |
+| v0.8.6 | 94 | 0 |
+| v0.8.5 | 94 | 0 |
+| v0.8.4 | 94 | 0 |
+| v0.8.3 | 93 | 0 |
+| v0.8.2 | 84 | 0 |
+| v0.8.1 | 83 | 0 |
+| v0.8.0 | 83 | 0 |
+
+范围包括当前可下载的安装包。该记录无法判断已下载副本的去向、历史已撤回附件或第三方二进制中的任意内容。

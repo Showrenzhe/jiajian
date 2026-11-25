@@ -1,7 +1,12 @@
+// @ts-check
 'use strict';
+
+/** @typedef {{start: number, end: number}} SourceRange */
+/** @typedef {{name?: string, description?: string, duration?: number, smartTrim?: boolean}} ShotSettings */
 
 const minimum = 0.1;
 
+/** @param {unknown} rows @param {number} length @returns {(ShotSettings | null)[] | undefined} */
 function normalizeShotSettings(rows, length) {
   if (rows === undefined) return undefined;
   if (!Array.isArray(rows) || rows.length !== length) throw new Error('分镜属性数量与分镜不匹配。');
@@ -9,7 +14,7 @@ function normalizeShotSettings(rows, length) {
     if (row === null) return null;
     if (!row || typeof row !== 'object' || Array.isArray(row)) throw new Error('分镜属性无效。');
     const result = {};
-    for (const [key, limit] of [['name', 120], ['description', 2000]]) {
+    for (const [key, limit] of Object.entries({name: 120, description: 2000})) {
       if (row[key] === undefined) continue;
       if (typeof row[key] !== 'string' || row[key].length > limit) throw new Error('分镜名称或说明过长。');
       result[key] = row[key];
@@ -26,6 +31,7 @@ function normalizeShotSettings(rows, length) {
   });
 }
 
+/** @param {unknown} ranges @param {number} start @param {number} end @returns {SourceRange[]} */
 function normalizeRanges(ranges, start, end) {
   if (!Array.isArray(ranges) || !ranges.length || ranges.length > 2000) throw new Error('候选需要有效的裁剪片段。');
   return Array.from(ranges, (range) => {
@@ -96,6 +102,7 @@ function normalizeSceneCuts(rows, record) {
 }
 
 // Work in source seconds across the sequence of retained pieces, including reordered ranges.
+/** @param {SourceRange[]} ranges @param {number} offset @param {number} length @returns {SourceRange[]} */
 function sliceSource(ranges, offset, length) {
   const result = [];
   let remaining = length;

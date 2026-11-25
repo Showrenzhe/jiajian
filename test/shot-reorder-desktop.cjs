@@ -88,8 +88,13 @@ async function check() {
       +'return {x,y,hit:e.contains(document.elementFromPoint(x,y))}})()');
     assert.ok(p.hit,selector+' 应可直接拖动');return p;
   }
+  async function shotGrip(index) {
+    const selector='.sequence-shots [data-drop-shot="'+index+'"] .shot-reorder-handle';
+    const p=await read('(()=>{const e='+query(selector)+';e.scrollIntoView({block:"nearest",inline:"nearest"});const r=e.getBoundingClientRect();const x=r.left+r.width/2,y=r.top+r.height/2,hit=document.elementFromPoint(x,y);return {x,y,okay:e.contains(hit),bounds:r.toJSON(),hit:hit?.outerHTML?.slice(0,360)}})()');
+    assert.ok(p.okay,JSON.stringify(p));return p;
+  }
   async function drag(from,to,portion,cancel=false) {
-    const start=await point(from), end=await point(to,portion);
+    const start=await shotGrip(from), end=await point(to,portion);
     await send('dispatchMouseEvent',{type:'mouseMoved',x:start.x,y:start.y,buttons:0});
     await mouse('mousePressed',start);await mouse('mouseMoved',end);
     await wait('!'+marker+'.hidden','显示插入线');
@@ -161,7 +166,7 @@ async function check() {
     for(let i=0;i<7;i++) await click('#add-shot');
     await wait(host+'.scrollWidth>'+host+'.clientWidth+150','横滚测试需要超过一屏');
     await read(host+'.scrollLeft=0');
-    const start=await point(0,.2);
+    const start=await shotGrip(0);
     const end={x:await read(host+'.getBoundingClientRect().right-2'),y:start.y};
     // Editing a large project on a slow GPU can deliver fewer than ten animation frames per second.
     const originalRate=wc.getFrameRate();
@@ -171,7 +176,7 @@ async function check() {
     wc.setFrameRate(originalRate);
     await mouse('mouseReleased',end);
     await wait(order+'.at(-1)==="C"','首镜跨屏移到最后');
-    const last=await point(9,.8);
+    const last=await shotGrip(9);
     const beginning={x:await read(host+'.getBoundingClientRect().left+'+query('.sequence-shots .sequence-head')+'.offsetWidth+2'),y:last.y};
     await mouse('mousePressed',last);await mouse('mouseMoved',beginning);
     await wait(host+'.scrollLeft===0','拖动至左边缘应持续滚到片头');
@@ -442,16 +447,21 @@ async function check() {
     alternatives.count=2;
     alternatives.shots[2].forEach(clip=>{clip.enabled=clip.videoLane===2;});
     const normalPlans=createPreviewBatch(alternatives,savedRefill.assets).plans;
-    const ordinaryChoices=normalPlans.map(plan=>plan.clips.filter(clip=>clip.shotIndex===2).map(clip=>path.basename(clip.asset.path)));
+    const ordinaryChoices=normalPlans.map(plan=>plan.clips.filter(clip=>clip.shotIndex===2 && clip.outputFrames!==0).map(clip=>path.basename(clip.asset.path)));
     assert.deepEqual(ordinaryChoices.sort(),[[path.basename(longVideo)],[path.basename(refillGreen)]].sort(),
       '普通混剪保留两种独立组合，每个组合只抽取第三镜的一个候选');
+    const supplement=normalPlans.flatMap(plan=>plan.clips).filter(clip=>clip.shotIndex===2 && clip.outputFrames===0);
+    assert.equal(supplement.length,1);
+    assert.equal(path.basename(supplement[0].asset.path),path.basename(refillGreen));
+    assert.equal(supplement[0].outputDuration,0);
+    assert.ok(supplement[0].visibleSpans.length>0);
     const renderedWindow=await exportBatch(createPreviewBatch(isolated,savedRefill.assets).plans,root);
     assert.deepEqual(renderedWindow.failures,[]);
     const boundaryPixels=await ffmpeg(['-i',renderedWindow.results[0].path,'-an','-vf',
       "select='eq(n,104)+eq(n,105)+eq(n,201)+eq(n,202)+eq(n,203)',scale=1:1",'-fps_mode','passthrough','-pix_fmt','rgb24','-f','rawvideo','pipe:1']);
     assert.equal(boundaryPixels.length,15);
     const redFrames=Array.from({length:5},(_,i)=>boundaryPixels[i*3]>180 && boundaryPixels[i*3+1]<40 && boundaryPixels[i*3+2]<40);
-    assert.deepEqual(redFrames,[false,true,true,true,false],'24fps 成片应从 4.375 到 8.4167 秒保留红片，前后相邻帧均应位于窗口外');
+    assert.deepEqual(redFrames,[false,true,true,false,false],'24fps 成片第 105 至 201 帧保留红片，202 帧开始下一个窗口');
     opens.push(refillPath);await click('#open-project');
     await wait(query('#notice')+'.textContent.includes("已打开工程：两轨变三轨并回填") && !!'+query(refilled),'重开后仍在原分镜与物理轨道');
     assert.equal(await read(rows),3);
@@ -464,7 +474,7 @@ async function check() {
     assert.deepEqual(soloRender.failures,[]);
     const soloVideo=soloRender.results[0].path;
     const transition=await ffmpeg(['-i',soloVideo,'-an','-vf',
-      "select='eq(n,202)+eq(n,203)+eq(n,295)+eq(n,299)',scale=1:1",'-fps_mode','passthrough','-pix_fmt','rgb24','-f','rawvideo','pipe:1']);
+      "select='eq(n,201)+eq(n,202)+eq(n,295)+eq(n,299)',scale=1:1",'-fps_mode','passthrough','-pix_fmt','rgb24','-f','rawvideo','pipe:1']);
     assert.equal(transition.length,12);
     const colorAt=i=>[...transition.subarray(i*3,i*3+3)].map(v=>v>130);
     assert.deepEqual([0,1,2,3].map(colorAt),[[true,false,false],[false,true,false],[false,true,false],[false,false,false]],

@@ -1,101 +1,46 @@
-name: 发布佳剪 Windows 正式版
-
+name: 构建内部 Windows 安装包
 on:
-  push:
-    tags: ['v*.*.*']
   workflow_dispatch:
     inputs:
       tag:
-        description: 已存在的正式版标签，例如 v0.6.3
-        required: true
+        description: 已合入 main 的版本标签
         type: string
-
+        required: true
 permissions:
-  contents: write
-
-concurrency:
-  group: release-windows-${{ inputs.tag || github.ref_name }}
-  cancel-in-progress: false
-
+  contents: read
 jobs:
   release:
-    runs-on: windows-2022
+    if: github.event.repository.private
+    runs-on: windows-latest
     timeout-minutes: 75
     env:
-      RELEASE_TAG: ${{ inputs.tag || github.ref_name }}
+      RELEASE_TAG: ${{ inputs.tag }}
+      JIAJIAN_UPDATE_URL: ${{ vars.JIAJIAN_UPDATE_URL }}
     steps:
-      - name: 校验正式版标签
-        shell: pwsh
-        run: |
-          if ($env:RELEASE_TAG -cnotmatch '^v(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)$') {
-            throw '仅接受 v主版本.次版本.修订号'
-          }
-      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
         with:
-          ref: refs/tags/${{ env.RELEASE_TAG }}
+          ref: refs/tags/${{ inputs.tag }}
           fetch-depth: 0
           persist-credentials: false
-      - name: 确认标签提交已经合入 main
-        run: |
-          git merge-base --is-ancestor HEAD refs/remotes/origin/main
-          if ($LASTEXITCODE -ne 0) { throw '正式标签必须指向已合入 main 的提交。' }
-      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020
         with:
           node-version: '24'
           cache: npm
-      - name: 生成此版本的更新说明
-        run: node scripts/release-notes.cjs $env:RELEASE_TAG "$env:RUNNER_TEMP/release-notes.md"
-      - name: 恢复已校验的离线工具
-        run: |
-          $ErrorActionPreference = 'Stop'
-          $installer = Join-Path $env:RUNNER_TEMP 'Jiajian-Setup-0.8.3-x64.exe'
-          $url = 'https://github.com/Showrenzhe/jiajian/releases/download/v0.8.3/Jiajian-Setup-0.8.3-x64.exe'
-          curl.exe --fail --location --silent --show-error --retry 3 --output $installer $url
-          if ($LASTEXITCODE -ne 0) { throw '下载 v0.8.3 官方安装包失败。' }
-          if ((Get-FileHash -LiteralPath $installer -Algorithm SHA256).Hash -ne 'bbf42446e0f26d9064e33481d527853fe17364e3d6389ed73848cbc6f609d387') {
-            throw 'v0.8.3 官方安装包 SHA-256 不符。'
-          }
-
-          $files = [ordered]@{
-            'bin/ffmpeg.exe'  = '81b5832f6c548d64feba0ec7d643397e2351d9f3460a65c6c296956045eebaea'
-            'bin/ffprobe.exe' = '421dbc81a3d758dfe114534ff48ef47a61ef91896eb4b9e819609a8752ab8272'
-            'LICENSE'         = '8ceb4b9ee5adedde47b31e975c1d90c73ad27b6b165a1dcd80c7c545eb65b903'
-            'README.txt'      = '3f887c5c1c7f1e4f5699f50939a7c9afd84e36324132d7352bf551c51f8e930e'
-          }
-          $staging = Join-Path $env:RUNNER_TEMP ([guid]::NewGuid().ToString())
-          $toolDir = 'tools/ffmpeg-8.0-full_build'
-          $entries = @($files.Keys | ForEach-Object { "resources/$toolDir/$_" })
-          # Read the NSIS installer without executing it, then extract only the four tool files.
-          7z.exe e '-tNSIS' "-o$staging" $installer '$PLUGINSDIR/app-64.7z'
-          if ($LASTEXITCODE -ne 0) { throw '提取 v0.8.3 安装包内的应用归档失败。' }
-          $payload = Join-Path $staging 'app-64.7z'
-          if (!(Test-Path -LiteralPath $payload -PathType Leaf)) { throw '安装包缺少 app-64.7z。' }
-          7z.exe x '-t7z' "-o$staging" $payload @entries
-          if ($LASTEXITCODE -ne 0) { throw '提取 v0.8.3 离线工具失败。' }
-          foreach ($name in $files.Keys) {
-            $source = Join-Path $staging "resources/$toolDir/$name"
-            if (!(Test-Path -LiteralPath $source -PathType Leaf) -or (Get-FileHash -LiteralPath $source -Algorithm SHA256).Hash -ne $files[$name]) {
-              throw "v0.8.3 离线工具缺失或校验失败：$name"
-            }
-            $destination = Join-Path $toolDir $name
-            [void](New-Item -ItemType Directory -Force -Path (Split-Path -Parent $destination))
-            Copy-Item -LiteralPath $source -Destination $destination -Force
-          }
-          ./scripts/prepare-release-tools.ps1
-          $bin = (Resolve-Path 'tools/ffmpeg-8.0-full_build/bin').Path
-          "SUPERDIR_REPLICA_FFMPEG=$bin\ffmpeg.exe" >> $env:GITHUB_ENV
-          "SUPERDIR_REPLICA_FFPROBE=$bin\ffprobe.exe" >> $env:GITHUB_ENV
-          $bin >> $env:GITHUB_PATH
+      - run: |
+          if (!$env:JIAJIAN_UPDATE_URL) { throw '请配置内部 HTTPS 更新目录 JIAJIAN_UPDATE_URL。' }
+          git merge-base --is-ancestor HEAD refs/remotes/origin/main
+          if ($LASTEXITCODE) { throw '标签尚未合入 main。' }
       - run: npm ci
-      - run: npm test
-      - run: npm run test:updates
-      - run: node --test test/release-workflow.test.cjs
-      - run: ./test/release-publish.test.ps1
-      - name: 构建安装包与自动更新清单
-        run: npm run dist:win -- "-c.releaseInfo.releaseNotesFile=$env:RUNNER_TEMP/release-notes.md"
-      - name: 核对安装包、更新说明与离线引擎
-        run: node scripts/verify-release.cjs "$env:RUNNER_TEMP/release-notes.md"
-      - name: 上传到草稿，校验全部附件后发布
-        env:
-          GH_TOKEN: ${{ github.token }}
-        run: ./scripts/publish-release.ps1 -Tag $env:RELEASE_TAG -Notes "$env:RUNNER_TEMP/release-notes.md"
+      - run: node scripts/release-notes.cjs $env:RELEASE_TAG "$env:RUNNER_TEMP/notes.md"
+      - run: ./scripts/prepare-release-tools.ps1
+      - run: npm run dist:win -- "-c.releaseInfo.releaseNotesFile=$env:RUNNER_TEMP/notes.md"
+      - run: node scripts/verify-release.cjs "$env:RUNNER_TEMP/notes.md"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: internal-windows-${{ inputs.tag }}
+          path: |
+            dist/*.exe
+            dist/*.blockmap
+            dist/*.yml
+            !dist/builder*.yml
+          if-no-files-found: error

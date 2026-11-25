@@ -48,7 +48,7 @@ function parseBase(value) {
   if (!authority || authority.includes('@') || /[?#\\\x00-\x1f\x7f]/.test(text)) throw new Error('语音服务地址无效。');
   let base;
   try { base = new URL(text); } catch { throw new Error('语音服务地址无效。'); }
-  if (base.protocol !== 'https:' && !(base.protocol === 'http:' && /^127\.0\.0\.1(?::\d+)?$/.test(authority))) {
+  if (base.protocol !== 'https:' && !(require('./cloud-transport-policy.cjs').allowedLocalTest() && base.protocol === 'http:' && /^127\.0\.0\.1(?::\d+)?$/.test(authority))) {
     throw new Error('语音服务须使用 HTTPS。测试仅支持 HTTP 的 127.0.0.1。');
   }
   return base;

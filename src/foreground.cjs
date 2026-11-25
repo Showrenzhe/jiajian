@@ -10,7 +10,7 @@ const { pipeline } = require('node:stream/promises');
 
 const modelDirectory = require('./vendor-path.cjs')('foreground');
 const frameBytes = 320 * 320;
-const ffmpeg = process.env.SUPERDIR_REPLICA_FFMPEG || 'ffmpeg';
+const ffmpeg = process.env.JIAJIAN_FFMPEG || process.env.SUPERDIR_REPLICA_FFMPEG || 'ffmpeg';
 
 async function createForeground(asset, directory, { signal, onProgress = () => {} } = {}) {
   if (!['image', 'video'].includes(asset?.kind) || !path.isAbsolute(asset.path)) throw new Error('请选择本地图片或视频进行抠像。');

@@ -2,8 +2,8 @@
 param([string]$Archive, [string]$ToolsDirectory = (Join-Path $PSScriptRoot '../tools/ffmpeg-8.0-full_build'))
 
 $ErrorActionPreference = 'Stop'
-$archiveUrl = 'https://github.com/Showrenzhe/jiajian/releases/download/v0.6.2/Jiajian-v0.6.2-Windows-x64-offline.zip'
-$archiveHash = '9abf1dfbe1868d4aaab954f53c8de8a89bedf0a52d1dcf20b76558f9a2d67003'
+$archiveUrl = 'https://github.com/GyanD/codexffmpeg/releases/download/8.0/ffmpeg-8.0-full_build.zip'
+$archiveHash = '48ca5e824d2660a94f89fd55287b7c35129b55bbe680c4330efeed5269c4820f'
 $files = [ordered]@{
     'bin/ffmpeg.exe' = '81b5832f6c548d64feba0ec7d643397e2351d9f3460a65c6c296956045eebaea'
     'bin/ffprobe.exe' = '421dbc81a3d758dfe114534ff48ef47a61ef91896eb4b9e819609a8752ab8272'
@@ -32,7 +32,7 @@ try {
         $Archive = [IO.Path]::GetTempFileName()
         $downloaded = $true
         curl.exe --fail --location --silent --show-error --retry 3 --output $Archive $archiveUrl
-        if ($LASTEXITCODE -ne 0) { throw '下载 v0.6.2 官方离线包失败。' }
+        if ($LASTEXITCODE -ne 0) { throw '下载 FFmpeg 8.0 工具包失败。' }
     }
     if ((Get-FileHash -LiteralPath $Archive -Algorithm SHA256).Hash -ne $archiveHash) {
         throw '离线包 SHA-256 与固定版本不符。'
@@ -40,7 +40,7 @@ try {
     $zip = [IO.Compression.ZipFile]::OpenRead((Resolve-Path -LiteralPath $Archive).Path)
     try {
         foreach ($name in $files.Keys) {
-            $suffix = "/tools/ffmpeg-8.0-full_build/$name"
+            $suffix = "/ffmpeg-8.0-full_build/$name"
             $entries = @($zip.Entries | Where-Object { ('/' + $_.FullName.Replace('\','/')).EndsWith($suffix, [StringComparison]::Ordinal) })
             if ($entries.Count -ne 1) { throw "离线包缺少唯一的 $suffix" }
             $destination = Join-Path $ToolsDirectory $name

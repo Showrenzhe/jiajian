@@ -1,36 +1,5 @@
 'use strict';
 
-// Track ownership follows shot objects when the user inserts, reorders or removes shots.
-window.createTimelinePackaging = function () {
-  const fresh = () => ({global: [], composites: [], textGroups: [], wholeNarration: [], segmentNarration: [], textMode: 'whole', textSelection: 'ordered'});
-  let data = fresh();
-  let order = [];
-  function forShots(shots) {
-    if (order.length !== shots.length || shots.some((shot, i) => shot !== order[i])) {
-      const indices = new Map(order.map((shot, i) => [shot, i]));
-      const align = (row) => shots.map((shot) => row[indices.get(shot)] ?? []);
-      if (data.segmentNarration.length) data.segmentNarration = align(data.segmentNarration);
-      if (data.textMode === 'segmented') data.textGroups = data.textGroups.map(align);
-      order = [...shots];
-    }
-    return data;
-  }
-  function load(value, shots) {
-    data = Object.assign(fresh(), structuredClone(value ?? {}));
-    order = [...shots];
-  }
-  function choices(shots, controls) {
-    const pack = window.trackControls.enabledPackaging(forShots(shots), controls);
-    const alternatives = (groups) => BigInt(Math.max(1, groups.filter(Boolean).length));
-    let total = alternatives(pack.composites.map((row) => row.length));
-    if (pack.textMode === 'segmented' && pack.textSelection === 'random') {
-      for (let i = 0; i < shots.length; i++) total *= alternatives(pack.textGroups.map((row) => row[i]?.length));
-    } else total *= alternatives(pack.textGroups.map((row) => pack.textMode === 'whole' ? row[0]?.length : row.some((col) => col.length)));
-    return total;
-  }
-  return {forShots, load, choices};
-};
-
 function candidateSourceSeconds(clip) {
   const retained = clip.ranges?.reduce((sum, range) => sum + range.end - range.start, 0) ?? (clip.end - clip.start);
   return Math.max(.1, retained - (clip.look?.head ?? 0) - (clip.look?.tail ?? 0)) / (clip.speed || 1);
@@ -362,6 +331,7 @@ window.mountEditTimeline = function (host, ctx) {
   function bindCopy(node,kind,snapshot) {
     copySources.set(node,{kind,snapshot});
     node.setAttribute('aria-keyshortcuts','Control+C Control+V');
+    if(kind==='字幕') node.title+=' · 选中后 Ctrl+C 复制、Delete 删除，轨道左侧可隐藏字幕';
   }
   function copyItem(node) {
     const entry=copySources.get(node);
@@ -483,8 +453,11 @@ window.mountEditTimeline = function (host, ctx) {
     const state=ctx.state();
     const index=state.shots.indexOf(slot.shot);
     if(index<0 && state.shots.length) return;
+    const menuKeys={mute:'M',delete:'Delete',left:'[',right:']'};
     for(const button of videoMenu.querySelectorAll('button')) {
       const action=button.dataset.action;
+      button.dataset.menuKey=menuKeys[action];
+      button.setAttribute('aria-keyshortcuts',menuKeys[action]);
       const insert=action==='left' || action==='right';
       if(action==='mute') {
         button.querySelector('span').textContent=slot.clip?.sourceMuted ? '取消静音' : '静音片段';
@@ -574,6 +547,8 @@ window.mountEditTimeline = function (host, ctx) {
     }
   });
   videoMenu.addEventListener('keydown',event=>{
+    const command=[...videoMenu.querySelectorAll('button:enabled')].find(b=>b.dataset.menuKey.toLowerCase()===event.key.toLowerCase());
+    if(command && !event.ctrlKey && !event.altKey && !event.metaKey) { event.preventDefault();event.stopPropagation();command.click();return; }
     if(event.key==='Escape' || event.key==='Tab') {
       closeVideoMenu();
       (menuCell?.isConnected && menuCell.matches('button') ? menuCell : host).focus({preventScroll:true});
@@ -639,6 +614,7 @@ window.mountEditTimeline = function (host, ctx) {
   function updateShotDrop() {
     const drag=shotDrag;
     if (!drag?.active) return;
+    if(drag.ghost) drag.ghost.style.transform='translate3d('+(drag.x+8)+'px,'+(drag.y+8)+'px,0)';
     const viewport=host.getBoundingClientRect(), bounds=drag.strip.getBoundingClientRect();
     const inside=drag.y>=bounds.top && drag.y<=bounds.bottom && drag.x>=viewport.left && drag.x<=viewport.right;
     drag.marker.hidden=!inside;
@@ -678,6 +654,7 @@ window.mountEditTimeline = function (host, ctx) {
     drag.marker.hidden=true;
     drag.strip.classList.remove('reordering');
     drag.button.classList.remove('shot-drag-source');
+    drag.ghost?.remove();
     if (drag.button.hasPointerCapture(drag.id)) drag.button.releasePointerCapture(drag.id);
     if (commit && drag.active && drag.slot!==undefined) {
       const to=drag.slot>drag.from ? drag.slot-1 : drag.slot;
@@ -703,6 +680,7 @@ window.mountEditTimeline = function (host, ctx) {
       shotDrag.cancelled=true;shotDrag.active=false;
       shotDrag.marker.hidden=true;shotDrag.strip.classList.remove('reordering');
       shotDrag.button.classList.remove('shot-drag-source');
+      shotDrag.ghost?.remove();
       cancelAnimationFrame(shotDrag.frame);
     }
   },true);
@@ -712,7 +690,7 @@ window.mountEditTimeline = function (host, ctx) {
     marker.hidden=true;marker.setAttribute('aria-hidden','true');strip.prepend(marker);
     strip.onpointerdown=(event)=>{
       const button=event.target.closest('[data-reorder-shot]');
-      if (!button || order.length<2 || ctx.busy() || event.button!==0 || !event.isPrimary
+      if (!event.target.closest('.shot-reorder-handle') || !button || order.length<2 || ctx.busy() || event.button!==0 || !event.isPrimary
           || event.ctrlKey || event.metaKey || event.shiftKey || event.altKey) return;
       const from=Number(button.dataset.dropShot);
       shotDrag={strip,marker,button,from,shot:order[from],id:event.pointerId,startX:event.clientX};
@@ -735,6 +713,7 @@ window.mountEditTimeline = function (host, ctx) {
     if (!drag.active) {
       if (Math.abs(drag.x-drag.startX)<5) return;
       drag.active=true;drag.strip.classList.add('reordering');drag.button.classList.add('shot-drag-source');
+      drag.ghost=el('span','shot-reorder-ghost',drag.button.textContent);drag.ghost.setAttribute('aria-hidden','true');document.body.append(drag.ghost);
       draftTransport.stop();ctx.pause();
     }
     if (drag.frame===undefined) {
@@ -792,6 +771,7 @@ window.mountEditTimeline = function (host, ctx) {
     function row(label, cls, key, layer) {
       const node=el('div','sequence-row '+cls), head=el('div','sequence-head');
       const track=el('div','sequence-content');
+      if (cls==='sequence-voice') track.dataset.emptyHint=window.editorMessages.emptyVoice;
       if (key) {
         node.dataset.laneKey=key;
         const toggle=btn(label,()=>{setFold(node,key,!folded.has(key),true);ctx.scroll();});
@@ -824,7 +804,7 @@ window.mountEditTimeline = function (host, ctx) {
           button.setAttribute('aria-label',label+' · '+names[action]);
           button.setAttribute('aria-pressed',String(on));
           button.dataset.trackAction=action;
-          if(action==='solo') button.textContent='S';
+          if(action==='solo') button.textContent=on ? 'S✓' : 'S';
           else if(action==='disabled') {
             button.title=label+(on ? ' · 启用轨道，加入预览和生成' : ' · 禁用轨道，从预览和生成中排除');
             button.append(icon('track-power'));
@@ -932,6 +912,7 @@ window.mountEditTimeline = function (host, ctx) {
       const filled=videoCells[j] ?? [];
       const reserved=window.reservedVideoCells(filled);
       const occupied=filled.concat(reserved);
+      if (!filled.length) lane.dataset.emptyHint=window.editorMessages.emptyVideo;
       const gaps=window.emptyVideoCells(occupied,shotTimes,widths).filter(cell=>cell.span>=1/(s.fps || 30)-1e-7);
       for(const {index:i,clip,start,span,gap,anchor} of occupied.concat(gaps)) {
         const b=block(lane,start,span,clip?.asset.name ?? '',clip ? (event)=>{
@@ -975,7 +956,7 @@ window.mountEditTimeline = function (host, ctx) {
         const label=clipHeader(clip.asset.name,clip.asset.kind,source.duration,detail,clip.sourceMuted);
         b.replaceChildren(label);
         const original=source.kind==='video' && Number.isFinite(source.duration) ? ' · 原片 '+source.duration.toFixed(2)+' 秒' : '';
-        b.title=clip.asset.name+original+' · 轨道占用 '+summary(span)+' · '+(match ? detail : '候选时长 '+detail)+' · 拖至视频轨下方新建轨道，Alt＋上下键换轨，Alt＋左右键移动分镜中的候选';
+        b.title=clip.asset.name+original+' · 双击进入裁剪 · 轨道占用 '+summary(span)+' · '+(match ? detail : '候选时长 '+detail)+' · 拖至视频轨下方新建轨道，Alt＋上下键换轨，Alt＋左右键移动分镜中的候选';
         b.setAttribute('aria-label',b.title);
         b.setAttribute('aria-haspopup','menu');
         b.setAttribute('aria-keyshortcuts','Shift+F10 Control+C Control+V Alt+ArrowLeft Alt+ArrowRight Alt+ArrowUp Alt+ArrowDown');
@@ -1000,11 +981,12 @@ window.mountEditTimeline = function (host, ctx) {
       };
       const b=block(strip,shotTimes[i],widths[i],(cfg.name || '分镜 '+String(i+1).padStart(2,'0'))+' · '+summary(widths[i]),()=>{
         if(!shot) openShot();
-      },[cfg.description,shot ? '左右拖动调整顺序，Alt＋左右方向键移动，双击编辑分镜' : '添加分镜'].filter(Boolean).join(' · '));
+      },[cfg.description,shot ? '拖动左侧把手或按 Alt＋左右方向键调整顺序，双击编辑分镜' : '添加分镜'].filter(Boolean).join(' · '));
       if(shot) {
         selection.bind(b,shot,()=>removeItem(s.shots,shot),false);
         b.ondblclick=openShot;
         b.dataset.reorderShot='';
+        const handle=el('span','shot-reorder-handle');handle.title='拖动把手调整分镜顺序';handle.setAttribute('aria-hidden','true');b.prepend(handle);
         b.setAttribute('aria-keyshortcuts','Alt+ArrowLeft Alt+ArrowRight');
       }
       b.dataset.dropShot=String(i);
@@ -1021,7 +1003,8 @@ window.mountEditTimeline = function (host, ctx) {
       const b=block(lane,from+delay,displayed,asset?.name ?? '',asset ? ()=>{
         voiceTarget=voice;focusShot=voice.shot;focusClip=undefined;ctx.voice(voice);
       } : undefined);
-      if(asset) b.title=asset.name+' · '+speed+' 倍 · 单击查看口播设置，双击编辑';
+      if(asset) b.title=asset.name+' · '+speed+' 倍 · 双击编辑，选中后 Delete 删除、Ctrl+C 复制，轨道左侧可静音';
+      if(asset) delete lane.dataset.emptyHint;
       b.dataset.voiceRow=String(voice.row);
       if(si>=0) b.dataset.voiceShot=String(si);
       if (!asset) b.classList.add('sequence-empty');
@@ -1052,7 +1035,7 @@ window.mountEditTimeline = function (host, ctx) {
       cutReferences.push({start,end:start});
       const cell=block(row('音乐 '+(i+1),'sequence-music','music'+i),start,totalTime-start,asset.name,()=>ctx.music(asset));
       bindMaterialSource(cell, asset);
-      cell.title=asset.name+' · '+s.musicSpeed(asset)+' 倍 · 双击调整倍速';
+      cell.title=asset.name+' · '+s.musicSpeed(asset)+' 倍 · 双击调整倍速，选中后 Delete 删除，轨道左侧可静音';
       waveforms.add(cell,asset,{span:(totalTime-start)*s.musicSpeed(asset),loop:true,volume:s.musicVolume(asset),
         muted:!window.trackControls.allows(s.trackControls,'music'+i,'audio')});
       selection.bind(cell,asset,()=>ctx.removeMusic(asset));
@@ -1145,6 +1128,7 @@ window.mountEditTimeline = function (host, ctx) {
         }
         selection.bind(cell,layer,()=>removeItem(items,layer));
         const hasContextMenu=!cell.closest(tracksWithoutContextMenu);
+        if(!hasContextMenu) cell.title+=' · 选中后 Delete 删除，轨道左侧可'+(layer.kind==='sound'?'静音':'隐藏字幕');
         function splitButton(d,at,label) {
           const split=btn(label,()=>{
             const offset=Math.round(at*1000)/1000;
@@ -1194,7 +1178,7 @@ window.mountEditTimeline = function (host, ctx) {
             cell.style.left=(start+a)*timeScale+'px';cell.style.width=Math.max(2,(b-a)*timeScale-2)+'px';
           }
           cell.onpointermove=(event)=>{
-            if(event.pointerId!==e.pointerId || (Math.abs(event.clientX-x)<3 && !dragged)) return;
+            if(event.pointerId!==e.pointerId || (Math.abs(event.clientX-x)<5 && !dragged)) return;
             dragged=true;
             latestX=event.clientX;
             if(frame===undefined) frame=requestAnimationFrame(()=>{frame=undefined;moveLayer(latestX);});
@@ -1397,6 +1381,34 @@ window.mountEditTimeline = function (host, ctx) {
     node.classList.toggle('sequence-folded',value);
     node.querySelector('[aria-expanded]').setAttribute('aria-expanded',String(!value));
   }
+  const accessMenu=document.getElementById('accessible-layout-controls');
+  const trackChoice=document.getElementById('accessible-track-choice');
+  const trackHeight=document.getElementById('accessible-track-value');
+  function chosenTrack() {
+    return host.querySelector('[data-lane-key="'+CSS.escape(trackChoice.value)+'"]');
+  }
+  function showTrackHeight() { const row=chosenTrack(); if (row) trackHeight.value=row.offsetHeight; }
+  accessMenu.addEventListener('beforetoggle',event=>{
+    if (event.newState!=='open') return;
+    const previous=trackChoice.value;
+    trackChoice.replaceChildren(...Array.from(host.querySelectorAll('[data-lane-key]'),row=>
+      new Option(row.querySelector('.sequence-head [aria-expanded]').title.split(' · ')[0],row.dataset.laneKey)));
+    if ([...trackChoice.options].some(option=>option.value===previous)) trackChoice.value=previous;
+    document.getElementById('accessible-track-height').hidden=!trackChoice.options.length;
+    showTrackHeight();
+  });
+  trackChoice.addEventListener('change',showTrackHeight);
+  document.getElementById('accessible-track-apply').onclick=()=>{
+    if(!trackHeight.reportValidity() || !Number.isFinite(trackHeight.valueAsNumber)) return;
+    const row=chosenTrack();
+    if(row) resizeLane(row,row.dataset.laneKey,trackHeight.valueAsNumber);
+    showTrackHeight();
+  };
+  document.getElementById('accessible-track-reset').onclick=()=>{
+    const row=chosenTrack();
+    if(row) row.querySelector('.sequence-height-handle').ondblclick();
+    showTrackHeight();
+  };
   function resizeLane(node,key,size) {
     const compact=size<=17;
     if(!compact) {

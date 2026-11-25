@@ -26,6 +26,7 @@
     host.hidden = true;
     let current;
     let lastScene;
+    let leaveDialog;
     let generation = 0;
     function element(tag, text, className) {
       const node = document.createElement(tag);
@@ -49,6 +50,42 @@
       host.replaceChildren();
       host.hidden = true;
       delete host.dataset.mode;
+    }
+    function dirty() { return Boolean(current?.isDirty?.()); }
+    async function confirmLeave() {
+      if (!dirty()) return true;
+      if (leaveDialog) return false;
+      const editing = current;
+      const prompt = element('dialog', undefined, 'cloud-settings-dialog cut-leave-dialog');
+      leaveDialog = prompt;
+      const title = element('h2', '应用当前片段的裁剪？');
+      title.id = 'cut-leave-title';
+      prompt.setAttribute('aria-labelledby',title.id);
+      const body = element('div',undefined,'cloud-settings-body');
+      body.append(title, element('p','选择“应用裁剪”会将当前调整写入工程。'));
+      const footer = element('footer',undefined,'cloud-settings-actions');
+      const choose = (id,text) => { const b=button(text,()=>prompt.close(id)); b.dataset.cutLeave=id; return b; };
+      const stay=choose('cancel','取消');
+      stay.autofocus=true;
+      footer.append(stay,choose('discard','放弃修改'),choose('apply','应用裁剪'));
+      prompt.append(body,footer);
+      document.body.append(prompt);
+      const choice=await new Promise(resolve=>{
+        prompt.addEventListener('close',()=>resolve(prompt.returnValue),{once:true});
+        prompt.showModal();
+      });
+      window.afterDialogExit(prompt);
+      try {
+        if (editing !== current || !['apply','discard'].includes(choice)) return false;
+        if (choice === 'apply') return await editing.apply() === true;
+        editing.discard();
+        return true;
+      } finally { leaveDialog=undefined; }
+    }
+    function requestClose() { if (dirty()) return confirmLeave(); current?.discard ? current.discard() : close(); return true; }
+    function guardOpen(action) {
+      if (!dirty()) return action();
+      return confirmLeave().then(allowed=>allowed && action());
     }
     function status(message) { if (current) current.message.textContent = message; }
     function sceneRecords() { return options.getSceneCuts?.() ?? []; }
@@ -189,6 +226,7 @@
         commit: options.createCommit?.(clip, isCurrent) ?? ((ranges, speed, autoFit, signal) =>
           options.commitRanges(clip, ranges, () => isCurrent() && !signal?.aborted, speed, autoFit)),
         prepareSourceEdit: options.prepareSourceEdit,
+        requestClose,
         close: () => {
           close();
           const fallback = document.querySelector('#timeline-clock .sequence-selected, #timeline-clock');
@@ -384,9 +422,11 @@
       if (!(event.ctrlKey || event.metaKey) || event.key.toLowerCase() !== 'l' || !lastScene || !recordFor(lastScene)) return;
       if (document.querySelector('.app-frame')?.dataset.mode !== 'montage' || document.querySelector('dialog[open]')) return;
       event.preventDefault();
-      if (current?.mode === 'scene') close(); else openScenes(lastScene);
+      if (current?.mode === 'scene') close(); else guardOpen(()=>openScenes(lastScene));
     });
-    return { openCut, openVoice, openScenes, openSlices: (asset) => openScenes(asset,true), close, dropScene, toggleLocalPlayback, refresh: renderScenes };
+    return {openCut: clip=>guardOpen(()=>openCut(clip)), openVoice: (...args)=>guardOpen(()=>openVoice(...args)),
+      openScenes: asset=>guardOpen(()=>openScenes(asset)), openSlices: asset=>guardOpen(()=>openScenes(asset,true)),
+      close, dirty, confirmLeave, dropScene, toggleLocalPlayback, refresh: renderScenes};
   }
   window.createCutTrackEditor = createCutTrackEditor;
   window.trimRetainedRanges = trimRetainedRanges;

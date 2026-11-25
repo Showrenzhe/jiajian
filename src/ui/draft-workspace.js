@@ -76,7 +76,7 @@
       onState('idle');
     }
 
-    return { stage, reset, flush, forget };
+    return { stage, reset, flush, forget, invalidate: () => { savedKey = undefined; } };
   };
 
   window.mountDraftLibrary = (container, { load, open, remove, notify, importMaterials, showEmptyImport }) => {

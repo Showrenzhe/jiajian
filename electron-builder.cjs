@@ -3,6 +3,9 @@
 const fs = require('node:fs/promises');
 const path = require('node:path');
 const { execFileSync } = require('node:child_process');
+const { updateFeed } = require('./src/update-feed.cjs');
+const feed = updateFeed(process.env.JIAJIAN_UPDATE_URL);
+const channel = require('semver').prerelease(require('./package.json').version) ? 'preview' : 'latest';
 
 const ffmpegDirectory = 'tools/ffmpeg-8.0-full_build';
 const ffmpegFiles = ['bin/ffmpeg.exe', 'bin/ffprobe.exe', 'LICENSE', 'README.txt'];
@@ -31,5 +34,6 @@ module.exports = {
     uninstallDisplayName: '${productName}',
     artifactName: 'Jiajian-Setup-${version}-${arch}.${ext}',
   },
-  publish: { provider: 'github', owner: 'Showrenzhe', repo: 'jiajian', releaseType: 'release' },
+  extraMetadata: { jiajianUpdateFeed: feed },
+  publish: feed ? { provider: 'generic', url: feed, channel } : null,
 };

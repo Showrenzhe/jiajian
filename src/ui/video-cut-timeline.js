@@ -31,6 +31,7 @@ window.mountVideoCutTimeline = function mountVideoCutTimeline(host, clip, option
 
   const header = node('header');
   const title = node('strong', '', '片段剪辑');
+  const dirtyLabel = node('span', 'cut-pending-label', '未应用');
   const name = node('span', 'cut-track-name', asset.name);
   name.title = asset.name;
   const body = node('div', 'cut-track-body');
@@ -106,7 +107,7 @@ window.mountVideoCutTimeline = function mountVideoCutTimeline(host, clip, option
     buttons[action] = item;
     return item;
   }
-  header.append(title, name);
+  header.append(title, dirtyLabel, name);
   button('cancel', '取消', 'Escape', cancel, header);
   button('play', '播放', 'Space', togglePlay, tools);
   button('undo', '撤销', '', () => travel('undo'), tools);
@@ -144,7 +145,56 @@ window.mountVideoCutTimeline = function mountVideoCutTimeline(host, clip, option
   button('delete', '移除片段', 'Delete', remove, actions);
   button('reset', '恢复完整素材', '', reset, actions);
   button('apply', '应用裁剪', '', apply, actions);
-  work.append(tools, timeline, sequence, actions, message);
+  const precision = node('details', 'cut-precision');
+  precision.append(node('summary', '', '精确入出点'));
+  const fields = {};
+  for (const [key, caption] of [['start','入点'], ['end','出点'], ['duration','时长']]) {
+    const label = node('label', '', caption);
+    const input = node('input');
+    input.type = 'text';
+    input.dataset.cutTime = key;
+    input.autocomplete = 'off';
+    input.title = '输入 hh:mm:ss.ff 或从 0 开始的帧号';
+    const commitField = () => {
+      if (pendingApply || drag) return;
+      const value = input.value.trim(), fps = nominalRate();
+      const parts = /^(\d{1,6}):([0-5]\d):([0-5]\d)\.(\d{2,3})$/.exec(value);
+      const count = /^\d+$/.test(value) ? Number(value) : parts && Number(parts[4]) < fps
+        ? ((Number(parts[1])*60+Number(parts[2]))*60+Number(parts[3]))*fps+Number(parts[4]) : NaN;
+      const range = ranges[selected], edge = key === 'start' ? 'start' : 'end';
+      const targetFrame = count + (key === 'duration' ? Math.round(range.start/frame) : 0);
+      const target = targetFrame === Math.round(asset.duration/frame) ? asset.duration : round(targetFrame*frame);
+      const [lo, hi] = edgeLimits(range,edge);
+      if (!Number.isSafeInteger(count) || target < lo-1e-6 || target > hi+1e-6) {
+        input.setAttribute('aria-invalid','true');
+        status('请输入有效时间码或帧号，片段须在原片范围内且至少保留 0.1 秒。');
+        return;
+      }
+      input.removeAttribute('aria-invalid');
+      pause();
+      const before = ranges;
+      editEdge(before,selected,edge,target);
+      if (before !== ranges) record(frameAt(selected,head));
+      syncFields(ranges[selected]);
+    };
+    watch(input,'change',commitField);
+    watch(input,'keydown',event => { if(event.key === 'Enter') { event.preventDefault(); input.blur(); playhead.focus({preventScroll:true}); } });
+    fields[key]=input; label.append(input); precision.append(label);
+  }
+  function nominalRate() { return Math.max(1,Math.round(1/frame)); }
+  function timecode(count) {
+    const fps=nominalRate(), seconds=Math.floor(count/fps);
+    const parts=[Math.floor(seconds/3600), Math.floor(seconds/60)%60, seconds%60];
+    return parts.map(n=>String(n).padStart(2,'0')).join(':')+'.'+String(count%fps).padStart(String(fps-1).length < 2 ? 2 : String(fps-1).length,'0');
+  }
+  function syncFields(range) {
+    const first=Math.round(range.start/frame), end=Math.round(range.end/frame);
+    for(const [key,value] of Object.entries({start:first,end,duration:end-first})) {
+      fields[key].value=timecode(value);
+      fields[key].removeAttribute('aria-invalid');
+    }
+  }
+  work.append(tools, timeline, precision, sequence, actions, message);
   body.append(work);
   host.dataset.mode = 'cut';
   host.classList.add('cut-track-editor');
@@ -274,7 +324,9 @@ window.mountVideoCutTimeline = function mountVideoCutTimeline(host, clip, option
     playhead.style.left = source / asset.duration * 100 + '%';
     playhead.setAttribute('aria-valuenow', String(value));
     playhead.setAttribute('aria-valuetext', '原片 ' + source.toFixed(2) + ' 秒，剪后 ' + value.toFixed(2) + ' 秒');
-    timer.textContent = value.toFixed(2) + ' / ' + (total / speed).toFixed(2) + ' 秒';
+    const sourceFrame=Math.max(0,Math.floor(frameAt(playheadIndex(),head)/frame+1e-5));
+    timer.textContent = timecode(sourceFrame)+' · 第 '+sourceFrame+' 帧';
+    timer.title='原片时间码（帧号从 0 开始） · 剪后 '+value.toFixed(2)+' / '+(total/speed).toFixed(2)+' 秒';
     monitor?.updatePosition();
   }
   function edgeLimits(range, key) {
@@ -316,6 +368,7 @@ window.mountVideoCutTimeline = function mountVideoCutTimeline(host, clip, option
       currentSourceRange = range;
       lane.setAttribute('aria-label', '原片共 ' + round(asset.duration) + ' 秒，片段 ' + (index + 1) +
         ' 入点 ' + round(range.start) + ' 秒，出点 ' + round(range.end) + ' 秒');
+      syncFields(range);
       updateMarker(range, 'start', '入');
       updateMarker(range, 'end', '出');
     }
@@ -369,6 +422,8 @@ window.mountVideoCutTimeline = function mountVideoCutTimeline(host, clip, option
     selected = clamp(selected, 0, ranges.length - 1);
     head = clamp(head, 0, total);
     selection(playheadIndex());
+    dirtyLabel.hidden = !isDirty();
+    buttons.apply.classList.toggle('cut-has-changes',!dirtyLabel.hidden);
     buttons.undo.disabled = !history.canUndo();
     buttons.redo.disabled = !history.canRedo();
     showHead();
@@ -476,7 +531,7 @@ window.mountVideoCutTimeline = function mountVideoCutTimeline(host, clip, option
   function setApplying(attempt) {
     pendingApply = attempt;
     const busy = Boolean(attempt);
-    for (const control of [tools, timeline, sequence, actions]) control.inert = busy;
+    for (const control of [tools, timeline, precision, sequence, actions]) control.inert = busy;
     if (busy) timeline.setAttribute('aria-busy', 'true');
     else timeline.removeAttribute('aria-busy');
     const label = busy ? '取消应用' : '取消';
@@ -486,23 +541,26 @@ window.mountVideoCutTimeline = function mountVideoCutTimeline(host, clip, option
     monitor?.sync();
   }
   function cancel() {
-    if (!pendingApply) { options.close(); return; }
+    if (!pendingApply) { void options.requestClose(); return; }
     pendingApply.abort();
     setApplying(undefined);
     status('已取消应用，当前剪辑已保留。');
     buttons.apply.focus({preventScroll: true});
   }
+  function isDirty() { return autoFit !== initialAutoFit || speed !== initialSpeed || !window.sameEditSnapshot(original,ranges); }
   async function apply() {
-    if (pendingApply || drag) return;
+    if (pendingApply || drag) return false;
     pause();
-    if (autoFit === initialAutoFit && speed === initialSpeed && window.sameEditSnapshot(original, ranges)) { options.close(); return; }
+    if (!isDirty()) { options.close(); return true; }
     const attempt = new AbortController();
     setApplying(attempt);
     buttons.cancel.focus({preventScroll: true});
     status(ranges.some(range => range.reverse) ? '正在应用倒放剪辑…' : '正在应用剪辑…');
     try {
       if (await options.commit(structuredClone(ranges), speed, autoFit, attempt.signal) === false) throw new Error('无法应用，请检查素材和分镜。');
-      if (!attempt.signal.aborted) options.close();
+      if (attempt.signal.aborted) return false;
+      options.close();
+      return true;
     } catch (error) {
       if (attempt.signal.aborted) return;
       setApplying(undefined);
@@ -785,6 +843,11 @@ window.mountVideoCutTimeline = function mountVideoCutTimeline(host, clip, option
       return;
     }
     const action = window.cutShortcuts?.actionFor(event);
+    const step = {'frame-back':-1,'frame-forward':1,'frames-back':-10,'frames-forward':10}[action];
+    if (step) {
+      event.preventDefault(); event.stopPropagation(); pause(); scrub(head+step*frame);
+      playhead.focus({preventScroll:true}); return;
+    }
     if (shortcuts.includes(action)) {
       event.stopPropagation();
       event.preventDefault();
@@ -849,7 +912,7 @@ window.mountVideoCutTimeline = function mountVideoCutTimeline(host, clip, option
   watch(video, 'loadedmetadata', () => monitor?.updatePosition());
   playhead.focus({preventScroll: true});
   return {
-    mode: 'cut', video,
+    mode: 'cut', video, isDirty, apply, discard: options.close,
     destroy() {
       disposed = true;
       pendingApply?.abort();

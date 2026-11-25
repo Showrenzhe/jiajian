@@ -1,3 +1,4 @@
+// @ts-check
 'use strict';
 
 const { randomUUID } = require('node:crypto');
@@ -21,15 +22,27 @@ const { normalizeLook, inspectLut } = require('./visual-style.cjs');
 const { candidateVideoLanes, normalizeVideoGaps, placedVideoSpeed, minVideoSpeed } = require('./ui/track-tools.js');
 
 const format = 'sdworkbench';
-const version = 1;
+const version = 2;
+/** @typedef {{start:number,end:number,reverse?:boolean,mirror?:boolean,rotation?:number,crop?:{x:number,y:number,width:number,height:number}}} EditRange */
+/** @typedef {{id:string,ranges:EditRange[]}} EditRecipe */
+/** @typedef {Map<string, Record<string, any>>} AssetCatalog */
+// Version 1 declarations omit size and duration. These remain unknown until the media can be inspected.
+const migrations = new Map([[1, project => ({ ...project, version:2 })]]);
+function migrateProject(project) {
+  if (project?.format !== format || !Number.isInteger(project.version)) throw Error('不支持此工程文件格式或版本。');
+  let current=project;
+  while (migrations.has(current.version)) current=migrations.get(current.version)(current);
+  if (current.version!==version) throw Error('不支持此工程文件格式或版本。');
+  return current;
+}
 const maxBytes = 1024 * 1024;
 const maxScriptBytes = 256 * 1024;
 const maxScriptRows = 1000;
 const extensions = { audio: audioExtensions, image: imageExtensions, video: videoExtensions, lut:['cube'] };
 
 function requireProjectPath(file) {
-  if (!isLocalPath(file) || path.extname(file).toLowerCase() !== '.sdworkbench') {
-    throw new Error('请选择本地的 .sdworkbench 工程文件。');
+  if (!isLocalPath(file) || !['.jiajian', '.sdworkbench'].includes(path.extname(file).toLowerCase())) {
+    throw new Error('请选择本地的 .jiajian 或 .sdworkbench 工程文件。');
   }
 }
 
@@ -299,16 +312,21 @@ function cleanConfig(config) {
 }
 
 function mediaDeclaration(id, asset, role) {
-  const file = asset?.path;
+  const file = asset?.missingPath ?? asset?.path;
   const kind = asset?.kind;
   const validKind = role === 'library' ? ['image','video','audio'].includes(kind) :
     role === 'visual' ? ['image','video'].includes(kind) : role === kind;
   if (!role || !validKind || !(kind === 'lut' ? isLocalPath(file) : isMaterialPath(file)) || !extensions[kind].includes(path.extname(file).slice(1).toLowerCase())) {
     throw new Error(`工程素材 ${id} 缺失或类型不匹配，请重新选择素材。`);
   }
-  return { id, kind, path: file };
+  const duration = asset.missing ? asset.originalDuration : asset.duration;
+  return { id, kind, path: file,
+    ...(Number.isSafeInteger(asset.size) && asset.size >= 0 && {size:asset.size}),
+    ...(Number.isFinite(duration) && duration > 0 && duration <= 86400 && {duration}),
+  };
 }
 
+/** @returns {Generator<[string, EditRecipe]>} */
 function* sourceEdits(config) {
   const subprojects = config.subprojects;
   const rows = subprojects ? [...subprojects.main, ...subprojects.projects.flatMap(project => project.shots)] : [];
@@ -374,7 +392,7 @@ async function projectThumbnail(config, catalog, declarations) {
   const first = chosen || clips.find((clip) => clip.enabled !== false) || clips[0]
     || declarations.find((item) => item.kind === 'video' || item.kind === 'image');
   const asset = first && catalog.get(first.id);
-  if (!asset) return null;
+  if (!asset || asset.missing) return null;
   if (isSharedMaterialPath(asset.path)) {
     const source = await checkedMaterialPath({path:asset.path, root:asset.path, kind:asset.kind}).catch(() => null);
     if (!source) return null;
@@ -401,14 +419,17 @@ function embeddedThumbnail(document) {
   return bytes.length <= maxThumbnailBytes && bytes.at(-2) === 255 && bytes.at(-1) === 217 ? bytes : null;
 }
 
+/** Atomically saves a normalized editor snapshot, retaining unresolved declarations.
+ * @param {string} file @param {Record<string, any>} config @param {AssetCatalog} catalog
+ * @param {{overwrite?:boolean}} [options] */
 async function saveProject(file, config, catalog, { overwrite = false } = {}) {
   requireProjectPath(file);
   const { references, config: projectConfig } = cleanConfig(config);
   const assets = [...references].map(([id, role]) => mediaDeclaration(id, catalog.get(id), role));
-  validateCuts(projectConfig, catalog);
+  if (!assets.some(row => catalog.get(row.id)?.missing)) validateCuts(projectConfig, catalog);
   const thumbnail = await projectThumbnail(projectConfig, catalog, assets)
     ?? await (emptyCover ??= fs.readFile(path.join(__dirname, 'ui', 'assets', 'project-cover.jpg')).then((bytes) => 'data:image/jpeg;base64,' + bytes.toString('base64')));
-  const contents = Buffer.from(`${JSON.stringify({ thumbnail, format, version, config: projectConfig, assets }, null, 2)}\n`, 'utf8');
+  const contents = Buffer.from(`${JSON.stringify({ thumbnail, format, version: path.extname(file).toLowerCase() === '.jiajian' ? version : 1, config: projectConfig, assets }, null, 2)}\n`, 'utf8');
   if (contents.length - (thumbnail?.length ?? 0) > maxBytes) throw new Error('工程文件超过 1 MiB 的大小上限。');
 
   const temp = path.join(path.dirname(file), `.sdworkbench-${randomUUID()}.tmp`);
@@ -436,6 +457,7 @@ async function saveProject(file, config, catalog, { overwrite = false } = {}) {
   }
 }
 
+/** @param {string} file */
 async function readProject(file) {
   const reader = await fs.open(file, 'r');
   try {
@@ -463,8 +485,9 @@ async function readProject(file) {
   }
 }
 
+/** @param {Record<string, any>} project */
 function projectReferences(project) {
-  if (project?.format !== format || project.version !== version) throw new Error('不支持此工程文件格式或版本。');
+  project = migrateProject(project);
   const { references, config } = cleanConfig(project.config);
   if (!Array.isArray(project.assets) || project.assets.length !== references.size) throw new Error('工程的素材清单与引用不一致。');
   const declared = new Set();
@@ -477,7 +500,12 @@ function projectReferences(project) {
   return {config,rows};
 }
 
-async function loadProject(file,resolvePath,inspect=inspectAsset,sourceEditDirectory=path.join(os.tmpdir(),'jiajian-source-edits')) {
+/** @param {string} file
+ * @param {(file:string) => string | Promise<string>} [resolvePath]
+ * @param {typeof inspectAsset} [inspect]
+ * @param {string} [sourceEditDirectory]
+ * @param {{allowMissing?:boolean}} [options] */
+async function loadProject(file,resolvePath,inspect=inspectAsset,sourceEditDirectory=path.join(os.tmpdir(),'jiajian-source-edits'), {allowMissing=false}={}) {
   requireProjectPath(file);
   const {config,rows}=projectReferences(await readProject(file));
   const assets = new Map();
@@ -493,6 +521,10 @@ async function loadProject(file,resolvePath,inspect=inspectAsset,sourceEditDirec
           return [row.id, row.kind==='lut' ? await inspectLut(source) : await inspect(source, row.kind, { signal })];
         } catch (error) {
           if (edits.has(row.id) && !signal.aborted) return [row.id, null];
+          if (allowMissing && !signal.aborted && (['ENOENT','ENOTDIR','EACCES','OFFLINE'].includes(error.code)
+              || (isSharedMaterialPath(row.path) && /共享素材|共享路径/.test(error.message)))) {
+            return [row.id, require('./relink.cjs').missingAsset(row,config)];
+          }
           const name = path.basename(row.path);
           if (error.code === 'ENOENT') throw new Error(`找不到工程素材「${name}」。请将它放回原位置后重试。`);
           if (signal.aborted) throw new Error('读取工程素材超时。');
@@ -504,6 +536,10 @@ async function loadProject(file,resolvePath,inspect=inspectAsset,sourceEditDirec
     for (const [id, edit] of edits) {
       if (assets.has(id)) continue;
       const original = assets.get(edit.id);
+      if (allowMissing && original?.missing) {
+        assets.set(id, require('./relink.cjs').missingAsset(rows.find(row=>row.id===id),config));
+        continue;
+      }
       if (original?.kind !== 'video') throw new Error('找不到可用于恢复剪辑的原始视频。');
       const restored = await prepareSourceEdit(original, edit.ranges, sourceEditDirectory, { signal: cancellation.signal });
       assets.set(id, await inspect(restored, 'video', { signal: cancellation.signal }));
@@ -512,8 +548,23 @@ async function loadProject(file,resolvePath,inspect=inspectAsset,sourceEditDirec
     cancellation.abort();
     throw error;
   }
-  validateCuts(config, assets);
+  if (![...assets.values()].some(asset=>asset.missing)) validateCuts(config, assets);
   return { config, assets };
 }
 
-module.exports = { embeddedThumbnail, readProject, saveProject, loadProject, projectReferences, normalizeScriptModel };
+function missingReferences(config, catalog) {
+  return [...cleanConfig(config).references.keys()].filter(id => catalog.get(id)?.missing);
+}
+/** Recreate a missing edit cache from its newly located original and persisted recipe.
+ * @param {Record<string, any>} config @param {AssetCatalog} catalog @param {AssetCatalog} found
+ * @param {string} directory @param {typeof inspectAsset} inspect */
+async function restoreLocatedEdits(config,catalog,found,directory,inspect) {
+  for (const [id,recipe] of sourceEdits(config)) {
+    if (!catalog.get(id)?.missing || found.has(id)) continue;
+    const source=found.get(recipe.id) ?? catalog.get(recipe.id);
+    if (!source || source.missing) continue;
+    const file=await prepareSourceEdit(source,recipe.ranges,directory);
+    found.set(id,await inspect(file,'video'));
+  }
+}
+module.exports = { embeddedThumbnail, readProject, saveProject, loadProject, projectReferences, normalizeScriptModel, missingReferences, validateCuts, restoreLocatedEdits };
