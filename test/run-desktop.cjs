@@ -11,6 +11,7 @@ async function run() {
     .filter((name) => name !== path.basename(__filename) && (name === 'desktop.cjs' || name.endsWith('-desktop.cjs')))
     .sort();
   const names = process.argv.includes('--smoke') ? smoke : all;
+  const tempDirectory = await fs.realpath(os.tmpdir());
   const parent = path.resolve(process.env.JIAJIAN_TEST_ARTIFACTS || 'run-data/test-artifacts');
   await fs.mkdir(parent, { recursive: true });
   const root = await fs.mkdtemp(path.join(parent, 'desktop-'));
@@ -19,12 +20,13 @@ async function run() {
     const log = await fs.open(path.join(root, name + '.log'), 'w');
     const env = {
       ...process.env,
+      ...(process.platform === 'win32' ? { TEMP: tempDirectory, TMP: tempDirectory } : {}),
       JIAJIAN_DESKTOP_SCENARIO: name,
       JIAJIAN_TEST_SCREENSHOT: path.join(root, name + '.png'),
     };
     delete env.ELECTRON_RUN_AS_NODE;
     const bench =
-      name === 'interaction-frames-desktop.cjs' ? await fs.mkdtemp(path.join(os.tmpdir(), 'jiajian-bench-')) : null;
+      name === 'interaction-frames-desktop.cjs' ? await fs.mkdtemp(path.join(tempDirectory, 'jiajian-bench-')) : null;
     if (bench) env.JIAJIAN_FRAME_BENCH_ROOT = bench;
     let status;
     try {

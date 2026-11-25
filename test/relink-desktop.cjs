@@ -1,5 +1,6 @@
 'use strict';
 const assert = require('node:assert/strict');
+const { mkdtempSync, realpathSync } = require('node:fs');
 const fs = require('node:fs/promises'),
   path = require('node:path'),
   os = require('node:os');
@@ -12,7 +13,7 @@ const { clickVisible } = require('./desktop-input.cjs');
 const { setTimeout: delay } = require('node:timers/promises');
 
 async function test() {
-  const root = require('node:fs').mkdtempSync(path.join(os.tmpdir(), 'jiajian-relink-ui-'));
+  const root = mkdtempSync(path.join(realpathSync.native(os.tmpdir()), 'jiajian-relink-ui-'));
   app.setPath('userData', root);
   app.setPath('sessionData', root);
   const old = path.join(root, 'before'),

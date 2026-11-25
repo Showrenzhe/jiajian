@@ -11,7 +11,7 @@ const { inspectAsset } = require('../src/media.cjs');
 const { fixtures } = require('./fixtures.cjs');
 
 test('moves a folder, saves offline, relinks by name and size, then opens a new and a legacy project', async (t) => {
-  const root = await fs.mkdtemp(path.join(os.tmpdir(), 'jiajian-relink-'));
+  const root = await fs.mkdtemp(path.join(await fs.realpath(os.tmpdir()), 'jiajian-relink-'));
   t.after(() => fs.rm(root, { recursive: true, force: true }));
   const before = path.join(root, '原素材'),
     after = path.join(root, '新素材');
