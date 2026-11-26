@@ -13,6 +13,77 @@ const { releaseNotes } = require('../scripts/release-notes.cjs');
 const { verifyManifest } = require('../scripts/verify-release.cjs');
 const yaml = createRequire(require.resolve('electron-updater/package.json'))('js-yaml');
 
+function checkWorkflowReferences(file, source) {
+  // js-yaml 的解析结果不含行号。保留每个映射中 uses 键的位置，以便定位块式、行内和锚点写法。
+  const usesLines = new WeakMap();
+  const nodes = [];
+  const workflow = yaml.load(source, {
+    filename: file,
+    listener(event, state) {
+      if (event === 'open') {
+        nodes.push({ line: state.line + 1, children: [] });
+        return;
+      }
+      const node = nodes.pop();
+      if (state.kind === 'mapping' && Object.hasOwn(state.result, 'uses')) {
+        const key = node.children.find((child, index) => index % 2 === 0 && child.value === 'uses');
+        if (key) usesLines.set(state.result, key.line);
+      }
+      nodes.at(-1)?.children.push({ value: state.result, line: node.line });
+    },
+  });
+
+  const errors = [];
+  for (const job of Object.values(workflow.jobs)) {
+    for (const entry of [job, ...(job.steps ?? [])]) {
+      if (!Object.hasOwn(entry, 'uses')) continue;
+      const ref = entry.uses;
+      if (typeof ref === 'string') {
+        if (ref.startsWith('./')) {
+          const [firstDirectory] = path.posix.normalize(ref.replaceAll('\\', '/')).split('/');
+          if (firstDirectory !== '..') continue;
+        } else if (/^[^@\s]+@[0-9a-f]{40}$/i.test(ref)) {
+          continue;
+        }
+      }
+      errors.push(`${file}:${usesLines.get(entry)}  ${String(ref)} 应引用仓库内路径或固定到 40 位提交哈希`);
+    }
+  }
+  return errors;
+}
+
+test('所有工作流的外部 Action 和可复用工作流都固定到完整提交', async () => {
+  const directory = path.join(__dirname, '../.github/workflows');
+  const files = await fs.readdir(directory, { recursive: true, withFileTypes: true });
+  const errors = [];
+  for (const file of files) {
+    if (!file.isFile() || !/\.ya?ml$/i.test(file.name)) continue;
+    const absolute = path.join(file.parentPath, file.name);
+    const display = path.relative(path.join(__dirname, '..'), absolute).split(path.sep).join('/');
+    errors.push(...checkWorkflowReferences(display, await fs.readFile(absolute, 'utf8')));
+  }
+  assert.deepEqual(errors, [], errors.join('\n'));
+});
+
+test('未固定的引用报告文件和行号，允许本地引用并忽略脚本字面量', () => {
+  const errors = checkWorkflowReferences('example.yaml', [
+    'jobs:',
+    '  shared: {uses: team/repo/.github/workflows/shared.yml@main}',
+    '  check:',
+    '    steps:',
+    '      - "uses": actions/checkout@v4',
+    '      - uses: ./local/action',
+    '      - run: |',
+    '          uses: example@main',
+    '      - uses: ./../outside',
+  ].join('\n'));
+  assert.deepEqual(errors, [
+    'example.yaml:2  team/repo/.github/workflows/shared.yml@main 应引用仓库内路径或固定到 40 位提交哈希',
+    'example.yaml:5  actions/checkout@v4 应引用仓库内路径或固定到 40 位提交哈希',
+    'example.yaml:9  ./../outside 应引用仓库内路径或固定到 40 位提交哈希',
+  ]);
+});
+
 test('标签触发 Windows 构建，安装包通过校验后发布到 GitHub 草稿', async () => {
   const workflow = yaml.load(await fs.readFile(path.join(__dirname, '../.github/workflows/release-windows.yml'), 'utf8'));
   assert.deepEqual(workflow.on.push.tags, ['v*.*.*']);

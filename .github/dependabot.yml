@@ -1,0 +1,13 @@
+version: 2
+# 两类常规版本更新合计最多打开 3 个 PR。GitHub 单独计算安全更新的限额。
+updates:
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly
+    open-pull-requests-limit: 1
+  - package-ecosystem: npm
+    directory: /
+    schedule:
+      interval: weekly
+    open-pull-requests-limit: 2
