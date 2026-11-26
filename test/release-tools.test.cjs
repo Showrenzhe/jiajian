@@ -61,7 +61,7 @@ test('工具包下载按来源授权、跳转时保护令牌并脱敏报告 HTTP
     requests.length = 0;
     // Route every host to the fixture. TLS uses its ephemeral, uninstalled certificate.
     const command = [
-      '$binary = (Get-Command curl.exe -CommandType Application).Source',
+      '$binary = (Get-Command curl.exe -CommandType Application -TotalCount 1).Source',
       'function curl.exe {',
       '  $input | & $binary --disable --noproxy "*" --connect-to $env:TEST_ROUTE --cacert $env:TEST_CERT @args',
       '  $global:LASTEXITCODE = $LASTEXITCODE',
