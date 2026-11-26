@@ -192,7 +192,7 @@
 #timeline-clock[data-candidate-drag="active"] .sequence-video .sequence-block,
 #timeline-clock[data-candidate-drag="active"] .sequence-cursor {pointer-events:none;}
 #timeline-clock .sequence-video .sequence-block.candidate-moving {
-  z-index:2;cursor:grabbing;outline:2px solid var(--focus-ring);outline-offset:-1px;
+  z-index:2;cursor:grabbing;opacity:.78;outline:2px solid var(--focus-ring);outline-offset:-1px;
   box-shadow:0 5px 14px #0007;
 }
 #timeline-clock .sequence-video .sequence-block.candidate-moving:popover-open {

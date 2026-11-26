@@ -1012,7 +1012,7 @@ window.mountEditTimeline = function (host, ctx) {
         b.dataset.moveCandidate='';
         b.onpointerdown=event=>{
           if(draggedCandidate || ctx.busy() || !event.isPrimary || event.button!==0 || event.ctrlKey || event.metaKey || event.shiftKey || event.altKey) return;
-          liftCandidate(b,clip,owner,event);
+          draggedCandidate={button:b,clip,owner,id:event.pointerId,startX:event.clientX,startY:event.clientY};
         };
         b.onkeydown=event=>nudgeCandidate(event,b,clip,owner);
         if (clip.enabled===false) b.classList.add('sequence-disabled');
@@ -1671,20 +1671,24 @@ window.mountEditTimeline = function (host, ctx) {
     button.parentElement.append(marker);
     return marker;
   }
-  function liftCandidate(button,clip,owner,event) {
+  function liftCandidate(drag) {
+    const {button,clip,startX,startY}=drag;
     const from=button.getBoundingClientRect();
     stopCandidateMotion(button);
-    const home=slotMarker(button), x=event.clientX, y=event.clientY;
-    draggedCandidate={button,clip,owner,home,id:event.pointerId,startX:x,startY:y,x,y,windows:referenceWindows(clip)};
+    drag.home=slotMarker(button);
+    drag.windows=referenceWindows(clip);
     // A manual popover puts the actual frames and waveform above the scrolling pane.
     // Keep the normal slot and its inline timeline coordinates intact for hit testing.
     button.style.setProperty('--lift-left',from.left+'px');
     button.style.setProperty('--lift-top',from.top+'px');
     button.style.setProperty('--lift-width',from.width+'px');
     button.style.setProperty('--lift-height',from.height+'px');
-    button.style.transformOrigin=(x-from.left)+'px '+(y-from.top)+'px';
+    button.style.transformOrigin=(startX-from.left)+'px '+(startY-from.top)+'px';
     button.classList.add('candidate-moving');
-    host.dataset.candidateDrag='pressed';
+    button.popover='manual';button.showPopover();
+    showNewCandidateLane(drag);
+    host.dataset.candidateDrag='active';
+    drag.active=true;
   }
   function newVideoLane(lane,reason,shot) {
     const row=el('div','sequence-row candidate-new-lane');
@@ -2006,17 +2010,15 @@ window.mountEditTimeline = function (host, ctx) {
     markCandidateDrop(drag,candidateUnderPointer(drag,x,y));
     drag.button.style.translate=dx+'px '+dy+'px';
   }
-  function updateCandidate(drag,x,y) {
+  function updateCandidate(drag,x,y,releasing=false) {
     drag.x=x;drag.y=y;
     if(!drag.active) {
-      if(Math.hypot(x-drag.startX,y-drag.startY)<5) return;
-      drag.active=true;
-      drag.button.popover='manual';drag.button.showPopover();
-      showNewCandidateLane(drag);
-      host.dataset.candidateDrag='active';
-      host.setPointerCapture(drag.id);
+      if(Math.hypot(x-drag.startX,y-drag.startY)<=5) return;
+      liftCandidate(drag);
+      if(!releasing) host.setPointerCapture(drag.id);
     }
-    queueCandidateFrame(drag);
+    if(releasing) paintCandidate(drag);
+    else queueCandidateFrame(drag);
   }
   function dockCandidate(drag) {
     cancelAnimationFrame(drag.frame);
@@ -2087,7 +2089,7 @@ window.mountEditTimeline = function (host, ctx) {
     const from=drag.active && !drag.cancelled ? drag.button.getBoundingClientRect() : null;
     const otherFrom=target?.classList.contains('candidate-displaced') && target.getBoundingClientRect();
     draggedCandidate=undefined;
-    if(!drag.cancelled) dockCandidate(drag);
+    if(drag.active && !drag.cancelled) dockCandidate(drag);
     if(host.hasPointerCapture(drag.id)) host.releasePointerCapture(drag.id);
     if(resizeAfterCandidate) {resizeAfterCandidate=false;refresh();}
     if(commit && from && target) {
@@ -2113,10 +2115,7 @@ window.mountEditTimeline = function (host, ctx) {
   window.addEventListener('pointerup',event=>{
     const drag=draggedCandidate;
     if(!drag || event.pointerId!==drag.id) return;
-    if(drag.active && !drag.cancelled) {
-      drag.x=event.clientX;drag.y=event.clientY;
-      paintCandidate(drag);
-    }
+    if(!drag.cancelled) updateCandidate(drag,event.clientX,event.clientY,true);
     if(drag.active || drag.cancelled) suppressDragClick();
     finishCandidateDrag(!drag.cancelled);
   },true);
@@ -2124,9 +2123,11 @@ window.mountEditTimeline = function (host, ctx) {
     const drag=draggedCandidate;
     if(event.key!=='Escape' || !drag || drag.cancelled) return;
     event.preventDefault();event.stopPropagation();
-    const from=drag.active && drag.button.getBoundingClientRect();
-    dockCandidate(drag);
-    animateCandidateFrom(drag.button,from);
+    if(drag.active) {
+      const from=drag.button.getBoundingClientRect();
+      dockCandidate(drag);
+      animateCandidateFrom(drag.button,from);
+    }
     drag.cancelled=true;
   },true);
   host.addEventListener('lostpointercapture',event=>{

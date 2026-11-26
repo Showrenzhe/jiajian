@@ -2,6 +2,7 @@
 
 const assert = require('node:assert/strict');
 const { mkdtempSync } = require('node:fs');
+const fs = require('node:fs/promises');
 const os = require('node:os');
 const path = require('node:path');
 const { setTimeout: delay } = require('node:timers/promises');
@@ -270,7 +271,8 @@ async function check() {
     const atSlot=(selector,r)=>'(()=>{const e='+query(selector)+';if(!e)return false;const r=e.getBoundingClientRect();'
       +'return '+['x','y','width','height'].map(k=>'Math.abs(r.'+k+'-'+r[k]+')<3').join(' && ')+'})()';
     const clips='Array.from(document.querySelectorAll(".sequence-video [data-move-candidate]"), e=>[e.dataset.dropShot,e.dataset.candidateIndex,e.querySelector(".sequence-clip-name").textContent])';
-    const restored=()=>wait('!document.querySelector(".candidate-moving,.candidate-displaced,.candidate-vacancy,[data-material-drop],[data-candidate-rejected],[data-drag-rejected]") && !'+query('.candidate-drop-hint')+'.textContent','结束拖动应清除悬浮、预览及反馈');
+    const dragVisuals='.candidate-moving,.candidate-displaced,.candidate-slot,.candidate-new-lane,[data-candidate-drag]';
+    const restored=()=>wait('!'+query(dragVisuals+',[data-material-drop],[data-candidate-rejected],[data-drag-rejected]')+' && !'+query('.candidate-drop-hint')+'.textContent','结束拖动应清除悬浮、预览及反馈');
     const source=cell(0,1),middle=cell(1,0),target=cell(2,0),empty=cell(3,0);
     const clipNamed=(selector,name)=>query(selector+' .sequence-clip-name')+'?.textContent==='+JSON.stringify(path.basename(name));
     const originalClips=await read(clips);
@@ -289,7 +291,97 @@ async function check() {
       return file;
     }
     const baseline=(await loadProject(await saveAs('互换前对照'))).config;
+    const configSnapshot=async name=>(await loadProject(await saveAs(name))).config;
+    const evidence=process.env.JIAJIAN_DRAG_EVIDENCE;
+    async function evidenceViewport(theme,width=1420,height=940) {
+      if(!evidence) return;
+      win.setContentSize(width,height);
+      await wc.debugger.sendCommand('Emulation.setEmulatedMedia',{features:[{name:'prefers-color-scheme',value:theme}]});
+      await wait('innerWidth==='+width+' && innerHeight==='+height+' && document.documentElement.dataset.theme==='+JSON.stringify(theme),'切换拖拽截图窗口');
+      await read('new Promise(done=>requestAnimationFrame(()=>requestAnimationFrame(()=>requestAnimationFrame(done))))');
+      await fitTimeline();
+    }
+    async function captureDrag(name) {
+      if(!evidence) return;
+      await read('new Promise(done=>requestAnimationFrame(()=>requestAnimationFrame(done)))');
+      assert.ok(await read('!!document.querySelector(".candidate-moving:popover-open")'),'截取正在拖动的片段');
+      const frame=await wc.capturePage();
+      assert.deepEqual([frame.getSize().width,frame.getSize().height],win.getContentSize());
+      await fs.mkdir(evidence,{recursive:true});
+      await fs.writeFile(path.join(evidence,name+'.jpg'),frame.toJPEG(88));
+    }
+    const press={x:Math.round(sourcePoint.x),y:Math.round(sourcePoint.y)};
+    for(const [dx,dy] of [[4,0],[5,0],[3,4]]) {
+      await read('window.addEventListener("pointerdown",e=>{window.testCandidatePointer=e.pointerId},{once:true})');
+      await mouse('mousePressed',press);
+      const jitter={x:press.x+dx,y:press.y+dy};
+      await mouse('mouseMoved',jitter);
+      await read('new Promise(done=>requestAnimationFrame(()=>requestAnimationFrame(done)))');
+      assert.ok(await read('!'+query(dragVisuals)+' && !'+host+'.hasPointerCapture(window.testCandidatePointer)'),'5 px 内不抓起、不捕获、不显示落点');
+      await mouse('mouseReleased',jitter);
+      await wait(query(source)+'.classList.contains("sequence-selected")','死区内松手保留普通点选');
+      assert.deepEqual(await read(clips),originalClips);
+    }
+    for(const clickCount of [1,2]) for(const type of ['mousePressed','mouseReleased']) {
+      await send('dispatchMouseEvent',{type,...press,button:'left',buttons:type==='mousePressed'?1:0,clickCount});
+    }
+    await wait('!!document.querySelector("#timeline-cut-editor[data-mode=cut]:not([hidden])")','双击仍进入视频裁剪');
+    assert.ok(await read('!'+query(dragVisuals)),'双击不产生拖拽预览');
+    await key('Escape',27);
+    await wait(query('#timeline-cut-editor')+'.hidden','取消裁剪');
+    assert.deepEqual(await configSnapshot('点击双击后'),baseline);
+    assert.ok(await read(query('#track-undo')+'.disabled && '+query('#track-redo')+'.disabled'),'点击、双击和死区移动不产生历史');
     const hint=query('.candidate-drop-hint');
+    // Leave one real edit on either side of the history cursor before cancelling a swap.
+    const mute='[data-control-key="vis0"] [data-track-action="muted"]';
+    assert.equal(await read(query(mute)+'.ariaPressed'),'false');
+    await click(mute);await wait(query(mute)+'.ariaPressed==="true"','建立撤销历史');
+    const historyMuted=await configSnapshot('历史中的静音状态');
+    await click(mute);await wait(query(mute)+'.ariaPressed==="false"','建立重做历史');
+    const unmuted=await configSnapshot('候选片段互换示例');
+    await click('#track-undo');await wait(query(mute)+'.ariaPressed==="true"','撤回第二个编辑');
+    const sameSource=cell(0,0);
+    async function sameLaneSwap() {
+      const from=await center(sameSource), box=await bounds(middle), to={x:box.x+box.width/2,y:box.y+box.height/2};
+      await read('window.addEventListener("pointerdown",e=>{window.testCandidatePointer=e.pointerId},{once:true})');
+      await mouse('mousePressed',from);
+      await mouse('mouseMoved',{x:from.x+8,y:from.y});
+      await mouse('mouseMoved',to);
+      await wait(clipNamed('.candidate-displaced',files.green)+' && '+clipNamed('.candidate-moving',files.red),'同轨交换显示目标和手持片段');
+      return to;
+    }
+    await evidenceViewport('light');
+    const cancelAt=await sameLaneSwap();
+    await captureDrag('light-same-track-swap');
+    await key('Escape',27);await restored();
+    await mouse('mouseMoved',{x:cancelAt.x+24,y:cancelAt.y});await mouse('mouseReleased',cancelAt);await restored();
+    assert.deepEqual(await configSnapshot('互换取消对照'),historyMuted);
+    for(const interruption of ['pointercancel','blur']) {
+      const to=await sameLaneSwap();
+      if(interruption==='pointercancel') {
+        await read(host+'.dispatchEvent(new PointerEvent("pointercancel",{pointerId:window.testCandidatePointer,bubbles:true}))');
+      } else await read('window.dispatchEvent(new Event("blur"))');
+      await restored();
+      assert.ok(await read('!'+query(dragVisuals)+' && !'+host+'.hasPointerCapture(window.testCandidatePointer)'),'中断后收起临时轨、悬浮和占位 '+interruption);
+      await mouse('mouseReleased',to);
+      assert.deepEqual(await read(clips),originalClips);
+    }
+    await click('#track-undo');await wait(query(mute)+'.ariaPressed==="false"','取消后撤销上一次实际编辑');
+    assert.deepEqual(await configSnapshot('取消后原撤销项'),baseline);
+    await click('#track-redo');await wait(query(mute)+'.ariaPressed==="true"','重做第一个原有编辑');
+    assert.deepEqual(await configSnapshot('取消后原重做一'),historyMuted);
+    await click('#track-redo');await wait(query(mute)+'.ariaPressed==="false"','重做第二个原有编辑');
+    assert.deepEqual(await configSnapshot('取消后原重做二'),unmuted);
+    await click('#track-undo');await wait(query(mute)+'.ariaPressed==="true"','回到第一个编辑');
+    await click('#track-undo');await wait(query(mute)+'.ariaPressed==="false"','恢复源工程');
+    assert.ok(await read(query('#track-undo')+'.disabled'),'到达真实历史起点');
+    const finalPoint=await center(target);
+    await sameLaneSwap();
+    await mouse('mouseReleased',finalPoint);await restored();
+    await wait(clipNamed(sameSource,files.green)+' && '+clipNamed(middle,files.green)+' && '+clipNamed(target,files.red),'用最终松手位置完成同轨交换');
+    await click('#track-undo');await wait(clipNamed(sameSource,files.red)+' && '+clipNamed(middle,files.green),'一次撤销恢复同轨两个片段');
+    assert.ok(await read(query('#track-undo')+'.disabled'),'一次完成的拖拽只占一个历史位置');
+    assert.deepEqual(await configSnapshot('同轨互换撤销对照'),baseline);
     async function expectRejected(selector,message) {
       const node=query(selector);
       await wait(node+'.hasAttribute("data-candidate-rejected") && !'+node+'.hasAttribute("data-material-drop") && '+hint+'.textContent==='+JSON.stringify(message),'禁放反馈应显示具体原因');
@@ -310,7 +402,10 @@ async function check() {
       // A notice above the panel can move the lanes between separate gestures.
       const from=await center(source), to=await center(target), home=await bounds(source);
       await mouse('mousePressed',from);
-      await wait('!!'+query('.candidate-moving'),'按下时提起视频');
+      assert.ok(await read('!'+query(dragVisuals)),'单独按下没有影子或临时落点');
+      await mouse('mouseMoved',{x:from.x+6,y:from.y});
+      const active=await read('(()=>{const e=document.querySelector(".candidate-moving:popover-open");return e && [document.querySelector("#timeline-clock").dataset.candidateDrag,Number(getComputedStyle(e).opacity)];})()');
+      assert.ok(active && active[0]==='active' && active[1]>0 && active[1]<1,'超过 5 px 在本次指针移动即进入半透明拖拽');
       await mouse('mouseMoved',to);
       await wait(atSlot('.candidate-displaced',home),'松手前目标视频应填入源候选行，并适配其宽度');
       await wait(clipNamed('.candidate-displaced',files.green)+' && '+clipNamed('.candidate-moving',files.blue),'预览应显示原片段');
@@ -347,6 +442,7 @@ async function check() {
     assert.deepEqual(movedConfig,expected,'落盘只应交换两条完整候选，其余分镜及口播、字幕、包装均保持原顺序');
     opens.push(movedFile);await click('#open-project');await wait(query('#notice')+'.textContent.includes("已打开工程") && '+exchanged,'重开后保留两个视频的交换位置');
     await verify(['A','B','C','D']);
+    await read('new Promise(done=>requestAnimationFrame(()=>requestAnimationFrame(done)))');
     await read(query(cell(0,0))+'.focus()');await key('ArrowRight',39,1);
     await wait(clipNamed(middle,files.red)+' && document.activeElement==='+query(middle),'键盘互换后焦点随视频到相邻分镜');
     await key('ArrowLeft',37,1);
@@ -686,7 +782,9 @@ async function check() {
       await checkPlacement(axis,scale,0,1.2,'回到第一分镜，覆盖到第一镜末端');
       return first;
     }
+    await evidenceViewport('dark');
     let hover=await hoverNewLane(0);
+    await captureDrag('dark-new-video-track');
     const neighbour=await bounds(cell(1,0));
     await mouse('mouseMoved',{x:neighbour.x+neighbour.width/2,y:neighbour.y+neighbour.height/2});
     await wait('!'+query(zone)+'.hasAttribute("data-material-drop")','离开新增区域取消新轨预览');
@@ -697,10 +795,14 @@ async function check() {
     assert.equal(await read(query('.sequence-hover')),null,'指针经过轨道时只有真实播放头');
     assert.equal((await bounds('.sequence-cursor')).x,cursorBefore.x);
     assert.equal(await read(rows),1);
+    await evidenceViewport('light',1366,768);
     hover=await hoverNewLane(0);
+    await captureDrag('compact-new-video-track');
     await key('Escape',27);await mouse('mouseReleased',hover);await restored();
     assert.equal(await read(rows),1,'直接取消新增轨道后仍只有原轨');
     assert.equal(await read(query('#track-undo')+'.disabled'),true,'取消操作不应产生可撤销的编辑');
+    assert.deepEqual(await configSnapshot('新增轨取消对照'),singleBaseline);
+    await evidenceViewport('light');
 
     let expectedTime;
     async function commitNewLane(from,bottom=false) {
