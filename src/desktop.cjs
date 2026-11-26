@@ -6,6 +6,7 @@ const { mkdirSync } = require('node:fs');
 const fs = require('node:fs/promises');
 const os = require('node:os');
 const path = require('node:path');
+const { mediaTool } = require('./media-tool.cjs');
 const { Readable } = require('node:stream');
 const { pathToFileURL } = require('node:url');
 const {
@@ -1458,7 +1459,7 @@ async function launchDesktop({
     lookRequest?.abort();const request=new AbortController();lookRequest=request;
     const at=asset.kind==='image'?0:Math.max(0,Math.min(value.time,asset.duration-1/(asset.fps||30)));
     try{
-      return await previewLook(process.env.JIAJIAN_FFMPEG || process.env.SUPERDIR_REPLICA_FFMPEG || 'ffmpeg',asset,look,catalog,at,value.ratio,request.signal,Number.isFinite(value.origin)?Math.max(0,value.origin):0);
+      return await previewLook(mediaTool('ffmpeg'),asset,look,catalog,at,value.ratio,request.signal,Number.isFinite(value.origin)?Math.max(0,value.origin):0);
     }catch(error){if(request.signal.aborted)return null;throw error;}
     finally{if(lookRequest===request)lookRequest=undefined;}
   });
