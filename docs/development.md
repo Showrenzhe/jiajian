@@ -4,7 +4,9 @@
 
 ## 媒体工具
 
-运行 `./scripts/prepare-release-tools.ps1` 准备项目固定版本的 FFmpeg 8 和 FFprobe。单独运行 Node 测试时，应把 `tools/ffmpeg-8.0-full_build/bin` 加入当前进程的 PATH。也可用 `JIAJIAN_FFMPEG` 和 `JIAJIAN_FFPROBE` 指定绝对路径，历史 `SUPERDIR_REPLICA_*` 变量仍可读。各离线引擎的来源、版本和权重说明保存在 `vendor` 对应目录的 README 中。
+用 `JIAJIAN_FFMPEG` 和 `JIAJIAN_FFPROBE` 可分别指定可执行文件的绝对路径。旧名 `SUPERDIR_REPLICA_FFMPEG` 和 `SUPERDIR_REPLICA_FFPROBE` 保留到下一个次版本。同一工具同时设置新旧变量时优先读取新名。用到旧名时，每个进程在日志中提示一次。
+
+未配置变量时，安装版使用安装目录 `resources/tools/ffmpeg-8.0-full_build/bin` 下的程序。源码运行时先使用仓库 `tools/ffmpeg-8.0-full_build/bin` 下的对应程序，缺少时从 PATH 查找。Windows 上可运行 `./scripts/prepare-release-tools.ps1` 准备固定版本。独立运行 Node 测试时，设置 `JIAJIAN_FFMPEG` 或把该目录加入当前进程的 PATH，供测试夹具生成素材。各离线引擎的来源、版本和权重说明保存在 `vendor` 对应目录的 README 中。
 
 ## 验证
 
@@ -41,7 +43,11 @@
 
 帧间隔报告写入 `run-data/benchmarks/standard.json` 或 `large.json`。在前台保持佳剪窗口可见，暂时关闭其他负载。报告包含 Electron、CPU、显示刷新率、缩放、GPU 适配器与合成状态，并列出各操作的 P95 和超过 25 ms 的间隔数。大工程含 5 条视频轨。批量列表另用 5 镜组合生成 1,000 个可选择结果，采样真实滚轮、窗口行数及筛选后的选择状态。
 
-CI 保存本次大工程报告，下载上一次成功主线推送的未过期报告。图形适配器、刷新率、缩放、合成状态和工程规模相同时，若任一场景 P95 同时增加超过 20% 和 2 ms，检查标红。没有可比基线时保存本次数据。可在开发机用 `node scripts/compare-bench.cjs 旧报告.json 新报告.json` 复核。在公司 Windows 集成显卡机器上使用前台桌面会话运行 `npm run bench:large`，即可生成该机的报告。
+CI 的“Windows / 大工程帧间隔”在一台托管 Windows 机器上比较两个版本。PR 以目标分支在事件中的提交为基线，以 GitHub 生成的 PR 合并提交为候选。推送到 `main` 时，基线为此次推送前的提交。首次推送分支、手动运行和定时运行使用候选的第一父提交。遇到没有父提交的根提交时，检查会报告缺少基线。
+
+两个版本各自安装依赖，用候选版本的同一套驱动依次运行基线、候选、候选、基线。每轮启动新的 Electron 进程，使用独立的临时工程和配置目录。每个版本、每个场景将两轮原始帧间隔合并计算 P95，至少需要 100 个间隔。任一场景的 P95 增幅同时超过 20% 和 2 ms，检查标红。环境不同、操作或报告不完整、样本不足也会标红，并在报告中注明原因。
+
+在 Actions 运行页下载 `benchmark-large`，查看 `summary.json` 中的场景结果和错误。在仓库根目录运行 `node scripts/compare-bench.cjs --paired 解压目录` 可重新汇总这四轮数据。在公司 Windows 集成显卡机器的前台桌面会话中运行 `npm run bench:large`，可单独生成该机的报告。[配对报告读法](benchmarks/README.md)
 
 Windows 应用容器需对 `node_modules/electron/dist` 有读取和执行权限。开发机曾因该目录 ACL 无法启动沙箱渲染器，补足此目录读取执行权限后可在普通桌面会话运行测试。
 

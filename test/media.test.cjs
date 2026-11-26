@@ -5,6 +5,7 @@ const fs = require('node:fs/promises');
 const os = require('node:os');
 const path = require('node:path');
 const { test } = require('node:test');
+const { mediaTool } = require('../src/media-tool.cjs');
 const { inspectAsset, createVideoThumbnail, createTrackProxy, normalizeSubtitleStyle, planMontage, planExtraction, exportBatch, maxWholeTracks } = require('../src/media.cjs');
 const { prepareMontagePlans } = require('../src/preview-plans.cjs');
 const { ffmpeg, fixtures } = require('./fixtures.cjs');
@@ -971,7 +972,7 @@ test('publishes selected MP4 cover artwork, pins first shot and inserts a real r
   const {promisify}=require('node:util');
   const probe=promisify(require('node:child_process').execFile);
   for (const {path:file} of batch.results) {
-    const {stdout}=await probe(process.env.SUPERDIR_REPLICA_FFPROBE||'ffprobe',['-v','error','-show_streams','-of','json',file]);
+    const {stdout}=await probe(mediaTool('ffprobe'),['-v','error','-show_streams','-of','json',file]);
     assert.equal(JSON.parse(stdout).streams.filter((s)=>s.disposition.attached_pic===1 && s.codec_name==='mjpeg').length,1);
   }
   const picture=await ffmpeg(['-i',batch.results[0].path,'-map','0:v:1','-frames:v','1','-vf','scale=1:1','-pix_fmt','rgb24','-f','rawvideo','pipe:1']);
@@ -1005,7 +1006,7 @@ test('renders selective color, timed effects, CUBE overlays and custom backgroun
   const [edge,center,overlay]=await Promise.all([sample(3,12,100),sample(3,640,360),sample(4,640,360)]);
   assert.ok(edge[0]>220&&edge[2]>220&&center[0]<35&&center[2]>180);
   assert.ok(overlay[0]<30&&overlay[1]>190&&overlay[2]>190,JSON.stringify([...overlay]));
-  const still=async(look)=>previewLook(process.env.SUPERDIR_REPLICA_FFMPEG||'ffmpeg',catalog.get('blue'),look,catalog,.1,'16:9');
+  const still=async(look)=>previewLook(mediaTool('ffmpeg'),catalog.get('blue'),look,catalog,.1,'16:9');
   for(const kind of ['blur','sharpen','grain','vignette','chromatic','negative'])assert.ok((await still({effects:[{kind,start:0,end:1,strength:65}]})).length>300,kind);
   for(const bg of [{kind:'blur',strength:50},{kind:'color',color:'#abcdef'},{kind:'pattern',pattern:'gradient'},{kind:'pattern',pattern:'dots'},{kind:'media',ids:['green']}])assert.ok((await still({background:bg})).length>300,bg.kind);
 });

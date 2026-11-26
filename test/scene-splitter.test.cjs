@@ -10,7 +10,8 @@ const { test } = require('node:test');
 const { splitVideos, detectSceneCuts } = require('../src/scene-splitter.cjs');
 
 const execFileAsync = promisify(execFile);
-const ffmpeg = process.env.SUPERDIR_REPLICA_FFMPEG || 'ffmpeg';
+const { mediaTool } = require('../src/media-tool.cjs');
+const ffmpeg = mediaTool('ffmpeg');
 
 test('splits a video into content scenes with the bundled PySceneDetect engine', async () => {
   const root = await fs.mkdtemp(path.join(os.tmpdir(), 'sd-scene-split-'));

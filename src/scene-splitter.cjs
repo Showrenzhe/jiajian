@@ -4,6 +4,7 @@ const { spawn } = require('node:child_process');
 const fs = require('node:fs/promises');
 const os = require('node:os');
 const path = require('node:path');
+const { mediaTool } = require('./media-tool.cjs');
 
 const videoExtensions = new Set(['mp4', 'mov', 'mkv', 'avi', 'webm', 'm4v', 'ts', 'mpeg', 'mpg', 'mts', 'm2ts']);
 const detectors = new Set(['content', 'adaptive', 'threshold']);
@@ -21,9 +22,10 @@ function executablePath() {
 
 function mediaEnvironment() {
   const env = { ...process.env };
-  const ffmpeg = env.JIAJIAN_FFMPEG || env.SUPERDIR_REPLICA_FFMPEG;
-  if (ffmpeg && path.isAbsolute(ffmpeg)) {
-    env.PATH = [path.dirname(ffmpeg), env.PATH].filter(Boolean).join(path.delimiter);
+  const ffmpeg = mediaTool('ffmpeg');
+  if (path.isAbsolute(ffmpeg)) {
+    const key = process.platform === 'win32' ? Object.keys(env).find(name => name.toUpperCase() === 'PATH') || 'PATH' : 'PATH';
+    env[key] = [path.dirname(ffmpeg), env[key]].filter(Boolean).join(path.delimiter);
   }
   return env;
 }

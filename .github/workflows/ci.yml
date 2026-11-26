@@ -46,53 +46,83 @@ jobs:
   benchmark:
     name: Windows / 大工程帧间隔
     runs-on: windows-latest
-    timeout-minutes: 30
+    timeout-minutes: 90
     permissions:
       contents: read
-      actions: read
+    env:
+      REPORTS_DIR: run-data/benchmarks/paired
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
         with:
+          ref: ${{ github.sha }}
+          path: head
+          fetch-depth: 2
+          persist-credentials: false
+      - name: 确定参与比较的提交
+        id: baseline
+        env:
+          PR_BASE: ${{ github.event.pull_request.base.sha }}
+          PUSH_BEFORE: ${{ github.event.before }}
+        run: |
+          New-Item -ItemType Directory -Path $env:REPORTS_DIR -Force | Out-Null
+          try {
+            $eventName = $env:GITHUB_EVENT_NAME
+            if ($eventName -eq 'pull_request') {
+              $base = $env:PR_BASE
+            } elseif ($eventName -eq 'push' -and $env:PUSH_BEFORE -ne ('0' * 40)) {
+              $base = $env:PUSH_BEFORE
+            } elseif ($eventName -in 'push','schedule','workflow_dispatch') {
+              # 首次推送分支、定时或手动运行时，以被测提交的第一父提交为准。
+              $parents = git -C head rev-list --parents -n 1 HEAD
+              if ($LASTEXITCODE) { throw '无法读取被测提交的父提交' }
+              $base = ($parents -split ' ')[1]
+            }
+            if ($base -notmatch '^[0-9a-f]{40}$' -or $base -eq ('0' * 40) -or $base -eq $env:GITHUB_SHA) {
+              throw '缺少独立的基线提交，当前运行无法进行性能比较'
+            }
+            "sha=$base" >> $env:GITHUB_OUTPUT
+            "event=$eventName base=$base head=$env:GITHUB_SHA" | Tee-Object "$env:REPORTS_DIR/revisions.txt"
+          } catch {
+            $_.Exception.Message > "$env:REPORTS_DIR/baseline-error.txt"
+            throw
+          }
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          ref: ${{ steps.baseline.outputs.sha }}
+          path: base
           persist-credentials: false
       - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
         with:
           node-version: '24'
           cache: npm
-      - run: npm ci
-      - run: |
-          ./scripts/prepare-release-tools.ps1
-          (Resolve-Path tools/ffmpeg-8.0-full_build/bin).Path >> $env:GITHUB_PATH
-      - run: npm run bench:large
-      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
-        with:
-          name: benchmark-large
-          path: run-data/benchmarks/large.json
-          retention-days: 30
-      - name: 找上一次主线基准
-        id: baseline
+          cache-dependency-path: head/package-lock.json
+      - name: 在同一台机器依次采样基线、候选、候选、基线
+        id: sample
         env:
-          GH_TOKEN: ${{ github.token }}
-          BASE_BRANCH: ${{ github.base_ref || github.event.repository.default_branch }}
+          BASE_SHA: ${{ steps.baseline.outputs.sha }}
+        run: ./head/scripts/run-paired-bench.ps1
+      - name: 汇总并对比同机采样
+        if: ${{ !cancelled() && steps.sample.outcome != 'skipped' }}
         run: |
-          $runIds = gh api --paginate --method GET "repos/$env:GITHUB_REPOSITORY/actions/runs" -f branch="$env:BASE_BRANCH" -f event=push -f status=success -F per_page=100 --jq '.workflow_runs[] | select(.path == ".github/workflows/ci.yml") | .id'
-          if ($LASTEXITCODE) { exit $LASTEXITCODE }
-          foreach ($runId in $runIds) {
-            $artifacts = gh api --method GET "repos/$env:GITHUB_REPOSITORY/actions/runs/$runId/artifacts" -f name=benchmark-large | ConvertFrom-Json
-            if ($LASTEXITCODE) { exit $LASTEXITCODE }
-            if ($artifacts.artifacts | Where-Object { !$_.expired }) {
-              "run=$runId" >> $env:GITHUB_OUTPUT
-              break
-            }
+          node head/scripts/compare-bench.cjs --paired $env:REPORTS_DIR 2>&1 | Tee-Object "$env:REPORTS_DIR/compare.log"
+          exit $LASTEXITCODE
+      - name: 记录比较前的失败
+        if: failure()
+        run: |
+          New-Item -ItemType Directory -Path $env:REPORTS_DIR -Force | Out-Null
+          $summary = Join-Path $env:REPORTS_DIR 'summary.json'
+          if (!(Test-Path -LiteralPath $summary)) {
+            @{ status = 'invalid'; head = $env:GITHUB_SHA; errors = @('未生成配对汇总，请查看本次作业中最早失败的步骤。') } |
+              ConvertTo-Json > $summary
           }
-      - if: steps.baseline.outputs.run
-        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+      - name: 保存每轮证据和比较结果
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
-          github-token: ${{ github.token }}
-          run-id: ${{ steps.baseline.outputs.run }}
           name: benchmark-large
-          path: run-data/benchmarks/previous
-      - if: steps.baseline.outputs.run
-        run: node scripts/compare-bench.cjs run-data/benchmarks/previous/large.json run-data/benchmarks/large.json
+          path: ${{ env.REPORTS_DIR }}
+          retention-days: 30
+          if-no-files-found: warn
   integrated-graphics:
     if: >-
       github.event_name == 'workflow_dispatch' &&

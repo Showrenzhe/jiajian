@@ -9,7 +9,8 @@ const path = require('node:path');
 const pending = new Map();
 const digests = new Map();
 let renderQueue = Promise.resolve();
-const ffmpeg = process.env.JIAJIAN_FFMPEG || process.env.SUPERDIR_REPLICA_FFMPEG || 'ffmpeg';
+const { mediaTool } = require('./media-tool.cjs');
+const ffmpeg = mediaTool('ffmpeg');
 
 /** @typedef {{start:number,end:number,reverse?:boolean,mirror?:boolean,rotation?:number,crop?:{x:number,y:number,width:number,height:number}}} SourceRange */
 /** @param {SourceRange[]} ranges @param {number} duration @returns {SourceRange[]} */
