@@ -20,8 +20,12 @@ const { saveProject } = require('../src/project-format.cjs');
 const { fixtures, ffmpeg } = require('./fixtures.cjs');
 const { clickVisible } = require('./desktop-input.cjs');
 
-const durationMs = 2000;
 const large = process.argv.includes('--large');
+const paired = process.argv.includes('--paired');
+assert.ok(!paired || large, '--paired 需要 --large');
+const durationMs = paired ? 14400 : 2000;
+let activeScene = 'setup';
+let completedInputs = 0;
 const shotsCount = large ? 200 : 24;
 const laneCount = large ? 5 : 3;
 const budget = 1000 / 60;
@@ -48,6 +52,9 @@ async function makeProject() {
     [id, await inspectAsset(files[id], id === 'music' ? 'audio' : 'video')])));
   const shots = Array.from({ length: shotsCount }, (_, index) => Array.from({length:laneCount},(_,lane) =>
     ({ id: ids[(index + lane) % ids.length], start: 0, end: 1, videoLane: lane })));
+  // The two crossed slots otherwise both contain blue. Keep the same gesture
+  // geometry and use red at its destination to verify both ends of the swap.
+  if (paired) shots[4][1].id = 'red';
   const config = {
     shots, ratio: '16:9', resolution: 720, fps: 30, fit: 'fit', keepAudio: true,
     priority: 'picture', unordered: false, useOriginal: true, useMirrors: false, count: 1,
@@ -67,7 +74,8 @@ async function makeProject() {
 }
 
 function summarize({ timestamps, events, elapsedMs }) {
-  const intervals = timestamps.slice(1).map((time, i) => time - timestamps[i]).sort((a, b) => a - b);
+  const raw = timestamps.slice(1).map((time, i) => time - timestamps[i]);
+  const intervals = [...raw].sort((a, b) => a - b);
   assert.ok(intervals.length, '没有采到 rAF 帧间隔');
   const quantile = q => +intervals[Math.ceil(q * intervals.length) - 1].toFixed(2);
   return {
@@ -76,6 +84,7 @@ function summarize({ timestamps, events, elapsedMs }) {
     over16_67Ms: intervals.filter(ms => ms > budget).length,
     // Normal 60 Hz timestamps can alternate between 16.6 and 16.7 ms.
     over25Ms: intervals.filter(ms => ms > 1.5 * budget).length,
+    ...(paired && { frameIntervalsMs: raw }),
   };
 }
 
@@ -122,7 +131,17 @@ async function run() {
   });
   const wc = win.webContents;
   const read = code => wc.executeJavaScript(code, true);
-  const send = (type, point, fields) => wc.debugger.sendCommand('Input.dispatchMouseEvent', { type, ...point, ...fields });
+  let actions;
+  let actionStart;
+  function send(type, point, fields) {
+    const input = { type, ...point, ...fields };
+    if (!actions) return wc.debugger.sendCommand('Input.dispatchMouseEvent', input);
+    const atMs = performance.now() - actionStart;
+    return wc.debugger.sendCommand('Input.dispatchMouseEvent', input).then(() => {
+      actions.push({ atMs, ...input });
+      completedInputs++;
+    });
+  }
   const mouseDown = p => send('mousePressed', p, { button: 'left', buttons: 1, clickCount: 1 });
   const mouseUp = p => send('mouseReleased', p, { button: 'left', buttons: 0, clickCount: 1 });
   const mouseMove = p => send('mouseMoved', p, { button: 'left', buttons: 1 });
@@ -166,11 +185,20 @@ async function run() {
   // An interval measures renderer rAF scheduling. It cannot confirm a Windows display present.
   const results = {};
   async function sample(name, gesture, eventType = 'pointermove') {
+    activeScene = name;
+    completedInputs = 0;
     await read(`new Promise(resolve => {
       const timestamps = [], type = ${JSON.stringify(eventType)};
       let events = 0, id;
-      const onInput = e => { if (e.isTrusted) events++; };
-      window.addEventListener(type, onInput, {capture:true, passive:true});
+      const received = [];
+      const types = ${paired} ? ['pointerdown','pointermove','pointerup','wheel'] : [type];
+      const onInput = e => {
+        if (!e.isTrusted) return;
+        if (e.type === type) events++;
+        if (${paired}) received.push({type:e.type, atMs:e.timeStamp - timestamps[0], x:e.clientX, y:e.clientY,
+          ...(e.type === 'wheel' && {deltaX:e.deltaX, deltaY:e.deltaY})});
+      };
+      for (const t of types) window.addEventListener(t, onInput, {capture:true, passive:true});
       const tick = time => {
         timestamps.push(time); id = requestAnimationFrame(tick);
         if (timestamps.length === 1) { performance.mark(${JSON.stringify('jj-frame-' + name + '-start')}); resolve(true); }
@@ -178,17 +206,39 @@ async function run() {
       id = requestAnimationFrame(tick);
       window.finishSample = () => new Promise(done => requestAnimationFrame(() => {
         cancelAnimationFrame(id);
-        window.removeEventListener(type, onInput, true);
+        for (const t of types) window.removeEventListener(t, onInput, true);
         performance.mark(${JSON.stringify('jj-frame-' + name + '-end')});
-        done({timestamps, events, elapsedMs: timestamps.at(-1) - timestamps[0]});
+        done({timestamps, events, elapsedMs: timestamps.at(-1) - timestamps[0], ...(${paired} && {received})});
       }));
     })`);
+    if (paired) {
+      actions = [];
+      actionStart = performance.now();
+    }
     await gesture();
     const recorded = await read('window.finishSample()');
     if (name !== 'idle') assert.ok(recorded.events >= (large ? 1 : 10), name + ' 实际收到的输入不足 ' + recorded.events);
     const result = summarize(recorded);
+    if (paired) Object.assign(result, { actions, dispatchedInputs: actions.length, receivedInputs: recorded.received });
+    actions = undefined;
     results[name] = result;
-    console.log(name + ' ' + JSON.stringify(result));
+    console.log(name + ' ' + JSON.stringify(result, (key,value) =>
+      ['actions','receivedInputs','frameIntervalsMs'].includes(key) ? undefined : value));
+    activeScene = 'between scenes, after ' + name;
+  }
+
+  // Each checkout receives the same number, order and coordinates of inputs.
+  // Wait for the previous acknowledgement, never drop a step or catch up in a burst.
+  // The last step ends the gesture immediately; slow work extends the active span.
+  async function fixedSteps(count, visit) {
+    const spacing = durationMs / (count - 1);
+    let next = performance.now();
+    for (let index = 0; index < count; index++) {
+      const wait = next - performance.now();
+      if (wait > 0) await delay(wait);
+      next = performance.now() + spacing;
+      await visit(index, index / (count - 1));
+    }
   }
 
   // Drive input independently of both rAF and slow renderer acknowledgements. Bound the
@@ -215,7 +265,11 @@ async function run() {
   const between = (a, b, t) => ({ x: a.x + (b.x-a.x)*t, y: a.y + (b.y-a.y)*t });
   async function drag(start, end, verify) {
     await mouseDown(start);
-    await sweep(t => mouseMove(between(start, end, wave(t))));
+    if (paired) {
+      await fixedSteps(240, (_index,t) => mouseMove(between(start, end, (1 - Math.cos(9 * Math.PI * t)) / 2)));
+    } else {
+      await sweep(t => mouseMove(between(start, end, wave(t))));
+    }
     await verify();
     await mouseUp(end);
   }
@@ -243,6 +297,7 @@ async function run() {
       tracks: await read('document.querySelectorAll(".sequence-row").length'),
       shots: shotsCount, candidateClips: shotsCount*laneCount, videoLanes:laneCount, narrationSeconds: large ? 200 : 0.4,
       durationMs, metric: 'renderer requestAnimationFrame timestamps',
+      ...(paired && { samplingProtocol: 'paired-v1' }),
       sourceSha256, driverSha256: createHash('sha256').update(readFileSync(__filename)).digest('hex'),
     };
     console.log('environment ' + JSON.stringify(info));
@@ -255,9 +310,21 @@ async function run() {
     const cell = (shot, lane) => '.sequence-block[data-drop-shot="' + shot + '"][data-candidate-index="' + lane + '"]';
     const source = cell(2, 0), target = cell(large ? 4 : 9, 1);
     const before = await read(selector(source) + '.title');
+    const clipSource = slot => selector(slot) + '.dataset.clipSource';
+    let originalIds;
+    if (paired) {
+      originalIds = await read('[' + clipSource(source) + ',' + clipSource(target) + ']');
+      assert.ok(originalIds.every(Boolean) && originalIds[0] !== originalIds[1], '拖前两格必须能区分素材');
+    }
     const from = await point(source), to = await point(target);
     await sample('candidateDrag', () => drag(from, to, () => waitFor('!!document.querySelector(".candidate-moving")')));
-    await waitFor(selector(target) + '.title === ' + JSON.stringify(before));
+    if (paired) {
+      await waitFor(clipSource(target) + ' === ' + JSON.stringify(originalIds[0]) + ' && '
+        + clipSource(source) + ' === ' + JSON.stringify(originalIds[1]));
+      results.candidateDrag.swapped = true;
+    } else {
+      await waitFor(selector(target) + '.title === ' + JSON.stringify(before));
+    }
     const ruler = '.sequence-ruler .sequence-content';
     if (large) {
       await read(selector('#timeline-fit') + '.click()');
@@ -280,10 +347,25 @@ async function run() {
     const zoom = () => read(selector('#track-zoom') + '.valueAsNumber');
     const initialZoom = await zoom();
     let peakZoom = initialZoom;
-    await sample('timelineZoom', () => sweep(async t => {
-      await send('mouseWheel', wheelPoint, { modifiers: 2, deltaX: 0, deltaY: Math.floor(t * 9) % 2 ? 80 : -80 });
-      if (t < .12) peakZoom = Math.max(peakZoom, await zoom());
-    }, 40), 'wheel');
+    if (paired) {
+      assert.ok(initialZoom + 2 <= await read('Number(' + selector('#track-zoom') + '.max)'), '缩放需要两个可用档位');
+      let expected = initialZoom;
+      await sample('timelineZoom', () => fixedSteps(96, async index => {
+        const direction = index % 4 < 2 ? 1 : -1;
+        expected += direction;
+        await send('mouseWheel', wheelPoint, { modifiers: 2, deltaX: 0, deltaY: -80 * direction });
+        // Acknowledge the application-level result as well as input dispatch. In
+        // particular, opposite notches must not cancel inside a single paint.
+        await waitFor(selector('#track-zoom') + '.valueAsNumber === ' + expected);
+        peakZoom = Math.max(peakZoom, expected);
+      }), 'wheel');
+      assert.equal(await zoom(), initialZoom, '连续缩放后应回到初始档位');
+    } else {
+      await sample('timelineZoom', () => sweep(async t => {
+        await send('mouseWheel', wheelPoint, { modifiers: 2, deltaX: 0, deltaY: Math.floor(t * 9) % 2 ? 80 : -80 });
+        if (t < .12) peakZoom = Math.max(peakZoom, await zoom());
+      }, 40), 'wheel');
+    }
     assert.ok(peakZoom > initialZoom, '滚轮应确实放大工程时间线');
     if (large) {
       chosenProject = batchProject;
@@ -307,7 +389,27 @@ async function run() {
       const list = '#preview-batch-list';
       await read(selector(list) + '.scrollIntoView({block:"center"})');
       const listPoint = await point(list);
-      await sample('batchScroll', () => sweep(() => send('mouseWheel',listPoint,{deltaX:0,deltaY:120}),30),'wheel');
+      if (paired) {
+        const position = selector(list) + '.scrollTop';
+        const scrollTurns = [{ afterWheel: 0, scrollTop: await read(position) }];
+        await sample('batchScroll', () => fixedSteps(240, async index => {
+          const phase = index % 48;
+          const direction = phase < 32 ? 1 : -1;
+          await send('mouseWheel', listPoint, { deltaX:0, deltaY:120 * direction });
+          if (phase !== 31 && phase !== 47) return;
+          const previous = scrollTurns.at(-1).scrollTop;
+          // Wheel dispatch and application scrolling are asynchronous. Verify real
+          // travel in each of the ten legs, and reject gestures clipped at an edge.
+          await waitFor('(' + position + ' - ' + previous + ') * ' + direction + ' > 500');
+          const top = await read(position);
+          const limit = await read(selector(list) + '.scrollHeight - ' + selector(list) + '.clientHeight');
+          assert.ok(top > 0 && top < limit, '批量列表滚动到边界 ' + top + '/' + limit);
+          scrollTurns.push({ afterWheel:index + 1, scrollTop:top });
+        }), 'wheel');
+        results.batchScroll.scrollTurns = scrollTurns;
+      } else {
+        await sample('batchScroll', () => sweep(() => send('mouseWheel',listPoint,{deltaX:0,deltaY:120}),30),'wheel');
+      }
       assert.ok(await read(selector(list) + '.scrollTop') > 500, '列表须响应真实滚轮');
       const rendered = await read(selector(list) + '.querySelectorAll(".batch-entry").length');
       assert.ok(rendered > 0 && rendered < 35, '只挂载视口附近的预览行');
@@ -338,5 +440,8 @@ async function run() {
   }
 }
 
-const watchdog = setTimeout(() => { console.error('基准超时，检查可见窗口和显示刷新'); app.exit(1); }, large ? 300000 : 120000);
+const watchdog = setTimeout(() => {
+  console.error('基准超时，检查可见窗口和显示刷新', { scene: activeScene, completedInputs });
+  app.exit(1);
+}, paired ? 600000 : large ? 300000 : 120000);
 run().then(() => { clearTimeout(watchdog); app.exit(0); }, error => { console.error(error); app.exit(1); });

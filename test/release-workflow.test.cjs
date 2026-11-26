@@ -109,12 +109,64 @@ test('标签触发 Windows 构建，安装包通过校验后发布到 GitHub 草
   assert.equal(steps.at(-1).env.GH_TOKEN, '${{ github.token }}');
   const ci = yaml.load(await fs.readFile(path.join(__dirname, '../.github/workflows/ci.yml'), 'utf8'));
   assert.ok(Object.hasOwn(ci.on, 'pull_request'));
-  const baseline = ci.jobs.benchmark.steps.find(step => step.id === 'baseline').run;
-  assert.match(baseline, /actions\/runs["] -f branch=/);
-  assert.match(baseline, /\.github\/workflows\/ci\.yml/);
-  assert.match(baseline, /artifacts\.artifacts/);
   assert.deepEqual(ci.jobs.checks.steps.filter(s => ['npm ci', 'npm test', 'npm run test:smoke'].includes(s.run)).map(s => s.run),
     ['npm ci', 'npm test', 'npm run test:smoke']);
+});
+
+test('托管性能检查在同一台机器独立检出两个版本，始终归档各轮证据', async () => {
+  const ci = yaml.load(await fs.readFile(path.join(__dirname, '../.github/workflows/ci.yml'), 'utf8'));
+  const job = ci.jobs.benchmark;
+  assert.equal(job.name, 'Windows / 大工程帧间隔');
+  assert.equal(job['runs-on'], 'windows-latest');
+  assert.deepEqual(job.permissions, { contents: 'read' });
+  const steps = job.steps;
+  const checkouts = steps.filter(step => step.uses?.startsWith('actions/checkout@'));
+  assert.deepEqual(checkouts.map(step => [step.with.path, step.with.ref, step.with['persist-credentials']]), [
+    ['head', '${{ github.sha }}', false], ['base', '${{ steps.baseline.outputs.sha }}', false],
+  ]);
+  assert.ok(checkouts[0].with['fetch-depth'] >= 2);
+  const baseline = steps.find(step => step.id === 'baseline');
+  assert.equal(baseline.env.PR_BASE, '${{ github.event.pull_request.base.sha }}');
+  assert.equal(baseline.env.PUSH_BEFORE, '${{ github.event.before }}');
+  const sample = steps.find(step => step.id === 'sample');
+  assert.equal(sample.env.BASE_SHA, '${{ steps.baseline.outputs.sha }}');
+  assert.equal(sample.run, './head/scripts/run-paired-bench.ps1');
+  assert.ok(steps.some(step => step.run?.includes('compare-bench.cjs --paired $env:REPORTS_DIR')));
+  assert.ok(steps.every(step => !step.uses?.startsWith('actions/download-artifact@')));
+  assert.equal(steps.at(-1).if, 'always()');
+  assert.equal(steps.at(-1).with.path, '${{ env.REPORTS_DIR }}');
+});
+
+test('性能基线按事件选取，首次分支推送可用第一父提交，根提交明确失败', { skip: process.platform !== 'win32' }, async t => {
+  const ci = yaml.load(await fs.readFile(path.join(__dirname, '../.github/workflows/ci.yml'), 'utf8'));
+  const root = await fixture(t);
+  const head = path.join(root, 'head');
+  await fs.mkdir(head);
+  const git = (...args) => execFileSync('git', ['-c', 'user.name=Test', '-c', 'user.email=test@example.invalid',
+    '-c', 'commit.gpgsign=false', ...args], { cwd: head, encoding: 'utf8', stdio: 'pipe' }).trim();
+  git('init');
+  const commits = [];
+  for (let i = 0; i < 3; i++) {
+    git('commit', '--allow-empty', '-m', String(i));
+    commits.push(git('rev-parse', 'HEAD'));
+  }
+  const script = path.join(root, 'select.ps1');
+  const select = ci.jobs.benchmark.steps.find(step => step.id === 'baseline').run;
+  await fs.writeFile(script, "\ufeff$ErrorActionPreference = 'Stop'\n" + select + '\nGet-Content $env:GITHUB_OUTPUT -Tail 1');
+  const sample = (event, sha, before) => execFileSync('powershell.exe', ['-NoProfile', '-NonInteractive',
+    '-ExecutionPolicy', 'Bypass', '-File', script], { cwd: root, encoding: 'utf8', stdio: 'pipe',
+    env: { ...process.env, GITHUB_EVENT_NAME: event, GITHUB_SHA: sha, PR_BASE: commits[0], PUSH_BEFORE: before,
+      REPORTS_DIR: path.join(root, 'reports'), GITHUB_OUTPUT: path.join(root, 'output') } }).trim().split(/\r?\n/).at(-1);
+  const zero = '0'.repeat(40);
+  for (const [event, before, expected] of [
+    ['pull_request', zero, commits[0]], ['push', commits[0], commits[0]],
+    ['push', zero, commits[1]], ['schedule', zero, commits[1]], ['workflow_dispatch', zero, commits[1]],
+  ]) {
+    assert.equal(sample(event, commits[2], before), 'sha=' + expected);
+  }
+  git('checkout', '--detach', commits[0]);
+  assert.throws(() => sample('push', commits[0], zero));
+  await fs.access(path.join(root, 'reports/baseline-error.txt'));
 });
 
 test('内部集显采样只接受启用后的默认分支手动运行', async () => {
