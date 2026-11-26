@@ -20,3 +20,11 @@
 0.8.9 对照来自提交 `45efa19`，复用新版基准驱动，仅采时间线。两版的大工程缩放、拖动与播放头移动均有明显掉帧；缩放时仍需重排各轨道的片段几何尺寸。单轮样本会受调度、媒体解码和其他进程影响。后续回归使用同环境 CI 报告对比；每份 JSON 同时保存源文件及基准驱动哈希。
 
 完整记录见 [0.9.0 大工程](windows-large-v0.9.0.json)、[0.9.0 标准工程](windows-standard-v0.9.0.json) 和 [0.8.9 对照](windows-large-v0.8.9.json)。
+
+## 集显采样
+
+内部 Windows 集显采样默认关闭。公开仓库中的外部贡献可能改动工作流，使自托管 Runner 在内部机器上执行不受信任的代码。建议仓库公开期间保持关闭，等仓库转为私有后再启用。
+
+启用时，由仓库管理员登记带有 `self-hosted`、`Windows`、`integrated-graphics` 标签的内部集显机器，并将仓库 Actions 变量 `INTERNAL_RUNNER_ENABLED` 设为 `true`。随后在 Actions 的 CI 工作流中选择默认分支，勾选集显采样并手动运行。完成后下载 `benchmark-integrated-graphics` 查看报告。
+
+要验证默认关闭状态，可在变量未设置时按上述方式手动运行一次。预期 `integrated-graphics` 显示为已跳过（Skipped），无需登记机器。
