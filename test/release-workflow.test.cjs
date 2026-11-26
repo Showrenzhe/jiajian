@@ -46,6 +46,30 @@ test('标签触发 Windows 构建，安装包通过校验后发布到 GitHub 草
     ['npm ci', 'npm test', 'npm run test:smoke']);
 });
 
+test('内部集显采样只接受启用后的默认分支手动运行', async () => {
+  const ci = yaml.load(await fs.readFile(path.join(__dirname, '../.github/workflows/ci.yml'), 'utf8'));
+  assert.equal(Object.hasOwn(ci.on, 'pull_request_target'), false);
+  const input = ci.on.workflow_dispatch.inputs.integrated_gpu;
+  assert.equal(input.type, 'boolean');
+  assert.equal(input.default, false);
+
+  const job = ci.jobs['integrated-graphics'];
+  assert.deepEqual(job.if.split(/\s*&&\s*/).sort(), [
+    "github.event_name == 'workflow_dispatch'",
+    "github.ref_type == 'branch'",
+    'github.ref_name == github.event.repository.default_branch',
+    'inputs.integrated_gpu',
+    "vars.INTERNAL_RUNNER_ENABLED == 'true'",
+  ].sort());
+  assert.deepEqual(job['runs-on'], ['self-hosted', 'Windows', 'integrated-graphics']);
+  assert.doesNotMatch(JSON.stringify(job), /\bsecrets\b/i);
+  const checkouts = job.steps.filter(step => step.uses?.startsWith('actions/checkout@'));
+  assert.deepEqual(checkouts.map(step => step.with), [{
+    ref: '${{ github.sha }}',
+    'persist-credentials': false,
+  }]);
+});
+
 async function fixture(t) {
   const root = await fs.mkdtemp(path.join(os.tmpdir(), 'jiajian-release-'));
   t.after(() => fs.rm(root, { recursive: true, force: true }));

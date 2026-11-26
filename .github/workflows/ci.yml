@@ -94,12 +94,18 @@ jobs:
       - if: steps.baseline.outputs.run
         run: node scripts/compare-bench.cjs run-data/benchmarks/previous/large.json run-data/benchmarks/large.json
   integrated-graphics:
-    if: github.event_name == 'workflow_dispatch' && inputs.integrated_gpu && github.event.repository.private && github.ref_name == github.event.repository.default_branch
+    if: >-
+      github.event_name == 'workflow_dispatch' &&
+      inputs.integrated_gpu &&
+      vars.INTERNAL_RUNNER_ENABLED == 'true' &&
+      github.ref_type == 'branch' &&
+      github.ref_name == github.event.repository.default_branch
     runs-on: [self-hosted, Windows, integrated-graphics]
     timeout-minutes: 30
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
         with:
+          ref: ${{ github.sha }}
           persist-credentials: false
       - run: npm ci
       - run: |
