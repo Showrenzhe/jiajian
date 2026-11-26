@@ -6,6 +6,7 @@ const path = require('node:path');
 const { randomUUID } = require('node:crypto');
 const { inspectAsset, audioExtensions } = require('./media.cjs');
 const { readSubtitles } = require('./subtitles.cjs');
+const { mediaTool } = require('./media-tool.cjs');
 
 function localFile(file, extensions) {
   return typeof file === 'string' && path.isAbsolute(file) && !file.includes('\0') && !/^[\\/]{2}/.test(file)
@@ -13,15 +14,10 @@ function localFile(file, extensions) {
     && (process.platform !== 'win32' || (/^[a-z]:[\\/]/i.test(file) && !file.slice(2).includes(':')));
 }
 
-function ffmpegCommand() {
-  const configured = process.env.JIAJIAN_FFMPEG || process.env.SUPERDIR_REPLICA_FFMPEG || 'ffmpeg';
-  return /[\\/]/.test(configured) ? path.resolve(configured) : configured;
-}
-
 function runFfmpeg(args, { signal, timeout = 120000 } = {}) {
   signal?.throwIfAborted();
   return new Promise((resolve, reject) => {
-    const child = spawn(ffmpegCommand(), args, { shell: false, windowsHide: true, stdio: ['ignore', 'ignore', 'pipe'] });
+    const child = spawn(mediaTool('ffmpeg'), args, { shell: false, windowsHide: true, stdio: ['ignore', 'ignore', 'pipe'] });
     let errors = '';
     let failure;
     const stop = () => child.kill();

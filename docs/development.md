@@ -4,7 +4,9 @@
 
 ## 媒体工具
 
-运行 `./scripts/prepare-release-tools.ps1` 准备项目固定版本的 FFmpeg 8 和 FFprobe。单独运行 Node 测试时，应把 `tools/ffmpeg-8.0-full_build/bin` 加入当前进程的 PATH。也可用 `JIAJIAN_FFMPEG` 和 `JIAJIAN_FFPROBE` 指定绝对路径，历史 `SUPERDIR_REPLICA_*` 变量仍可读。各离线引擎的来源、版本和权重说明保存在 `vendor` 对应目录的 README 中。
+用 `JIAJIAN_FFMPEG` 和 `JIAJIAN_FFPROBE` 可分别指定可执行文件的绝对路径。旧名 `SUPERDIR_REPLICA_FFMPEG` 和 `SUPERDIR_REPLICA_FFPROBE` 保留到下一个次版本。同一工具同时设置新旧变量时优先读取新名。用到旧名时，每个进程在日志中提示一次。
+
+未配置变量时，安装版使用安装目录 `resources/tools/ffmpeg-8.0-full_build/bin` 下的程序。源码运行时先使用仓库 `tools/ffmpeg-8.0-full_build/bin` 下的对应程序，缺少时从 PATH 查找。Windows 上可运行 `./scripts/prepare-release-tools.ps1` 准备固定版本。独立运行 Node 测试时，设置 `JIAJIAN_FFMPEG` 或把该目录加入当前进程的 PATH，供测试夹具生成素材。各离线引擎的来源、版本和权重说明保存在 `vendor` 对应目录的 README 中。
 
 ## 验证
 

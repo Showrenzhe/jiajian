@@ -23,9 +23,9 @@ const { maxCandidates, minClipSeconds, minEdgeSilence, audioRate, withOutputFram
 const vendorPath = require('./vendor-path.cjs');
 const { isMaterialPath } = require('./material-path.cjs');
 
-const ffmpegCommand = process.env.JIAJIAN_FFMPEG || process.env.SUPERDIR_REPLICA_FFMPEG || 'ffmpeg';
-const ffmpeg = /[\\/]/.test(ffmpegCommand) ? path.resolve(ffmpegCommand) : ffmpegCommand;
-const ffprobe = process.env.JIAJIAN_FFPROBE || process.env.SUPERDIR_REPLICA_FFPROBE || 'ffprobe';
+const { mediaTool } = require('./media-tool.cjs');
+const ffmpeg = mediaTool('ffmpeg');
+const ffprobe = mediaTool('ffprobe');
 const execFileAsync = promisify(execFile);
 /** @typedef {Awaited<ReturnType<typeof inspectAsset>>} InspectedAsset */
 /** @typedef {{signal?: AbortSignal}} MediaReadOptions */

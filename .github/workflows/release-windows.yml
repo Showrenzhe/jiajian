@@ -50,8 +50,8 @@ jobs:
         run: |
           ./scripts/prepare-release-tools.ps1
           $bin = (Resolve-Path 'tools/ffmpeg-8.0-full_build/bin').Path
-          "SUPERDIR_REPLICA_FFMPEG=$bin\ffmpeg.exe" >> $env:GITHUB_ENV
-          "SUPERDIR_REPLICA_FFPROBE=$bin\ffprobe.exe" >> $env:GITHUB_ENV
+          "JIAJIAN_FFMPEG=$bin\ffmpeg.exe" >> $env:GITHUB_ENV
+          "JIAJIAN_FFPROBE=$bin\ffprobe.exe" >> $env:GITHUB_ENV
           $bin >> $env:GITHUB_PATH
       - run: npm test
       - run: npm run test:updates
