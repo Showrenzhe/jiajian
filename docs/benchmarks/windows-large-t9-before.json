@@ -1,0 +1,116 @@
+{
+  "environment": {
+    "appVersion": "0.9.0",
+    "electron": "45.2.3",
+    "platform": "10.0.26200",
+    "cpu": "12th Gen Intel(R) Core(TM) i7-12700KF",
+    "refreshHz": 60,
+    "scaleFactor": 1,
+    "windowDip": [
+      1400,
+      900
+    ],
+    "gpu": "enabled",
+    "adapters": [
+      {
+        "active": false,
+        "vendorId": 4318,
+        "deviceId": 10370
+      },
+      {
+        "active": false,
+        "vendorId": 4318,
+        "deviceId": 9351
+      },
+      {
+        "active": false,
+        "vendorId": 5140,
+        "deviceId": 140
+      }
+    ],
+    "tracks": 10,
+    "shots": 200,
+    "candidateClips": 1000,
+    "videoLanes": 5,
+    "narrationSeconds": 200,
+    "durationMs": 2000,
+    "metric": "renderer requestAnimationFrame timestamps",
+    "sourceSha256": "3cc9e14218cb635cbbe95af98f379243d61da4f374de81cd6670fa13261413ea",
+    "driverSha256": "d5ea5209f58177bda362c3098c036f6ada4f64a3fe5bb7125d1d6e988f5ddb4d",
+    "batchRows": 1000,
+    "batchReadyMs": 235,
+    "batchListRenderMs": 21.5
+  },
+  "results": {
+    "idle": {
+      "elapsedMs": 2017,
+      "trustedEvents": 0,
+      "intervals": 121,
+      "medianMs": 16.7,
+      "p95Ms": 16.8,
+      "maxMs": 16.8,
+      "over16_67Ms": 72,
+      "over25Ms": 0
+    },
+    "candidateDrag": {
+      "elapsedMs": 2350,
+      "trustedEvents": 92,
+      "intervals": 93,
+      "medianMs": 16.7,
+      "p95Ms": 50.1,
+      "maxMs": 316.6,
+      "over16_67Ms": 64,
+      "over25Ms": 16
+    },
+    "playheadScrub": {
+      "elapsedMs": 2183,
+      "trustedEvents": 47,
+      "intervals": 44,
+      "medianMs": 50,
+      "p95Ms": 100,
+      "maxMs": 100,
+      "over16_67Ms": 42,
+      "over25Ms": 37
+    },
+    "panelResize": {
+      "elapsedMs": 2150,
+      "trustedEvents": 132,
+      "intervals": 125,
+      "medianMs": 16.7,
+      "p95Ms": 16.8,
+      "maxMs": 66.8,
+      "over16_67Ms": 71,
+      "over25Ms": 2
+    },
+    "timelineZoom": {
+      "elapsedMs": 2750,
+      "trustedEvents": 23,
+      "intervals": 24,
+      "medianMs": 100.1,
+      "p95Ms": 216.7,
+      "maxMs": 216.7,
+      "over16_67Ms": 23,
+      "over25Ms": 21
+    },
+    "batchScroll": {
+      "elapsedMs": 2050,
+      "trustedEvents": 61,
+      "intervals": 123,
+      "medianMs": 16.7,
+      "p95Ms": 16.8,
+      "maxMs": 16.9,
+      "over16_67Ms": 72,
+      "over25Ms": 0
+    }
+  },
+  "batchPreview": {
+    "firstRenderMs": 21.5,
+    "filterInputMs": [
+      4.6,
+      4.6,
+      4.2,
+      3.5,
+      3.7
+    ]
+  }
+}

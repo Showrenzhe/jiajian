@@ -78,6 +78,43 @@ test('ABBA 用同侧两轮全部原始帧计算 nearest-rank P95，保留尖峰�
   assert.notEqual(summary.sources.base, summary.sources.head);
 });
 
+test('1000 条列表的首绘与五次筛选可和旧报告比较，已采集的同侧数据须完整', t => {
+  const timing = {firstRenderMs:20, filterInputMs:[5,1,2,3,4]};
+  const onlyNew = reports(t, (report,run) => {
+    if (run.startsWith('head')) report.batchPreview = timing;
+  });
+  const summary = comparePaired(onlyNew);
+  assert.equal(summary.status, 'passed');
+  assert.equal(summary.batchPreview.base, null);
+  assert.deepEqual(summary.batchPreview.head.firstRenderMs, [20,20]);
+  assert.equal(summary.batchPreview.head.meanFirstRenderMs, 20);
+  assert.deepEqual(summary.batchPreview.head.filterInputMs, [...timing.filterInputMs,...timing.filterInputMs]);
+  assert.equal(summary.batchPreview.head.filterP95Ms, 5);
+  const oldReport = JSON.parse(fs.readFileSync(path.join(onlyNew,'base-1.json')));
+  const newReport = JSON.parse(fs.readFileSync(path.join(onlyNew,'head-1.json')));
+  assert.equal(compare(oldReport,newReport).batchPreview.head.filterP95Ms, 5);
+  assert.equal(compare(oldReport,newReport).batchPreview.base, null);
+  const fullyMeasured = reports(t, (report,run) => {
+    report.batchPreview = {...timing,firstRenderMs:run==='base-2' ? 32 : 20};
+  });
+  assert.equal(comparePaired(fullyMeasured).batchPreview.base.meanFirstRenderMs, 26);
+  const partial = reports(t, (report,run) => { if (run!=='head-2') report.batchPreview = timing; });
+  assert.equal(comparePaired(partial).status, 'invalid');
+  const invalid = reports(t, report => { report.batchPreview = {...timing,filterInputMs:[1,-1,1,1,1]}; });
+  assert.match(comparePaired(invalid).errors.join('\n'), /真实筛选输入/);
+});
+
+test('1000 条滚动即使与基线相同也受 25.05 ms 上限约束，恰好等于上限可通过', t => {
+  for (const [interval,expected] of [[25.05,'passed'], [25.06,'regression']]) {
+    const directory = reports(t, report => { report.results.batchScroll = sample('batchScroll',Array(50).fill(interval)); });
+    const summary = comparePaired(directory);
+    assert.equal(summary.status, expected);
+    const report = JSON.parse(fs.readFileSync(path.join(directory,'head-1.json')));
+    report.results.batchScroll.p95Ms = interval;
+    assert.equal(compare(report,report).regressions.length, Number(interval > 25.05));
+  }
+});
+
 test('仅注入 head 的慢帧即可触发退化，失败时 CLI 也保存摘要', t => {
   const directory = reports(t, (report, run) => {
     if (run.startsWith('head')) report.results.timelineZoom = sample('timelineZoom', [...Array(46).fill(10), ...Array(4).fill(17)]);

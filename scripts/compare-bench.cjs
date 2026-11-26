@@ -5,6 +5,32 @@ const fs = require('node:fs');
 const path = require('node:path');
 const { isDeepStrictEqual } = require('node:util');
 
+const batchScrollLimitMs = 25.05;
+
+function batchTimings(data) {
+  assert.ok(Number.isFinite(data?.firstRenderMs) && data.firstRenderMs > 0, '1000 条列表首绘耗时无效');
+  assert.ok(Array.isArray(data.filterInputMs) && data.filterInputMs.length === 5 &&
+    data.filterInputMs.every(ms => Number.isFinite(ms) && ms >= 0), '需要五个有效的真实筛选输入耗时');
+  return data;
+}
+
+function summarizeBatchTimings(runs) {
+  const first = runs.map(run => run.firstRenderMs);
+  const filter = runs.flatMap(run => run.filterInputMs);
+  const sorted = [...filter].sort((a, b) => a - b);
+  const mean = first.reduce((sum, ms) => sum + ms, 0) / first.length;
+  return {
+    firstRenderMs: first,
+    meanFirstRenderMs: Number(mean.toFixed(2)),
+    filterInputMs: filter,
+    filterP95Ms: sorted[Math.ceil(sorted.length * .95) - 1],
+  };
+}
+
+function checkBatchScroll(ms, regressions) {
+  if (ms > batchScrollLimitMs) regressions.push(`1000 条列表滚动 P95 为 ${ms} ms，超过 ${batchScrollLimitMs} ms`);
+}
+
 function compare(previous, current) {
   const environment = (report) => {
     const {
@@ -47,7 +73,15 @@ function compare(previous, current) {
       regressions.push(`${scene} 的 P95 从 ${before.p95Ms} ms 增至 ${after.p95Ms} ms`);
     }
   }
-  return { comparable: true, regressions };
+  const result = { comparable: true, regressions };
+  if (current.results.batchScroll) checkBatchScroll(current.results.batchScroll.p95Ms, regressions);
+  if (previous.batchPreview || current.batchPreview) {
+    result.batchPreview = {
+      base: previous.batchPreview ? summarizeBatchTimings([batchTimings(previous.batchPreview)]) : null,
+      head: summarizeBatchTimings([batchTimings(current.batchPreview)]),
+    };
+  }
+  return result;
 }
 const scenes = ['idle', 'candidateDrag', 'playheadScrub', 'panelResize', 'timelineZoom', 'batchScroll'];
 const runNames = ['base-1', 'head-1', 'head-2', 'base-2'];
@@ -156,6 +190,7 @@ function comparePaired(directory) {
   const regressions = [];
   const results = {};
   const samples = {};
+  const listTimings = { base: [], head: [] };
   for (const run of runNames) {
     const filename = run + '.json';
     let report;
@@ -173,6 +208,11 @@ function comparePaired(directory) {
       sources[side] ??= source;
     } catch (error) {
       errors.push(run + ' ' + error.message);
+    }
+    if (Object.hasOwn(report ?? {}, 'batchPreview')) {
+      try {
+        listTimings[run.split('-')[0]].push(batchTimings(report.batchPreview));
+      } catch (error) { errors.push(run + ' ' + error.message); }
     }
     samples[run] = {};
     const extraScenes = Object.keys(report?.results ?? {}).filter(name => !scenes.includes(name));
@@ -212,7 +252,14 @@ function comparePaired(directory) {
     }
     results[scene] = result;
   }
+  let batchPreview;
+  if (listTimings.base.length || listTimings.head.length) {
+    if (listTimings.base.length === 1 || listTimings.head.length !== 2) errors.push('同侧两轮的批量列表计时不完整');
+    batchPreview = Object.fromEntries(Object.entries(listTimings).map(([side, runs]) =>
+      [side, runs.length ? summarizeBatchTimings(runs) : null]));
+  }
   if (!errors.length) {
+    checkBatchScroll(results.batchScroll.head.p95Ms, regressions);
     for (const [scene, { base, head }] of Object.entries(results)) {
       // Match the driver's two-decimal P95. Use hundredths of a millisecond
       // so values exactly on either strict threshold remain eligible to pass.
@@ -224,7 +271,19 @@ function comparePaired(directory) {
     }
   }
   const status = errors.length ? 'invalid' : regressions.length ? 'regression' : 'passed';
-  return { samplingProtocol: 'paired-v1', status, order: runNames, minIntervals, environments, sources, results, errors, regressions };
+  return { samplingProtocol: 'paired-v1', status, order: runNames, minIntervals, environments, sources, results, batchPreview, errors, regressions };
+}
+
+function printBatchTimings(batchPreview) {
+  if (!batchPreview) return;
+  for (const [side, timings] of Object.entries(batchPreview)) {
+    if (timings) console.log(`1000 条列表 ${side} 首绘均值 ${timings.meanFirstRenderMs} ms，筛选输入 P95 ${timings.filterP95Ms} ms`);
+    else console.log('历史基线未采集批量列表计时。');
+  }
+  if (batchPreview.base && batchPreview.head) {
+    const delta = key => (batchPreview.head[key] - batchPreview.base[key]).toFixed(2);
+    console.log(`候选减基线：1000 条列表首绘 ${delta('meanFirstRenderMs')} ms，筛选输入 P95 ${delta('filterP95Ms')} ms`);
+  }
 }
 
 function runPaired(directory) {
@@ -239,6 +298,7 @@ function runPaired(directory) {
     }
   }
   for (const message of [...summary.errors, ...summary.regressions]) console.error('::error::' + message);
+  printBatchTimings(summary.batchPreview);
   if (summary.status === 'passed') console.log('各场景 P95 通过配对回归门槛。');
   return Number(summary.status !== 'passed');
 }
@@ -250,6 +310,7 @@ if (require.main === module && process.argv[2] === '--paired') {
   const reports = process.argv.slice(2).map((file) => JSON.parse(fs.readFileSync(file, 'utf8')));
   assert.equal(reports.length, 2, '需要上一次与本次报告');
   const result = compare(...reports);
+  printBatchTimings(result.batchPreview);
   if (!result.comparable) console.log('两次采样的图形或工程配置不同，本次留作新基线。');
   else if (!result.regressions.length) console.log('各场景 P95 通过回归门槛。');
   for (const regression of result.regressions) console.error('::error::' + regression);
