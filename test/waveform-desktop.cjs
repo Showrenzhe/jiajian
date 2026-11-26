@@ -16,13 +16,15 @@ async function check() {
   const root=await fs.mkdtemp(path.join(os.tmpdir(),'jiajian-waves-'));
   app.setPath('userData',path.join(root,'electron'));
   const voice=path.join(root,'停顿后有声.wav'), picture=path.join(root,'有声.mp4'), quiet=path.join(root,'无音轨.mp4');
+  const sticker=path.join(root,'单色贴纸.png');
   await ffmpeg(['-f','lavfi','-i','sine=frequency=440:duration=2','-af',"volume='if(lt(t,1),0,4.8+2.5*sin(22*t))':eval=frame",voice]);
   await Promise.all([
     ffmpeg(['-f','lavfi','-i','color=teal:s=160x120:r=24','-i',voice,'-t','2','-c:v','libx264','-c:a','aac','-threads','2',picture]),
     ffmpeg(['-f','lavfi','-i','color=blue:s=160x120:r=24','-t','3','-c:v','libx264','-threads','2',quiet]),
+    ffmpeg(['-f','lavfi','-i','color=orange:s=96x72','-frames:v','1','-threads','1',sticker]),
   ]);
   const project=path.join(root,'波形工程.sdworkbench');
-  const records=new Map(await Promise.all([['voice',voice,'audio'],['video',picture,'video'],['quiet',quiet,'video']]
+  const records=new Map(await Promise.all([['voice',voice,'audio'],['video',picture,'video'],['quiet',quiet,'video'],['sticker',sticker,'image']]
     .map(async ([id,file,kind])=>[id,await inspectAsset(file,kind)])));
   await saveProject(project,{
     shots:[[{id:'video',start:0,end:2,speed:2,ranges:[{start:1,end:2},{start:0,end:1}]}],[{id:'quiet',start:0,end:3}]],
@@ -30,7 +32,7 @@ async function check() {
     musicIds:['voice'],musicVolume:90,narrationId:'voice',narrationMode:'whole',narrationVolume:100,priority:'picture',
     segmentNarrationIds:[['voice'],[]],segmentVoiceCuts:[[{ranges:[{start:1.2,end:1.6},{start:0,end:.4}],offset:.1}],[]],
     packaging:{global:[{kind:'sound',id:'voice',start:0,end:.7,mediaOffset:1,volume:100},
-      {kind:'pip',id:'video',start:0,end:.7,mediaOffset:1,volume:0}]},
+      {kind:'pip',id:'video',start:0,end:.7,mediaOffset:1,volume:0},{kind:'sticker',id:'sticker',start:.1,end:.8}]},
   },records);
   const win=await launchDesktop({show:false,dataDirectory:path.join(root,'profile'),dialogs:{
     async showOpenDialog(_win,opts){assert.equal(opts.title,'打开工程');return {canceled:false,filePaths:[project]};}
@@ -45,6 +47,36 @@ async function check() {
     throw new Error(label+': '+await run('document.querySelector("#notice")?.textContent'));
   }
   function query(selector){return 'document.querySelector('+JSON.stringify(selector)+')';}
+  const wc = win.webContents;
+  wc.debugger.attach();
+  const menu = '#video-track-menu:popover-open';
+  async function rightClick(selector) {
+    const point = await run(`(async () => {
+      const el=${query(selector)};
+      el.scrollIntoView({block:'center',inline:'nearest'});
+      await new Promise(done=>requestAnimationFrame(done));
+      const r=el.getBoundingClientRect();
+      for (const fraction of [.5,.35,.7]) {
+        const x=r.left+r.width*fraction,y=r.top+r.height/2;
+        if(el.contains(document.elementFromPoint(x,y))) return {x,y};
+      }
+    })()`);
+    assert.ok(point, '滚动后可命中 '+selector);
+    for(const type of ['mousePressed','mouseReleased']) {
+      await wc.debugger.sendCommand('Input.dispatchMouseEvent',{type,...point,button:'right',buttons:type==='mousePressed'?2:0,clickCount:1});
+    }
+    await wait('!!'+query(menu),'右键打开 '+selector);
+    return run('[...'+query(menu)+'.querySelectorAll("button")].filter(b=>b.checkVisibility()).map(b=>b.dataset.action)');
+  }
+  async function choose(action) {
+    await run(query(menu+' button[data-action="'+action+'"]')+'.click()');
+    await wait('!'+query(menu),'菜单命令关闭菜单 '+action);
+  }
+  async function escape() {
+    for(const type of ['rawKeyDown','keyUp']) {
+      await wc.debugger.sendCommand('Input.dispatchKeyEvent',{type,key:'Escape',code:'Escape',windowsVirtualKeyCode:27});
+    }
+  }
   async function levels(selector,fractions) {
     const strip=query(selector+' .audio-waveform');
     await wait('!!'+strip,selector);
@@ -74,15 +106,32 @@ async function check() {
     assert.ok((await levels('.kind-sound',[.35]))[0]>3,'音效从指定源偏移取样');
     assert.ok((await levels('.kind-pip',[.35]))[0]>3,'静音画中画也可看到原声形状');
     assert.ok(await run('!!'+query('.kind-pip .waveform-muted')),'静音画中画使用弱化样式');
-    for(const part of ['.sequence-head','.sequence-content','.sequence-block']) {
+    for(const part of ['.sequence-head','.sequence-content']) {
       assert.ok(await run('!'+query('.kind-sound '+part)+'.dispatchEvent(new MouseEvent("contextmenu",{bubbles:true,cancelable:true})) && !document.querySelector("dialog[open],:popover-open")'),'音效右键留空 '+part);
     }
     await run(query('.kind-sound .sequence-block')+'.dispatchEvent(new MouseEvent("dblclick",{bubbles:true}))');
     assert.ok(await run('document.querySelector("dialog[open]").textContent.includes("在播放头分割")'),'音效分割可从编辑片段进入');
     await run('document.querySelector("dialog[open]").close()');
-    await run(query('.kind-pip .sequence-block')+'.dispatchEvent(new MouseEvent("contextmenu",{bubbles:true,cancelable:true}))');
-    assert.ok(await run('document.querySelector("dialog[open]").textContent.includes("在此处分割")'),'画中画仍可在右击位置分割');
-    await run('document.querySelector("dialog[open]").close()');
+    const sound='.kind-sound .sequence-block', pip='.kind-pip .sequence-block';
+    const soundActions=await rightClick(sound);
+    assert.deepEqual(soundActions.sort(),['delete','mute','speed'],'音效菜单复用已有操作');
+    await choose('speed');
+    await wait('!!document.querySelector("dialog[open]")','音效倍速入口');
+    assert.ok(await run('document.activeElement.matches("dialog[open] input[type=number]") && document.activeElement.closest("label")?.textContent.includes("播放速度")'),'音效倍速命令聚焦播放速度');
+    await escape();
+    await wait('!document.querySelector("dialog[open]")','取消音效编辑');
+    const pipActions=await rightClick(pip);
+    assert.deepEqual(pipActions.sort(),['delete','edit','mute','split'],'画中画沿用分割与编辑，支持删除和轨道静音');
+    await choose('split');
+    await wait('document.querySelectorAll(".kind-pip .sequence-block").length===2','画中画按右击位置分割');
+    await run(query('#track-undo')+'.click()');
+    await wait('document.querySelectorAll(".kind-pip .sequence-block").length===1','撤销后恢复原画中画');
+    const stickerActions=await rightClick('.kind-sticker .sequence-block');
+    assert.deepEqual(stickerActions.sort(),['delete','edit','split'],'贴纸菜单保留原分割与编辑');
+    await choose('edit');
+    await wait('!!document.querySelector("dialog[open]")','贴纸编辑入口');
+    await escape();
+    await wait('!document.querySelector("dialog[open]")','取消贴纸编辑');
     await run(query('.sequence-music button[aria-expanded]')+'.click()');
     await wait(query('.sequence-music .audio-waveform canvas')+'?.height<=8','折叠后波形应缩成细条');
     await run(query('.sequence-music button[aria-expanded]')+'.click()');
@@ -109,6 +158,12 @@ async function check() {
     await wait(query('.sequence-voice .sequence-block')+'?.hasAttribute("data-voice-shot")','分段口播');
     const segmented=await levels('.sequence-voice',[.17,.8]);
     assert.ok(segmented[0]>segmented[1]+2,'分段口播按照重排后的原声区间取样');
+    const voiceTarget='.sequence-voice .sequence-block[data-selectable]';
+    assert.deepEqual((await rightClick(voiceTarget)).sort(),['delete','mute','speed']);
+    await choose('delete');
+    await wait('!'+query(voiceTarget),'菜单只移除选中的分段口播');
+    await run(query('#track-undo')+'.click()');
+    await wait('!!'+query(voiceTarget),'撤销恢复分段口播');
     const voiceCell=query('.sequence-voice .sequence-block');
     const originalWidth=await run(voiceCell+'.getBoundingClientRect().width');
     await setSpeed('.sequence-voice .sequence-block',2);

@@ -21,6 +21,10 @@ window.mountTimelineSelection = function (host, {busy, changed, removed}) {
     }
     changed(selected.size);
   }
+  function selectOnly(key) {
+    selected=key===undefined ? new Set() : new Set([key]);
+    paint();
+  }
   function attach(canvas) {
     visible = [...canvas.querySelectorAll('[data-selectable]')].filter(node=>!node.closest('[data-track-locked]'));
     const current = new Set(visible.map((node) => entries.get(node).key));
@@ -154,6 +158,6 @@ window.mountTimelineSelection = function (host, {busy, changed, removed}) {
   });
   return {bind,attach,removeSelection,get size(){return selected.size;},
     single(){return selected.size===1 ? visible.find(node=>selected.has(entries.get(node).key)) : undefined;},
-    selectOnly(key){selected=new Set([key]);paint();},
+    selectOnly,selectNode(node){selectOnly(entries.get(node)?.key);},
     clear(){finish(true);selected.clear();paint();}};
 };

@@ -73,6 +73,7 @@ async function check() {
   }
   const videoMenu = '#video-track-menu[role="menu"]:popover-open';
   const commands = ['删除','静音片段','向左插入空分镜','向右插入空分镜'];
+  const contextHint = '.timeline-context-hint[role=status]';
   async function rightClickTrack(point) {
     await read('window.videoRightClickCancelled=false;'
       +'window.addEventListener("contextmenu",e=>{window.videoRightClickCancelled=e.isTrusted && e.defaultPrevented},{once:true})');
@@ -85,9 +86,9 @@ async function check() {
     await rightClickTrack(point);
     await wait('!!'+query(videoMenu),'在视频轨打开菜单');
     assert.ok(await read('document.activeElement==='+query(videoMenu)),'鼠标打开时焦点留在菜单本身');
-    const items = await read('[...'+query(videoMenu)+'.querySelectorAll(\'[role="menuitem"]\')].map(b=>[b.textContent.trim(),b.disabled])');
+    const items = await read('[...'+query(videoMenu)+'.querySelectorAll(\'[role="menuitem"]\')].filter(b=>b.checkVisibility()).map(b=>{const copy=b.cloneNode(true);copy.querySelectorAll("svg,kbd").forEach(el=>el.remove());return [copy.textContent.trim(),b.disabled]})');
     assert.deepEqual(items, commands.map(label => [muted && label==='静音片段' ? '取消静音' : label, disabled.includes(label)]));
-    assert.deepEqual(await read('[...'+query(videoMenu)+'.querySelectorAll("button use")].map(use=>use.getAttribute("href"))'),
+    assert.deepEqual(await read('[...'+query(videoMenu)+'.querySelectorAll("button")].filter(b=>b.checkVisibility()).map(b=>b.querySelector("use").getAttribute("href"))'),
       ['#icon-track-delete',muted?'#icon-track-sound':'#icon-track-mute','#icon-track-insert-left','#icon-track-insert-left']);
     await wait(`(() => {
       const r=${query(videoMenu)}.getBoundingClientRect(), x=${point.x}, y=${point.y};
@@ -99,9 +100,40 @@ async function check() {
     await actualClick(videoMenu+' [data-action="'+action+'"]');
     await wait('!'+query(videoMenu),'执行命令后关闭菜单');
   }
-  async function checkSilentVideoPoint(point) {
+  async function checkSilentVideoPoint(point, hint='') {
     await rightClickTrack(point);
     assert.ok(await read('!document.querySelector("dialog[open],:popover-open")'),'轨头、行间空白和锁定视频轨应保持菜单关闭');
+    assert.equal(await read(query(contextHint)+'.textContent'),hint);
+  }
+  async function menuActions(target, expected) {
+    await rightClickTrack(await pointerPoint(target));
+    await wait('!!'+query(videoMenu),'打开 '+target);
+    const actions = await read('[...'+query(videoMenu)+'.querySelectorAll("[data-action]")].filter(b=>b.checkVisibility()).map(b=>b.dataset.action)');
+    assert.deepEqual(actions.sort(), [...expected].sort(), target);
+    const shortcuts = await read('[...'+query(videoMenu)+'.querySelectorAll("[data-action]")].filter(b=>b.checkVisibility()).map(b=>[b.dataset.action,b.getAttribute("aria-keyshortcuts"),b.dataset.menuKey,getComputedStyle(b,"::after").content])');
+    for(const [action, accelerator, key, displayed] of shortcuts) {
+      if(action==='delete') {
+        assert.equal(accelerator,'Delete');
+        assert.equal(key,'Delete');
+        assert.notEqual(displayed,'none');
+      } else assert.ok(!accelerator && !key, action+' 沿用实际存在的快捷键');
+    }
+  }
+  async function capture(name) {
+    if (!process.env.JIAJIAN_MENU_EVIDENCE) return;
+    await read('new Promise(done=>requestAnimationFrame(()=>requestAnimationFrame(done)))');
+    await fs.mkdir(process.env.JIAJIAN_MENU_EVIDENCE,{recursive:true});
+    const frame = await win.webContents.capturePage();
+    assert.deepEqual([frame.getSize().width,frame.getSize().height],win.getContentSize());
+    await fs.writeFile(path.join(process.env.JIAJIAN_MENU_EVIDENCE,name+'.jpg'),frame.toJPEG(88));
+  }
+  const emulate = theme => win.webContents.debugger.sendCommand('Emulation.setEmulatedMedia',{features:[
+    {name:'prefers-color-scheme',value:theme},{name:'prefers-reduced-motion',value:'reduce'}]});
+  async function resizeTimeline(width,height) {
+    win.setContentSize(width,height);
+    await wait('innerWidth==='+width+' && innerHeight==='+height,'调整时间线窗口');
+    // The ResizeObserver schedules a second frame to reposition the tracks and their controls.
+    await read('new Promise(done=>requestAnimationFrame(()=>requestAnimationFrame(()=>requestAnimationFrame(done))))');
   }
   const undo = () => click('#track-undo');
   const video = '.sequence-video .sequence-block[data-selectable]';
@@ -122,8 +154,32 @@ async function check() {
   try {
     await clickVisible(win.webContents,'#home-create');
     await wait('!!'+query(slot),'空工程的视频轨道应有素材落点');
-    await openVideoMenu(await pointerPoint(slot),commands);
-    await pressKey('Escape',27);
+    await checkSilentVideoPoint(await pointerPoint(slot));
+    const emptyHints = '.sequence-content[data-empty-hint]';
+    for(const theme of ['dark','light']) {
+      await emulate(theme);
+      await wait('document.documentElement.dataset.theme==='+JSON.stringify(theme),'切换空轨外观');
+      await read('new Promise(done=>requestAnimationFrame(()=>requestAnimationFrame(done)))');
+      for(const type of ['video','voice']) {
+        const hint = '.sequence-'+type+' '+emptyHints;
+        const {x,y,ink}=await read(`(() => {
+          const el=${query(hint)}, style=getComputedStyle(el,"::after"), r=el.getBoundingClientRect();
+          if(!el.dataset.emptyHint || style.position!=="absolute" || style.pointerEvents!=="none" || style.content==="none")
+            throw Error("空轨提示应可见、不拦截输入且不占用布局高度");
+          const ctx=document.createElement("canvas").getContext("2d");
+          ctx.fillStyle=style.color;ctx.fillRect(0,0,1,1);
+          return {x:Math.round(r.left+12),y:Math.round(r.top+r.height/2+12),ink:[...ctx.getImageData(0,0,1,1).data].slice(0,3)};
+        })()`);
+        const pixel=await win.webContents.capturePage({x,y,width:1,height:1});
+        const [b,g,r]=pixel.toBitmap();
+        const lum=rgb=>rgb.map(c=>c/255).map(v=>v<=.04045?v/12.92:((v+.055)/1.055)**2.4)
+          .reduce((sum,v,i)=>sum+v*[.2126,.7152,.0722][i],0);
+        const levels=[lum(ink),lum([r,g,b])].sort((a,b)=>a-b);
+        const contrast=(levels[1]+.05)/(levels[0]+.05);
+        assert.ok(contrast>=4.5,`${theme} ${type} 空态提示对比度 ${contrast}`);
+      }
+    }
+    await capture('light-empty-tracks');
     await clickBlank(slot);
     await clickBlank(wholeSlot);
     await pressKey('Enter',13);
@@ -169,6 +225,7 @@ async function check() {
     await actualClick(video);
     const originalSelection = await read(query(video+'.sequence-marked')+'.textContent');
     await checkSilentVideoPoint({x:box.x,y:box.y});
+    assert.equal(await read(query(video+'.sequence-marked')+'.textContent'),originalSelection,'右击空白不改变原选区');
     await mouse('mousePressed',box.x,box.y);
     await mouse('mouseMoved',box.toX,box.toY);
     await wait(count(video+'.sequence-marked')+'===2','拖动中应预览两个候选');
@@ -196,6 +253,7 @@ async function check() {
     if (!await read(query('#whole-track-settings')+'.open')) await click('#whole-track-summary');
     await click('#pick-narration');
     await wait(count(voice)+'===1','添加口播');
+    assert.equal(await read(count('.sequence-video '+emptyHints+',.sequence-voice '+emptyHints)),0,'有素材的视频轨和口播轨应收起空态提示');
     const packedVideo=video+'[data-drop-shot="1"]';
     await actualClick(packedVideo);
     await click('#track-more');
@@ -204,18 +262,59 @@ async function check() {
     await read('(() => {const d=document.querySelector(".sequence-dialog[open]");d.querySelector("textarea").value="删除验收";d.querySelector("form").requestSubmit()})()');
     await wait(count(layer)+'===1','添加包装文字');
     for(const row of ['.sequence-shots','.sequence-music','.sequence-voice','.sequence-layer.kind-text']) {
-      for(const part of [' .sequence-head .track-kind',' .sequence-block']) {
-        await rightClickTrack(await pointerPoint(row+part));
-        assert.ok(await read('!document.querySelector("dialog[open],:popover-open")'),row+part+' 的右键应保持空闲');
-      }
+      await checkSilentVideoPoint(await pointerPoint(row+' .sequence-head .track-kind'));
     }
+    const shotStrip = '.sequence-shots [data-reorder-shot]';
+    await actualClick(packedVideo);
+    await checkSilentVideoPoint(await pointerPoint(shotStrip),'此处无菜单，可双击进入编辑');
+    assert.ok(await read(query(shotStrip)+'.matches(".sequence-marked:focus") && '+count('.sequence-marked')+'===1'),'右击分镜后焦点和唯一选区同步');
+    await pressKey('c',67,2);
+    await wait(query('#notice')+'.textContent.includes("请选择一个视频、口播或字幕片段")','分镜不支持复制时不复制之前选中的视频');
+    await pressKey('Escape',27);
+    await wait('!'+query(contextHint)+'.textContent && document.activeElement==='+query(shotStrip),'Esc 清除操作提示并保留分镜焦点');
+    await read(query(shotStrip)+'.dispatchEvent(new MouseEvent("dblclick",{bubbles:true}))');
+    await wait('!!document.querySelector("dialog[open]")','提示对应真实分镜编辑入口');
+    await pressKey('Escape',27);
+    await wait('!document.querySelector("dialog[open]")','取消分镜编辑');
+    await menuActions(layer,['delete']);
+    await pressKey('Delete',46);
+    await wait(count(layer)+'===0','菜单中的 Delete 只移除包装文字');
+    await undo();
+    await wait(count(layer)+'===1','撤销恢复包装文字');
+    await emulate('dark');
+    await wait('document.documentElement.dataset.theme==="dark"','深色时间线');
+    await menuActions(voice,['delete','mute','speed']);
+    await capture('dark-voice-menu');
+    await pressKey('Escape',27);
+    await wait('document.activeElement==='+query(voice),'Esc 回到整段口播');
+    await pressKey('F10',121,8);
+    await wait('document.activeElement.matches("#video-track-menu:popover-open [data-action=delete]")','Shift+F10 打开整段口播并聚焦首项');
+    await pressKey('End',35);
+    await wait('document.activeElement.dataset.action==="speed"','End 聚焦倍速命令');
+    await pressKey('Escape',27);
+    await menuActions(music,['delete','mute','speed']);
+    await chooseVideoCommand('mute');
+    const musicMute='.sequence-music [data-track-action="muted"]';
+    await wait(query(musicMute)+'.ariaPressed==="true"','配乐菜单与轨头共用静音状态');
+    await menuActions(music,['delete','mute','speed']);
+    await chooseVideoCommand('mute');
+    await wait(query(musicMute)+'.ariaPressed==="false"','从菜单取消静音');
+    await resizeTimeline(1366,768);
+    await menuActions(music,['delete','mute','speed']);
+    await capture('compact-music-menu');
+    await chooseVideoCommand('speed');
+    await wait('!!document.querySelector("dialog[open] input[type=number]")','配乐菜单复用倍速编辑');
+    await pressKey('Escape',27);
+    await wait('!document.querySelector("dialog[open]")','取消倍速修改');
+    await wait('document.activeElement==='+query(music),'取消后回到配乐片段');
+    await resizeTimeline(1400,960);
     await actualClick(packedVideo);
     await click('#timeline-play');
     const monitor='.draft-transport-preview:not([hidden])', title=monitor+' .draft-text-overlay';
     await wait(query(title)+'?.textContent==="删除验收"','时间线播放器显示当前片段的文字包装');
     await click('#timeline-play');
     await read('window.checkedTrackVideo='+query(monitor+' video'));
-    assert.ok(await read('!!window.checkedTrackVideo'));
+    await wait('!!window.checkedTrackVideo && window.checkedTrackVideo.paused','待预览画面暂停再操作轨头');
     const layerEye='.sequence-layer [data-track-action="hidden"]';
     await actualClick(layerEye);
     await wait('!'+query(title)+' && '+query(layerEye)+'.ariaPressed==="true"','关闭眼睛立即隐藏暂停帧上的文字');
@@ -273,14 +372,19 @@ async function check() {
       await pressKey('Escape',27);
     }
     await win.webContents.debugger.sendCommand('Emulation.setEmulatedMedia',{features:[]});
-    await openVideoMenu(await pointerPoint(secondRow),commands);
-    await pressKey('Escape',27);
-    await wait('!'+query(videoMenu)+' && document.activeElement.id==="timeline-clock"','从空格取消菜单后焦点返回时间线');
+    await checkSilentVideoPoint(await pointerPoint(secondRow));
+    await actualClick(cell(0,0));
     await openVideoMenu(await pointerPoint(secondUpper),['静音片段']);
     await pressKey('ArrowUp',38);
     assert.equal(await read('document.activeElement.dataset.action'),'right','从菜单向上到最后一项');
     await pressKey('Escape',27);
     await wait('!'+query(videoMenu)+' && document.activeElement==='+query(secondUpper),'取消候选菜单后焦点返回右击的片段');
+    assert.ok(await read(query(secondUpper)+'.matches(".sequence-marked") && '+count('.sequence-marked')+'===1'),'Esc 后保留右击的候选为唯一选区');
+    await pressDelete();
+    const greenRemoved='![...document.querySelectorAll(".sequence-video .sequence-clip-name")].some(el=>el.textContent==='+JSON.stringify(greenName)+')';
+    await wait(count(video)+'===3 && '+owns(cell(0,0),redName)+' && '+greenRemoved,'Esc 后 Delete 仅移除右击的绿色候选');
+    await undoKey();await wait(originalOrder,'撤销恢复右击的绿色候选');
+    await read(query(secondUpper)+'.focus()');
     await pressKey('F10',121,8);
     await wait('!!'+query(videoMenu),'Shift+F10 对焦点候选显示同一菜单');
     assert.equal(await read('document.activeElement.dataset.action'),'delete','键盘打开时焦点落在首个可用命令');
@@ -447,6 +551,15 @@ async function check() {
     const speechCaption='[data-lane-key="caption0"] .sequence-block';
     const fixedCaption='[data-lane-key="pasted-captions"] .sequence-block';
     await wait(aligned(voice,1)+' && '+aligned(speechCaption,1),'插入前分镜口播和字幕对齐');
+    await actualClick(cell(0,0));
+    await checkSilentVideoPoint(await pointerPoint(fixedCaption),'此处无菜单，可双击进入编辑');
+    assert.ok(await read(query(fixedCaption)+'.matches(".sequence-marked:focus") && '+count('.sequence-marked')+'===1'),'右击字幕将旧的视频选区移到字幕');
+    await pressKey('c',67,2);
+    await wait(query('#notice')+'.textContent.includes("已复制字幕")','Ctrl+C 的复制对象为字幕');
+    await pressDelete();
+    await wait('!'+query(fixedCaption)+' && '+originalOrder,'Delete 仅删除右击字幕并保留全部原候选');
+    await undoKey();
+    await wait(query(fixedCaption)+'?.textContent==="固定时间" && '+originalOrder,'撤销恢复刚删除的固定字幕');
     const fixedTimeRatio='parseFloat('+query(fixedCaption)+'.style.left)/parseFloat('+query(strip(0))+'.style.width)';
     const fixedAt=await read(fixedTimeRatio);
     await openVideoMenu(await pointerPoint(cell(0,0)));
