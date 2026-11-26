@@ -214,6 +214,13 @@ async function check() {
       for(const part of ['.sequence-head','.sequence-content','.sequence-block']) {
         const target=query('[data-lane-key="'+lane+'"] '+part);
         assert.ok(await read('!'+target+'.dispatchEvent(new MouseEvent("contextmenu",{bubbles:true,cancelable:true})) && !document.querySelector("dialog[open],:popover-open")'),'字幕右键不打开菜单 '+lane+' '+part);
+        if(part==='.sequence-block') {
+          await wait(query('.timeline-context-hint[role=status]')+'?.textContent==="此处无菜单，可双击进入编辑"','有双击编辑入口的字幕应给出操作提示');
+          await read(target+'.dispatchEvent(new MouseEvent("dblclick",{bubbles:true}))');
+          await wait('!!document.querySelector("dialog[open]")','双击字幕应确实进入编辑');
+          await key('Escape',27);
+          await wait('!document.querySelector("dialog[open]")','Esc 取消字幕编辑');
+        }
       }
     }
     await click('#track-undo');await wait('!'+query('[data-lane-key="pasted-captions"]'),'撤销粘贴字幕');

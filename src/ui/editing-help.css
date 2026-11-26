@@ -56,7 +56,7 @@ body :is(button,select,a[href],input[type="text"],input[type="number"],input[typ
 .cut-precision input[aria-invalid="true"] { outline:2px solid var(--danger,#ce554e); }
 .cut-pending-label { font-size:11px; font-weight:600; padding:2px 5px; border:1px solid currentColor; border-radius:5px; }
 .cut-has-changes { box-shadow:inset 0 0 0 2px var(--accent,#3674d7); font-weight:700; }
-.sequence-content[data-empty-hint]::after { content:attr(data-empty-hint); position:absolute; inset-inline-start:10px; top:50%; transform:translateY(-50%); pointer-events:none; color:var(--secondary-ink); font-size:11px; white-space:nowrap; }
+.sequence-content[data-empty-hint]::after { content:attr(data-empty-hint); position:absolute; inset-inline:10px; top:50%; transform:translateY(-50%); pointer-events:none; user-select:none; color:var(--secondary-ink); font-size:11px; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
 #video-track-menu button[data-menu-key]::after { content:attr(data-menu-key); margin-inline-start:auto; padding-inline-start:12px; color:var(--menu-accessible-secondary); }
 #timeline-clock .sequence-shots [data-reorder-shot] { padding-inline-start:min(34px,36%); cursor:pointer; }
 .shot-reorder-handle { position:absolute; inset:0 auto 0 0; width:min(32px,35%); cursor:grab; touch-action:none; display:grid; place-items:center; }

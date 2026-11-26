@@ -12,4 +12,8 @@ window.editorMessages = Object.freeze({
     reverse:'倒放', mirror:'镜像', crop:'裁剪画面', rotate:'旋转', save:'快速保存',
     back:'前一帧', forward:'后一帧', backTen:'后退十帧', forwardTen:'前进十帧' },
   emptyVideo:'拖入视频或图片到此处', emptyVoice:'拖入口播音频到此处',
+  timelineMenu: {
+    label:'时间线片段操作', remove:'删除', muteTrack:'静音轨道', unmuteTrack:'取消轨道静音',
+    speed:'调整倍速', split:'在此处分割', edit:'编辑片段', doubleClick:'此处无菜单，可双击进入编辑',
+  },
 });
