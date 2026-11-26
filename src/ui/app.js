@@ -3700,20 +3700,23 @@ function discardPreviewBatch() {
   activateTimelineTab($('#timeline-tracks-tab'), returnFocus);
 }
 
-function matchesPreviewFilters(entry) {
+function previewFilter() {
   const project = $('#batch-project-filter').value;
-  if (project && entry.subproject?.id !== project) return false;
   const query = $('#batch-search').value.trim().toLocaleLowerCase();
-  if (query && !entry.searchText.includes(query)) return false;
-  const { percent, kind } = entry.reuse;
-  switch ($('#batch-reuse-filter').value) {
-    case 'none': return kind === 'none';
-    case 'low': return percent <= 70;
-    case 'medium': return percent > 70 && percent < 95;
-    case 'high': return percent >= 95 && percent < 100;
-    case 'same': return kind === 'same';
-    default: return true;
-  }
+  const reuse = $('#batch-reuse-filter').value;
+  return entry => {
+    if (project && entry.subproject?.id !== project) return false;
+    if (query && !entry.searchText.includes(query)) return false;
+    const { percent, kind } = entry.reuse;
+    switch (reuse) {
+      case 'none': return kind === 'none';
+      case 'low': return percent <= 70;
+      case 'medium': return percent > 70 && percent < 95;
+      case 'high': return percent >= 95 && percent < 100;
+      case 'same': return kind === 'same';
+      default: return true;
+    }
+  };
 }
 
 function filterPreviews() {
@@ -3732,8 +3735,7 @@ $('#invert-preview-selection').addEventListener('click',()=>{
     if (previewBatch.selected.has(index)) previewBatch.selected.delete(index);
     else previewBatch.selected.add(index);
   }
-  rebuildPreviewList();
-  updateControls();
+  syncPreviewSelection();
 });
 
 function createPreviewRow(entry) {
@@ -3785,10 +3787,15 @@ function createPreviewRow(entry) {
 
 const batchList = $('#preview-batch-list');
 const virtualRowHeight = 144;
+const previewSpacers = Array.from({length:2},()=>{
+  const spacer=document.createElement('li');
+  spacer.setAttribute('aria-hidden','true');
+  return spacer;
+});
 function rebuildPreviewList() {
   const batch = previewBatch;
   const sort = $('#batch-sort').value;
-  batch.filtered = batch.entries.filter(matchesPreviewFilters);
+  batch.filtered = batch.entries.filter(previewFilter());
   if (sort !== 'index') batch.filtered.sort((a,b) => (sort==='duration' ? a.duration-b.duration : a.reuse.percent-b.reuse.percent) || a.index-b.index);
   batch.virtual = batch.filtered.length>50;
   batchList.classList.toggle('virtual',batch.virtual);
@@ -3799,32 +3806,85 @@ function rebuildPreviewList() {
 function drawPreviewWindow() {
   const batch=previewBatch;
   if (!batch?.filtered) return;
-  const start = batch.virtual ? Math.max(0,Math.floor(batchList.scrollTop/virtualRowHeight)-3) : 0;
+  const scrollTop=batchList.scrollTop;
+  const start = batch.virtual ? Math.max(0,Math.floor(scrollTop/virtualRowHeight)-3) : 0;
   const end = batch.virtual ? Math.min(batch.filtered.length,start+Math.ceil((batchList.clientHeight || 350)/virtualRowHeight)+7) : batch.filtered.length;
   if (batch.range===start+':'+end) return;
   batch.range=start+':'+end;
   const focused = document.activeElement;
   const focusIndex = focused?.closest('.batch-entry')?.dataset.index;
   const focusType = focused?.classList.contains('batch-select') ? '.batch-select' : '.preview-composition';
-  const spacer = height => {
-    const el=document.createElement('li');
-    el.setAttribute('aria-hidden','true');
-    el.style.height=height+'px';
-    return el;
-  };
-  const rows=batch.filtered.slice(start,end).map(createPreviewRow);
-  batchList.replaceChildren(...(start ? [spacer(start*virtualRowHeight)] : []),...rows,
-    ...(end<batch.filtered.length ? [spacer((batch.filtered.length-end)*virtualRowHeight)] : []));
-  if (focusIndex !== undefined) {
+  const mounted=new Map([...batchList.querySelectorAll('.batch-entry')].map(row=>[Number(row.dataset.index),row]));
+  const rows=batch.filtered.slice(start,end).map((entry,offset)=>{
+    const row=mounted.get(entry.index) ?? createPreviewRow(entry);
+    row.setAttribute('aria-posinset',String(start+offset+1));
+    row.setAttribute('aria-setsize',String(batch.filtered.length));
+    return row;
+  });
+  const windowNodes=rows;
+  if(batch.virtual) {
+    const [before,after]=previewSpacers;
+    before.style.height=start*virtualRowHeight+'px';
+    after.style.height=(batch.filtered.length-end)*virtualRowHeight+'px';
+    windowNodes.unshift(before);
+    windowNodes.push(after);
+  }
+  const keep=new Set(windowNodes);
+  for(const child of [...batchList.children]) if(!keep.has(child)) child.remove();
+  for(const [i,node] of windowNodes.entries()) {
+    const current=batchList.children[i];
+    if(current!==node) batchList.insertBefore(node,current ?? null);
+  }
+  if (focusIndex !== undefined && document.activeElement!==focused) {
     const target=batchList.querySelector('[data-index="'+focusIndex+'"] '+focusType);
     (target ?? batchList).focus({preventScroll:true});
+    // Removing a focused row can clamp the scroll offset while the window is being updated.
+    if(batch.virtual && batchList.scrollTop!==scrollTop) batchList.scrollTop=scrollTop;
   }
 }
 let listFrame=0;
-batchList.tabIndex=0;
 batchList.addEventListener('scroll',()=>{
   if (listFrame || !previewBatch?.virtual) return;
   listFrame=requestAnimationFrame(()=>{ listFrame=0; drawPreviewWindow(); });
+});
+batchList.addEventListener('keydown',event=>{
+  const batch=previewBatch;
+  if(operation || !batch || event.defaultPrevented || event.isComposing || event.altKey || event.shiftKey) return;
+  if(event.ctrlKey || event.metaKey) {
+    if(event.key.toLowerCase()==='a') {
+      event.preventDefault();
+      if(batch.filtered.length) selectPreviews(true);
+    }
+    return;
+  }
+  if(event.key!=='ArrowDown' && event.key!=='ArrowUp') return;
+  event.preventDefault();
+  if(!batch.filtered.length) return;
+  const down=event.key==='ArrowDown', active=event.target.closest('.batch-entry');
+  let position;
+  if(active) position=Number(active.getAttribute('aria-posinset'))-1+(down ? 1 : -1);
+  else if(batch.virtual) position=down ? Math.floor(batchList.scrollTop/virtualRowHeight)
+    : Math.ceil((batchList.scrollTop+batchList.clientHeight)/virtualRowHeight)-1;
+  else {
+    const bounds=batchList.getBoundingClientRect();
+    const visible=[...batchList.children].filter(row=>{
+      const rect=row.getBoundingClientRect();
+      return rect.bottom>bounds.top && rect.top<bounds.bottom;
+    });
+    position=Number((down ? visible[0] : visible.at(-1))?.getAttribute('aria-posinset') ?? 1)-1;
+  }
+  position=Math.max(0,Math.min(batch.filtered.length-1,position));
+  if(batch.virtual) {
+    const top=position*virtualRowHeight;
+    if(top<batchList.scrollTop) batchList.scrollTop=top;
+    else if(top+virtualRowHeight>batchList.scrollTop+batchList.clientHeight)
+      batchList.scrollTop=top+virtualRowHeight-batchList.clientHeight;
+    drawPreviewWindow();
+  }
+  const row=batchList.querySelector('[data-index="'+batch.filtered[position].index+'"]');
+  if(!batch.virtual) row.scrollIntoView({block:'nearest',inline:'nearest'});
+  const control=event.target.matches('.preview-composition') ? '.preview-composition' : '.batch-select';
+  row.querySelector(control).focus({preventScroll:true});
 });
 function renderPreviewBatch() {
   rebuildPreviewList();
@@ -3835,7 +3895,10 @@ function renderPreviewBatch() {
 
 function selectPreviews(selectAll) {
   if (operation || !previewBatch) return;
-  previewBatch.selected = new Set(selectAll ? previewBatch.entries.filter(matchesPreviewFilters).map(({ index }) => index) : []);
+  previewBatch.selected = new Set(selectAll ? previewBatch.filtered.map(({ index }) => index) : []);
+  syncPreviewSelection();
+}
+function syncPreviewSelection() {
   for (const row of batchList.querySelectorAll('.batch-entry')) row.querySelector('.batch-select').checked = previewBatch.selected.has(Number(row.dataset.index));
   updateControls();
 }
@@ -3874,7 +3937,7 @@ async function preparePreview(scope) {
     previewBatch = {
       ...result,
       configKey: JSON.stringify(config),
-      selected: new Set(result.entries.filter(matchesPreviewFilters).map(({ index }) => index)),
+      selected: new Set(result.entries.filter(previewFilter()).map(({ index }) => index)),
     };
     renderPreviewBatch();
   } catch (error) {

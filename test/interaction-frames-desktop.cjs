@@ -184,6 +184,47 @@ async function run() {
   // Timestamp collection happens inside the renderer, independently of input dispatch.
   // An interval measures renderer rAF scheduling. It cannot confirm a Windows display present.
   const results = {};
+  let batchPreview;
+  // Observe the same native controls and resulting DOM in both application versions.
+  async function timeBatchUpdate(id, eventName, expectedIndex, trigger) {
+    await read(`(() => {
+      const control=document.getElementById(${JSON.stringify(id)});
+      const list=document.querySelector('#preview-batch-list');
+      const summary=document.querySelector('#preview-batch-summary');
+      const expected=${JSON.stringify(expectedIndex)};
+      window.batchUpdateTiming=new Promise((resolve,reject)=>{
+        let start, matched=false;
+        const observer=new MutationObserver(check);
+        const timer=setTimeout(()=>{
+          observer.disconnect();
+          reject(Error('批量列表没有响应 '+control.id+'='+control.value+'；事件起点 '+start+'；'+summary.textContent));
+        },15000);
+        function check() {
+          if(start===undefined || matched) return;
+          const rows=list.querySelectorAll('.batch-entry');
+          const count=expected===null ? 1000 : 1;
+          if(!list.checkVisibility() || !summary.textContent.endsWith('当前显示 '+count+' 条') ||
+             !rows.length || (expected===null ? rows[0].dataset.index!=='0' :
+               rows.length!==1 || rows[0].dataset.index!==String(expected))) return;
+          matched=true;
+          observer.disconnect();
+          const updated=performance.now();
+          // The second rAF follows a rendering opportunity for the verified rows.
+          if(expected===null) requestAnimationFrame(()=>requestAnimationFrame(()=>done(performance.now())));
+          else done(updated);
+        }
+        function done(end) {clearTimeout(timer);resolve(Number((end-start).toFixed(2)));}
+        control.addEventListener(${JSON.stringify(eventName)},event=>{
+          if(!event.isTrusted) return;
+          start=event.timeStamp;
+          observer.observe(list,{childList:true,subtree:true,characterData:true});
+          observer.observe(summary,{childList:true,subtree:true,characterData:true});
+        },{once:true,capture:true});
+      });
+    })()`);
+    await trigger();
+    return read('window.batchUpdateTiming');
+  }
   async function sample(name, gesture, eventType = 'pointermove') {
     activeScene = name;
     completedInputs = 0;
@@ -375,17 +416,20 @@ async function run() {
       const started = performance.now();
       await clickVisible(wc,'#prepare-preview');
       await waitFor('document.querySelector("#preview-batch").checkVisibility() && document.querySelector("#preview-batch-summary").textContent.includes("1000")');
-      const populated = await read(`(async () => {
-        const filter=document.querySelector('#batch-reuse-filter');
-        const start=performance.now();
-        filter.value='all';
-        filter.dispatchEvent(new Event('change'));
-        await new Promise(resolve=>requestAnimationFrame(()=>requestAnimationFrame(resolve)));
-        return Math.round(performance.now()-start);
-      })()`);
       info.batchRows = 1000;
       info.batchReadyMs = Math.round(performance.now()-started);
-      info.batchListRenderMs = populated;
+      assert.ok(await read("document.querySelector('#batch-reuse-filter').value==='low' && !document.querySelector('#preview-batch-summary').textContent.endsWith('当前显示 1000 条')"), '首次显示全部 1000 条之前应仍在默认筛选');
+      const key = async (name, code) => {
+        for(const type of ['rawKeyDown','keyUp']) {
+          await wc.debugger.sendCommand('Input.dispatchKeyEvent',{type,key:name,code:name,windowsVirtualKeyCode:code});
+        }
+      };
+      await clickVisible(wc,'#batch-reuse-filter');
+      await waitFor("document.querySelector('#batch-reuse-filter').matches(':open')");
+      const firstRenderMs = await timeBatchUpdate('batch-reuse-filter','change',null,()=>
+        clickVisible(wc,'#batch-reuse-filter option[value=all]'));
+      info.batchListRenderMs = firstRenderMs;
+      batchPreview = {firstRenderMs, filterInputMs:[]};
       const list = '#preview-batch-list';
       await read(selector(list) + '.scrollIntoView({block:"center"})');
       const listPoint = await point(list);
@@ -416,7 +460,17 @@ async function run() {
       await read('const sort=document.querySelector("#batch-sort"); sort.value="reuse"; sort.dispatchEvent(new Event("change"));');
       const percentages=await read('Array.from(document.querySelectorAll("#preview-batch-list .batch-reuse"),el=>Number(el.textContent.match(/(\\d+)%/)[1]))');
       assert.deepEqual(percentages,[...percentages].sort((a,b)=>a-b),'重复度升序须反映在可见行');
-      await read('const search=document.querySelector("#batch-search"); search.value="第 999 条"; search.dispatchEvent(new Event("input"));');
+      await clickVisible(wc,'#batch-search');
+      for(const number of [123,321,555,777,999]) {
+        if(batchPreview.filterInputMs.length) {
+          await read("document.querySelector('#batch-search').select()");
+          await key('Backspace',8);
+        }
+        await waitFor("document.querySelector('#preview-batch-summary').textContent.endsWith('当前显示 1000 条')");
+        const ms = await timeBatchUpdate('batch-search','input',number-1,()=>
+          wc.debugger.sendCommand('Input.insertText',{text:'第 '+number+' 条'}));
+        batchPreview.filterInputMs.push(ms);
+      }
       assert.equal(await read(selector(list) + '.querySelector(".batch-title").textContent'), '第 999 条');
       await clickVisible(wc,'#select-all-previews');
       await clickVisible(wc,'#invert-preview-selection');
@@ -426,10 +480,14 @@ async function run() {
     assert.equal(sourceFingerprint(), sourceSha256, '采样期间源码有改动，请重跑以便比较同一版本');
     const report = path.resolve(process.env.JIAJIAN_BENCH_REPORT || ('run-data/benchmarks/'+(large?'large':'standard')+'.json'));
     mkdirSync(path.dirname(report),{recursive:true});
-    writeFileSync(report,JSON.stringify({environment:info,results},null,2)+'\n');
+    writeFileSync(report,JSON.stringify({environment:info,results,batchPreview},null,2)+'\n');
     console.log('JSON',report);
     console.log('rAF measures renderer scheduling. --presentation adds Chromium Viz presentation feedback. Physical scanout is unmeasured.');
     console.log('over16_67Ms includes timestamp rounding; over25Ms counts larger stalls.');
+    if(batchPreview) {
+      console.log('batchPreview',JSON.stringify(batchPreview));
+      if(!paired) assert.ok(results.batchScroll.p95Ms <= 25.05,'1000 条列表滚动 P95 超过 25.05 ms');
+    }
     if (process.argv.includes('--strict')) {
       assert.ok(Object.values(results).every(result => result.over25Ms === 0 && result.p95Ms <= 16.8),
         '代表用例的 rAF 门槛未通过 (p95 <= 16.8 ms，且没有 >25 ms 间隔)');
