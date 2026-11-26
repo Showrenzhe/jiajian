@@ -32,7 +32,9 @@ node scripts/verify-release.cjs "$env:TEMP/jiajian-notes.md"
 
 ## 公开源码的合并检查
 
-main 分支的建议规则为经 PR 合并、至少一人批准并通过 `Windows / 单元与桌面冒烟`。管理员可用临时 PR 提交一个确定失败的测试，确认合并受阻，恢复测试后验证检查通过并关闭演练 PR。
+合入 `main` 前，作者完成自检，负责人按开发指南核对 PR 及两项必需检查。[合并规则](development.md#合并规则)
+
+管理员可在临时 PR 中提交一个确定失败的测试，确认合并受阻。恢复测试后，等 `Windows / 单元与桌面冒烟` 和 `Windows / 大工程帧间隔` 都通过，再关闭演练 PR。
 
 ## 公开安装包检查记录
 
