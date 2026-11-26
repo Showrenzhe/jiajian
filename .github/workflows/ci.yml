@@ -1,118 +1,105 @@
-name: CI
-on:
-  pull_request:
-  push:
-    branches: [main]
-  workflow_dispatch:
-    inputs:
-      integrated_gpu:
-        description: 同时在已登记的内部 Windows 集成显卡机器上采样
-        type: boolean
-        default: false
-  schedule:
-    - cron: '17 3 * * *'
+# 此 QA 分支沿用已登记的工作流路径，供维护者手动派发。
+name: T4 同机配对诊断
+on: workflow_dispatch
 permissions:
   contents: read
+
 jobs:
-  checks:
-    name: Windows / 单元与桌面冒烟
+  paired:
+    name: 诊断 / 主线与 T4 同机采样
+    if: github.ref == 'refs/heads/codex/qa-t4-paired-benchmark'
     runs-on: windows-latest
     timeout-minutes: 90
+    env:
+      BASE_SHA: a41d6bb6867a4110b6d47007ef670c4108887d2f
+      T4_SHA: 20e1a182f08dcabe35308d136ec5111db16ee754
     steps:
-      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
-        with:
-          persist-credentials: false
-      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
-        with:
-          node-version: '24'
-          cache: npm
-      - run: npm ci
-      - run: npm run lint
-      - run: npm run typecheck
-      - run: |
-          ./scripts/prepare-release-tools.ps1
-          (Resolve-Path tools/ffmpeg-8.0-full_build/bin).Path >> $env:GITHUB_PATH
-      - run: npm test
-      - run: npm run test:smoke
-      - if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
-        run: npm run test:desktop
-      - if: failure()
-        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
-        with:
-          name: desktop-diagnostics
-          path: run-data/test-artifacts/
-          if-no-files-found: ignore
-          retention-days: 7
-  benchmark:
-    name: Windows / 大工程帧间隔
-    runs-on: windows-latest
-    timeout-minutes: 30
-    permissions:
-      contents: read
-      actions: read
-    steps:
-      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
-        with:
-          persist-credentials: false
-      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
-        with:
-          node-version: '24'
-          cache: npm
-      - run: npm ci
-      - run: |
-          ./scripts/prepare-release-tools.ps1
-          (Resolve-Path tools/ffmpeg-8.0-full_build/bin).Path >> $env:GITHUB_PATH
-      - run: npm run bench:large
-      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
-        with:
-          name: benchmark-large
-          path: run-data/benchmarks/large.json
-          retention-days: 30
-      - name: 找上一次主线基准
-        id: baseline
-        env:
-          GH_TOKEN: ${{ github.token }}
-          BASE_BRANCH: ${{ github.base_ref || github.event.repository.default_branch }}
+      - name: 准备证据目录
         run: |
-          $runIds = gh api --paginate --method GET "repos/$env:GITHUB_REPOSITORY/actions/runs" -f branch="$env:BASE_BRANCH" -f event=push -f status=success -F per_page=100 --jq '.workflow_runs[] | select(.path == ".github/workflows/ci.yml") | .id'
-          if ($LASTEXITCODE) { exit $LASTEXITCODE }
-          foreach ($runId in $runIds) {
-            $artifacts = gh api --method GET "repos/$env:GITHUB_REPOSITORY/actions/runs/$runId/artifacts" -f name=benchmark-large | ConvertFrom-Json
-            if ($LASTEXITCODE) { exit $LASTEXITCODE }
-            if ($artifacts.artifacts | Where-Object { !$_.expired }) {
-              "run=$runId" >> $env:GITHUB_OUTPUT
-              break
+          New-Item -ItemType Directory evidence
+          [ordered]@{
+            run = $env:GITHUB_RUN_ID
+            attempt = $env:GITHUB_RUN_ATTEMPT
+            workflow = $env:GITHUB_SHA
+            A = $env:BASE_SHA
+            B = $env:T4_SHA
+            image = $env:ImageOS
+            imageVersion = $env:ImageVersion
+          } | ConvertTo-Json > evidence/run.json
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          path: qa
+          persist-credentials: false
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          ref: ${{ env.BASE_SHA }}
+          path: A
+          persist-credentials: false
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          ref: ${{ env.T4_SHA }}
+          path: B
+          persist-credentials: false
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version: '24'
+      - name: 安装两份依赖并核对采样工具
+        id: prepare
+        run: |
+          $files = @('package-lock.json','package.json','test/run-interaction-frames.cjs','test/interaction-frames-desktop.cjs','scripts/compare-bench.cjs','tools/ffmpeg-8.0-full_build/bin/ffmpeg.exe','tools/ffmpeg-8.0-full_build/bin/ffprobe.exe')
+          $manifest = [ordered]@{}
+          foreach ($side in 'A','B') {
+            Push-Location $side
+            try {
+              $commit = git rev-parse HEAD
+              $expected = if ($side -eq 'A') { $env:BASE_SHA } else { $env:T4_SHA }
+              if ($LASTEXITCODE -or $commit -ne $expected) { throw "检出提交不符 $side" }
+              npm ci
+              if ($LASTEXITCODE) { throw "依赖安装失败 $side" }
+              ./scripts/prepare-release-tools.ps1
+              $hashes = [ordered]@{}
+              foreach ($file in $files) { $hashes[$file] = (Get-FileHash -LiteralPath $file).Hash }
+              $manifest[$side] = @{ commit = $commit; sha256 = $hashes }
+              $manifest | ConvertTo-Json -Depth 5 > ../evidence/manifest.json
+            } finally { Pop-Location }
+          }
+          foreach ($file in $files) {
+            if ($manifest.A.sha256[$file] -ne $manifest.B.sha256[$file]) { throw "两版本文件不同 $file" }
+          }
+      - name: 依次运行 AB、BA、BA、AB
+        run: |
+          $envPath = $env:PATH
+          $pair = 0
+          $failed = @()
+          foreach ($order in 'AB','BA','BA','AB') {
+            $pair++
+            foreach ($side in $order.ToCharArray()) {
+              $round = "$pair-$side"
+              Write-Host "::group::$round"
+              Push-Location ([string]$side)
+              try {
+                $env:PATH = (Resolve-Path tools/ffmpeg-8.0-full_build/bin).Path + ';' + $envPath
+                $env:JIAJIAN_BENCH_REPORT = Join-Path $env:GITHUB_WORKSPACE "evidence/$round.json"
+                npm run bench:large 2>&1 | Tee-Object -FilePath "../evidence/$round.log"
+                if ($LASTEXITCODE -or !(Test-Path -LiteralPath $env:JIAJIAN_BENCH_REPORT)) { $failed += $round }
+              } catch {
+                $failed += $round
+                Write-Warning "$round $_"
+              } finally {
+                Pop-Location
+                Write-Host '::endgroup::'
+              }
             }
           }
-      - if: steps.baseline.outputs.run
-        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+          if ($failed.Count) { throw "采样失败 $failed" }
+      - name: 比较四对结果和各版本的轮间波动
+        if: ${{ !cancelled() && steps.prepare.outcome == 'success' }}
+        run: node qa/scripts/qa-t4-pairs.cjs
+      - name: 归档所有已产生的证据
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
-          github-token: ${{ github.token }}
-          run-id: ${{ steps.baseline.outputs.run }}
-          name: benchmark-large
-          path: run-data/benchmarks/previous
-      - if: steps.baseline.outputs.run
-        run: node scripts/compare-bench.cjs run-data/benchmarks/previous/large.json run-data/benchmarks/large.json
-  integrated-graphics:
-    if: >-
-      github.event_name == 'workflow_dispatch' &&
-      inputs.integrated_gpu &&
-      vars.INTERNAL_RUNNER_ENABLED == 'true' &&
-      github.ref_type == 'branch' &&
-      github.ref_name == github.event.repository.default_branch
-    runs-on: [self-hosted, Windows, integrated-graphics]
-    timeout-minutes: 30
-    steps:
-      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
-        with:
-          ref: ${{ github.sha }}
-          persist-credentials: false
-      - run: npm ci
-      - run: |
-          ./scripts/prepare-release-tools.ps1
-          (Resolve-Path tools/ffmpeg-8.0-full_build/bin).Path >> $env:GITHUB_PATH
-      - run: npm run bench:large
-      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
-        with:
-          name: benchmark-integrated-graphics
-          path: run-data/benchmarks/large.json
+          name: t4-paired-${{ github.run_id }}-${{ github.run_attempt }}
+          path: evidence/
+          retention-days: 30
+          if-no-files-found: warn
