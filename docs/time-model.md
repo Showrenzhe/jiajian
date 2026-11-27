@@ -42,6 +42,14 @@
 - **音频工具去停顿。** `audio-tools.cjs` 的 `detectPauses` 用秒计算停顿和气口，将边界保留至小数点后六位。`processAudio` 按保留区间裁切、拼接音频。`retimeCaptions` 从每个字幕端点减去该端点以前已删除的总毫秒数，四舍五入到毫秒并移除空行。
 - **连续配音分段。** `segmented-speech.cjs` 的 `alignScript` 在相邻词的接缝或实测停顿中点四舍五入到毫秒。`synthesizeSegmented` 将切点除以 1000 传给 FFmpeg，并用每包 48 个采样的 48 kHz PCM（每包 1 毫秒）切分。每行字幕以分段文件开头计时，末端受该文件实测时长限制。
 
+### v2 工程能识别哪些倍速操作
+
+拖入视频空位时，`src/ui/track-tools.js` 的 `fitVideoSpeed` 用保留源时长除以空位时长。0.1 秒填 10 秒得到 0.01×，60 秒填 1 秒得到 60×。`src/project-format.cjs` 接受的 `speed` 范围是 0.000001 至 `Number.MAX_SAFE_INTEGER`。
+
+`src/ui/app.js` 的 `candidate` 创建普通候选时写入 `speed: 1`。手动改倍速会删除 `autoFitSpeed`，`serializeClip` 和 `src/project-format.cjs` 的 `cleanConfig` 仅保留值为 `true` 的自动标记。
+
+复现时，取一份 v2 工程，将同一候选分别设为 `speed: 1` 和 `speed: 1, autoFitSpeed: false`，交给 `projectReferences` 读取。两次得到的候选字段完全相同，重开后无法区分默认 1× 和手动改回的 1×。对保留 8 秒、已设为 2× 的视频调用 `src/ui/voice-alignment.js` 的 `matchCandidateDuration(clip, 1)`，结果为 8×。
+
 ## 预览、导出与验证
 
 剪辑台的实时草稿使用 `src/ui/draft-transport.js` 的 `timing` 和 `makePlan`，按当前选中候选、编辑尺上的秒数和口播匹配关系调度浏览器媒体元素。逐帧查看素材使用源帧率，草稿时间线逐帧移动使用工程帧率。编辑尺既可展示还未选入成片的轨道，也可保留没有素材的分镜占位。
