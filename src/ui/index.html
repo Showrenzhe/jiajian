@@ -36,7 +36,10 @@
   <link rel="stylesheet" href="./liquid-glass.css">
   <link rel="stylesheet" href="./workspace-controls.css">
   <link rel="stylesheet" href="./home-workspace.css">
+  <link rel="stylesheet" href="./command-palette.css">
   <script src="./messages-zh-cn.js" defer></script>
+  <script src="./commands.js" defer></script>
+  <script src="./command-palette.js" defer></script>
   <script src="./cut-shortcuts.js" defer></script>
   <script src="./editing-help.js" defer></script>
   <script src="./cloud-tts-settings.js" defer></script>
@@ -144,15 +147,16 @@
     <button type="button" id="title-home" aria-label="返回首页" title="返回首页"><svg class="ui-icon" aria-hidden="true"><use href="#icon-home"></use></svg></button>
     <span id="title-tab">工作台</span>
     <span id="titlebar-update">
-      <button type="button" id="software-update-entry" class="glass glass--pill" title="打开软件更新" aria-haspopup="dialog" aria-controls="update-dialog">
+      <button type="button" id="software-update-entry" class="glass glass--pill" aria-haspopup="dialog" aria-controls="update-dialog">
         <span class="update-icon" aria-hidden="true">
           <svg class="ui-icon"><use href="#icon-import"></use></svg>
           <span id="update-badge" hidden></span>
-        </span>软件更新
+        </span><span id="software-update-title"></span>
         <span id="update-notice" hidden></span>
       </button>
-      <button type="button" id="update-notice-dismiss" title="收起本次更新提醒" aria-label="收起本次更新提醒" hidden>×</button>
+      <button type="button" id="update-notice-dismiss" hidden>×</button>
     </span>
+    <button type="button" id="command-palette-entry" aria-haspopup="dialog" aria-controls="command-palette"><svg class="ui-icon" aria-hidden="true"><use href="#icon-search"></use></svg></button>
     <button type="button" id="cut-shortcuts-entry" title="自定义剪辑快捷键" aria-haspopup="dialog"><svg class="ui-icon" aria-hidden="true"><use href="#icon-keyboard"></use></svg>快捷键</button>
     <button type="button" id="editing-help-entry" title="剪辑帮助与快捷键（? 或 Ctrl+/）" aria-haspopup="dialog">帮助</button>
     <button type="button" id="app-settings" class="glass glass--pill" title="打开设置" aria-haspopup="dialog"><svg class="ui-icon" aria-hidden="true"><use href="#icon-settings"></use></svg>设置</button>
@@ -211,7 +215,7 @@
               </div>
               <ul id="draft-list" class="draft-list" data-view="grid" aria-label="本地草稿"></ul>
               <div id="draft-context-menu" class="glass glass--thick" popover="auto" role="menu" aria-label="草稿操作">
-                <button type="button" role="menuitem" id="draft-context-delete"><svg class="ui-icon" aria-hidden="true"><use href="#icon-track-delete"></use></svg>删除</button>
+                <button type="button" role="menuitem" id="draft-context-delete"><svg class="ui-icon" aria-hidden="true"><use href="#icon-track-delete"></use></svg><span></span></button>
               </div>
               <dialog id="draft-delete-dialog" class="narration-review" aria-labelledby="draft-delete-title" aria-describedby="draft-delete-detail">
                 <h2 id="draft-delete-title"></h2>
@@ -1047,6 +1051,22 @@
       <p>拖动所选把手或按方向键调整。双击恢复默认，拖动中按 Esc 撤销。</p>
     </fieldset>
   </div>
+  <dialog id="command-palette">
+    <div class="palette-search">
+      <svg class="ui-icon" aria-hidden="true"><use href="#icon-search"></use></svg>
+      <input id="palette-query" type="text" role="combobox" aria-autocomplete="list" aria-expanded="false"
+        aria-controls="palette-results" autocomplete="off" spellcheck="false" autofocus>
+      <button type="button" class="quiet" id="palette-close"></button>
+    </div>
+    <div class="palette-body">
+      <div id="palette-results" role="listbox"></div>
+      <p id="palette-status" role="status" hidden></p>
+    </div>
+    <footer class="palette-hints" aria-hidden="true">
+      <span><kbd>↑</kbd><kbd>↓</kbd> <span data-palette-hint="navigate"></span></span>
+      <span><kbd>↵</kbd> <span data-palette-hint="execute"></span></span>
+    </footer>
+  </dialog>
   <dialog id="caption-zoom-dialog" aria-labelledby="caption-zoom-title">
     <div class="caption-section-head"><h3 id="caption-zoom-title">字幕预览</h3><button type="button" class="quiet" id="caption-zoom-close">关闭</button></div>
     <canvas id="caption-zoom-canvas" aria-label="点按或拖动可设置字幕中心点"></canvas>

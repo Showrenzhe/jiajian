@@ -82,3 +82,22 @@ function setupTabs(tablist, onChange) {
   });
   return activate;
 }
+
+// Keep the icon node intact when applying command metadata to an existing control.
+function presentEditorCommand(button, id, {title, visible = false} = {}) {
+  const registry = window.editorCommands;
+  const command = registry.get(id);
+  title ??= command.titleFor?.() ?? command.title;
+  const keys = registry.keysFor(id).filter(Boolean);
+  const hint = registry.labelFor(id);
+  button.dataset.commandId = id;
+  button.title = title + (hint ? '（' + hint + '）' : '');
+  button.setAttribute('aria-label', title);
+  if (keys.length) button.setAttribute('aria-keyshortcuts', keys.map(key => key.replace('Ctrl+', 'Control+')).join(' '));
+  else button.removeAttribute('aria-keyshortcuts');
+  if (visible) {
+    const caption = [...button.childNodes].find(node => node.nodeType === Node.TEXT_NODE && node.textContent.trim())
+      ?? button.querySelector(':scope > span:not([aria-hidden])');
+    if (caption && caption.textContent !== title) caption.textContent = title;
+  }
+}

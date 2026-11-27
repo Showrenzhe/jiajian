@@ -262,7 +262,7 @@ window.mountEditTimeline = function (host, ctx) {
     const selectedKey = initialTarget.key;
     const d = dialog(existing ? '编辑包装片段' : '添加包装片段');
     const scope = choice(groups.map((g)=>[g.key,g.label]), groups.some((g)=>g.key===selectedKey) ? selectedKey : 'global');
-    const type = choice(Object.entries(kinds), existing?.kind ?? 'text');
+    const type = choice(Object.entries(kinds), existing?.kind ?? initialTarget.kind ?? 'text');
     const content = el('textarea'); content.maxLength = 4096; content.value = existing?.text ?? '';
     const begin = input('number',existing?.start ?? 0,0,null,.001), end = input('number',existing?.end,0,null,.001);
     end.placeholder = '随所属轨道结束';
@@ -410,11 +410,31 @@ window.mountEditTimeline = function (host, ctx) {
       ctx.notify('已粘贴'+clipboard.kind+'。');
     } catch(error) {ctx.notify(error.message);}
   }
+  const registry = window.editorCommands;
+  function copyNode(context) {
+    return context?.node ?? selection.single();
+  }
+  registry.bind('timeline-copy',{
+    titleFor:context => registry.get('timeline-copy').title + (copySources.get(copyNode(context))?.kind ?? ''),
+    when:context => !ctx.busy() && host.clientWidth > 0 && (context?.source === 'keyboard' || copySources.has(copyNode(context))),
+    run:context => copyItem(copyNode(context)),
+  });
+  registry.bind('timeline-paste',{
+    titleFor:() => registry.get('timeline-paste').title + (clipboard?.kind ?? ''),
+    when:() => !ctx.busy() && host.clientWidth > 0 && Boolean(clipboard),
+    run:context => pasteItem(context?.position),
+  });
   function clipboardButtons(d,node,position) {
-    if(copySources.has(node)) d.body.append(btn('复制'+copySources.get(node).kind,()=>{copyItem(node);d.wrapper.close();}));
-    const paste=btn(clipboard ? '粘贴'+clipboard.kind : '粘贴',()=>{d.wrapper.close();pasteItem(position);});
-    paste.disabled=!clipboard;
-    d.body.append(paste);
+    for (const id of ['timeline-copy','timeline-paste']) {
+      const command=registry.get(id), context={node,position};
+      const enabled=command.when(context);
+      if (!enabled && id === 'timeline-copy') continue;
+      const title=command.titleFor(context);
+      const button=btn(title,()=>{d.wrapper.close();registry.execute(id,context);});
+      presentEditorCommand(button,id,{title});
+      button.disabled=!enabled;
+      d.body.append(button);
+    }
   }
   function speedField(d,current,apply) {
     const field=input('number',current,.5,3,'any');
@@ -454,6 +474,10 @@ window.mountEditTimeline = function (host, ctx) {
     matchDurationButton(d,state,index,clip);
     d.wrapper.showModal();
   }
+  function addCandidateLayer(shot, clip, kind) {
+    focusShot=shot; focusClip=clip; voiceTarget=undefined;
+    editLayer({key:'local', kind});
+  }
   function openCandidateActions(shot,clip) {
     const state=ctx.state(), index=state.shots.indexOf(shot);
     if (ctx.busy() || index<0 || !shot.includes(clip)) return;
@@ -478,6 +502,7 @@ window.mountEditTimeline = function (host, ctx) {
   const videoMenuLabel=videoMenu.getAttribute('aria-label');
   const clipMenus=new WeakMap(), itemActions=new WeakMap();
   const menuText=window.editorMessages.timelineMenu;
+  const menuCommands={mute:'mute-video', delete:'delete-selection', left:'insert-shot-left', right:'insert-shot-right'};
   const contextHint=el('div','timeline-context-hint');
   contextHint.setAttribute('role','status');
   document.body.append(contextHint);
@@ -504,55 +529,58 @@ window.mountEditTimeline = function (host, ctx) {
     if(index<0 || !slot.shot.includes(slot.clip)) return false;
     videoMenu.replaceChildren(...videoItems);
     videoMenu.setAttribute('aria-label',videoMenuLabel);
-    const menuKeys={mute:'M',delete:'Delete',left:'[',right:']'};
     for(const button of videoMenu.querySelectorAll('button')) {
       const action=button.dataset.action;
-      button.dataset.menuKey=menuKeys[action];
-      button.setAttribute('aria-keyshortcuts',menuKeys[action]);
+      const id=menuCommands[action];
+      const title=action==='mute' && slot.clip.sourceMuted ? window.editorMessages.commandTitles['unmute-video'] : window.editorCommands.get(id).title;
+      presentEditorCommand(button,id,{title,visible:true});
+      button.dataset.menuKey=window.editorCommands.keysFor(id)[0];
       const insert=action==='left' || action==='right';
       if(action==='mute') {
-        button.querySelector('span').textContent=slot.clip?.sourceMuted ? '取消静音' : '静音片段';
         button.querySelector('use').setAttribute('href',slot.clip?.sourceMuted ? '#icon-track-sound' : '#icon-track-mute');
       }
       const reason=action==='mute' && (slot.clip.asset.kind!=='video' || !slot.clip.asset.hasAudio) ? '这个片段没有原声音轨。'
         : insert ? ctx.insertShotError(index+(action==='right' ? 1 : 0)) : '';
       button.disabled=Boolean(reason);
-      button.title=reason;
+      if(reason) button.title=reason;
     }
     return true;
   }
   function setClipItems(cell,entry,x) {
     videoMenu.replaceChildren();
     videoMenu.setAttribute('aria-label',menuText.label);
-    function add(action,label,image,run,key) {
+    function add(action,id,image,run) {
       const button=el('button');
       button.type='button';
       button.setAttribute('role','menuitem');
       button.dataset.action=action;
-      button.append(icon(image),el('span','',label));
-      if(key) {
-        button.dataset.menuKey=key;
-        button.setAttribute('aria-keyshortcuts',key);
-      }
-      itemActions.set(button,run);
+      button.append(icon(image),el('span','',registry.get(id).title));
+      presentEditorCommand(button,id);
+      const key=registry.keysFor(id)[0];
+      if(key) button.dataset.menuKey=key;
+      itemActions.set(button,()=>registry.execute(id,{timelineSelection:true, cell, menuAction:run}));
       videoMenu.append(button);
       return button;
     }
-    add('delete',menuText.remove,'track-delete',()=>{selection.removeSelection();host.focus({preventScroll:true});},'Delete');
+    add('delete','delete-selection','track-delete');
     const mute=cell.closest('.sequence-row').querySelector('.sequence-head [data-track-action="muted"]');
     if(mute) {
       const muted=mute.getAttribute('aria-pressed')==='true';
-      add('mute',muted ? menuText.unmuteTrack : menuText.muteTrack,muted ? 'track-sound' : 'track-mute',()=>{
+      add('mute',muted ? 'track-unmute' : 'track-mute',muted ? 'track-sound' : 'track-mute',()=>{
         mute.click();
         selection.single()?.focus({preventScroll:true});
       });
     }
-    if(entry.speed) add('speed',menuText.speed,'settings',entry.speed);
+    if(entry.speed) add('speed','clip-speed','settings',entry.speed);
     if(entry.split) {
       const split=entry.split(x);
-      add('split',menuText.split,'scene',split.run).disabled=!split.enabled;
+      add('split','split-here','scene',split.run).disabled=!split.enabled;
     }
-    if(entry.edit) add('edit',menuText.edit,'settings',entry.edit);
+    if(entry.edit) add('edit','edit-track-clip','settings',entry.edit);
+  }
+  for (const id of ['track-mute','track-unmute','clip-speed','split-here','edit-track-clip']) {
+    window.editorCommands.bind(id,{palette:false, when:context => !ctx.busy() && context?.cell?.isConnected &&
+      !context.cell.closest('[data-track-locked]') && typeof context.menuAction === 'function', run:context => context.menuAction()});
   }
   function showCellMenu(cell,x,y) {
     clearContextHint();
@@ -623,35 +651,27 @@ window.mountEditTimeline = function (host, ctx) {
       action();
       return;
     }
-    if(!slot) return;
-    const state=ctx.state(), index=state.shots.indexOf(slot.shot);
-    if(state.trackControls?.['vis'+slot.lane]?.locked) return;
-    if(index<0 && state.shots.length) return;
-    if(button.dataset.action==='mute') {
-      if(!slot.shot?.includes(slot.clip) || slot.clip?.asset.kind!=='video' || !slot.clip.asset.hasAudio) return;
-      ctx.toggleClipMute(slot.clip);
-      finishControlEdit();
-      (candidateNodes.get(slot.clip) ?? host).focus({preventScroll:true});
-    } else if(button.dataset.action==='delete') {
-      if(!slot.clip || !slot.shot.includes(slot.clip)) return;
-      ctx.removeClip(slot.shot,slot.clip);
-      ctx.afterRemove();
-    } else if(slot.clip && slot.shot?.includes(slot.clip)) {
-      const at=index+(button.dataset.action==='right' ? 1 : 0);
-      const monitor=ctx.isMonitoringTimeline();
-      const shot=ctx.insertShot(at,[],{starts:shotTimes,widths,focus:layoutFocus});
-      if(!shot) return;
-      finishControlEdit();
-      playTime=shotTimes[at];
-      pastePosition=positionAt(playTime);
-      if(monitor) draftTransport.scrub(draftPlan,playTime);
-      syncCursor();
-      const strip=host.querySelector('.sequence-shots [data-drop-shot="'+at+'"]');
-      strip?.focus({preventScroll:true});
-      strip?.scrollIntoView({block:'nearest',inline:'nearest'});
-      ctx.notify('已插入空分镜 '+(at+1)+'，可从素材库拖入画面。');
-    }
+    if(slot) window.editorCommands.execute(menuCommands[button.dataset.action],{slot});
   });
+  function toggleCandidateMute(clip) {
+    ctx.toggleClipMute(clip);
+    finishControlEdit();
+    candidateNodes.get(clip)?.focus({preventScroll:true});
+  }
+  function insertBesideCandidate(index) {
+    const monitor=ctx.isMonitoringTimeline();
+    const shot=ctx.insertShot(index,[],{starts:shotTimes,widths,focus:layoutFocus});
+    if(!shot) return;
+    finishControlEdit();
+    playTime=shotTimes[index];
+    pastePosition=positionAt(playTime);
+    if(monitor) draftTransport.scrub(draftPlan,playTime);
+    syncCursor();
+    const strip=host.querySelector('.sequence-shots [data-drop-shot="'+index+'"]');
+    strip?.focus({preventScroll:true});
+    strip?.scrollIntoView({block:'nearest',inline:'nearest'});
+    ctx.notify('已插入空分镜 '+(index+1)+'，可从素材库拖入画面。');
+  }
   videoMenu.addEventListener('keydown',event=>{
     const command=[...videoMenu.querySelectorAll('button:enabled[data-menu-key]')].find(b=>b.dataset.menuKey.toLowerCase()===event.key.toLowerCase());
     if(command && !event.ctrlKey && !event.altKey && !event.metaKey) { event.preventDefault();event.stopPropagation();command.click();return; }
@@ -682,14 +702,14 @@ window.mountEditTimeline = function (host, ctx) {
     if(key!=='c' && key!=='v') return;
     if(key==='v' && !clipboard) return;
     event.preventDefault();event.stopPropagation();
-    if(key==='c') copyItem(selection.single());
+    if(key==='c') registry.execute('timeline-copy',{source:'keyboard'});
     else {
       const target=event.target.closest('[data-drop-shot]');
       if(clipboard?.kind==='视频' && target) {
         const place=materialVideoDrop(event);
-        pasteItem({index:place?.targetIndex ?? Number(target.dataset.dropShot),videoLane:place?.targetLane,videoSlot:place?.videoSlot});
+        registry.execute('timeline-paste',{position:{index:place?.targetIndex ?? Number(target.dataset.dropShot),videoLane:place?.targetLane,videoSlot:place?.videoSlot}});
       }
-      else pasteItem();
+      else registry.execute('timeline-paste');
     }
   });
 
@@ -808,7 +828,8 @@ window.mountEditTimeline = function (host, ctx) {
           || !['ArrowLeft','ArrowRight'].includes(event.key)) return;
       event.preventDefault();event.stopPropagation();
       const index=Number(button.dataset.dropShot), shot=order[index];
-      if (ctx.move(shot,index+(event.key==='ArrowLeft' ? -1 : 1))) refocusShot=shot;
+      const id=event.key==='ArrowLeft' ? 'move-shot-left' : 'move-shot-right';
+      if (window.editorCommands.execute(id,{shot})) refocusShot=shot;
     };
   }
   window.addEventListener('pointermove',(event)=>{
@@ -1080,7 +1101,7 @@ window.mountEditTimeline = function (host, ctx) {
         b.prepend(frames);
         waveforms.add(b,clip.asset,{ranges,span:span*rate,loop:clip.speedOverflow==='loop',
           volume:clip.volume,muted:clip.sourceMuted || !s.keepAudio || s.muted.has(j) || !window.trackControls.allows(s.trackControls,'vis'+j,'audio')});
-        b.ondblclick=()=>{if (clip.asset.kind==='video') ctx.cut(clip); else editShot(s,i);};
+        b.ondblclick=()=>{if (clip.asset.kind==='video') window.editorCommands.execute('edit-clip',{slot:{shot:owner,clip}}); else editShot(s,i);};
       }
     }
     const strip=row('分镜','sequence-shots','shot-strip');
@@ -2377,7 +2398,8 @@ window.mountEditTimeline = function (host, ctx) {
     node.focus({preventScroll:true});
     revealCandidateLane(node);
   }
-  return {refresh,refreshMonitoring,syncPlayer,selectClip,focusCandidate,locateMaterial,editCaptions,openCardMatchMenu,openCandidateActions,materialVideoDrop,showLibraryLane,clearLibraryLane,previewLibrarySlot,removeSelected:selection.removeSelection,clearSelection:selection.clear,get selectionCount(){return selection.size;},
+  return {refresh,refreshMonitoring,syncPlayer,selectClip,addCandidateLayer,toggleCandidateMute,insertBesideCandidate,focusCandidate,locateMaterial,editCaptions,openCardMatchMenu,openCandidateActions,materialVideoDrop,showLibraryLane,clearLibraryLane,previewLibrarySlot,removeSelected:selection.removeSelection,clearSelection:selection.clear,get selectionCount(){return selection.size;},
+    get selectedShot(){return candidateSlots.get(selection.single())?.shot;},
     get selectedCandidate(){return candidateSlots.get(selection.single())?.clip;},textSettings:()=>textSettings(ctx.state()),
     toggleDraftPlayback,
     seekDraft:draftTransport.seek,draftState:draftTransport.state,

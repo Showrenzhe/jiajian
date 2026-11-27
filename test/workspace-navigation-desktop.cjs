@@ -81,6 +81,15 @@ async function run() {
     await wc.debugger.sendCommand('Animation.enable');
     await wc.debugger.sendCommand('Animation.setPlaybackRate', { playbackRate: .2 });
     await read("window.originalPlayer = document.querySelector('#preview')");
+    const unregistered = await read(`(() => {
+      const selectors = ['.titlebar > button', '#workbench-actions button', '.track-toolbar button',
+        '#material-context-menu button', '#material-import-menu button', '#prepare-preview', '#start-export'];
+      return [...document.querySelectorAll(selectors.join(','))].filter(button => {
+        const command = window.editorCommands.get(button.dataset.commandId);
+        return !command || !button.getAttribute('aria-label');
+      }).map(button => button.id || button.textContent.trim());
+    })()`);
+    assert.deepEqual(unregistered, [], '标题栏、工作台工具和素材菜单按钮必须关联注册表与可读名称');
     await click('#home-open-project');
     await wait("!document.querySelector('#home-open-project').disabled", '取消选择工程后应恢复首页');
     assert.equal(await read(current), 'home');
@@ -114,6 +123,15 @@ async function run() {
     await click('#home-create');
     await wait(current + " === 'montage'", '减少动态下应直接进入');
     assert.equal(await read(arrival + '.length'), 0);
+    for (const [id, dialog] of [['batch-levels','.jj-batch-editor'], ['timeline-text-tools','.sequence-dialog'], ['organize-tracks','.track-organizer']]) {
+      await click('#timeline-more');
+      await click('#' + id);
+      await wait('!!document.querySelector(' + JSON.stringify(dialog + ':modal') + ')', '从制作工具打开 ' + id);
+      await read('document.querySelector(' + JSON.stringify(dialog + ':modal') + ').close()');
+    }
+    for (const id of ['prepare-preview','start-export','track-slice']) {
+      assert.equal(await read(`window.editorCommands.get('${id}').when({source:'palette'})`), false, '空工程不提供 ' + id);
+    }
     await quickSave('本地草稿已保存');
     await quickSave('本地草稿已保存');
     assert.equal(await read('(async () => (await window.workbench.listDrafts()).length)()'), 1, '空工程首次快速保存应生成一份真实草稿');

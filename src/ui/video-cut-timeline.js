@@ -94,6 +94,10 @@ window.mountVideoCutTimeline = function mountVideoCutTimeline(host, clip, option
   message.setAttribute('aria-live', 'polite');
   const status = text => { message.textContent = text; };
   const buttons = {};
+  const registry = window.editorCommands;
+  const cutActions = ['undo', 'redo', 'split', 'trim-left', 'trim-right', 'reverse', 'mirror', 'crop', 'rotate'];
+  const frameSteps = {'frame-back':-1, 'frame-forward':1, 'frames-back':-10, 'frames-forward':10};
+  const handlers = new Map();
   function button(action, label, key, callback, parent) {
     const item = node('button', '', label);
     item.type = 'button';
@@ -101,7 +105,12 @@ window.mountVideoCutTimeline = function mountVideoCutTimeline(host, clip, option
     item.title = label + (key ? '（' + key + '）' : '');
     item.setAttribute('aria-label', label);
     if (key) item.setAttribute('aria-keyshortcuts', key.replace('Ctrl', 'Control'));
-    item.onclick = callback;
+    if (cutActions.includes(action)) {
+      handlers.set(action, callback);
+      item.textContent = registry.get(action).title;
+      item.setAttribute('aria-label', registry.get(action).title);
+      item.onclick = () => registry.execute(action, {target: item});
+    } else item.onclick = callback;
     window.decorateCutAction?.(item, action);
     parent.append(item);
     buttons[action] = item;
@@ -834,15 +843,26 @@ window.mountVideoCutTimeline = function mountVideoCutTimeline(host, clip, option
     watch(surface, 'lostpointercapture', event => { if (drag?.id === event.pointerId) finishDrag(true); });
   }
   watch(window, 'blur', () => { if (drag) finishDrag(true); });
-  const shortcuts = ['undo', 'redo', 'split', 'trim-left', 'trim-right', 'reverse', 'mirror', 'crop', 'rotate'];
+  function canExecute(id) {
+    return !pendingApply && !drag && (frameSteps[id] !== undefined || (handlers.has(id) && !buttons[id].disabled));
+  }
+  function execute(id) {
+    if (!canExecute(id)) return false;
+    if (frameSteps[id] !== undefined) {
+      pause();
+      scrub(head + frameSteps[id] * frame);
+      playhead.focus({preventScroll:true});
+    } else handlers.get(id)();
+    return true;
+  }
   function shortcutTitle(action) {
-    const item = buttons[action], key = window.cutShortcuts.labelFor(action);
+    const item = buttons[action], key = registry.labelFor(action);
     const title = action === 'rotate' ? '顺时针旋转 90° · 当前 ' + (ranges[selected].rotation ?? 0) + '°' : item.getAttribute('aria-label');
     item.title = title + (key ? '（' + key + '）' : '');
     if (key) item.setAttribute('aria-keyshortcuts', key.replaceAll('Ctrl', 'Control').split(/\s*\/\s*/).join(' '));
     else item.removeAttribute('aria-keyshortcuts');
   }
-  function refreshShortcuts() { shortcuts.forEach(shortcutTitle); }
+  function refreshShortcuts() { cutActions.forEach(shortcutTitle); }
   watch(window, 'cutshortcutschange', refreshShortcuts);
   function onKey(event) {
     if (event.isComposing) { event.stopPropagation(); return; }
@@ -861,15 +881,10 @@ window.mountVideoCutTimeline = function mountVideoCutTimeline(host, clip, option
       return;
     }
     const action = window.cutShortcuts?.actionFor(event);
-    const step = {'frame-back':-1,'frame-forward':1,'frames-back':-10,'frames-forward':10}[action];
-    if (step) {
-      event.preventDefault(); event.stopPropagation(); pause(); scrub(head+step*frame);
-      playhead.focus({preventScroll:true}); return;
-    }
-    if (shortcuts.includes(action)) {
-      event.stopPropagation();
+    if (frameSteps[action] || cutActions.includes(action)) {
       event.preventDefault();
-      if (!event.repeat && !buttons[action].disabled) buttons[action].click();
+      event.stopPropagation();
+      if (!event.repeat || frameSteps[action]) registry.execute(action, {target:event.target});
       return;
     }
     if (event.ctrlKey || event.metaKey || event.altKey) {
@@ -949,7 +964,7 @@ window.mountVideoCutTimeline = function mountVideoCutTimeline(host, clip, option
   watch(video, 'loadedmetadata', () => monitor?.updatePosition());
   playhead.focus({preventScroll: true});
   return {
-    mode: 'cut', video, isDirty, apply, discard: options.close,
+    mode: 'cut', video, isDirty, apply, canExecute, execute, discard: options.close,
     destroy() {
       disposed = true;
       pendingApply?.abort();

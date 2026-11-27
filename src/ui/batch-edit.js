@@ -27,7 +27,7 @@ window.mountBatchEdit = function(ctx) {
   }
   ctx.material.onclick=async()=>{try{const items=await ctx.materials();rename(items,false,(_,names)=>ctx.alias(items,names));}catch(error){ctx.warn(error.message);}};
   ctx.outputs.onclick=()=>{const items=ctx.works();rename(items,true,async(prefix)=>ctx.renameWorks(items,prefix));};
-  ctx.volume.onclick=()=>{
+  function openVolume() {
     const {d,body,foot,status}=modal('批量设置音量');
     const picker=el('select');for(const [key,title] of [['video','视频原声'],['voice','口播'],['sound','音效'],['music','背景音乐']])picker.append(new Option(title,key));
     const entries=el('div');entries.className='jj-level-list';const scope=el('select'),slider=el('input'),amount=el('output');
@@ -53,5 +53,6 @@ window.mountBatchEdit = function(ctx) {
       if(!targets.length){status.textContent='请至少选择一个片段。';return;}
       targets.forEach(row=>row.set(Number(slider.value)));ctx.changed();d.close();
     }));
-  };
+  }
+  return {openVolume};
 };

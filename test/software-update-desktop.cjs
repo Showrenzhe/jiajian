@@ -109,12 +109,13 @@ async function run() {
   assert.ok(await read(`(() => {
     const entry = document.querySelector('.titlebar #software-update-entry');
     const group = entry?.closest('#titlebar-update');
+    const palette = document.querySelector('#command-palette-entry');
     const shortcuts = document.querySelector('#cut-shortcuts-entry');
     const help = document.querySelector('#editing-help-entry');
     const settings = document.querySelector('#app-settings');
     return entry?.checkVisibility() && entry.textContent.includes('软件更新') &&
       shortcuts?.checkVisibility() && settings?.checkVisibility() &&
-      group?.nextElementSibling === shortcuts && shortcuts.nextElementSibling === help && help.nextElementSibling === settings &&
+      group?.nextElementSibling === palette && palette.nextElementSibling === shortcuts && shortcuts.nextElementSibling === help && help.nextElementSibling === settings &&
       group.getBoundingClientRect().right <= shortcuts.getBoundingClientRect().left &&
       shortcuts.getBoundingClientRect().right <= settings.getBoundingClientRect().left;
   })()`), 'The title bar should show Updates, Shortcuts and Settings in order');
@@ -165,13 +166,15 @@ async function run() {
   await until('!document.getElementById("update-dialog").open && document.activeElement.id === "software-update-entry"');
   await expectBadge(version);
   await press('Tab', 9);
-  assert.equal(await read('document.activeElement.id'), 'cut-shortcuts-entry');
+  assert.equal(await read('document.activeElement.id'), 'command-palette-entry');
   await press('Tab', 9, 8); // Shift+Tab moves back to the update entry.
   assert.ok(await read(`(() => {
     const entry = document.querySelector('#software-update-entry:focus-visible');
     return entry && getComputedStyle(entry, '::after').content.includes(entry.title);
   })()`), 'A keyboard user should see the available version on focus');
   await press('Tab', 9);
+  await press('Tab', 9);
+  assert.equal(await read('document.activeElement.id'), 'cut-shortcuts-entry');
   await press('Tab', 9);
   assert.equal(await read('document.activeElement.id'), 'editing-help-entry');
   await press('Tab', 9);

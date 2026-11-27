@@ -428,6 +428,8 @@
     });
     return {openCut: clip=>guardOpen(()=>openCut(clip)), openVoice: (...args)=>guardOpen(()=>openVoice(...args)),
       openScenes: asset=>guardOpen(()=>openScenes(asset)), openSlices: asset=>guardOpen(()=>openScenes(asset,true)),
+      canExecute: id => current?.canExecute?.(id) === true,
+      execute: id => current?.execute?.(id),
       close, dirty, confirmLeave, dropScene, toggleLocalPlayback, refresh: renderScenes};
   }
   window.createCutTrackEditor = createCutTrackEditor;

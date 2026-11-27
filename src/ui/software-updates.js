@@ -9,6 +9,11 @@ window.bindSoftwareUpdates = (api) => {
   const dismiss = $('update-notice-dismiss');
   const action = $('update-action');
   const error = $('update-error');
+  const registry = window.editorCommands;
+  const openId = 'software-update-entry', dismissId = 'update-notice-dismiss';
+  presentEditorCommand(entry, openId);
+  $('software-update-title').textContent = registry.get(openId).title;
+  presentEditorCommand(dismiss, dismissId);
   let state;
   let received = 0;
   let dismissed;
@@ -69,8 +74,9 @@ window.bindSoftwareUpdates = (api) => {
     };
     const hint = version && version !== currentVersion && updateHints[status];
     badge.hidden = !hint;
-    entry.title = hint ? '佳剪 v' + version + ' ' + hint : '打开软件更新';
-    entry.setAttribute('aria-label', hint ? '软件更新，' + entry.title : '软件更新');
+    const title = registry.get(openId).title;
+    entry.title = hint ? '佳剪 v' + version + ' ' + hint : title;
+    entry.setAttribute('aria-label', hint ? title + '，' + entry.title : title);
     const reminder = {
       available: descriptions.available, checking: descriptions.available, downloaded: '更新已就绪',
       error: retry === 'check' ? '上次发现 ' + version : '',
@@ -109,13 +115,18 @@ window.bindSoftwareUpdates = (api) => {
     catch (cause) { showError(cause.message); }
     finally { submitting = false; render(); }
   });
-  document.addEventListener('click', event => { if (event.target.id === 'update-settings-entry') open(); });
-  entry.addEventListener('click', open);
-  dismiss.addEventListener('click', () => {
-    dismissed = state?.version;
-    render();
-    entry.focus();
+  registry.bind(openId, {when:() => !dialog.open, run:open});
+  document.addEventListener('click', event => { if (event.target.id === 'update-settings-entry') registry.execute(openId); });
+  entry.addEventListener('click', () => registry.execute(openId));
+  registry.bind(dismissId, {
+    palette:false, when:() => !dismiss.hidden,
+    run:() => {
+      dismissed = state?.version;
+      render();
+      entry.focus();
+    },
   });
+  dismiss.addEventListener('click', () => registry.execute(dismissId));
   $('update-close').addEventListener('click', () => dialog.close());
   $('update-manage-installation').addEventListener('click', async () => {
     showError();
