@@ -198,13 +198,17 @@ function createTrackPreviewClock(clip) {
   const rate = window.placedVideoSpeed(clip);
   const retained = window.waveformSource(clip.ranges ?? [clip], clip.look?.head, clip.look?.tail);
   if (!(rate > 0 && retained.duration > 0)) return;
+  const windowSeconds=clip.videoWindow ?? clip.videoDuration ?? clip.matchedDuration;
+  const trim=['trim-start','trim-end','continue'].includes(clip.speedOverflow);
+  const length=trim && windowSeconds>0 ? Math.min(retained.duration,windowSeconds*rate) : retained.duration;
+  const begin=clip.speedOverflow==='trim-end' ? retained.duration-length : 0;
   const parts = [];
   let offset = 0, current = 0;
-  retained.visit(0, retained.duration, false, (start, end) => {
+  retained.visit(begin,begin+length,false,(start,end) => {
     parts.push({start, end, offset});
     offset += end - start;
   });
-  const duration = retained.duration / rate;
+  const duration=length/rate;
   function sourceAt(time) {
     const distance = Math.max(0, Math.min(duration, time)) * rate;
     current = parts.findIndex(part => distance < part.offset + part.end - part.start);
@@ -222,7 +226,7 @@ function createTrackPreviewClock(clip) {
     const part = parts[current];
     return (part.offset + Math.max(0, Math.min(part.end, source) - part.start)) / rate;
   }
-  return {duration, rate, sourceAt, timeAt};
+  return {duration,rate,sourceAt,timeAt,...(trim && {sourceEnd:parts.at(-1).end})};
 }
 
 window.mountPlayerTools = ({ panel, getClip, getTrackClock, seekTrackSource, isLibraryVideo, isEditor, isTrack, validClip, notify, onImageTime,

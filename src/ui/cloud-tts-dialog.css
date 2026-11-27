@@ -1,4 +1,4 @@
-:is(.cloud-tts-dialog, .cloud-settings-dialog) {
+:is(.cloud-tts-dialog, .cloud-settings-dialog, .speed-overflow-dialog) {
   --dialog-alert: var(--destructive-ink);
   --dialog-selection: var(--selected-fill);
   padding: 0;
@@ -9,11 +9,11 @@
   box-shadow: var(--sheet-shadow);
   color: var(--ink);
 }
-:is(.cloud-tts-dialog, .cloud-settings-dialog)::backdrop { background: var(--sheet-scrim); }
-:is(.cloud-tts-dialog, .cloud-settings-dialog) :focus-visible { outline: 2px solid var(--focus-ring); outline-offset: 2px; }
-:is(.cloud-tts-dialog, .cloud-settings-dialog) h2[tabindex="-1"]:focus { outline: none; }
-:is(.cloud-tts-dialog, .cloud-settings-dialog) h2 { margin: 0; font-size: 24px; letter-spacing: -.025em; line-height: 1.35; }
-:is(.cloud-tts-dialog, .cloud-settings-dialog) button {
+:is(.cloud-tts-dialog, .cloud-settings-dialog, .speed-overflow-dialog)::backdrop { background: var(--sheet-scrim); }
+:is(.cloud-tts-dialog, .cloud-settings-dialog, .speed-overflow-dialog) :focus-visible { outline: 2px solid var(--focus-ring); outline-offset: 2px; }
+:is(.cloud-tts-dialog, .cloud-settings-dialog, .speed-overflow-dialog) h2[tabindex="-1"]:focus { outline: none; }
+:is(.cloud-tts-dialog, .cloud-settings-dialog, .speed-overflow-dialog) h2 { margin: 0; font-size: 24px; letter-spacing: -.025em; line-height: 1.35; }
+:is(.cloud-tts-dialog, .cloud-settings-dialog, .speed-overflow-dialog) button {
   display: inline-flex;
   align-items: center;
   justify-content: center;
@@ -25,17 +25,17 @@
   background: transparent;
   color: var(--ink);
 }
-:is(.cloud-tts-dialog, .cloud-settings-dialog) button:hover:enabled { background: var(--hover-tint); }
-:is(.cloud-tts-dialog, .cloud-settings-dialog) :is(.cloud-tts-primary, .cloud-settings-primary):enabled { padding-inline: 15px; background: var(--action-fill); color: white; font-weight: 600; }
-:is(.cloud-tts-dialog, .cloud-settings-dialog) :is(.cloud-tts-primary, .cloud-settings-primary):hover:enabled { background: var(--blue-hover); }
-:is(.cloud-tts-dialog, .cloud-settings-dialog) :is(input[type="number"], input[type="url"], input[type="password"], select, textarea) {
+:is(.cloud-tts-dialog, .cloud-settings-dialog, .speed-overflow-dialog) button:hover:enabled { background: var(--hover-tint); }
+:is(.cloud-tts-dialog, .cloud-settings-dialog, .speed-overflow-dialog) :is(.cloud-tts-primary, .cloud-settings-primary):enabled { padding-inline: 15px; background: var(--action-fill); color: white; font-weight: 600; }
+:is(.cloud-tts-dialog, .cloud-settings-dialog, .speed-overflow-dialog) :is(.cloud-tts-primary, .cloud-settings-primary):hover:enabled { background: var(--blue-hover); }
+:is(.cloud-tts-dialog, .cloud-settings-dialog, .speed-overflow-dialog) :is(input[type="number"], input[type="url"], input[type="password"], select, textarea) {
   padding: 6px 9px;
   border: 1px solid var(--hairline);
   border-radius: 5px;
   background: var(--field-fill);
   color: var(--ink);
 }
-:is(.cloud-tts-dialog, .cloud-settings-dialog) :is(input[type="checkbox"], input[type="radio"], progress) { accent-color: var(--system-blue); }
+:is(.cloud-tts-dialog, .cloud-settings-dialog, .speed-overflow-dialog) :is(input[type="checkbox"], input[type="radio"], progress) { accent-color: var(--system-blue); }
 .cloud-tts-dialog { width: min(780px, calc(100vw - 36px)); max-height: calc(100dvh - 42px); }
 .cloud-tts-dialog[open] { display: grid; }
 .cloud-tts-dialog { grid-template-rows: auto minmax(0, 1fr) auto; overflow: hidden; }
@@ -120,10 +120,21 @@
 @media (max-width:720px) { .breeze-voices .cloud-tts-body { grid-template-columns:1fr; } }
 
 @media (prefers-reduced-transparency: reduce), (prefers-contrast: more), (forced-colors: active) {
-  :is(.cloud-tts-dialog, .cloud-settings-dialog) { backdrop-filter: none; background: var(--surface); }
+  :is(.cloud-tts-dialog, .cloud-settings-dialog, .speed-overflow-dialog) { backdrop-filter: none; background: var(--surface); }
 }
 @media (forced-colors: active) {
-  :is(.cloud-tts-dialog, .cloud-settings-dialog) { border: 1px solid CanvasText; }
+  :is(.cloud-tts-dialog, .cloud-settings-dialog, .speed-overflow-dialog) { border: 1px solid CanvasText; }
   .cloud-tts-voice-row:has(input:checked) { outline: 1px solid Highlight; outline-offset: -1px; }
   #cloud-tts-filters [aria-pressed="true"] { border: 1px solid Highlight; text-decoration: underline; }
 }
+
+.speed-inspector-actions,.speed-range-fields {display:flex;flex-wrap:wrap;align-items:end;gap:8px;}
+.speed-range-fields label {flex:1 1 80px;min-width:0;}
+.speed-range-fields input {display:block;width:100%;box-sizing:border-box;margin-top:4px;}
+.speed-overflow-dialog {padding:20px;border:1px solid var(--hairline);width:min(380px,calc(100vw - 40px));box-sizing:border-box;max-height:calc(100vh - 32px);overflow:auto;}
+.speed-overflow-dialog h2 {font-size:18px;margin:0 0 8px;}
+.speed-overflow-dialog p {margin:0 0 16px;overflow-wrap:anywhere;}
+.speed-overflow-actions {display:grid;gap:6px;margin-bottom:12px;}
+.speed-overflow-actions button {justify-content:flex-start;text-align:start;background:var(--field-fill);border:1px solid var(--hairline);}
+.speed-overflow-actions button:disabled {color:var(--secondary-ink);}
+.speed-overflow-dialog > [data-speed-cancel] {display:flex;margin-inline-start:auto;}

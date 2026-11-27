@@ -26,11 +26,11 @@ window.editVisualStyle = function (options) {
   const body=make('div');body.className='jj-look-body';body.append(visual,controls);
   const report=make('output');
   const scopeControl=select(options.scopes??{clip:'当前片段'},scope,(v)=>{scope=v;});
-  const foot=make('footer');foot.append(report,label('应用到',scopeControl),button('应用设置',()=>{
+  const foot=make('footer');foot.append(report,label('应用到',scopeControl),button('应用设置',async()=>{
     try{
       const groups={'调色':['grade','hsl'],'滤镜':['filter','lut'],'特效':['effects'],'背景':['background'],'去片头片尾':['head','tail']};
       const keys=[...new Set([...groups[tab],...Object.values(groups).flat().filter((k)=>JSON.stringify(initial[k])!==JSON.stringify(draft[k]))])];
-      options.apply(structuredClone(draft),scope,keys);dialog.close();
+      if(await options.apply(structuredClone(draft),scope,keys)!==false) dialog.close();
     }catch(error){report.textContent=error.message;}
   }));
   dialog.append(head,nav,body,foot);document.body.append(dialog);dialog.showModal();

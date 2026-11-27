@@ -1,12 +1,13 @@
 'use strict';
 
 const { randomUUID } = require('node:crypto');
+const {speedPlanningErrors} = require('./ui/messages-zh-cn.js');
 const { estimatedBytes } = require('./export-preflight.cjs');
 const { planMontage, analyzeNarrationSilence } = require('./media.cjs');
 const { measureBatchReuse } = require('./visual-similarity.cjs');
 const { normalizeSubprojects, resolveSubprojectShots,projectVoiceConfig } = require('./subprojects.cjs');
 
-async function prepareMontagePlans(config, catalog, { signal, random = Math.random, batchLimit } = {}) {
+async function prepareMontagePlans(config, catalog, { signal, random = Math.random, batchLimit, silenceCache } = {}) {
   signal?.throwIfAborted();
   if (config?.priority !== 'voice' || config.narrationMode !== 'segmented' || config.voiceAlignment === 'reference') return planMontage(config, catalog, random, batchLimit);
 
@@ -31,12 +32,13 @@ async function prepareMontagePlans(config, catalog, { signal, random = Math.rand
   const measured = new Map();
   for (let index = 0; index < voices.length; index += 4) {
     const group = voices.slice(index, index + 4);
-    const results = await Promise.allSettled(group.map((asset) => analyzeNarrationSilence(asset, { signal })));
+    const results = await Promise.allSettled(group.map((asset) => silenceCache?.get(asset) ?? analyzeNarrationSilence(asset, { signal })));
     signal?.throwIfAborted();
     for (const [position, result] of results.entries()) {
       const asset = group[position];
       if (result.status === 'rejected') throw new Error(`无法检查口播「${asset.name}」的接缝，请确认音频可以正常读取。`, { cause: result.reason });
       const edgeSilence = result.value;
+      silenceCache?.set(asset,edgeSilence);
       if (edgeSilence.leading || edgeSilence.trailing) measured.set(asset, edgeSilence);
     }
   }
@@ -78,6 +80,67 @@ async function prepareSubprojectPlans(config, scope, catalog, options) {
     }
   }
   return plans;
+}
+
+// Keep one pending draw per editor window. Retrying a dialog uses the same
+// pictures, narration rows, ordering, cover and music through both seam passes.
+function createSpeedPlanningSession() {
+  let pending;
+  return async function prepare(config,scope,catalog,{signal,response,random=Math.random}={}) {
+    if (!config.autoSpeedRange && !response) {
+      pending=undefined;
+      const options={signal,random};
+      return {plans:scope===undefined ? await prepareMontagePlans(config,catalog,options)
+        : await prepareSubprojectPlans(config,scope,catalog,options)};
+    }
+    const key=JSON.stringify([config,scope]);
+    let draws=[], choices, cursor=0;
+    let silenceCache=new Map();
+    if (response) {
+      if (!pending || response.token!==pending.token || pending.key!==key)
+        throw Error(speedPlanningErrors.expired);
+      choices={...pending.choices};
+      for (const item of pending.items) {
+        const value=response.choices?.[item.key];
+        if (!item.choices.includes(value) || (value==='group' && !item.groupAvailable))
+          throw Error(speedPlanningErrors.invalidChoice);
+        choices[item.key]=value;
+      }
+      draws=pending.draws;
+      catalog=pending.catalog;
+      silenceCache=pending.silenceCache;
+    } else {
+      catalog=new Map(catalog);
+    }
+    pending=undefined;
+    function nextDraw() {
+      if (response) {
+        if (cursor>=draws.length) throw Error(speedPlanningErrors.drawChanged);
+        return draws[cursor++];
+      }
+      const value=random();
+      draws.push(value);
+      return value;
+    }
+    const input={...config,batchSpeedChoices:choices};
+    const options={signal,random:nextDraw,silenceCache};
+    const plans=scope===undefined ? await prepareMontagePlans(input,catalog,options)
+      : await prepareSubprojectPlans(input,scope,catalog,options);
+    const grouped=new Map();
+    for (const plan of plans) {
+      for (const issue of plan.speedChallenges ?? []) {
+        const prior=grouped.get(issue.key);
+        const count=(prior?.count ?? 0)+1;
+        const extreme=!prior || (issue.direction==='high' ? issue.required>prior.required : issue.required<prior.required);
+        grouped.set(issue.key,{...(extreme ? issue : prior),count});
+      }
+    }
+    if (!grouped.size) return {plans};
+    const items=[...grouped.values()];
+    const token=randomUUID();
+    pending={key,draws,items,token,choices,catalog,silenceCache};
+    return {speedChallenge:{token,items}};
+  };
 }
 
 function describeClip({ asset, mirror, narration, visuals }) {
@@ -127,4 +190,4 @@ function selectPreviewPlans(batch, config, selection) {
   return indices.map((index) => batch.plans[index]);
 }
 
-module.exports = { createPreviewBatch, selectPreviewPlans, prepareMontagePlans, prepareSubprojectPlans };
+module.exports = { createPreviewBatch, selectPreviewPlans, prepareMontagePlans, prepareSubprojectPlans,createSpeedPlanningSession };

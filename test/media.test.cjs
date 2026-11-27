@@ -202,6 +202,10 @@ test('exported frames follow the selected shots across shortened narration seams
   const plans = await prepareMontagePlans(config, catalog, { random: () => 0 });
   assert.equal(new Set(plans.map(plan => plan.clips[1].asset)).size, 2);
   assert.ok(plans.every(plan => plan.clips[0].outputDuration < 0.5), 'the first narration seam must be shortened');
+  const {createSpeedPlanningSession}=require('../src/preview-plans.cjs');
+  const {speedChallenge}=await createSpeedPlanningSession()({...config,autoSpeedRange:{min:.1,max:1.5}},undefined,catalog,{random:()=>0});
+  const shortened=speedChallenge.items.find(item=>item.shotIndex===0);
+  assert.ok(shortened.target<.5 && shortened.required>1.5,'the original untrimmed ratio was exactly 1');
   const batch = await exportBatch(plans, output);
   assert.deepEqual(batch.failures, []);
 
@@ -1706,4 +1710,54 @@ test('reopens a legacy fixed-length shot and accelerates its entire source to it
   for(const p of [accelerated,whole]) assert.deepEqual(p.clips[0].visuals.map(v=>[v.sourceDuration,v.speed]),[[4,4]]);
   assert.equal(plan({priority:'picture'}).clips[0].sourceDuration,1);
   assert.equal(plan({voiceAlignment:'reference'}).clips[0].visuals[0].sourceDuration,1);
+});
+
+test('v3 overflow choices keep the chosen source frames and pitch in rendered clips',async t=>{
+  const {catalog,output}=await fixtureDirectory(t);
+  const file=path.join(output,'two-colors.mp4');
+  await ffmpeg(['-f','lavfi','-i','color=red:s=160x90:r=24:d=0.5','-f','lavfi','-i','color=blue:s=160x90:r=24:d=0.5',
+    '-f','lavfi','-i','sine=frequency=440:duration=1','-filter_complex','[0:v][1:v]concat=n=2:v=1:a=0[v]',
+    '-map','[v]','-map','2:a','-c:a','aac','-threads','2',file]);
+  catalog.set('two',await inspectAsset(file,'video'));
+  const config={...montage,count:1,keepAudio:true,musicIds:[],ratio:'16:9'};
+  const make=(strategy,speed,window,extra={})=>{
+    const {videoSpeedDecision,applyVideoSpeedDecision}=require('../src/ui/track-tools.js');
+    const clip={id:'two',asset:catalog.get('two'),start:0,end:1,speed:1,autoFitSpeed:true,
+      videoStart:0,videoDuration:window,videoFit:'hold',...extra};
+    const low=['loop','hold','group'].includes(strategy);
+    const decision=videoSpeedDecision(clip,window,{min:low ? speed : Math.min(speed,.25),max:low ? 4 : speed,choice:strategy,hasGroup:true});
+    assert.equal(decision.strategy,strategy);
+    assert.equal(applyVideoSpeedDecision(clip,decision),true);
+    if (strategy==='continue') assert.equal(clip.ranges,undefined);
+    return planMontage({...config,shots:[[clip,{id:'green',start:0,end:1}]],shotSettings:[{duration:window}]},catalog,()=>0)[0];
+  };
+  const plans=[make('trim-start',2,.25),make('trim-end',2,.25),make('continue',2,.25),
+    make('loop',1,1.5),make('hold',1,1.5),make('group',1,1.5),
+    make('loop',1,1.5,{ranges:[{start:.5,end:1},{start:0,end:.5}]}),make('hold',.25,4.5),make('continue',4,.2),make('trim-end',.1,.1)];
+  const batch=await exportBatch(plans,output);
+  assert.deepEqual(batch.failures,[]);
+  const shots=[['red',.16],['blue',.08],['red',.18],['red',1.2],['blue',1.2],['green',1.2],['blue',1.2]];
+  for(const [i,[color,at]] of shots.entries()){
+    const rgb=await frameColor(batch.results[i].path,at);
+    assert.ok(rgb[color]>90 && rgb[color]>=Math.max(...Object.values(rgb)),String(i)+' '+JSON.stringify(rgb));
+  }
+  assert.ok(Math.abs(await toneAt(batch.results[8].path,'0.04')-440)<65);
+  assert.ok(Math.abs(await toneAt(batch.results[7].path,'1.1')-440)<65);
+  assert.equal(await toneAt(batch.results[4].path,'1.13'),0);
+  assert.ok((await frameColor(batch.results[9].path,.02)).blue>200);
+});
+
+test('legacy narration playback preserves its derived rate while manual 1× stays at the stored rate',()=>{
+  const assets=new Map([['pic',{kind:'video',duration:4,name:'picture'}],['speech',{kind:'audio',duration:1,name:'voice'}]]);
+  for(const narrationMode of ['whole','segmented']){
+    for(const [speedMode,rate,source] of [['legacy',4,4],['manual',1,1]]){
+      const clip={id:'pic',start:0,end:4,speed:1,speedMode};
+      const [plan]=planMontage({...montage,shots:[[clip]],count:1,musicIds:[],priority:'voice',narrationMode,
+        narrationId:'speech',segmentNarrationIds:[['speech']],shotSettings:[{duration:1}],autoSpeedRange:{min:.5,max:2}},assets,()=>0);
+      assert.equal(plan.clips[0].visuals[0].speed,rate);
+      assert.equal(plan.clips[0].visuals[0].sourceDuration,source);
+      assert.equal(clip.speed,1);
+      assert.ok(!plan.speedChallenges);
+    }
+  }
 });

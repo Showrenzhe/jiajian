@@ -1,5 +1,95 @@
 'use strict';
 
+window.videoSpeedControls = (() => {
+  const key = 'jiajian.autoSpeedRange';
+  const defaults = {min: .25, max: 4};
+  const messages=window.editorMessages.videoSpeed;
+  const strategies=messages.strategies;
+  for(const element of document.querySelectorAll('[data-speed-text]')) {
+    element.textContent=messages[element.dataset.speedText];
+  }
+
+  function validRange(range) {
+    return Number.isFinite(range?.min) && Number.isFinite(range?.max)
+      && range.min >= window.minVideoSpeed && range.max <= Number.MAX_SAFE_INTEGER && range.min <= range.max;
+  }
+  let range;
+  try { range = JSON.parse(localStorage.getItem(key)); } catch {}
+  if (!validRange(range)) range = {...defaults};
+
+  const rateLabel = speed => '×' + Number((speed ?? 1).toPrecision(4));
+  function sourceLabel(clip) {
+    if (clip.speedMode === 'legacy') return messages.legacy;
+    if (clip.speedMode === 'manual') return messages.manual;
+    if (clip.speedMode === 'auto' || clip.autoFitSpeed) return messages.auto;
+    return messages.original;
+  }
+  function describe(clip) {
+    return [sourceLabel(clip) + ' ' + rateLabel(clip.speed), strategies[clip.speedOverflow]].filter(Boolean).join(' · ');
+  }
+  function bindSettings(container) {
+    const min = container.querySelector('#auto-speed-min'), max = container.querySelector('#auto-speed-max');
+    const save = container.querySelector('#auto-speed-save'), status = container.querySelector('[role="status"]');
+    const reset = () => { min.value=range.min; max.value=range.max; status.textContent=''; };
+    for (const input of [min,max]) {
+      input.min=window.minVideoSpeed; input.max=Number.MAX_SAFE_INTEGER;
+      input.addEventListener('input', () => { status.textContent=''; });
+    }
+    save.onclick = () => {
+      const next = {min:min.valueAsNumber,max:max.valueAsNumber};
+      if (!validRange(next)) {
+        status.textContent=messages.invalidRange;
+        (!min.validity.valid || next.min>next.max ? min : max).focus();
+        return;
+      }
+      try { localStorage.setItem(key, JSON.stringify(next)); }
+      catch { status.textContent=messages.storageError; return; }
+      range=next;
+      status.textContent=messages.saved;
+    };
+    return reset;
+  }
+
+  function choose(name, decision, limits=range) {
+    const dialog=document.querySelector('#speed-overflow-dialog');
+    const high=decision.direction==='high';
+    dialog.querySelector('h2').textContent=high ? messages.high : messages.low;
+    const required=rateLabel(decision.required);
+    const bounds=[rateLabel(limits.min),rateLabel(limits.max)];
+    dialog.querySelector('p').textContent=decision.count>1 ? messages.multiple(name,decision.count,required,...bounds)
+      : messages.detail(name,required,...bounds);
+    const actions=dialog.querySelector('.speed-overflow-actions');
+    actions.replaceChildren();
+    for (const choice of decision.choices) {
+      const button=document.createElement('button');
+      button.type='button'; button.dataset.speedChoice=choice;
+      button.textContent=strategies[choice]+' · '+rateLabel(high ? limits.max : limits.min);
+      if(choice==='group' && !decision.groupAvailable) {
+        button.disabled=true; button.textContent+=messages.unavailable;
+      }
+      button.onclick=()=>dialog.close(choice);
+      actions.append(button);
+    }
+    dialog.returnValue='';
+    const cancel=dialog.querySelector('[data-speed-cancel]');
+    cancel.onclick=()=>dialog.close('');
+    return new Promise(resolve=>{
+      dialog.addEventListener('close',()=>resolve(decision.choices.includes(dialog.returnValue) ? dialog.returnValue : null),{once:true});
+      dialog.showModal();
+    });
+  }
+  async function collectChoices(items,limits) {
+    const choices={};
+    for(const item of items) {
+      const choice=await choose(item.name,item,limits);
+      if(!choice) return null;
+      choices[item.key]=choice;
+    }
+    return choices;
+  }
+  return {get range() {return {...range};}, rateLabel, describe, bindSettings, choose, collectChoices};
+})();
+
 (() => {
   const seedAudio = 'seed-audio';
   const gateway = 'gateway';
@@ -23,6 +113,15 @@
               <label><input type="radio" name="appearance" value="dark"><span class="appearance-preview" aria-hidden="true"></span><span>深色</span></label>
               <label><input type="radio" name="appearance" value="system"><span class="appearance-preview" aria-hidden="true"></span><span>跟随系统</span></label>
             </div>
+          </fieldset>
+          <fieldset id="auto-speed-settings" hidden>
+            <legend>${window.editorMessages.videoSpeed.settings}</legend>
+            <div class="speed-range-fields">
+              <label>${window.editorMessages.videoSpeed.min}<input id="auto-speed-min" type="number" step="any"></label>
+              <label>${window.editorMessages.videoSpeed.max}<input id="auto-speed-max" type="number" step="any"></label>
+              <button id="auto-speed-save" type="button">${window.editorMessages.videoSpeed.saveRange}</button>
+            </div>
+            <small role="status" aria-live="polite"></small>
           </fieldset>
           <button type="button" id="update-settings-entry">软件更新与通道</button>
           <details id="performance-settings" hidden>
@@ -113,6 +212,8 @@
     const dialog = $('dialog');
     const appearance = container.querySelector('#appearance-settings');
     window.bindAppearancePicker(appearance);
+    const speedSettings=container.querySelector('#auto-speed-settings');
+    const resetSpeedSettings=window.videoSpeedControls.bindSettings(speedSettings);
     const provider = $('provider');
     const address = $('base-url');
     const password = $('api-key');
@@ -228,6 +329,8 @@
       const state = { showAppearance, loading: true, ready: false, provider: breeze, selection: breeze, gatewayAddress: '', baseUrl: breezeEndpoint, hasApiKey: false };
       session = state;
       appearance.hidden = !showAppearance;
+      speedSettings.hidden = !showAppearance;
+      resetSpeedSettings();
       perf('settings').open = false;
       perf('settings').hidden = !showAppearance;
       perf('options').disabled = true;

@@ -18,8 +18,8 @@ window.mountVideoCutTimeline = function mountVideoCutTimeline(host, clip, option
   };
   let ranges = structuredClone(original);
   const initialSpeed = clip.speed ?? 1;
-  const slotDuration = clip.videoWindow ?? (clip.videoFit === 'hold' ? clip.videoDuration : undefined);
-  const initialAutoFit = Boolean(slotDuration && clip.autoFitSpeed);
+  const slotDuration = clip.matchedDuration ?? clip.videoWindow ?? (clip.videoFit === 'hold' ? clip.videoDuration : undefined);
+  const initialAutoFit = Boolean(slotDuration && clip.speedMode!=='legacy' && clip.speedMode!=='manual' && (clip.autoFitSpeed || clip.speedMode==='auto'));
   let autoFit = initialAutoFit;
   let speed = initialSpeed;
   const history = window.createEditHistory({ranges, speed, autoFit});
@@ -121,7 +121,7 @@ window.mountVideoCutTimeline = function mountVideoCutTimeline(host, clip, option
   speedSelect.setAttribute('aria-label', '片段倍速');
   const autoOption = slotDuration > 0 ? new Option('自动', 'auto') : undefined;
   if (autoOption) speedSelect.add(autoOption);
-  const speeds = [...new Set([0.5, 0.75, 1, 1.25, 1.5, 2, 3, initialSpeed])].sort((a, b) => a - b);
+  const speeds = [...new Set([0.25, 0.5, 0.75, 1, 1.25, 1.5, 2, 3, 4, initialSpeed])].sort((a, b) => a - b);
   const displayRate = rate => Number(rate.toPrecision(4)) + '×';
   for (const rate of speeds) speedSelect.add(new Option(displayRate(rate), String(rate)));
   speedLabel.append(speedSelect);
@@ -215,8 +215,12 @@ window.mountVideoCutTimeline = function mountVideoCutTimeline(host, clip, option
     }
     if (autoOption) {
       const retained = total - (clip.look?.head ?? 0) - (clip.look?.tail ?? 0);
-      const next = window.fitVideoSpeed(retained, slotDuration);
-      const label = '自动 · ' + displayRate(next);
+      const needed = window.fitVideoSpeed(retained, slotDuration);
+      const {min,max}=window.videoSpeedControls.range;
+      const confirmed=initialAutoFit && window.sameEditSnapshot(original,ranges);
+      const next=confirmed ? initialSpeed : Math.min(max,Math.max(min,needed));
+      const pending=!confirmed && (needed>max || needed<min);
+      const label='自动 · '+displayRate(next)+(pending ? ' · '+window.editorMessages.videoSpeed.pending : '');
       if (autoOption.text !== label) autoOption.text = label;
       if (autoFit) setSpeed(next);
     }
@@ -557,7 +561,9 @@ window.mountVideoCutTimeline = function mountVideoCutTimeline(host, clip, option
     buttons.cancel.focus({preventScroll: true});
     status(ranges.some(range => range.reverse) ? '正在应用倒放剪辑…' : '正在应用剪辑…');
     try {
-      if (await options.commit(structuredClone(ranges), speed, autoFit, attempt.signal) === false) throw new Error('无法应用，请检查素材和分镜。');
+      const applied=await options.commit(structuredClone(ranges),speed,autoFit,attempt.signal);
+      if (applied===null) { cancel(); return false; }
+      if (applied===false) throw new Error('无法应用，请检查素材和分镜。');
       if (attempt.signal.aborted) return false;
       options.close();
       return true;

@@ -14,7 +14,7 @@ const {
   inspectAsset, createVideoThumbnail, createTrackProxy, supportsHdrToneMap, extractAudioWaveform, previewSubtitleStyle, planExtraction, exportBatch,
 } = require('./media.cjs');
 const { readHistory, remember, renameOutputs, resolveOutput } = require('./history.cjs');
-const { createPreviewBatch, selectPreviewPlans, prepareMontagePlans, prepareSubprojectPlans } = require('./preview-plans.cjs');
+const { createPreviewBatch, selectPreviewPlans, createSpeedPlanningSession } = require('./preview-plans.cjs');
 const { loadProject, saveProject, readProject, embeddedThumbnail, projectReferences } = require('./project-format.cjs');
 const { readSubtitles } = require('./subtitles.cjs');
 const { listWorkflows } = require('./workflow-provider.cjs');
@@ -218,6 +218,7 @@ async function launchDesktop({
   let draftCloseAllowed = false;
   let updateLocked = false;
   let previewBatch;
+  const planWithSpeedChoices=createSpeedPlanningSession();
   let activePreview;
   let cloudSettings = { baseUrl: '', apiKey: '' };
   let cloudSettingsWarning;
@@ -1713,11 +1714,12 @@ async function launchDesktop({
     try {
       const { config, scope } = request?.scope === undefined ? { config: request } : request;
       requireOnline(config);
-      const renderConfig=await renderConfigFor(config);
-      const plans = scope === undefined ? await prepareMontagePlans(renderConfig, catalog, { signal })
-        : await prepareSubprojectPlans(renderConfig, scope, catalog, { signal });
+      const {speedResponse,...base}=config;
+      const renderConfig=await renderConfigFor(base);
+      const {plans,speedChallenge}=await planWithSpeedChoices(renderConfig,scope,catalog,{signal,response:speedResponse});
       const settings=await performanceCache.settledSettings();
       if (signal.aborted || settings.hdrMode!==renderConfig.hdrMode) return null;
+      if (speedChallenge) return {speedChallenge};
       previewBatch = createPreviewBatch(renderConfig, catalog, plans);
       return { id: previewBatch.id, entries: previewBatch.entries };
     } catch (error) {
@@ -1775,10 +1777,13 @@ async function launchDesktop({
     job = new AbortController();
     const { signal } = job;
     try {
-      const renderConfig=mode==='montage' ? await renderConfigFor(config) : null;
-      const plans = mode === 'audio' ? planExtraction(config, catalog)
-        : chosen ? selectPreviewPlans(previewBatch, renderConfig, chosen) : await prepareMontagePlans(renderConfig, catalog, { signal });
+      const {speedResponse,...base}=mode==='montage' ? config : {};
+      const renderConfig=mode==='montage' ? await renderConfigFor(base) : null;
+      const {plans,speedChallenge}= mode==='audio' ? {plans:planExtraction(config,catalog)}
+        : chosen ? {plans:selectPreviewPlans(previewBatch,renderConfig,chosen)}
+        : await planWithSpeedChoices(renderConfig,undefined,catalog,{signal,response:speedResponse});
       if (signal.aborted) return null;
+      if (speedChallenge) return {speedChallenge};
       const selection = await dialogs.showOpenDialog(win, { title: '选择导出目录', properties: ['openDirectory', 'createDirectory'] });
       if (selection.canceled) return null;
       await checkPlanFolderFiles(plans, signal);

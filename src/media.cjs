@@ -8,7 +8,7 @@ const path = require('node:path');
 const { createInterface } = require('node:readline');
 const { promisify } = require('node:util');
 const { formatSubtitles, normalizeSubtitles, parseSubtitles } = require('./subtitles.cjs');
-const { normalizeShotSettings, normalizeRanges, normalizeSegmentVoiceCuts, sliceSource } = require('./shot-timing.cjs');
+const { normalizeShotSettings, normalizePictureRanges, normalizeSegmentVoiceCuts, sliceSource } = require('./shot-timing.cjs');
 const { candidateVideoLanes, pictureSpan, emptyVideoCells, usesPlacedVideoSource, soloLaneSequence, joinedVideoSequence, videoGroupLeaders, normalizeVideoGaps, placedVideoSpeed, minVideoSpeed } = require('./ui/track-tools.js');
 const trackControls = require('./ui/track-controls.js');
 const { preferSolo } = trackControls;
@@ -19,7 +19,7 @@ const { normalizeLayers, normalizeTransform, normalizePackaging, packagingChoice
 const { composeLayers, writeLayerTexts } = require('./packaging-render.cjs');
 const { visualMotion } = require('./layer-motion.cjs');
 const { fontFamily } = require('./text-style.cjs');
-const { maxCandidates, minClipSeconds, minEdgeSilence, audioRate, withOutputFrames, pictureFrames, voiceLength, pieces, repeatVisual, visualDuration, fitVisuals, placedVideoFrames, fitSegmentedVoice, fitWholeVoice, fitReferenceWhole } = require('./ui/voice-alignment.js');
+const { maxCandidates, minClipSeconds, minEdgeSilence, audioRate, withOutputFrames, pictureFrames, voiceLength, pieces, repeatVisual, visualDuration, fitVisuals, fitAutomaticVisuals, fixedSpeedPolicy, fixedSpeedVisuals, checkSpeedWindow, placedVideoFrames, fitSegmentedVoice, fitWholeVoice, fitReferenceWhole } = require('./ui/voice-alignment.js');
 const vendorPath = require('./vendor-path.cjs');
 const { isMaterialPath } = require('./material-path.cjs');
 
@@ -556,6 +556,13 @@ function visualPool(shot, selected) {
   return [selected, ...shot.filter((candidate) => candidate !== selected && candidate.mirror === selected.mirror)];
 }
 
+// Variable-length effect choices must not move the next composition's draw when
+// its predecessor gains source parts after a speed decision.
+function effectRandom(random) {
+  let state=Math.floor(random()*0x100000000)>>>0;
+  return () => ((state=(Math.imul(state,1664525)+1013904223)>>>0)/0x100000000);
+}
+
 // Placements are saved on the editor's untrimmed narration ruler. A generated
 // take can shorten its seams or reorder its shots while leaving free clips fixed.
 function editorSpeechWindows(shots, segmented, fps) {
@@ -597,7 +604,7 @@ function alignSpeechPlacement(source, clock, fps) {
   if (fillsShot && clock.span > 0) {
     if (source.videoWindow !== undefined) result.videoWindow = clock.span;
     else result.videoDuration = clock.span;
-    if (source.autoFitSpeed && source.asset.kind === 'video') {
+    if (source.autoFitSpeed && source.asset.kind === 'video' && !fixedSpeedPolicy(source)) {
       result.speed = source.sourceDuration / clock.span;
       result.duration = clock.span;
     }
@@ -709,11 +716,12 @@ function planMontage(config, catalog, random = Math.random, batchLimit = maxMont
       if (clip?.enabled === false || !trackControls.participates(controls,'vis'+lanes[candidateIndex])) return [];
       const asset = requireAsset(catalog, clip?.id, 'video', 'image');
       const volume = clip.volume === undefined ? 1 : requireNumber(clip.volume, 0, 100, `${asset.name} 的原声音量`) / 100;
-      const ranges = clip.ranges === undefined ? undefined : normalizeRanges(clip.ranges, clip.start, clip.end);
+      const ranges = clip.ranges === undefined ? undefined : normalizePictureRanges(clip.ranges, clip.start, clip.end);
       const layers = clip.layers === undefined ? {} : {
         layers: normalizeLayers(clip.layers, checkLayerAsset).filter(layer=>trackControls.participates(controls, trackControls.layerKey(layer))),
       };
       layers.videoLane = lanes[candidateIndex];
+      layers.originalMaterialId=clip.sourceEdit?.id ?? clip.id;
       if(clip.videoWindow!==undefined) layers.videoWindow=requireNumber(clip.videoWindow,Number.MIN_VALUE,Number.MAX_SAFE_INTEGER,'视频轨片段时长');
       if(clip.videoGaps) layers.videoGaps=normalizeVideoGaps(clip.videoGaps);
       if(clip.videoGroup) layers.videoGroup=clip.videoGroup;
@@ -722,6 +730,8 @@ function planMontage(config, catalog, random = Math.random, batchLimit = maxMont
       if (clip.videoStart !== undefined) layers.videoStart = requireNumber(clip.videoStart, 0, Number.MAX_SAFE_INTEGER, '视频片段的时间轴落点');
       if (clip.videoFollowsShot !== undefined) layers.videoFollowsShot = clip.videoFollowsShot;
       if (clip.autoFitSpeed) layers.autoFitSpeed = true;
+      if (clip.speedMode) layers.speedMode=clip.speedMode;
+      if (clip.speedOverflow) layers.speedOverflow=clip.speedOverflow;
       if (clip.videoDuration !== undefined) layers.videoDuration = requireNumber(clip.videoDuration, Number.MIN_VALUE, Number.MAX_SAFE_INTEGER, '视频片段的时间轴裁切时长');
       if (clip.videoFit !== undefined) {
         if (clip.videoFit !== 'hold' || layers.videoStart === undefined || layers.videoDuration === undefined) throw new Error('视频片段的切点窗口无效。');
@@ -766,7 +776,7 @@ function planMontage(config, catalog, random = Math.random, batchLimit = maxMont
           ...(parts[0].start!==start && {layerStart:parts[0].start-start}) };
       }
       const full=sourceClip(retained,sourceDuration);
-      if (!matchedDuration && shotDuration && sourceDuration > shotDuration * speed) {
+      if (!matchedDuration && shotDuration && sourceDuration > shotDuration * speed && !fixedSpeedPolicy(full)) {
         const size=shotDuration*speed;
         const offset=settings[index].smartTrim ? random()*(sourceDuration-size) : 0;
         const trimmed=sourceClip(sliceSource(retained,offset,size),size);
@@ -838,6 +848,9 @@ function planMontage(config, catalog, random = Math.random, batchLimit = maxMont
     draws = keys.map(key => takes.get(key).pop());
   }
   return draws.map((indices) => {
+    const speedChallenges=[];
+    const speedOptions={range:config.autoSpeedRange,choices:config.batchSpeedChoices,report:issue=>speedChallenges.push(issue)};
+    const lookRandom=config.autoSpeedRange ? effectRandom(random) : random;
     if (coverShot) indices[0] = Math.min(shots[0].length - 1,Math.floor(random()*shots[0].length));
     const narrationChoices = indices.slice(shots.length, shots.length + voiceGroups.length);
     const selection = packaging.select(indices.slice(shots.length + voiceGroups.length));
@@ -878,14 +891,16 @@ function planMontage(config, catalog, random = Math.random, batchLimit = maxMont
     const voicePriority = priority === 'voice' && (segmented || narration);
     const pools = scenes.map(({ shot, index }) => visualPool(shot, shot[indices[index]]));
     if (voicePriority) {
-      if (segmented) clips = fitSegmentedVoice(clips, pools, config.fps, alignment);
-      else if (alignment === 'reference') clips = fitReferenceWhole(clips, wholeDuration, config.fps);
-      else clips = fitWholeVoice(clips, pools, wholeDuration, config.fps);
+      if (segmented) clips = fitSegmentedVoice(clips, pools, config.fps, alignment,false,speedOptions);
+      else if (alignment === 'reference') clips = fitReferenceWhole(clips, wholeDuration, config.fps,pools,speedOptions);
+      else clips = fitWholeVoice(clips, pools, wholeDuration, config.fps,speedOptions);
     } else {
       const frames = pictureFrames(clips.map(clip => clip.shotDuration ?? clip.duration), config.fps);
       clips = clips.map((clip, index) => {
         const duration = clip.shotDuration ?? clip.duration;
         const outputFrames = frames[index];
+        const timed=checkSpeedWindow(clip,pools[index],duration,speedOptions);
+        if (fixedSpeedPolicy(timed)) return fixedSpeedVisuals(timed,pools[index],duration,outputFrames,config.fps);
         if (usesPlacedVideoSource(clip,false)) return placedVideoFrames(clip,outputFrames,config.fps);
         if (!clip.retainedRanges && duration <= clip.duration + 1e-9) return { ...clip, outputFrames, outputDuration: outputFrames/config.fps };
         const visuals = [];
@@ -896,7 +911,7 @@ function planMontage(config, catalog, random = Math.random, batchLimit = maxMont
           if (used >= duration - 1e-9) break;
         }
         repeatVisual(visuals, duration - used);
-        return fitVisuals(clip, visuals, Math.max(1, visualDuration(visuals) / duration), outputFrames, config.fps);
+        return fitAutomaticVisuals(clip,pools[index],visuals,Math.max(1,visualDuration(visuals)/duration),outputFrames,config.fps,speedOptions);
       });
     }
     if (clips.at(-1).transition) clips.at(-1).transition = null;
@@ -931,7 +946,9 @@ function planMontage(config, catalog, random = Math.random, batchLimit = maxMont
         source = alignSpeechPlacement(source,clock,config.fps);
         const videoDuration=pictureSpan(source,shotSpan);
         const {outputFrames}=withOutputFrames(source,videoDuration,config.fps);
-        const {visuals}=fitVisuals(source,pieces(source),1,outputFrames,config.fps);
+        const timed=owner.speedOverflow ? {...source,speed:owner.speed,speedOverflow:owner.speedOverflow,duration:source.sourceDuration/owner.speed} : source;
+        const {visuals}=fixedSpeedPolicy(timed) ? fixedSpeedVisuals(timed,visualPool(pool,source),videoDuration,outputFrames,config.fps)
+          : fitVisuals(source,pieces(source),1,outputFrames,config.fps);
         return {...owner,...(source.videoStart !== undefined && {videoStart:source.videoStart}),videoFit:'hold',videoDuration,visuals};
       }
       for(const other of sequence) {
@@ -940,7 +957,7 @@ function planMontage(config, catalog, random = Math.random, batchLimit = maxMont
       return clip.videoFit==='hold' || soloSequence.length || fillWindow || clip.outputDuration===0 ? fitPicture(full,clip) : clip;
     }).concat(extraPictures);
     clips = completeDisplacedShots(clips,fullSourceShots,indices,placementClocks,config.fps);
-    clips = chooseLooks(clips,catalog,random,effectUseCounts);
+    clips = chooseLooks(clips,catalog,lookRandom,effectUseCounts);
     const pictureDuration = clips.reduce((frames, clip) => frames + clip.outputFrames, 0) / config.fps;
     const sourceVisualDuration = segmented || voicePriority ? baseDuration : pictureDuration;
     const sequenceDuration = segmented && voicePriority
@@ -958,7 +975,7 @@ function planMontage(config, catalog, random = Math.random, batchLimit = maxMont
     const anchorIndex=followShot==null ? 0 : clips.findIndex((c)=>c.shotIndex===followShot);
     if(anchorIndex<0) throw new Error('整段口播跟随的分镜不存在。');
     const voiceStart=clips.slice(0,anchorIndex).reduce((sum,c)=>sum+(c.outputDuration ?? c.duration),0);
-    const scheduled = chooseLooks(scheduleLayers({ pack, selection, catalog, clips, duration, wholeIndex: wholeTrackIndex, narration,voiceStart,narrationSpeed }),catalog,random,effectUseCounts);
+    const scheduled = chooseLooks(scheduleLayers({ pack, selection, catalog, clips, duration, wholeIndex: wholeTrackIndex, narration,voiceStart,narrationSpeed }),catalog,lookRandom,effectUseCounts);
     let voiceSubtitles=subtitleStyle?.enabled === false || (!segmented && !visible('caption'+wholeTrackIndex)) ? null :
       generatedSubtitleTrack({segmented,clips,narration,caption:subtitles ?? caption,duration:audioDuration,narrationSpeed,voiceStart});
     if (timelineCaptions && subtitleStyle?.enabled !== false && visible('pasted-captions')) {
@@ -986,6 +1003,7 @@ function planMontage(config, catalog, random = Math.random, batchLimit = maxMont
       ...(layers.length && { layers }), ...(selection.composite !== undefined && { composite: selection.composite }),
       keepAudio: config.keepAudio, music: musicPool[musicIndex] ?? null, musicVolume:audible('music'+musicIndex) ? gain('music',config.musicIds[musicIndex])??musicVolume : 0, musicStart,
       ...(musicSpeeds[musicIndex] && {musicSpeed:musicSpeeds[musicIndex]}), ...(narrationSpeed!==1 && {narrationSpeed}),
+      ...(speedChallenges.length && {speedChallenges}),
       narration, narrationVolume:!segmented && !audible('whole'+wholeTrackIndex) ? 0 : (segmented?undefined:gain('whole',voiceId,null,wholeTrackIndex))??narrationVolume, narrationMode, priority, visualDuration: sourceVisualDuration,
       ...(videoCues.length && {videoSubtitles:{name:'视频字幕',cues:videoCues}}),
       subtitles: voiceSubtitles,...(voiceStart && {voiceStart}),
@@ -1182,6 +1200,9 @@ function montageArgs(plan, { intermediate = false } = {}) {
     const renderClock=clip.videoFit==='hold' ? clip.visuals[0] : clip;
     const {outputFrames,outputDuration}=renderClock;
     const seconds = time(sourceDuration);
+    const sourceFps=asset.fps || fps;
+    const subframe=asset.kind==='video' && !looped && sourceDuration<1/sourceFps;
+    const seek=subframe ? Math.max(0,Math.min(Math.floor(start*sourceFps)/sourceFps,(asset.duration ?? Infinity)-1/sourceFps)) : start;
     // FFmpeg seeks on the container clock. Keep the interval before a late
     // first picture; otherwise resetting both streams separately advances video.
     const delay = Math.max(0, (asset.videoDelay ?? 0) - start);
@@ -1191,8 +1212,8 @@ function montageArgs(plan, { intermediate = false } = {}) {
       args.push(...stillInput, '-loop', '1', '-framerate', String(fps), '-threads', '2', '-t', seconds, '-i', asset.path);
     } else {
       args.push(...mediaInput, ...(asset.alpha && asset.codec === 'vp9' ? ['-c:v', 'libvpx-vp9'] : []),
-        ...(looped ? ['-stream_loop', '-1'] : []), '-threads', '2', '-ss', time(start),
-        '-t', delay ? time(Math.max(sourceDuration, delay + 1 / (asset.fps || fps))) : seconds, '-i', asset.path);
+        ...(looped ? ['-stream_loop', '-1'] : []), '-threads', '2', '-ss', time(seek),
+        '-t', time(Math.max(start-seek+sourceDuration,delay ? delay+1/sourceFps : 0,subframe ? 1.5/sourceFps : 0)), '-i', asset.path);
     }
     const originalAudible = keepAudio && volume > 0 && asset.audioIndex !== null;
     const source = lookGraph({part:clip.visuals?.[0] ?? clip,source:pictureInput(asset, visualInput),index,width,height,fps,duration:seconds,graph:filters,overlayFormat,
@@ -1211,13 +1232,14 @@ function montageArgs(plan, { intermediate = false } = {}) {
       const outputSeconds = time(outputDuration);
       // A very fast edit can collapse every input timestamp to zero. Decode
       // its first frame before resampling so its reserved frame stays visible.
-      const retime = outputFrames === 1 && sourceDuration / speed < 1 / fps
+      const retime = subframe || (outputFrames === 1 && sourceDuration / speed < 1 / fps)
         ? 'trim=end_frame=1,setpts=PTS-STARTPTS' : `setpts=(${origin})/${speed}`;
       filters.push(`${source}settb=AVTB,${retime},fps=${fps}:start_time=0:eof_action=pass,${shape},tpad=stop_mode=clone:stop=${outputFrames},trim=end_frame=${outputFrames}[v${index}]`);
       const tempo = originalAudible ? audioTempo(speed) : [];
       const hasVoice = voice && segmentSpeechDuration(clip) > 1e-7;
       const bed = hasVoice && !alignVoices && !positioned ? `[bed${index}]` : `[a${index}]`;
-      filters.push([audio, `atrim=duration=${seconds}`, ...tempo, `apad=whole_dur=${outputSeconds}`, `atrim=duration=${outputSeconds}`, `asetpts=PTS-STARTPTS${bed}`].join(','));
+      const soundTrim=seek===start ? `atrim=duration=${seconds}` : `atrim=start=${time(start-seek)}:duration=${seconds},asetpts=PTS-STARTPTS`;
+      filters.push([audio, soundTrim, ...tempo, `apad=whole_dur=${outputSeconds}`, `atrim=duration=${outputSeconds}`, `asetpts=PTS-STARTPTS${bed}`].join(','));
       if (hasVoice) {
         addVoice(clip, index);
       } else if (alignVoices && !positioned) {
@@ -1427,7 +1449,9 @@ async function prepareVisualTracks(plan, temporaryDirectory, temporaryFiles, { s
     for (const visual of parts) {
       if (visual.repeat > 1) {
         const cycleDuration = (visual.sourceDuration ?? visual.duration) / visual.speed;
-        const cycle = await renderTrack([withOutputFrames(visual, cycleDuration, plan.fps)]);
+        const cycleParts=visual.cycleParts?.map(part=>({...part,look:visual.look}));
+        const cycle = await renderTrack(cycleParts ? fitVisuals(visual,cycleParts,1,withOutputFrames(visual,visual.duration,plan.fps).outputFrames,plan.fps).visuals.filter(p=>p.outputFrames>0)
+          : [withOutputFrames(visual, cycleDuration, plan.fps)]);
         tracks.push({ ...cycle, duration: visual.outputDuration, looped: true, outputFrames: visual.outputFrames, outputDuration: visual.outputDuration });
       } else {
         tracks.push(visual);
