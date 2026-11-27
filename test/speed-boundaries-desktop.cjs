@@ -113,7 +113,8 @@ async function run() {
     await click('#save-project');
     await wait(el('#notice')+'.textContent.includes("工程已保存") && !'+el('#save-project')+'.disabled','保存工程');
     const doc = JSON.parse(await fs.readFile(file));
-    assert.equal(doc.version,4);
+    assert.equal(doc.version,5);
+    assert.equal(doc.config.narrationTrim.mode,'legacy');
     const clip = doc.config.shots[0][0];
     for (const [key,value] of Object.entries(expected)) assert.equal(clip[key],value,key);
   }
@@ -190,7 +191,7 @@ async function run() {
     await save(high,{speed:3,speedMode:'auto',speedOverflow:'trim-end'});
     const tail=JSON.parse(await fs.readFile(high)).config.shots[0][0].ranges;
     assert.deepEqual(tail,[{start:5,end:8}]);
-    assert.deepEqual(await fs.readFile(path.join(root,'高倍速.pre-v4.jiajian')),original);
+    assert.deepEqual(await fs.readFile(path.join(root,'高倍速.pre-v5.jiajian')),original);
 
     await field('#track-speed',1);
     await click('#track-speed-manual');
@@ -199,7 +200,7 @@ async function run() {
     await wait(el('#notice')+'.textContent.includes("已匹配 0 条候选")','批量匹配跳过手动片段');
     await wait('!'+dialog+'.open && '+el('#track-speed-source')+'.textContent.includes("手动")','批量匹配保留手动锁定');
     await save(high,{speed:1,speedMode:'manual',speedOverflow:undefined});
-    assert.deepEqual(await fs.readFile(path.join(root,'高倍速.pre-v4.jiajian')),original);
+    assert.deepEqual(await fs.readFile(path.join(root,'高倍速.pre-v5.jiajian')),original);
     await open('#open-project',high);
     assert.match(await read(el('#track-speed-source')+'.textContent'),/手动.*×1/);
 

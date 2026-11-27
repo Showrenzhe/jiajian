@@ -55,6 +55,10 @@
 
   function voiceRange(clips, index) {
     const clip = clips[index];
+    return retainedVoiceRange(clip,Boolean(clips[index-1]?.narration),Boolean(clips[index+1]?.narration));
+  }
+  function retainedVoiceRange(clip,trimHead,trimTail) {
+    if (clip.narrationMap) return {narrationStart:clip.narrationMap.trimStart, narrationDuration:clip.narrationMap.duration};
     const voice = clip.narration;
     const duration = voiceLength(clip);
     const { leading = 0, trailing = 0 } = voice.edgeSilence ?? {};
@@ -62,12 +66,29 @@
     const speed = clip.narrationSpeed ?? 1;
     const head = (first ? Math.min(first.end - first.start, leading - first.start) : leading)/speed;
     const tail = (last ? Math.min(last.end - last.start, trailing - (voice.duration - last.end)) : trailing)/speed;
-    const start = clips[index - 1]?.narration && head >= minEdgeSilence ? head - seamPadding : 0;
-    const end = clips[index + 1]?.narration && tail >= minEdgeSilence ? tail - seamPadding : 0;
+    const start = trimHead && head >= minEdgeSilence ? head - seamPadding : 0;
+    const end = trimTail && tail >= minEdgeSilence ? tail - seamPadding : 0;
     if (!Number.isFinite(start + end) || duration - start - end < minClipSeconds) {
       return { narrationStart: 0, narrationDuration: duration };
     }
     return { narrationStart: start, narrationDuration: duration - start - end };
+  }
+
+  function appendLegacyCaptionCues(cues, caption, offset, speechDuration, speechStart = 0, speed = 1) {
+    if (!caption) return;
+    const start = Math.max(0, Math.ceil(offset * 1000 - 1e-7));
+    const stop = Math.floor((offset + speechDuration) * 1000 + 1e-7);
+    if (stop <= start) return;
+    if (typeof caption === 'string') {
+      cues.push({ start, end: stop, text: caption });
+      return;
+    }
+    const sourceStart = speechStart * 1000;
+    for (const cue of caption.cues) {
+      const shiftedStart = Math.max(start, Math.round(offset * 1000 + (cue.start - sourceStart)/speed));
+      const shiftedEnd = Math.min(Math.round(offset * 1000 + (cue.end - sourceStart)/speed), stop);
+      if (shiftedEnd > shiftedStart) cues.push({ ...cue,start: shiftedStart, end: shiftedEnd });
+    }
   }
 
   function pieces(clip) {
@@ -336,7 +357,7 @@
     return result;
   }
 
-  const api = { matchCandidateDuration, maxCandidates, minClipSeconds, minEdgeSilence, audioRate, withOutputFrames, pictureFrames, voiceLength, pieces, repeatVisual, visualDuration, visitVisualIntervals, fitVisuals, fitAutomaticVisuals, fixedSpeedPolicy, fixedSpeedVisuals, checkSpeedWindow, placedVideoFrames, fitSegmentedVoice, fitWholeVoice, fitReferenceWhole };
+  const api = { matchCandidateDuration, maxCandidates, minClipSeconds, minEdgeSilence, audioRate, withOutputFrames, pictureFrames, voiceLength, retainedVoiceRange, appendLegacyCaptionCues, pieces, repeatVisual, visualDuration, visitVisualIntervals, fitVisuals, fitAutomaticVisuals, fixedSpeedPolicy, fixedSpeedVisuals, checkSpeedWindow, placedVideoFrames, fitSegmentedVoice, fitWholeVoice, fitReferenceWhole };
   if (typeof module === "object" && module.exports) module.exports = api;
   else window.voiceAlignment = api;
 })();

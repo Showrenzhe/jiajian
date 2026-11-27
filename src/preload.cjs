@@ -88,6 +88,7 @@ contextBridge.exposeInMainWorld('workbench', {
   clipThumbnail: (id,time)=>invoke('workbench:clip-thumbnail',{id,time}),
   prepareSourceEdit: (id,ranges)=>invoke('workbench:prepare-source-edit',{id,ranges}),
   audioWaveform: (id,range)=>invoke('workbench:audio-waveform',{id,range}),
+  narrationPauses: ({id,thresholdDb,minSilenceMs})=>invoke('workbench:narration-pauses',{id,thresholdDb,minSilenceMs}),
   previewSubtitleStyle: (value) => invoke('workbench:subtitle-style-preview',value),
   createForeground: (assetId) => invoke('workbench:foreground', assetId),
   detectPauses: (request) => invoke('workbench:detect-pauses',request),

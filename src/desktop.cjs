@@ -11,8 +11,9 @@ const { Readable } = require('node:stream');
 const { pathToFileURL } = require('node:url');
 const {
   audioExtensions, imageExtensions, videoExtensions, maxShots, maxCandidates, maxWholeTracks,
-  inspectAsset, createVideoThumbnail, createTrackProxy, supportsHdrToneMap, extractAudioWaveform, previewSubtitleStyle, planExtraction, exportBatch,
+  inspectAsset, createVideoThumbnail, createTrackProxy, supportsHdrToneMap, extractAudioWaveform, analyzeNarrationPauses, previewSubtitleStyle, planExtraction, exportBatch,
 } = require('./media.cjs');
+const {normalizeSettings: trimSettings, smartDefaults: smartTrimDefaults} = require('./ui/narration-trim.js');
 const { readHistory, remember, renameOutputs, resolveOutput } = require('./history.cjs');
 const { createPreviewBatch, selectPreviewPlans, createSpeedPlanningSession } = require('./preview-plans.cjs');
 const { loadProject, saveProject, readProject, embeddedThumbnail, projectReferences } = require('./project-format.cjs');
@@ -41,7 +42,7 @@ const { isLocalPath, isMaterialPath, isSharedMaterialPath, materialPathKey, chec
 const scheme = 'sd-workbench';
 const page = `${scheme}://app/index.html`;
 const uiFiles = new Set(['/index.html', '/app.js', '/styles.css', '/dialog-focus.js', '/creative-service.js', '/script-workspace.js', '/script-workspace.css',
-  '/editor-text.js', '/text-presets.js', '/caption-inspector.js', '/caption-inspector.css', '/audio-tools.js', '/waveform.js', '/voice-alignment.js', '/draft-transport.js',
+  '/editor-text.js', '/text-presets.js', '/caption-inspector.js', '/caption-inspector.css', '/audio-tools.js', '/waveform.js', '/narration-trim.js', '/voice-alignment.js', '/draft-transport.js',
   '/track-organizer.js', '/cover-editor.js', '/visual-editor.js', '/batch-edit.js',
   '/editor-controls.js', '/material-library-view.js', '/timeline-packaging-state.js', '/timeline.js', '/timeline-edit-controls.js', '/timeline-selection.js', '/timeline.css', '/cut-filmstrip.js', '/cut-picture-view.js', '/video-cut-timeline.js', '/cut-track.js', '/cut-track.css', '/layer-motion.js', '/layer-motion.css', '/subprojects.js',
   '/track-workspace.css', '/edit-history.js', '/track-tools.js', '/track-controls.js', '/track-tools.css', '/cloud-tts-dialog.js', '/cloud-tts-dialog.css',
@@ -362,17 +363,36 @@ async function launchDesktop({
     return task.promise;
   }
 
+  function planAssetOrigin(asset) {
+    if (!asset?.path) return undefined;
+    return folderAssetOrigins.get(asset)
+      ?? folderAssetOrigins.get(catalog.get(lookupByPath.get(assetPathKey(asset.kind,asset.path))));
+  }
+
+  async function checkedNarrationPauses(asset, settings, {signal}) {
+    const origin = planAssetOrigin(asset);
+    if (origin) await checkedMaterialPath(origin);
+    signal?.throwIfAborted();
+    const pauses = await analyzeNarrationPauses(asset,settings,{signal});
+    if (origin) await checkedMaterialPath(origin);
+    signal?.throwIfAborted();
+    return pauses;
+  }
+
   async function checkPlanFolderFiles(plans, signal) {
     const origins = new Set();
     for (const plan of plans) {
       const sources = plan.kind === 'montage'
         ? plan.clips.flatMap((clip) => (clip.visuals ?? [clip]).map(({ asset }) => asset)) : [plan.asset];
+      if (plan.narration) sources.push(plan.narration);
+      if (plan.music) sources.push(plan.music);
+      for (const clip of plan.clips ?? []) if (clip.narration) sources.push(clip.narration);
       for (const layer of plan.layers ?? []) if (layer.asset) sources.push(layer.asset);
       for (const layer of plan.layers ?? []) if (layer.look?.backgroundAsset) sources.push(layer.look.backgroundAsset);
       if (plan.cover?.asset) sources.push(plan.cover.asset);
       for (const clip of plan.clips??[]) for (const part of clip.visuals??[clip]) if(part.look?.backgroundAsset)sources.push(part.look.backgroundAsset);
       for (const asset of sources) {
-        const record = folderAssetOrigins.get(asset);
+        const record = planAssetOrigin(asset);
         if (record) origins.add(record);
       }
     }
@@ -383,25 +403,41 @@ async function launchDesktop({
   }
 
   const thumbnails = new Map();
-  const waveforms = createWaveformCache();
-  async function audioWaveform({id,range} = {}) {
+  const audioAnalysis = createWaveformCache();
+  async function cachedAudioAnalysis(id, asset, params, decode) {
+    if (asset.missing) return null;
+    const scope = thumbnailScope.signal;
+    const record = folderAssetOrigins.get(asset);
+    if (record) await checkedMaterialPath(record);
+    const fileVersion = async () => {
+      const info = await fs.stat(asset.path,{bigint:true}).catch(()=>null);
+      return info?.isFile() ? [info.dev,info.ino,info.size,info.mtimeNs,info.ctimeNs].join(':') : null;
+    };
+    const version = await fileVersion();
+    if (!version || scope.aborted) return null;
+    const key = JSON.stringify([id,version,...params]);
+    const analysis = await audioAnalysis.get(key,async(signal)=>{
+      if (record) await checkedMaterialPath(record);
+      if (signal.aborted || await fileVersion() !== version) return null;
+      const result=await decode(signal);
+      if (record) await checkedMaterialPath(record);
+      return await fileVersion() === version ? result : null;
+    });
+    return !scope.aborted && (catalog.get(id) ?? voiceSamples.get(id)) === asset ? analysis : null;
+  }
+  function audioWaveform({id,range} = {}) {
     const asset = catalog.get(id) ?? voiceSamples.get(id);
     if (!asset || !Number.isInteger(asset.audioIndex) || asset.audioIndex < 0) return null;
     const start = range?.start ?? 0, end = Math.min(range?.end ?? asset.duration,asset.duration);
     if (!Number.isFinite(start) || !Number.isFinite(end) || start < 0 || end <= start) return null;
-    const scope = thumbnailScope.signal;
-    const record = folderAssetOrigins.get(asset);
-    if (record) await checkedMaterialPath(record);
-    const info = await fs.stat(asset.path).catch(()=>null);
-    if (!info?.isFile() || scope.aborted) return null;
-    const key = JSON.stringify([id,info.size,info.mtimeMs,start,end]);
-    const waveform = await waveforms.get(key,async(signal)=>{
-      const result=await extractAudioWaveform(asset,{start,end},{signal});
-      if (record) await checkedMaterialPath(record);
-      const latest=await fs.stat(asset.path);
-      return latest.size===info.size && latest.mtimeMs===info.mtimeMs ? result : null;
-    });
-    return !scope.aborted && (catalog.get(id) ?? voiceSamples.get(id)) === asset ? waveform : null;
+    return cachedAudioAnalysis(id,asset,['waveform',start,end],signal=>extractAudioWaveform(asset,{start,end},{signal}));
+  }
+  function narrationPauses({id,thresholdDb,minSilenceMs} = {}) {
+    const asset=catalog.get(id);
+    if (asset?.kind!=='audio') return null;
+    const settings=trimSettings({...smartTrimDefaults,thresholdDb,minSilenceMs});
+    return cachedAudioAnalysis(id,asset,['pauses',settings.thresholdDb,settings.minSilenceMs],
+      signal=>analyzeNarrationPauses(asset,settings,{signal}));
   }
   const trackProxies = new Map();
   let proxyGeneration = 0;
@@ -503,7 +539,7 @@ async function launchDesktop({
   }
 
   function resetThumbnails() {
-    waveforms.reset();
+    audioAnalysis.reset();
     thumbnailScope.abort();
     thumbnailScope = new AbortController();
     thumbnails.clear();
@@ -848,6 +884,7 @@ async function launchDesktop({
     return describeAsset(outputId,result);
   });
   handle('workbench:audio-waveform', audioWaveform);
+  handle('workbench:narration-pauses', narrationPauses);
   handle('workbench:track-proxy', ({id,fps,original}) => trackProxyUrl(id,{fps,original}));
   handle('workbench:retimed-preview', ({id,options}) => options ? trackProxyUrl(id,{retime:options}) : null);
   handle('workbench:playback-proxy', async ({id,fps}) => {
@@ -1719,7 +1756,7 @@ async function launchDesktop({
       requireOnline(config);
       const {speedResponse,...base}=config;
       const renderConfig=await renderConfigFor(base);
-      const {plans,speedChallenge}=await planWithSpeedChoices(renderConfig,scope,catalog,{signal,response:speedResponse});
+      const {plans,speedChallenge}=await planWithSpeedChoices(renderConfig,scope,catalog,{signal,response:speedResponse,analyzePauses:checkedNarrationPauses});
       const settings=await performanceCache.settledSettings();
       if (signal.aborted || settings.hdrMode!==renderConfig.hdrMode) return null;
       if (speedChallenge) return {speedChallenge};
@@ -1784,7 +1821,7 @@ async function launchDesktop({
       const renderConfig=mode==='montage' ? await renderConfigFor(base) : null;
       const {plans,speedChallenge}= mode==='audio' ? {plans:planExtraction(config,catalog)}
         : chosen ? {plans:selectPreviewPlans(previewBatch,renderConfig,chosen)}
-        : await planWithSpeedChoices(renderConfig,undefined,catalog,{signal,response:speedResponse});
+        : await planWithSpeedChoices(renderConfig,undefined,catalog,{signal,response:speedResponse,analyzePauses:checkedNarrationPauses});
       if (signal.aborted) return null;
       if (speedChallenge) return {speedChallenge};
       const selection = await dialogs.showOpenDialog(win, { title: '选择导出目录', properties: ['openDirectory', 'createDirectory'] });

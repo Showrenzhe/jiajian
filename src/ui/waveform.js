@@ -102,7 +102,7 @@
       const signature=[left,right,height,rect.width].join('/');
       if (view.signature===signature) return;
       view.signature=signature;
-      const {canvas,asset,source,span,loop,gain}=view;
+      const {canvas,asset,source,span,loop,gain,fadeTail}=view;
       const live=()=>strip.isConnected && views.get(strip)?.signature===signature && visible.has(strip);
       // Decode only the currently visible section of a long source; tile boundaries are shared on scroll.
       const unit=span/rect.width;
@@ -138,7 +138,8 @@
           const last=Math.min(tile.peaks.length,Math.ceil((b-tile.start)/tile.step));
           for(let j=first;j<last;j++) peak=Math.max(peak,tile.peaks[j]);
         }));
-        amplitudes[x]=peak;
+        const envelope=fadeTail ? Math.max(0,Math.min(1,(span-(left+x+.5)*unit)/fadeTail)) : 1;
+        amplitudes[x]=peak*envelope;
         if(loop && unit>=source.duration) fullPeak=peak;
       }
       drawing.fillStyle='#229ac2';
@@ -152,7 +153,7 @@
         if(level>.85) drawing.fillRect(x,height-Math.min(height,Math.sqrt(level)*(height-1)),1,1);
       }
     }
-    function add(parent,asset,{ranges,head,tail,span,loop=false,volume=100,muted=false}={}) {
+    function add(parent,asset,{ranges,head,tail,span,fadeTail=0,loop=false,volume=100,muted=false}={}) {
       if (!asset?.id || !(asset.duration>0) || !(asset.kind==='audio' || (asset.kind==='video' && asset.hasAudio))) return;
       const source=waveformSource(ranges ?? [{start:0,end:asset.duration}],head,tail);
       if (!(source.duration>0)) return;
@@ -170,7 +171,7 @@
       strip.setAttribute('aria-label',asset.name+' 音频波形'+(muted || volume===0 ? '（已静音）':''));
       strip.dataset.state='loading';
       strip.append(canvas);parent.append(strip);
-      views.set(strip,{asset,source,span:span ?? source.duration,loop,canvas,gain:volume>0?volume/100:1});
+      views.set(strip,{asset,source,span:span ?? source.duration,loop,fadeTail,canvas,gain:volume>0?volume/100:1});
       observe.observe(strip);resize.observe(strip);
       return strip;
     }

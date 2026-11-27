@@ -4,6 +4,16 @@
   if (typeof window !== 'undefined') window.editorMessages = messages;
   if (typeof module === 'object' && module.exports) module.exports = messages;
 })(Object.freeze({
+  narrationTrim: {
+    invalidMode:'口播裁剪策略无效。', invalidParameters:'口播静音或淡出参数超出范围。', invalidAsset:'无法分析口播音频。',
+    fileChanged:'口播文件已变化，请重新分析。', analysisExpired:name=>`口播「${name}」的静音分析已失效，请重新生成预览。`,
+    title:'口播裁剪', mode:'裁剪方式', smart:'智能裁剪', legacy:'沿用旧规则',
+    thresholdDb:'静音阈值（dB）', minSilenceMs:'最短静音（ms）', paddingMs:'接缝保留（ms）', fadeMs:'硬切淡出（ms）',
+    smartHelp:'画面优先时，超长的口播优先停在句末或短暂停顿。口播优先的佳剪规则会保留接缝两侧的气口。',
+    legacyHelp:'超长口播在画面末尾硬切，分段口播接缝各保留 25 ms。',
+    marker:'已裁短', detail:(start,end)=>`裁掉开头 ${start} 秒 / 结尾 ${end} 秒`,
+    measuring:'正在分析口播停顿…', unavailable:'未能分析口播停顿。请检查素材后重新播放。',
+  },
   timelineEdits: {
     snap:'吸附', tools:'时间线标记与区间', rename:'重命名标记', name:'标记名称', save:'保存',
     marker:number=>'标记 '+number, split:'已分割当前素材中播放头所在的片段。',

@@ -52,6 +52,54 @@ let volumeOverrides=[];
 const processedMaterials = [];
 const subprojects = window.createSubprojects({ shots, serialize: serializeClip, revive: (row) => reviveClip(row, editAssets),voiceIO:{read:readScopeVoice,write:writeScopeVoice} });
 const narrationCaptions = new Map();
+let narrationTrimSettings = window.narrationTrim.smartDefaults;
+const trimLabels = window.editorMessages.narrationTrim;
+const trimPanel = $('#narration-trim-settings');
+const trimMode = $('#narration-trim-mode');
+const trimFields = [...trimPanel.querySelectorAll('[data-trim-field]')];
+for (const label of trimPanel.querySelectorAll('[data-trim-label]')) label.textContent=trimLabels[label.dataset.trimLabel];
+function showNarrationTrim(settings) {
+  narrationTrimSettings=settings;
+  trimMode.value=settings.mode;
+  for (const input of trimFields) input.value=settings[input.dataset.trimField];
+  $('#narration-trim-values').hidden=settings.mode==='legacy';
+  $('#narration-trim-help').textContent=settings.mode==='legacy' ? trimLabels.legacyHelp : trimLabels.smartHelp;
+}
+showNarrationTrim(narrationTrimSettings);
+trimPanel.addEventListener('change',event=>{
+  const input=event.target;
+  if (input===trimMode) {
+    showNarrationTrim({...narrationTrimSettings,mode:input.value});
+  } else if (input.dataset.trimField) {
+    if (!input.value || !input.validity.valid) { input.reportValidity();input.value=narrationTrimSettings[input.dataset.trimField];return; }
+    narrationTrimSettings={...narrationTrimSettings,[input.dataset.trimField]:input.valueAsNumber};
+  }
+  updateControls();
+});
+const narrationMeasurements = new WeakMap();
+function measuredNarration(asset, jobs) {
+  if (!asset?.url || asset.missing) return asset;
+  const {thresholdDb,minSilenceMs}=narrationTrimSettings;
+  const key=thresholdDb+'/'+minSilenceMs;
+  let record=narrationMeasurements.get(asset);
+  // An explicit playback rechecks the file identity in the main process. Redraws
+  // reuse the completed measurement and never queue work on the transport clock.
+  if (!record || record.key!==key || (jobs && record.done && !jobs.has(record.promise))) {
+    record={key,pauses:record?.key===key ? record.pauses : undefined};
+    narrationMeasurements.set(asset,record);
+    record.promise=api.narrationPauses({id:asset.id,thresholdDb,minSilenceMs}).then(pauses=>{
+      if (!Array.isArray(pauses)) return false;
+      record.pauses=pauses;
+      if (narrationMeasurements.get(asset)===record) {
+        timeline?.refresh();
+        if (timeline?.draftState() && !timeline.isDraftPlaying()) timeline.refreshMonitoring();
+      }
+      return true;
+    }).catch(()=>false).then(ok=>{record.done=true;return ok;});
+  }
+  if (jobs) jobs.add(record.promise);
+  return record.pauses ? {...asset,narrationPauses:record.pauses} : asset;
+}
 const timelineCaptions = [];
 const extraWholeTracks = [];
 let narration = null;
@@ -2666,6 +2714,7 @@ function updateControls(group, keepDraftPlayback = false) {
   $('#pick-subtitle-batch').disabled = subtitleBatchCapacity() === 0;
   $('#segment-narration-settings').hidden = !segmented;
   $('#narration-timing').hidden = !hasNarration;
+  for (const input of [trimMode,...trimFields]) input.disabled=busy;
   $('#voice-follow-settings').hidden=segmented || $('#priority').value!=='picture';
   if(!$('#voice-follow-settings').hidden) syncVoiceFollow();
   $('#segment-narration-help').textContent = segmentSelection === 'ordered'
@@ -2962,7 +3011,7 @@ async function newProject() {
     if (!await flushCurrentDraft()) return;
     const proxyEnabled=await api.proxyDefault();
     await navigateWorkspace('montage', () => restoreProject({ name: '', assets: [], config: {
-      proxyEnabled, shots: [], ratio: '16:9', resolution: 720, fps: 30, fit: 'fit', keepAudio: true, unordered: false,
+      proxyEnabled, narrationTrim:window.narrationTrim.smartDefaults, shots: [], ratio: '16:9', resolution: 720, fps: 30, fit: 'fit', keepAudio: true, unordered: false,
       useOriginal: true, useMirrors: false, musicIds: [], musicVolume: 35, count: 1,
     } }));
   } finally {
@@ -3867,6 +3916,7 @@ function montageConfig() {
     musicStartShot: musicStartFrom ? shots.indexOf(musicStartFrom) : null,
     musicVolume: $('#music-volume').valueAsNumber,
     narrationId: narration?.id ?? null,
+    narrationTrim:narrationTrimSettings,
     narrationVolume: $('#narration-volume').valueAsNumber,
     narrationMode: $('#narration-mode').value,
     segmentNarrationSelection: $('#segment-narration-selection').value,
@@ -4366,6 +4416,7 @@ function restoreProject({ name, config, assets = [], folders = [], projectToken:
   $('#use-original').checked = config.useOriginal;
   $('#use-mirrors').checked = config.useMirrors;
   $('#music-volume').value = config.musicVolume;
+  showNarrationTrim(window.narrationTrim.normalizeSettings(config.narrationTrim));
   $('#narration-volume').value = config.narrationVolume === undefined ? 100 : config.narrationVolume;
   $('#narration-mode').value = config.narrationMode ?? 'whole';
   $('#segment-narration-selection').value = config.segmentNarrationSelection ?? 'ordered';
@@ -5239,10 +5290,10 @@ $('#apply-narration-recommendation').addEventListener('click',()=>{
   sayProject('已应用口播推荐设置。');
 });
 $('#montage-settings').addEventListener('input', (event) => {
-  if(!event.target.closest('#voice-follow-settings')) updateControls(event.target.type === 'number' ? event.target : undefined, ['ratio','fps'].includes(event.target.id));
+  if(!event.target.closest('#voice-follow-settings,#narration-trim-settings')) updateControls(event.target.type === 'number' ? event.target : undefined, ['ratio','fps'].includes(event.target.id));
 }, true);
 $('#montage-settings').addEventListener('change', (event) => {
-  if(!event.target.closest('#voice-follow-settings')) updateControls(undefined, ['ratio','fps'].includes(event.target.id));
+  if(!event.target.closest('#voice-follow-settings,#narration-trim-settings')) updateControls(undefined, ['ratio','fps'].includes(event.target.id));
   if (event.target.id==='fps') {
     timeline?.refreshMonitoring();
     refreshPreviewSources();
@@ -5416,44 +5467,28 @@ function timelineState() {
   const segments = shots.map((shot) => segmentNarrations.get(shot) ?? []);
   const whole = [{asset:narration,subtitles,follow:shots.indexOf(primaryVoiceFollow)}, ...extraWholeTracks.map((t)=>({asset:t.narration,subtitles:t.subtitles,follow:shots.indexOf(t.follow)}))];
   const segmented = $('#narration-mode').value === 'segmented';
-  const captions = [];
-  function appendCaptions(asset, imported, row, shot) {
-    const entry = imported ?? narrationCaptions.get(asset?.id);
+  const captionTracks=[];
+  function collectCaptionTrack(asset, imported, row, shot) {
+    const entry=imported ?? narrationCaptions.get(asset?.id);
     if (!entry) return;
-    const open = () => asset ? openNarrationReview(asset,undefined,Boolean(imported),undefined,voiceSpeed(asset,shots[shot],row)) : activateInspectorTab($('#inspector-tab-subtitles'));
-    let cues = typeof entry === 'string' ? [{start:0,end:(asset?.duration ?? 3)*1000,text:entry,original:null}]
-      : entry.cues.map((cue)=>({...cue,original:cue}));
-    const edit = shot != null && voiceEdits.get(shots[shot])?.[row];
-    if (edit?.ranges && edit.id === asset?.id && cues) {
-      let offset=0;
-      cues=edit.ranges.flatMap(({start,end})=>{
-        const shift=offset-start*1000;
-        offset+=(end-start)*1000;
-        return cues.filter((cue)=>cue.start<end*1000 && cue.end>start*1000).map((cue)=>({...cue,start:Math.max(cue.start,start*1000)+shift,end:Math.min(cue.end,end*1000)+shift}));
-      });
-    }
-    const voiceOffset=edit && edit.id===asset?.id ? edit.offset || 0 : 0;
-    const speed=voiceSpeed(asset,shots[shot],row);
-    const follow=shot==null && $('#priority').value==='picture' ? whole[row]?.follow : -1;
-    for (const cue of cues) {
-      const original=cue.original;
-      function remove() {
-        if (original) {
-          const index=entry.cues.indexOf(original);
-          if(index>=0) entry.cues.splice(index,1);
-          if(entry.cues.length) return;
-        }
-        if(!imported) narrationCaptions.delete(asset.id);
-        else if(row===0) subtitles=null;
-        else if(extraWholeTracks[row-1]) extraWholeTracks[row-1].subtitles=null;
+    const open=()=>asset ? openNarrationReview(asset,undefined,Boolean(imported),undefined,voiceSpeed(asset,shots[shot],row)) : activateInspectorTab($('#inspector-tab-subtitles'));
+    function remove(original) {
+      if (original) {
+        const index=entry.cues.indexOf(original);
+        if(index>=0) entry.cues.splice(index,1);
+        if(entry.cues.length) return;
       }
-      captions.push({row,shot,follow,start:cue.start/1000/speed+voiceOffset,duration:(cue.end-cue.start)/1000/speed,
-        name:cue.text,highlights:cue.highlights,key:original ?? 'subtitle:'+asset?.id,remove,open});
+      if(!imported) narrationCaptions.delete(asset.id);
+      else if(row===0) subtitles=null;
+      else if(extraWholeTracks[row-1]) extraWholeTracks[row-1].subtitles=null;
     }
+    captionTracks.push({shot,row,entry,open,remove});
   }
-  if(segmented) segments.forEach((tracks,i)=>tracks.forEach((asset,j)=>appendCaptions(asset,null,j,i)));
-  else whole.forEach((track,j)=>appendCaptions(track.asset,track.subtitles,j,null));
-  return {shots, segments, whole, autoSpeedRange:window.videoSpeedControls.range, timelineMarkers, timelineCaptions, music, maxCandidates, musicAt:shots.indexOf(musicStartFrom), segmented, captions, subtitleStyle:captionInspector.read(),
+  if(segmented) segments.forEach((tracks,i)=>tracks.forEach((asset,j)=>collectCaptionTrack(asset,null,j,i)));
+  else whole.forEach((track,j)=>collectCaptionTrack(track.asset,track.subtitles,j,null));
+  return {shots, segments, whole, autoSpeedRange:window.videoSpeedControls.range, timelineMarkers, timelineCaptions, music, maxCandidates, musicAt:shots.indexOf(musicStartFrom), segmented, captionTracks, subtitleStyle:captionInspector.read(),
+    narrationTrim:narrationTrimSettings, measuredNarration,
+    voiceCaption:(asset,shot,row)=>(shot==null ? whole[row]?.subtitles : null) ?? narrationCaptions.get(asset?.id),
     segmentNarrationSelection:$('#segment-narration-selection').value,
     trackControls:monitoredTrackControls(),
     keepAudio:$('#keep-audio').checked,
@@ -5816,7 +5851,7 @@ timeline = window.mountEditTimeline($('#timeline-clock'), {
   firstCover:()=>coverEditor.firstShot(),
   recognize:(asset)=>api.recognizeSpeech(asset.id),importSrt:()=>api.pickSubtitles(),cancelRecognition:()=>api.cancel(),
   captions:editVideoCaptions,slices:(asset)=>cutEditor.openSlices(asset),
-  state:timelineState, busy:()=>Boolean(operation), thumbnail:(id,time)=>api.clipThumbnail(id,time), asset:(id)=>editAssets.get(id),
+  narrationStatus:message=>sayProject(message), state:timelineState, busy:()=>Boolean(operation), thumbnail:(id,time)=>api.clipThumbnail(id,time), asset:(id)=>editAssets.get(id),
   getTimelineMarkers:()=>timelineMarkers,
   setTimelineMarkers(next) {
     if (operation) return false;

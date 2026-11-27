@@ -5,6 +5,7 @@ const fs = require('node:fs/promises');
 const os = require('node:os');
 const path = require('node:path');
 const { test } = require('node:test');
+const { smartDefaults } = require('../src/ui/narration-trim.js');
 const { saveProject, loadProject, restoreLocatedEdits } = require('../src/project-format.cjs');
 const { locateMissing } = require('../src/relink.cjs');
 const { inspectAsset } = require('../src/media.cjs');
@@ -29,6 +30,7 @@ test('moves a folder, saves offline, relinks by name and size, then opens a new 
     useMirrors: false,
     musicIds: ['audio'],
     musicVolume: 20,
+    narrationTrim: smartDefaults,
     count: 1,
   };
   const catalog = new Map([
@@ -38,14 +40,14 @@ test('moves a folder, saves offline, relinks by name and size, then opens a new 
   const project = path.join(root, '新工程.jiajian'),
     legacy = path.join(root, '旧工程.sdworkbench');
   await saveProject(project, config, catalog);
-  assert.equal(JSON.parse(await fs.readFile(project)).version, 4);
+  assert.equal(JSON.parse(await fs.readFile(project)).version, 5);
   await fs.rename(before, after);
   const offline = await loadProject(project, undefined, undefined, undefined, { allowMissing: true });
   assert.ok([...offline.assets.values()].every((a) => a.missing));
   assert.deepEqual(offline.config, config);
   await saveProject(legacy, config, offline.assets);
   const saved = JSON.parse(await fs.readFile(legacy));
-  assert.equal(saved.version, 4);
+  assert.equal(saved.version, 5);
   await fs.writeFile(legacy, JSON.stringify({...saved, version: 1}));
   assert.ok(saved.assets.every((a) => a.size > 0 && a.duration > 0));
   const dup = path.join(after, '同名');

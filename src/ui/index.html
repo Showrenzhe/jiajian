@@ -49,6 +49,7 @@
   <script src="./draft-workspace.js" defer></script>
   <script src="./player-tools.js" defer></script>
   <script src="./waveform.js" defer></script>
+  <script src="./narration-trim.js" defer></script>
   <script src="./voice-alignment.js" defer></script>
   <script src="./draft-transport.js" defer></script>
   <script src="./audio-tools.js" defer></script>
@@ -679,6 +680,19 @@
                 <label class="line-field" id="voice-alignment-row">口播优先规则
                   <select id="voice-alignment"><option value="fill">佳剪 · 补画面并均匀加速</option><option value="reference">教程 · 裁长画面、慢放短画面</option></select>
                 </label>
+                <details id="narration-trim-settings">
+                  <summary data-trim-label="title"></summary>
+                  <label class="line-field"><span data-trim-label="mode"></span>
+                    <select id="narration-trim-mode"><option value="smart" data-trim-label="smart"></option><option value="legacy" data-trim-label="legacy"></option></select>
+                  </label>
+                  <div id="narration-trim-values">
+                    <label class="line-field"><span data-trim-label="thresholdDb"></span><input data-trim-field="thresholdDb" type="number" min="-65" max="-15" step="any"></label>
+                    <label class="line-field"><span data-trim-label="minSilenceMs"></span><input data-trim-field="minSilenceMs" type="number" min="100" max="5000" step="1"></label>
+                    <label class="line-field"><span data-trim-label="paddingMs"></span><input data-trim-field="paddingMs" type="number" min="0" max="500" step="1"></label>
+                    <label class="line-field"><span data-trim-label="fadeMs"></span><input data-trim-field="fadeMs" type="number" min="80" max="150" step="1"></label>
+                  </div>
+                  <p id="narration-trim-help" class="muted compact"></p>
+                </details>
                 <label class="line-field">成片口播音量（%）<input id="narration-volume" type="number" min="0" max="100" step="1" value="100"></label>
               </div>
               <details id="whole-track-settings" class="narration-section">

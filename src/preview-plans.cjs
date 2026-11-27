@@ -1,15 +1,18 @@
 'use strict';
 
 const { randomUUID } = require('node:crypto');
-const {speedPlanningErrors} = require('./ui/messages-zh-cn.js');
+const {speedPlanningErrors,narrationTrim:trimMessages} = require('./ui/messages-zh-cn.js');
 const { estimatedBytes } = require('./export-preflight.cjs');
-const { planMontage, analyzeNarrationSilence } = require('./media.cjs');
+const { planMontage, analyzeNarrationSilence, analyzeNarrationPauses } = require('./media.cjs');
 const { measureBatchReuse } = require('./visual-similarity.cjs');
 const { normalizeSubprojects, resolveSubprojectShots,projectVoiceConfig } = require('./subprojects.cjs');
 
-async function prepareMontagePlans(config, catalog, { signal, random = Math.random, batchLimit, silenceCache } = {}) {
+async function prepareMontagePlans(config, catalog, { signal, random = Math.random, batchLimit, silenceCache, analyzePauses=analyzeNarrationPauses } = {}) {
   signal?.throwIfAborted();
-  if (config?.priority !== 'voice' || config.narrationMode !== 'segmented' || config.voiceAlignment === 'reference') return planMontage(config, catalog, random, batchLimit);
+  const seams = config?.priority === 'voice' && config.narrationMode === 'segmented' && config.voiceAlignment !== 'reference';
+  const smart = config?.narrationTrim?.mode === 'smart';
+  const picture = smart && (config.priority ?? 'picture') === 'picture';
+  if (!seams && !picture) return planMontage(config, catalog, random, batchLimit);
 
   const draws = [];
   const plans = planMontage(config, catalog, () => {
@@ -17,38 +20,52 @@ async function prepareMontagePlans(config, catalog, { signal, random = Math.rand
     draws.push(value);
     return value;
   }, batchLimit);
-  const adjacentVoices = new Set();
-  for (const { clips } of plans) {
+  const toAnalyze = new Set();
+  for (const { clips,narration,narrationMap } of plans) {
+    if (picture) {
+      if (narrationMap?.reason === 'hard' && narrationMap.duration > 0) toAnalyze.add(narration);
+      for (const clip of clips) {
+        if (clip.narrationMap?.reason === 'hard' && clip.narrationMap.duration > 0) toAnalyze.add(clip.narration);
+      }
+      continue;
+    }
     for (let index = 1; index < clips.length; index += 1) {
       const before = clips[index - 1].narration;
       const after = clips[index].narration;
       if (before && after) {
-        adjacentVoices.add(before);
-        adjacentVoices.add(after);
+        toAnalyze.add(before);
+        toAnalyze.add(after);
       }
     }
   }
-  const voices = [...adjacentVoices];
+  const voices = [...toAnalyze];
   const measured = new Map();
   for (let index = 0; index < voices.length; index += 4) {
     const group = voices.slice(index, index + 4);
-    const results = await Promise.allSettled(group.map((asset) => silenceCache?.get(asset) ?? analyzeNarrationSilence(asset, { signal })));
+    const results = await Promise.allSettled(group.map((asset) => smart ? analyzePauses(asset,config.narrationTrim,{signal})
+      : silenceCache?.get(asset) ?? analyzeNarrationSilence(asset, { signal })));
     signal?.throwIfAborted();
     for (const [position, result] of results.entries()) {
       const asset = group[position];
       if (result.status === 'rejected') throw new Error(`无法检查口播「${asset.name}」的接缝，请确认音频可以正常读取。`, { cause: result.reason });
+      if (smart) {
+        if (!Array.isArray(result.value)) throw new Error(trimMessages.analysisExpired(asset.name));
+        if (result.value.length) measured.set(asset,result.value);
+        continue;
+      }
       const edgeSilence = result.value;
       silenceCache?.set(asset,edgeSilence);
-      if (edgeSilence.leading || edgeSilence.trailing) measured.set(asset, edgeSilence);
+      if (edgeSilence.leading || edgeSilence.trailing) measured.set(asset, {edgeSilence});
     }
   }
   signal?.throwIfAborted();
   if (!measured.size) return plans;
 
-  const enriched = new Map([...catalog].map(([id, asset]) => [id, measured.has(asset)
-    ? { ...asset, edgeSilence: measured.get(asset) } : asset]));
   // Reuse the original draws so shortening a seam cannot change the selected combination or order.
   let cursor = 0;
+  if (smart) return planMontage(config,catalog,() => draws[cursor++],batchLimit,measured);
+  const enriched = new Map([...catalog].map(([id, asset]) => [id, measured.has(asset)
+    ? { ...asset, ...measured.get(asset) } : asset]));
   return planMontage(config, enriched, () => draws[cursor++], batchLimit);
 }
 
@@ -86,10 +103,10 @@ async function prepareSubprojectPlans(config, scope, catalog, options) {
 // pictures, narration rows, ordering, cover and music through both seam passes.
 function createSpeedPlanningSession() {
   let pending;
-  return async function prepare(config,scope,catalog,{signal,response,random=Math.random}={}) {
+  return async function prepare(config,scope,catalog,{signal,response,random=Math.random,analyzePauses}={}) {
     if (!config.autoSpeedRange && !response) {
       pending=undefined;
-      const options={signal,random};
+      const options={signal,random,analyzePauses};
       return {plans:scope===undefined ? await prepareMontagePlans(config,catalog,options)
         : await prepareSubprojectPlans(config,scope,catalog,options)};
     }
@@ -123,7 +140,7 @@ function createSpeedPlanningSession() {
       return value;
     }
     const input={...config,batchSpeedChoices:choices};
-    const options={signal,random:nextDraw,silenceCache};
+    const options={signal,random:nextDraw,silenceCache,analyzePauses};
     const plans=scope===undefined ? await prepareMontagePlans(input,catalog,options)
       : await prepareSubprojectPlans(input,scope,catalog,options);
     const grouped=new Map();
