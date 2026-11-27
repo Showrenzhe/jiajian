@@ -5943,7 +5943,10 @@ $('#shots').addEventListener('keydown',(event)=>{
 function syncTimelinePlayButton() {
   const button=$('#timeline-play');
   const playing=Boolean(timeline?.isDraftPlaying());
-  button.setAttribute('aria-pressed',String(playing));
+  if (button.ariaPressed !== String(playing)) {
+    button.ariaPressed = String(playing);
+    document.body.toggleAttribute('data-timeline-playing', playing);
+  }
   const label=playing ? '暂停时间线' : '播放时间线';
   button.setAttribute('aria-label',label);
   button.title=label+'（空格）';

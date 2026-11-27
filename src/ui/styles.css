@@ -51,7 +51,7 @@
   --sidebar-transition: 260ms cubic-bezier(.42, 0, .28, 1);
   --bar-height: 44px;
   --page-pad: clamp(24px, 3.5vw, 58px);
-  font: 14px/1.5 -apple-system, BlinkMacSystemFont, "SF Pro Text", "Segoe UI Variable Text", "Segoe UI", "PingFang SC", "Microsoft YaHei UI", "Microsoft YaHei", "Noto Sans CJK SC", system-ui, sans-serif;
+  font: 14px/1.5 -apple-system, BlinkMacSystemFont, "Segoe UI Variable Text", "Segoe UI", "PingFang SC", "Microsoft YaHei UI", "Microsoft YaHei", "Noto Sans CJK SC", system-ui, sans-serif;
   font-optical-sizing: auto;
   color: var(--ink);
   background: var(--canvas);
@@ -62,7 +62,7 @@
 
 /* Use the paint behind the label to choose its polarity as brightness crosses
    the reading threshold. Secondary and accent colors return at both ends. */
-:where(:root, .titlebar, .home-content, .draft-status, dialog, .panel-layout-pane) {
+:where(:root, .titlebar, .titlebar .glass, .home-content, .draft-status, dialog, .panel-layout-pane) {
   --ink: --appearance-ink(#202329, #f2f3f5);
   --secondary-ink: --appearance-ink(#555b65, #bac1ca);
   --system-blue: --appearance-ink(#0066cc, #87baff);
@@ -75,7 +75,7 @@
 }
 .home-content, .panel-layout-pane { --ink-surface: var(--surface); color: var(--ink); }
 .draft-status { --ink-surface: var(--well); }
-.titlebar { --ink-surface: --over(var(--titlebar-fill), var(--canvas), calc(67% + .15 * var(--appearance-mix))); }
+.titlebar { --titlebar-base: --over(var(--titlebar-fill), var(--canvas), calc(67% + .15 * var(--appearance-mix))); --ink-surface: var(--titlebar-base); }
 dialog { --ink-surface: var(--sheet-ink-surface); }
 dialog :is(input, textarea, select) {
   --ink-surface: --over(var(--field-fill), var(--sheet-ink-surface), calc(72% - .64 * var(--appearance-mix)));
@@ -491,7 +491,7 @@ input[type="checkbox"], progress { accent-color: var(--accent); }
 #draft-delete-dialog { width: min(360px, calc(100vw - 24px)); padding: 18px; border-radius: 15px; overflow-wrap: anywhere; }
 #draft-delete-title { margin: 0; font-size: 16px; }
 #draft-delete-confirm { color: var(--destructive-ink); }
-.narration-review::backdrop { background: var(--sheet-scrim); backdrop-filter: blur(4px); }
+.narration-review::backdrop { background: var(--sheet-scrim); }
 .narration-review p { margin: 8px 0; }
 .narration-review audio { width: 100%; margin-top: 7px; }
 .narration-review-field { display: grid; gap: 6px; margin-top: 13px; }

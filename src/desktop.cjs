@@ -46,7 +46,7 @@ const uiFiles = new Set(['/index.html', '/app.js', '/styles.css', '/dialog-focus
   '/editor-controls.js', '/material-library-view.js', '/timeline-packaging-state.js', '/timeline.js', '/timeline-selection.js', '/timeline.css', '/cut-filmstrip.js', '/cut-picture-view.js', '/video-cut-timeline.js', '/cut-track.js', '/cut-track.css', '/layer-motion.js', '/layer-motion.css', '/subprojects.js',
   '/track-workspace.css', '/edit-history.js', '/track-tools.js', '/track-controls.js', '/track-tools.css', '/cloud-tts-dialog.js', '/cloud-tts-dialog.css',
   '/cloud-tts-settings.js', '/cut-shortcuts.js', '/messages-zh-cn.js', '/editing-help.js', '/editing-help.css', '/cloud-tts-settings.css', '/split-view.js', '/panel-layout.js', '/material-folders.js', '/draft-workspace.js', '/player-tools.js', '/assets/jiajian-logo.png', '/assets/project-cover.jpg',
-  '/glass-material.css', '/inspector-controls.css', '/editor-surfaces.css', '/player-controls.css', '/appearance.js', '/appearance.css', '/software-updates.js',
+  '/glass-material.css', '/liquid-glass.css', '/glass-effect.js', '/inspector-controls.css', '/editor-surfaces.css', '/player-controls.css', '/appearance.js', '/appearance.css', '/software-updates.js',
   '/color-wheel.js', '/color-wheel.css', '/menu-motion.js', '/menu-motion.css']);
 const maxCatalog = (maxShots + 1) * (maxCandidates + maxWholeTracks);
 const maxSubtitleBatchBytes = 1024 * 1024;
@@ -597,6 +597,7 @@ async function launchDesktop({
     autoHideMenuBar: true,
     webPreferences: {
       preload: path.join(__dirname, 'preload.cjs'), sandbox: true, contextIsolation: true, nodeIntegration: false,
+      additionalArguments: rendering.active ? ['--jiajian-software-rendering'] : [],
       backgroundThrottling: show, offscreen: !show,
     },
   });

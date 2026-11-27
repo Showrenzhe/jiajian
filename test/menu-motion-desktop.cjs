@@ -6,12 +6,16 @@ const os = require('node:os');
 const path = require('node:path');
 const { app } = require('electron');
 const { launchDesktop } = require('../src/desktop.cjs');
+const { createDraftStore } = require('../src/draft-store.cjs');
 const { clickVisible } = require('./desktop-input.cjs');
 
 app.disableHardwareAcceleration();
 
 async function run() {
   const profile = await fs.mkdtemp(path.join(os.tmpdir(), 'jiajian-menu-'));
+  const drafts = createDraftStore(path.join(profile, 'drafts'));
+  await drafts.create({ name: '菜单校样', config: { shots: [], ratio: '16:9', resolution: 720, fps: 24, fit: 'fit',
+    keepAudio: true, unordered: false, useOriginal: true, useMirrors: false, musicIds: [], musicVolume: 35, count: 1 } }, new Map());
   const window = await launchDesktop({ show: false, dataDirectory: profile });
   const wc = window.webContents;
   wc.setBackgroundThrottling(false);
@@ -63,6 +67,36 @@ async function run() {
       await settle();
       assert.equal((await read(`menuState(${menu})`)).display, 'none');
     }
+    await clickVisible(wc, '#tab-drafts');
+    for (let attempt = 0; attempt < 30 && !await read('!!document.querySelector(".draft-open")'); attempt++) await settle();
+    const draft = '.draft-open', draftMenu = el('#draft-context-menu');
+    await clickVisible(wc, draft, 'right');
+    const opening = await read(`(() => {
+      const menu = ${draftMenu}, style = getComputedStyle(menu);
+      const card = document.querySelector(".draft-open").getBoundingClientRect();
+      const [x, y] = style.transformOrigin.split(" ").map(parseFloat);
+      return {
+        duration: parseFloat(style.transitionDuration) * 1000,
+        filter: style.backdropFilter,
+        thick: menu.matches(".glass.glass--thick"),
+        error: Math.max(Math.abs(menu.offsetLeft + x - card.x - card.width/2),
+          Math.abs(menu.offsetTop + y - card.y - card.height/2)),
+      };
+    })()`);
+    assert.ok(opening.duration >= 180 && opening.duration <= 240 && opening.thick && opening.filter !== 'none' && opening.error < 2, JSON.stringify(opening));
+    await settle();
+    await key('Escape', 27);
+    const exitTime = await read('parseFloat(getComputedStyle(' + draftMenu + ').transitionDuration)*1000');
+    assert.ok(exitTime >= 120 && exitTime <= 160);
+    assert.equal(await read('document.activeElement.matches(".draft-open")'), true);
+    await media([{ name: 'prefers-reduced-motion', value: 'reduce' }]);
+    await settle();
+    await clickVisible(wc, draft, 'right');
+    assert.equal((await read('menuState(' + draftMenu + ')')).opacity, 1);
+    assert.equal(await read('getComputedStyle(' + draftMenu + ').transitionDuration'), '0s');
+    await key('Escape', 27);
+    assert.equal(await read('document.activeElement.matches(".draft-open")'), true);
+    await media([{ name: 'prefers-reduced-motion', value: 'no-preference' }]);
     await click('#tab-script');
     await settle();
     await checkPopover('#script-assistant-toggle', '#script-assistant');

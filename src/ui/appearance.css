@@ -16,6 +16,7 @@ html[data-theme-changing] .p-switch > input + span { transition-property: none; 
 }
 #cloud-settings-section { margin-bottom: -10px; }
 .appearance-options { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 12px; }
+.glass-effect-field { margin-block-start: 14px; }
 .appearance-options label {
   position: relative; display: grid; gap: 7px; justify-items: center;
   border-radius: 9px; padding: 3px; color: var(--secondary-ink);

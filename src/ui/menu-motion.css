@@ -6,6 +6,13 @@
   --menu-ease: cubic-bezier(.22, .78, .22, 1);
 }
 
+dialog, dialog::backdrop, .glass--thick {
+  --menu-enter: 200ms;
+  --menu-exit: 140ms;
+  --menu-ease: cubic-bezier(.2, .8, .2, 1);
+  --menu-fade: var(--menu-ease);
+}
+
 /* Dialogs close natively so focus, Escape and nested modals stay in the
    browser's control. Keep the centered box and its scrim painted during exit. */
 @media (prefers-reduced-motion: no-preference) and (forced-colors: none) {
@@ -14,12 +21,12 @@
     inset: 0;
     opacity: 0;
     scale: .978;
-    transition: opacity var(--menu-exit) ease-out, scale var(--menu-exit) var(--menu-ease),
+    transition: opacity var(--menu-exit) var(--menu-fade), scale var(--menu-exit) var(--menu-ease),
       display var(--menu-exit) allow-discrete, overlay var(--menu-exit) allow-discrete;
   }
   dialog:not(.color-wheel-panel)::backdrop {
     opacity: 0;
-    transition: opacity var(--menu-exit) ease-out,
+    transition: opacity var(--menu-exit) var(--menu-fade),
       display var(--menu-exit) allow-discrete, overlay var(--menu-exit) allow-discrete;
   }
   dialog:not(.color-wheel-panel)[open] { opacity: 1; scale: 1; }
@@ -83,7 +90,7 @@
     scale: .975;
     translate: var(--menu-shift-x, 0px) var(--menu-shift-y, -3px);
     pointer-events: none;
-    transition: opacity var(--menu-time) ease-out, scale var(--menu-time) var(--menu-ease),
+    transition: opacity var(--menu-time) var(--menu-fade, ease-out), scale var(--menu-time) var(--menu-ease),
       translate var(--menu-time) var(--menu-ease), display var(--menu-time) allow-discrete,
       overlay var(--menu-time) allow-discrete;
     --menu-time: var(--menu-exit);

@@ -1732,6 +1732,7 @@ window.mountEditTimeline = function (host, ctx) {
     button.popover='manual';button.showPopover();
     showNewCandidateLane(drag);
     host.dataset.candidateDrag='active';
+    document.body.toggleAttribute('data-candidate-lifted',true);
     drag.active=true;
   }
   function newVideoLane(lane,reason,shot) {
@@ -2080,6 +2081,7 @@ window.mountEditTimeline = function (host, ctx) {
     b.classList.remove('candidate-moving');
     for(const property of ['translate','transform-origin','--lift-left','--lift-top','--lift-width','--lift-height']) b.style.removeProperty(property);
     delete host.dataset.candidateDrag;
+    document.body.removeAttribute('data-candidate-lifted');
   }
   async function placeAtSlot(clip,owner,slot) {
     if(!slot || ctx.busy()) return false;

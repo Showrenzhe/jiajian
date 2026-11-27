@@ -38,6 +38,7 @@ contextBridge.exposeInMainWorld('workbench', {
     ipcRenderer.on('workbench:update-state', (_event, state) => callback(state));
   },
   setWindowAppearance: (theme) => invoke('workbench:window-appearance', theme),
+  softwareRenderingActive: process.argv.includes('--jiajian-software-rendering'),
   performanceSettings: () => invoke('workbench:performance-settings'),
   relinkMaterials: config => invoke('workbench:relink-materials',config),
   setRenderingMode: (value) => invoke('workbench:rendering-mode', value),

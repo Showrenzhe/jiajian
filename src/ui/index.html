@@ -5,6 +5,7 @@
   <meta name="viewport" content="width=device-width,initial-scale=1">
   <meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'self'; style-src 'self'; media-src sd-workbench://asset; img-src 'self' sd-workbench://asset; base-uri 'none'; form-action 'none'">
   <title>佳剪</title>
+  <script src="./glass-effect.js"></script>
   <script src="./appearance.js"></script>
   <link rel="stylesheet" href="./styles.css">
   <link rel="stylesheet" href="./glass-material.css">
@@ -32,6 +33,7 @@
   <script src="./track-controls.js" defer></script>
   <script src="./cloud-tts-dialog.js" defer></script>
   <link rel="stylesheet" href="./editing-help.css">
+  <link rel="stylesheet" href="./liquid-glass.css">
   <script src="./messages-zh-cn.js" defer></script>
   <script src="./cut-shortcuts.js" defer></script>
   <script src="./editing-help.js" defer></script>
@@ -139,7 +141,7 @@
     <button type="button" id="title-home" aria-label="返回首页" title="返回首页"><svg class="ui-icon" aria-hidden="true"><use href="#icon-home"></use></svg></button>
     <span id="title-tab">工作台</span>
     <span id="titlebar-update">
-      <button type="button" id="software-update-entry" title="打开软件更新" aria-haspopup="dialog" aria-controls="update-dialog">
+      <button type="button" id="software-update-entry" class="glass glass--pill" title="打开软件更新" aria-haspopup="dialog" aria-controls="update-dialog">
         <span class="update-icon" aria-hidden="true">
           <svg class="ui-icon"><use href="#icon-import"></use></svg>
           <span id="update-badge" hidden></span>
@@ -150,7 +152,7 @@
     </span>
     <button type="button" id="cut-shortcuts-entry" title="自定义剪辑快捷键" aria-haspopup="dialog"><svg class="ui-icon" aria-hidden="true"><use href="#icon-keyboard"></use></svg>快捷键</button>
     <button type="button" id="editing-help-entry" title="剪辑帮助与快捷键（? 或 Ctrl+/）" aria-haspopup="dialog">帮助</button>
-    <button type="button" id="app-settings" title="打开设置" aria-haspopup="dialog"><svg class="ui-icon" aria-hidden="true"><use href="#icon-settings"></use></svg>设置</button>
+    <button type="button" id="app-settings" class="glass glass--pill" title="打开设置" aria-haspopup="dialog"><svg class="ui-icon" aria-hidden="true"><use href="#icon-settings"></use></svg>设置</button>
   </header>
   <div class="app-frame" data-mode="home">
     <nav id="workspace-navigation" class="tabs" aria-label="工作台导航">
@@ -205,7 +207,7 @@
                 <button type="button" id="draft-status-action" class="home-link" hidden></button>
               </div>
               <ul id="draft-list" class="draft-list" data-view="grid" aria-label="本地草稿"></ul>
-              <div id="draft-context-menu" popover="auto" role="menu" aria-label="草稿操作">
+              <div id="draft-context-menu" class="glass glass--thick" popover="auto" role="menu" aria-label="草稿操作">
                 <button type="button" role="menuitem" id="draft-context-delete"><svg class="ui-icon" aria-hidden="true"><use href="#icon-track-delete"></use></svg>删除</button>
               </div>
               <dialog id="draft-delete-dialog" class="narration-review" aria-labelledby="draft-delete-title" aria-describedby="draft-delete-detail">
@@ -390,7 +392,7 @@
           <progress id="batch-progress" max="1" value="0" aria-label="成片预览进度"></progress>
           <button type="button" id="cancel-preview" class="secondary">取消预览</button>
         </div>
-        <div id="video-track-menu" popover="auto" role="menu" aria-label="视频轨道操作" tabindex="-1">
+        <div id="video-track-menu" class="glass glass--thick" popover="auto" role="menu" aria-label="视频轨道操作" tabindex="-1">
           <button type="button" role="menuitem" data-action="delete"><svg class="ui-icon" aria-hidden="true"><use href="#icon-track-delete"></use></svg>删除</button>
           <button type="button" role="menuitem" data-action="mute"><svg class="ui-icon" aria-hidden="true"><use href="#icon-track-mute"></use></svg><span>静音片段</span></button>
           <hr role="separator">
@@ -505,7 +507,7 @@
         <p id="material-empty-hint" class="muted compact">从本机或局域网共享文件夹拖入视频、图片、音频或文件夹。</p>
       </div>
       <ul id="material-list" class="material-list"></ul>
-      <div popover="auto" id="material-context-menu" role="menu" aria-label="素材操作">
+      <div popover="auto" id="material-context-menu" class="glass glass--thick" role="menu" aria-label="素材操作">
         <button type="button" role="menuitem" id="material-context-rename" hidden>重命名文件夹</button>
         <button type="button" role="menuitem" id="material-context-remove"><span>从素材库移除</span><kbd>Delete</kbd></button>
         <button type="button" role="menuitem" id="material-context-audio">音频处理</button>

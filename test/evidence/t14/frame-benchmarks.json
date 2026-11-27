@@ -1,0 +1,188 @@
+{
+  "baseline": {
+    "environment": {
+      "appVersion": "0.9.0",
+      "electron": "45.2.3",
+      "platform": "10.0.26200",
+      "cpu": "12th Gen Intel(R) Core(TM) i7-12700KF",
+      "refreshHz": 60,
+      "scaleFactor": 1,
+      "windowDip": [
+        1400,
+        900
+      ],
+      "gpu": "enabled",
+      "adapters": [
+        {
+          "active": false,
+          "vendorId": 4318,
+          "deviceId": 10370
+        },
+        {
+          "active": false,
+          "vendorId": 4318,
+          "deviceId": 9351
+        },
+        {
+          "active": false,
+          "vendorId": 5140,
+          "deviceId": 140
+        }
+      ],
+      "tracks": 8,
+      "shots": 24,
+      "candidateClips": 72,
+      "videoLanes": 3,
+      "narrationSeconds": 0.4,
+      "durationMs": 2000,
+      "metric": "renderer requestAnimationFrame timestamps",
+      "sourceSha256": "3971dc3d9a3d9853705ccd7fd1ced83e95d4e3fa53d86c6f29f344be911325ad",
+      "driverSha256": "d5ea5209f58177bda362c3098c036f6ada4f64a3fe5bb7125d1d6e988f5ddb4d"
+    },
+    "results": {
+      "idle": {
+        "elapsedMs": 2034,
+        "trustedEvents": 0,
+        "intervals": 122,
+        "medianMs": 16.7,
+        "p95Ms": 16.8,
+        "maxMs": 16.9,
+        "over16_67Ms": 72,
+        "over25Ms": 0
+      },
+      "candidateDrag": {
+        "elapsedMs": 2100,
+        "trustedEvents": 130,
+        "intervals": 125,
+        "medianMs": 16.7,
+        "p95Ms": 16.8,
+        "maxMs": 33.2,
+        "over16_67Ms": 75,
+        "over25Ms": 1
+      },
+      "playheadScrub": {
+        "elapsedMs": 2050,
+        "trustedEvents": 129,
+        "intervals": 123,
+        "medianMs": 16.7,
+        "p95Ms": 16.8,
+        "maxMs": 17.2,
+        "over16_67Ms": 71,
+        "over25Ms": 0
+      },
+      "panelResize": {
+        "elapsedMs": 2050,
+        "trustedEvents": 130,
+        "intervals": 123,
+        "medianMs": 16.7,
+        "p95Ms": 16.8,
+        "maxMs": 17.4,
+        "over16_67Ms": 79,
+        "over25Ms": 0
+      },
+      "timelineZoom": {
+        "elapsedMs": 2083,
+        "trustedEvents": 43,
+        "intervals": 124,
+        "medianMs": 16.7,
+        "p95Ms": 16.8,
+        "maxMs": 32.8,
+        "over16_67Ms": 74,
+        "over25Ms": 1
+      }
+    }
+  },
+  "full": {
+    "environment": {
+      "appVersion": "0.9.0",
+      "electron": "45.2.3",
+      "platform": "10.0.26200",
+      "cpu": "12th Gen Intel(R) Core(TM) i7-12700KF",
+      "refreshHz": 60,
+      "scaleFactor": 1,
+      "windowDip": [
+        1400,
+        900
+      ],
+      "gpu": "enabled",
+      "adapters": [
+        {
+          "active": false,
+          "vendorId": 4318,
+          "deviceId": 10370
+        },
+        {
+          "active": false,
+          "vendorId": 4318,
+          "deviceId": 9351
+        },
+        {
+          "active": false,
+          "vendorId": 5140,
+          "deviceId": 140
+        }
+      ],
+      "tracks": 8,
+      "shots": 24,
+      "candidateClips": 72,
+      "videoLanes": 3,
+      "narrationSeconds": 0.4,
+      "durationMs": 2000,
+      "metric": "renderer requestAnimationFrame timestamps",
+      "sourceSha256": "4230d3d3f3440f86bf7792298544155a7752963e6c3a360ca8216bc6d8edd8ed",
+      "driverSha256": "d5ea5209f58177bda362c3098c036f6ada4f64a3fe5bb7125d1d6e988f5ddb4d"
+    },
+    "results": {
+      "idle": {
+        "elapsedMs": 2017,
+        "trustedEvents": 0,
+        "intervals": 121,
+        "medianMs": 16.7,
+        "p95Ms": 16.8,
+        "maxMs": 16.9,
+        "over16_67Ms": 73,
+        "over25Ms": 0
+      },
+      "candidateDrag": {
+        "elapsedMs": 2117,
+        "trustedEvents": 129,
+        "intervals": 124,
+        "medianMs": 16.7,
+        "p95Ms": 16.8,
+        "maxMs": 50,
+        "over16_67Ms": 80,
+        "over25Ms": 2
+      },
+      "playheadScrub": {
+        "elapsedMs": 2050,
+        "trustedEvents": 128,
+        "intervals": 123,
+        "medianMs": 16.7,
+        "p95Ms": 16.8,
+        "maxMs": 17,
+        "over16_67Ms": 75,
+        "over25Ms": 0
+      },
+      "panelResize": {
+        "elapsedMs": 2050,
+        "trustedEvents": 129,
+        "intervals": 123,
+        "medianMs": 16.7,
+        "p95Ms": 16.8,
+        "maxMs": 17.1,
+        "over16_67Ms": 75,
+        "over25Ms": 0
+      },
+      "timelineZoom": {
+        "elapsedMs": 2050,
+        "trustedEvents": 44,
+        "intervals": 123,
+        "medianMs": 16.7,
+        "p95Ms": 16.8,
+        "maxMs": 16.9,
+        "over16_67Ms": 77,
+        "over25Ms": 0
+      }
+    }
+  }
+}

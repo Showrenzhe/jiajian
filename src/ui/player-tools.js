@@ -361,7 +361,10 @@ window.mountPlayerTools = ({ panel, getClip, getTrackClock, seekTrackSource, isL
     position.min = active && !draft && !trackClock ? clip.start : 0;
     position.max = draft?.end ?? trackClock?.duration ?? (active ? clip.end : 1);
     const playing = draft?.playing ?? (active && (clip.asset.kind === 'image' ? imagePlaying() : !video.paused));
-    play.setAttribute('aria-pressed', String(playing));
+    if (play.ariaPressed !== String(playing)) {
+      play.ariaPressed = String(playing);
+      document.body.toggleAttribute('data-preview-playing', Boolean(playing));
+    }
     play.setAttribute('aria-label', playing ? '暂停' : '播放');
     play.title = `${play.getAttribute('aria-label')}${cut ? '片段' : timelineView ? '时间线' : ''}（空格）`;
     find('#player-ratio').value = ratio.value;
