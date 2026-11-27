@@ -418,7 +418,19 @@ async function run() {
       await waitFor('document.querySelector("#preview-batch").checkVisibility() && document.querySelector("#preview-batch-summary").textContent.includes("1000")');
       info.batchRows = 1000;
       info.batchReadyMs = Math.round(performance.now()-started);
-      assert.ok(await read("document.querySelector('#batch-reuse-filter').value==='low' && !document.querySelector('#preview-batch-summary').textContent.endsWith('当前显示 1000 条')"), '首次显示全部 1000 条之前应仍在默认筛选');
+      // Start both builds with only low-reuse entries visible and selected.
+      await clickVisible(wc,'#batch-reuse-filter');
+      await waitFor("document.querySelector('#batch-reuse-filter').matches(':open')");
+      await clickVisible(wc,'#batch-reuse-filter option[value=low]');
+      await waitFor(`document.querySelector('#batch-reuse-filter').value==='low'
+        && !document.querySelector('#batch-reuse-filter').matches(':open')
+        && !document.querySelector('#preview-batch-summary').textContent.endsWith('当前显示 1000 条')
+        && document.querySelector('#preview-batch-list .batch-entry') !== null`);
+      if (await read("!document.querySelector('#select-all-previews').disabled")) {
+        await clickVisible(wc,'#select-all-previews');
+      }
+      await waitFor("document.querySelector('#select-all-previews').disabled && !document.querySelector('#clear-preview-selection').disabled");
+      await read('new Promise(resolve=>requestAnimationFrame(()=>requestAnimationFrame(resolve)))');
       const key = async (name, code) => {
         for(const type of ['rawKeyDown','keyUp']) {
           await wc.debugger.sendCommand('Input.dispatchKeyEvent',{type,key:name,code:name,windowsVirtualKeyCode:code});

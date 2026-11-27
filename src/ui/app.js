@@ -54,6 +54,41 @@ const subprojects = window.createSubprojects({ shots, serialize: serializeClip, 
 const narrationCaptions = new Map();
 let narrationTrimSettings = window.narrationTrim.smartDefaults;
 let musicMixSettings = window.musicMix.smartDefaults;
+const batchLabels = window.editorMessages.batchRandom;
+let batchRandom = window.batchVariations.newSettings();
+let batchSubprojectScope = false;
+for (const label of document.querySelectorAll('[data-batch-label]')) label.textContent = batchLabels[label.dataset.batchLabel];
+
+function showBatchSettings(settings) {
+  batchRandom = settings;
+  $('#batch-seed').value = settings.seed;
+  $('#batch-min-shots').value = settings.minDifferentShots;
+  $('#batch-avoid-opening').checked = settings.avoidSameOpening;
+}
+showBatchSettings(batchRandom);
+$('#batch-min-shots').addEventListener('change', event => {
+  const input = event.currentTarget;
+  if (input.value !== '' && input.validity.valid) batchRandom = {...batchRandom, minDifferentShots:input.valueAsNumber};
+  else input.value = batchRandom.minDifferentShots;
+  updateControls();
+});
+$('#batch-avoid-opening').addEventListener('change', event => {
+  batchRandom = {...batchRandom, avoidSameOpening:event.currentTarget.checked};
+  updateControls();
+});
+
+function batchCoverage(count, space) {
+  if (space <= 0n || !Number.isSafeInteger(count) || count < 0) return '';
+  const tenths = (BigInt(count) * 1000n + space / 2n) / space;
+  return count && !tenths ? '<0.1%' : Number(tenths) / 10 + '%';
+}
+
+function batchReport(summary, projectId) {
+  const row = summary.subprojects?.find(project => project.id === projectId) ?? summary;
+  const space = BigInt(row.totalSpace);
+  return [row.name, batchLabels.partial(row.actual,row.requested), batchLabels.space(space.toLocaleString('zh-CN')),
+    space > 0n && batchLabels.actualCoverage(batchCoverage(row.actual,space)), batchLabels[row.reason]].filter(Boolean).join(' · ');
+}
 const mixLabels = window.editorMessages.musicMix;
 const mixPanel = $('#music-mix-settings');
 const mixFields = [...mixPanel.querySelectorAll('[data-mix-field]')];
@@ -1320,20 +1355,50 @@ function updateSubprojectScope() {
   const rows = selectedSubprojectScope();
   const total = rows.reduce((sum, item) => sum + item.count, 0);
   const invalid = rows.some((item) => !Number.isInteger(item.count) || item.count < 1);
+  let space = 0n, reachable = 0;
+  for (const row of $('#subproject-batch-list').children) {
+    if (!row.querySelector('input[type=checkbox]').checked) continue;
+    const capacity = BigInt(row.dataset.space);
+    space += capacity;
+    reachable += Math.min(row.querySelector('input[type=number]').valueAsNumber, Number(capacity));
+  }
   $('#subproject-batch-status').textContent = invalid ? '每个已选子工程至少生成一条，数量须为整数。'
-    : total > 1000 ? '本批超过 1000 条，请减少数量。' : `已选 ${rows.length} 个子工程，共 ${total} 条`;
-  $('#subproject-batch-confirm').disabled = invalid || !rows.length || total > 1000;
+    : total > 1000 ? '本批超过 1000 条，请减少数量。' : [`已选 ${rows.length} 个子工程，共 ${total} 条`,
+      space > 0n && batchLabels.space(space.toLocaleString('zh-CN')), space > 0n && batchLabels.coverage(batchCoverage(reachable,space)),
+      space > 0n && BigInt(reachable)*5n >= space*4n && batchLabels.nearLimit].filter(Boolean).join(' · ');
+  $('#subproject-batch-confirm').disabled = $('#subproject-batch-new-seed').disabled = invalid || !rows.length || total > 1000;
 }
+function subprojectBatchSpace(project, baseVoice) {
+  const {pictures,segments,whole} = subprojects.batchSources(project,baseVoice);
+  return batchSpace(pictures,segments.map(row=>row.map(track=>track?.id)),
+    whole.map(track=>({narration:track?.id,subtitles:track?.srt}))).combinations;
+}
+
+function repeatPreview(fresh = false) {
+  if (operation) return;
+  if (!batchSubprojectScope) return preparePreview(undefined,fresh);
+  subprojects.pack();
+  const voice = subprojects.batchBaseVoice();
+  const scope = subprojects.projects
+    .filter(project=>project.participates && subprojectBatchSpace(project,voice)>0n)
+    .map(project=>({id:project.id,count:project.count ?? 1}));
+  if (!scope.length) return say(batchLabels.noProjects);
+  return preparePreview(scope,fresh);
+}
+
 $('#subproject-batch').addEventListener('click', () => {
   if (operation) return;
   subprojects.pack();
   const list = $('#subproject-batch-list');
+  const baseVoice = subprojects.batchBaseVoice();
   list.replaceChildren(...subprojects.projects.map((project) => {
     const row = document.createElement('label');
     row.className = 'subproject-batch-item';
     row.dataset.id = project.id;
     const check = document.createElement('input'), count = document.createElement('input'), name = document.createElement('span');
-    const ready = subprojects.ready(project);
+    const combinations = subprojectBatchSpace(project,baseVoice);
+    const ready = combinations > 0n;
+    row.dataset.space = combinations.toString();
     check.type = 'checkbox'; check.checked = ready && project.participates !== false; check.disabled = !ready;
     check.setAttribute('aria-label', `${project.name} 参与批量混剪`);
     name.textContent = ready ? project.name : `${project.name} · 分镜缺少可用素材`;
@@ -1356,19 +1421,14 @@ $('#subproject-apply-count').addEventListener('click', () => {
   }
   updateSubprojectScope();
 });
-$('#subproject-batch-confirm').addEventListener('click', () => {
+function generateSubprojectBatch(fresh) {
   if (operation) return;
   const scope = selectedSubprojectScope();
-  for (const row of $('#subproject-batch-list').children) {
-    const item = subprojects.projects.find((project) => project.id === row.dataset.id);
-    const check = row.querySelector('input[type=checkbox]');
-    if (!check.disabled) item.participates = check.checked;
-    if (check.checked) item.count = row.querySelector('input[type=number]').valueAsNumber;
-  }
   $('#subproject-batch-dialog').close();
-  updateControls();
-  preparePreview(scope);
-});
+  preparePreview(scope, fresh);
+}
+$('#subproject-batch-confirm').addEventListener('click', () => generateSubprojectBatch(false));
+$('#subproject-batch-new-seed').addEventListener('click', () => generateSubprojectBatch(true));
 
 function changedSubproject() {
   clearPreview();
@@ -2646,34 +2706,43 @@ function updateMontageSteps() {
   }
 }
 
-function updateControls(group, keepDraftPlayback = false) {
-  monitoredLanes=undefined;
-  if (applyingEdit) return;
+function batchSpace(videoShots, trackRows, wholeRows) {
   const variants = Number($('#use-original').checked) + Number($('#use-mirrors').checked);
   const segmented = $('#narration-mode').value === 'segmented';
   const segmentSelection = $('#segment-narration-selection').value;
-  const trackRows = shots.map((shot) => segmentNarrations.get(shot) ?? []);
-  if (processedMaterials.length) updateProcessedUsage(materialUsage());
   const participates=key=>window.trackControls.participates(laneControls,key);
   const activeSegments=trackRows.map(tracks=>tracks.flatMap((asset,index)=>asset && participates('voice'+index) ? [index] : []));
-  const wholeRows=[{narration,subtitles},...extraWholeTracks];
   const activeWhole=wholeRows.flatMap((row,index)=>
     window.trackControls.wholeRowParticipates(laneControls,index,row.narration,row.subtitles) ? [index] : []);
   const wholeChoices=window.trackControls.preferSolo(activeWhole,index=>wholeRows[index].narration && laneControls['whole'+index]?.solo);
   const hasNarration=segmented ? activeSegments.some(row=>row.length) : wholeChoices.some(index=>wholeRows[index].narration);
   const narrationChoices = segmented ? segmentVariants(activeSegments, segmentSelection) : BigInt(Math.max(1,wholeChoices.length));
-  const videoRows=shots.map(shot=>{
+  const videoRows=videoShots.map(shot=>{
     const lanes=window.candidateVideoLanes(shot);
     const indices=shot.flatMap((clip,index)=>clip.enabled!==false && participates('vis'+lanes[index]) ? [index] : []);
     return {clips:indices.map(index=>shot[index]),lanes:indices.map(index=>lanes[index])};
   });
+  const videoChoices = videoRows.map(({clips,lanes}) => {
+    const solo = window.trackControls.preferSolo(clips, clip => laneControls['vis'+lanes[clips.indexOf(clip)]]?.solo);
+    const leaders = window.videoGroupLeaders(solo, solo.map(clip => lanes[clips.indexOf(clip)]));
+    return window.batchVariations.eligibleCandidates(leaders).length * variants;
+  });
+  const musicRows = window.trackControls.preferSolo(music.flatMap((asset,i)=>participates('music'+i) ? [i] : []), i=>laneControls['music'+i]?.solo);
+  const combinations = videoShots.length ? window.batchVariations.combinationCount([
+    ...videoChoices, narrationChoices, packaging.choices(shots,laneControls), Math.max(1,musicRows.length),
+  ]) : 0n;
+  return {variants,segmented,segmentSelection,videoRows,hasNarration,combinations};
+}
+
+function updateControls(group, keepDraftPlayback = false) {
+  monitoredLanes=undefined;
+  if (applyingEdit) return;
+  if (processedMaterials.length) updateProcessedUsage(materialUsage());
+  const trackRows = shots.map(shot=>segmentNarrations.get(shot) ?? []);
+  const {variants,segmented,segmentSelection,videoRows,hasNarration,combinations} =
+    batchSpace(shots,trackRows,[{narration,subtitles},...extraWholeTracks]);
+  const participates=key=>window.trackControls.participates(laneControls,key);
   const noEnabled = videoRows.findIndex((row,index)=>shots[index].length && !row.clips.length);
-  const combinations = shots.length
-    ? videoRows.reduce((total, {clips,lanes}, i) => {
-      const leaders=window.videoGroupLeaders(clips,lanes);
-      const size=window.trackControls.preferSolo(leaders,clip=>laneControls['vis'+lanes[clips.indexOf(clip)]]?.solo).length * variants;
-      return total * BigInt(i === 0 && editCover?.mode === 'first-shot' ? Math.min(1,size) : size);
-    }, narrationChoices * packaging.choices(shots,laneControls)) : 0n;
   const invalidTrim = videoRows.some(row=>row.clips.some(clip=>!validClip(clip)));
   const audioMode = mode === 'audio';
   const batchCapacity = combinations > maxMontageBatch ? maxMontageBatch : Number(combinations);
@@ -2684,6 +2753,9 @@ function updateControls(group, keepDraftPlayback = false) {
     : noEnabled >= 0 ? `分镜 ${noEnabled + 1} 未勾选任何候选，请至少启用一条画面参与混剪。` : invalidTrim ? '请检查素材的裁切、停留时长或速度。'
     : combinations === 0n ? '每组分镜至少添加一条候选。' : `可生成 ${combinations.toLocaleString('zh-CN')} 种不重复组合。${combinations > maxMontageBatch ? '每批最多 1,000 条。' : ''}`;
   const count = countField.valueAsNumber;
+  const coverage = batchCoverage(count, combinations);
+  $('#batch-coverage').textContent = coverage ? [batchLabels.coverage(coverage),
+    BigInt(count) * 5n >= combinations * 4n && batchLabels.nearLimit].filter(Boolean).join(' · ') : '';
   const musicVolume = $('#music-volume').valueAsNumber;
   const narrationVolumeField = $('#narration-volume');
   if (!hasNarration && !(narrationVolumeField.valueAsNumber >= 0 && narrationVolumeField.valueAsNumber <= 100)) {
@@ -2702,7 +2774,7 @@ function updateControls(group, keepDraftPlayback = false) {
   const config = mode === 'montage' || previewBatch || projectName ? montageConfig() : null;
   if (busy && operation !== 'quick-save') timeline?.stopDraftPlayback();
   const configKey = config ? JSON.stringify(config) : '';
-  const renderKey = config?.timelineMarkers ? JSON.stringify(renderConfig(config)) : configKey;
+  const renderKey = config?.timelineMarkers || config?.batchSubprojectScope ? JSON.stringify(renderConfig(config)) : configKey;
   if (mode === 'montage') timeline?.refresh(renderKey,keepDraftPlayback);
   if (mode === 'montage' && !busy) {
     if (editHistory?.record(config, group ? { group } : undefined)) {
@@ -2805,6 +2877,7 @@ function updateControls(group, keepDraftPlayback = false) {
       : '整段口播保持原速。画面不足先从各自分镜补候选，仍不足则复用同组素材，画面较长时统一加速对齐。')
     : `${segmented ? '每组分镜' : ''}保留完整画面，超出的口播会被裁剪。`;
   $('#prepare-preview').disabled = busy || !validMontage;
+  for (const button of [$('#batch-same-seed'),$('#batch-new-seed')]) button.disabled = busy || (batchSubprojectScope ? !subprojects.projects.some(project=>project.participates) : !validMontage);
   const listenIndex=selectedMixIndex();
   $('#listen-music-mix').disabled=busy || (previewBatch ? listenIndex===undefined : !validMontage);
   $('#music-listen-help').textContent=listenIndex!==undefined ? mixLabels.listenSelected(listenIndex+1) : previewBatch ? mixLabels.listenNone : mixLabels.listenFirst;
@@ -3869,8 +3942,8 @@ function renderResults({ results, failures }, complete) {
   $('#results').replaceChildren(...items);
 }
 
-function serializeClip({ asset, sourceEdit, start, end, volume, sourceMuted, speed, speedMode, speedOverflow, autoFitSpeed, matchedDuration, enabled, ranges, layers, transform, videoSubtitles, look, videoLane, videoStart, videoDuration, videoFit, videoGaps, videoGroup, videoWindow, videoFollowsShot }) {
-  return { id: asset.id, start, end, volume, ...(speed !== undefined && {speed}), ...(speedMode && {speedMode}), ...(speedOverflow && {speedOverflow}),
+function serializeClip({ asset, batchPreference, sourceEdit, start, end, volume, sourceMuted, speed, speedMode, speedOverflow, autoFitSpeed, matchedDuration, enabled, ranges, layers, transform, videoSubtitles, look, videoLane, videoStart, videoDuration, videoFit, videoGaps, videoGroup, videoWindow, videoFollowsShot }) {
+  return { id: asset.id, start, end, volume, ...(batchPreference && {batchPreference}), ...(speed !== undefined && {speed}), ...(speedMode && {speedMode}), ...(speedOverflow && {speedOverflow}),
     ...(matchedDuration!==undefined && {matchedDuration}), ...(enabled === false && { enabled: false }),
     ...(sourceMuted && {sourceMuted:true}), ...(videoGaps?.length && {videoGaps}), ...(videoGroup && {videoGroup}),
     ...(autoFitSpeed && {autoFitSpeed:true}), ...(videoWindow!==undefined && {videoWindow}),
@@ -3935,6 +4008,7 @@ function reviveClip(data, assets) {
   const source = sourceEdit && assets.get(sourceEdit.id);
   if (!asset || (sourceEdit && !source)) throw new Error('打开的工程缺少画面素材。');
   return { asset:sourceEdit ? namedRender(asset, source) : asset,
+    ...(data.batchPreference && data.batchPreference !== 'normal' && {batchPreference:data.batchPreference}),
     ...(data.speedMode && {speedMode:data.speedMode}), ...(data.speedOverflow && {speedOverflow:data.speedOverflow}),
     ...(data.videoFollowsShot!==undefined && {videoFollowsShot:data.videoFollowsShot}),
     ...(sourceEdit && {sourceEdit:{asset:source, ranges:structuredClone(sourceEdit.ranges)}}),
@@ -4002,6 +4076,8 @@ function montageConfig() {
     musicStartShot: musicStartFrom ? shots.indexOf(musicStartFrom) : null,
     musicVolume: $('#music-volume').valueAsNumber,
     musicMix:musicMixSettings,
+    batchRandom,
+    ...(batchSubprojectScope && {batchSubprojectScope:true}),
     narrationId: narration?.id ?? null,
     narrationTrim:narrationTrimSettings,
     narrationVolume: $('#narration-volume').valueAsNumber,
@@ -4051,6 +4127,7 @@ function previewFilter() {
 
 function filterPreviews() {
   if (!previewBatch) return;
+  $('#batch-generation-summary').textContent = batchReport(previewBatch.batchSummary,$('#batch-project-filter').value);
   $('#preview-batch-list').scrollTop = 0;
   rebuildPreviewList();
   updateControls();
@@ -4217,6 +4294,7 @@ batchList.addEventListener('keydown',event=>{
   row.querySelector(control).focus({preventScroll:true});
 });
 function renderPreviewBatch() {
+  $('#batch-generation-summary').textContent = batchReport(previewBatch.batchSummary);
   rebuildPreviewList();
   const tab = $('#timeline-batch-tab');
   tab.disabled = false;
@@ -4233,7 +4311,7 @@ function syncPreviewSelection() {
   updateControls();
 }
 
-function renderConfig({timelineMarkers: _markers, ...renderSettings}) {
+function renderConfig({timelineMarkers: _markers, batchSubprojectScope: _scope, ...renderSettings}) {
   return renderSettings;
 }
 
@@ -4252,18 +4330,59 @@ async function withSpeedChoices(settings,run) {
   return result;
 }
 
-async function preparePreview(scope) {
+function acceptPreviewBatch(result,config,autoSpeedRange,scope,projectUpdates) {
+  if (!result.entries.length) {
+    say(batchReport(result.batchSummary));
+    return;
+  }
+  discardPreviewBatch();
+  if (projectUpdates) for (const project of subprojects.projects) Object.assign(project,projectUpdates.get(project.id));
+  showBatchSettings(config.batchRandom);
+  batchSubprojectScope = Boolean(scope);
+  $('#batch-reuse-filter').value = 'all';
+  const projectFilter = $('#batch-project-filter');
+  const projects = new Map(result.batchSummary.subprojects?.map(project => [project.id,project.name]));
+  projectFilter.replaceChildren(new Option('全部子工程', ''), ...[...projects].map(([id, name]) => new Option(name, id)));
+  projectFilter.hidden = !projects.size;
+  $('#batch-search').value = '';
+  $('#batch-sort').value = 'index';
+  for (const entry of result.entries) {
+    entry.searchText = [String(entry.index+1),`第 ${entry.index+1} 条`,entry.subproject?.name,entry.music,entry.narration,entry.subtitles,
+      ...entry.clips.flatMap(clip=>[clip.name,clip.narration,...(clip.visuals??[]).map(part=>part.name)])].filter(Boolean).join(' ').toLocaleLowerCase();
+  }
+  previewBatch = {
+    ...result,
+    autoSpeedRange,
+    scope,
+    configKey: JSON.stringify(renderConfig(config)),
+    selected: new Set(result.entries.filter(previewFilter()).map(({ index }) => index)),
+  };
+  renderPreviewBatch();
+}
+
+async function preparePreview(scope, fresh = false) {
   if (operation || (!scope && $('#prepare-preview').disabled)) return;
   const config = montageConfig();
+  let projectUpdates;
+  if (scope) {
+    const counts = new Map(scope.map(item=>[item.id,item.count]));
+    projectUpdates = new Map();
+    config.subprojects.projects = config.subprojects.projects.map(({participates,count,...project})=>{
+      const included = counts.has(project.id);
+      const nextCount = included ? counts.get(project.id) : count;
+      const update = {participates:included,...(nextCount !== undefined && {count:nextCount})};
+      projectUpdates.set(project.id,update);
+      return {...project,...update};
+    });
+  }
+  if (fresh) config.batchRandom = {...batchRandom, seed:window.batchVariations.newSettings().seed};
   operation = 'prepare-preview';
   say('');
   const analyzeSeams = config.priority === 'voice' && config.narrationMode === 'segmented';
-  if (analyzeSeams) {
-    $('#batch-job').hidden = false;
-    $('#batch-job-status').textContent = '正在检查口播接缝并生成预览组合…';
-    $('#batch-progress').removeAttribute('value');
-    $('#cancel-preview').disabled = false;
-  }
+  $('#batch-job').hidden = false;
+  $('#batch-job-status').textContent = analyzeSeams ? '正在检查口播接缝并生成预览组合…' : batchLabels.preparing;
+  $('#batch-progress').removeAttribute('value');
+  $('#cancel-preview').disabled = false;
   updateControls();
   try {
     const settings=planningConfig(config);
@@ -4272,29 +4391,11 @@ async function preparePreview(scope) {
       say('已取消生成预览组合。');
       return;
     }
-    discardPreviewBatch();
-    $('#batch-reuse-filter').value = scope ? 'all' : 'low';
-    const projectFilter = $('#batch-project-filter');
-    const projects = new Map(result.entries.filter((entry) => entry.subproject).map((entry) => [entry.subproject.id, entry.subproject.name]));
-    projectFilter.replaceChildren(new Option('全部子工程', ''), ...[...projects].map(([id, name]) => new Option(name, id)));
-    projectFilter.hidden = !projects.size;
-    $('#batch-search').value = '';
-    $('#batch-sort').value = 'index';
-    for (const entry of result.entries) {
-      entry.searchText = [String(entry.index+1),`第 ${entry.index+1} 条`,entry.subproject?.name,entry.music,entry.narration,entry.subtitles,
-        ...entry.clips.flatMap(clip=>[clip.name,clip.narration,...(clip.visuals??[]).map(part=>part.name)])].filter(Boolean).join(' ').toLocaleLowerCase();
-    }
-    previewBatch = {
-      ...result,
-      autoSpeedRange:settings.autoSpeedRange,
-      configKey: JSON.stringify(renderConfig(config)),
-      selected: new Set(result.entries.filter(previewFilter()).map(({ index }) => index)),
-    };
-    renderPreviewBatch();
+    acceptPreviewBatch(result,config,settings.autoSpeedRange,scope,projectUpdates);
   } catch (error) {
     say(error.message);
   } finally {
-    if (analyzeSeams) $('#batch-job').hidden = true;
+    $('#batch-job').hidden = true;
     operation = '';
     updateControls();
   }
@@ -4505,6 +4606,8 @@ function restoreProject({ name, config, assets = [], folders = [], projectToken:
   $('#use-mirrors').checked = config.useMirrors;
   $('#music-volume').value = config.musicVolume;
   showMusicMix(window.musicMix.normalizeSettings(config.musicMix));
+  showBatchSettings(window.batchVariations.normalizeSettings(config.batchRandom));
+  batchSubprojectScope = config.batchSubprojectScope === true;
   showNarrationTrim(window.narrationTrim.normalizeSettings(config.narrationTrim));
   $('#narration-volume').value = config.narrationVolume === undefined ? 100 : config.narrationVolume;
   $('#narration-mode').value = config.narrationMode ?? 'whole';
@@ -4656,10 +4759,17 @@ async function startExport() {
       $('#output').hidden = true;
       return;
     }
+    if (result.partialPreview) {
+      $('#output').hidden = true;
+      acceptPreviewBatch(result,config,window.videoSpeedControls.range);
+      return;
+    }
+    if (!selection && result.batchSummary && result.results?.length && !result.cancelled) batchSubprojectScope = false;
     const status = result.cancelled ? '已取消' : result.failures.length ? '导出结束' : '导出完成';
     $('#copy-export-diagnostics').hidden = !result.failures.length;
     $('#output-status').textContent = `${status} · 已保存 ${result.results.length} 条${result.failures.length ? ` · 失败 ${result.failures.length} 条` : ''}`;
     if (!result.cancelled) $('#progress').value = 1;
+    if (result.batchSummary && !selection) $('#output-status').textContent += ' · '+batchReport(result.batchSummary);
     renderResults(result, true);
     if (result.historyWarning) say(result.historyWarning);
   } catch (error) {
@@ -5323,6 +5433,8 @@ window.addEventListener('keydown', event => {
   if (!event.repeat) commandRegistry.execute('quick-save');
 }, true);
 bindWorkbenchButton('prepare-preview', () => preparePreview());
+$('#batch-same-seed').addEventListener('click', () => repeatPreview());
+$('#batch-new-seed').addEventListener('click', () => repeatPreview(true));
 $('#select-all-previews').addEventListener('click', () => selectPreviews(true));
 $('#clear-preview-selection').addEventListener('click', () => selectPreviews(false));
 bindWorkbenchButton('start-export', startExport, () => mode === 'montage' || mode === 'audio');
@@ -5379,10 +5491,10 @@ $('#apply-narration-recommendation').addEventListener('click',()=>{
   sayProject('已应用口播推荐设置。');
 });
 $('#montage-settings').addEventListener('input', (event) => {
-  if(!event.target.closest('#voice-follow-settings,#narration-trim-settings,#music-mix-settings')) updateControls(event.target.type === 'number' ? event.target : undefined, ['ratio','fps'].includes(event.target.id));
+  if(!event.target.closest('#voice-follow-settings,#narration-trim-settings,#music-mix-settings,#batch-random-settings')) updateControls(event.target.type === 'number' ? event.target : undefined, ['ratio','fps'].includes(event.target.id));
 }, true);
 $('#montage-settings').addEventListener('change', (event) => {
-  if(!event.target.closest('#voice-follow-settings,#narration-trim-settings,#music-mix-settings')) updateControls(undefined, ['ratio','fps'].includes(event.target.id));
+  if(!event.target.closest('#voice-follow-settings,#narration-trim-settings,#music-mix-settings,#batch-random-settings')) updateControls(undefined, ['ratio','fps'].includes(event.target.id));
   if (event.target.id==='fps') {
     timeline?.refreshMonitoring();
     refreshPreviewSources();
@@ -6091,6 +6203,12 @@ timeline = window.mountEditTimeline($('#timeline-clock'), {
   }), preview:(clip)=>preview(clip,'轨道预览'),
   cut:openCandidateCut, scenes:(asset)=>cutEditor.openScenes(asset), dropScene:(event,i,lane,slot)=>cutEditor.dropScene(event,shots[i] ? i : -1,lane,slot),
   mute:setVisualTrackMuted, toggleClip:(clip)=>setCandidateEnabled(clip,clip.enabled===false),
+  setBatchPreference:(shot,clip,value)=>{
+    if (operation || !shot.includes(clip) || videoLocked(shot,clip)) return;
+    if (window.batchVariations.normalizePreference(value)==='normal') delete clip.batchPreference;
+    else clip.batchPreference=value;
+    renderLists();
+  },
   clear:()=>{clearPreview();activateInspectorTab($('#inspector-tab-visual'));},
   pick:(kind,done)=>pick(kind,1,([asset])=>{if(asset) done(asset);}),
   cutout:cutoutAsset, cutoutCandidate, editCandidateMotion,

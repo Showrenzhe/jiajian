@@ -215,6 +215,13 @@
     });
   }
 
+  function candidatePreferenceOwner(shot, clip) {
+    if (!clip.videoGroup) return clip;
+    const lanes = candidateVideoLanes(shot);
+    const lane = lanes[shot.indexOf(clip)];
+    return shot.find((item,index) => item.enabled !== false && item.videoGroup === clip.videoGroup && lanes[index] === lane) ?? clip;
+  }
+
   function joinedVideoSequence(shot,focus) {
     if(!focus?.videoGroup) return [];
     const variants=shot.filter(clip=>Boolean(clip.mirror)===Boolean(focus.mirror));
@@ -263,7 +270,7 @@
   }
 
   const tools = { normalizeTimelineMarkers, splitRanges, candidateVideoLanes, pinCandidateLanes, minVideoSpeed, fitVideoSpeed, videoSpeedDecision, applyVideoSpeedDecision, placedVideoSpeed, sampleVideoRate, shouldRetimeVideo, nativeVideoRate, pictureSpan, videoLaneCells, emptyVideoCells,
-    reservedVideoCells, normalizeVideoGaps, videoGroupLeaders, joinedVideoSequence, soloLaneSequence, usesPlacedVideoSource };
+    reservedVideoCells, normalizeVideoGaps, videoGroupLeaders, candidatePreferenceOwner, joinedVideoSequence, soloLaneSequence, usesPlacedVideoSource };
   if (typeof module === 'object' && module.exports) module.exports = tools;
   else Object.assign(window, tools);
 })();

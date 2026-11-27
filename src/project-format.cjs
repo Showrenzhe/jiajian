@@ -20,13 +20,14 @@ const { normalizeCover } = require('./cover.cjs');
 const { audioSpeed, normalizeMusicSpeeds, normalizeVolumeOverrides } = require('./shot-timing.cjs');
 const { normalizeLook, inspectLut } = require('./visual-style.cjs');
 const { candidateVideoLanes, normalizeVideoGaps, normalizeTimelineMarkers, placedVideoSpeed, minVideoSpeed } = require('./ui/track-tools.js');
-const {projectSpeedFormat, timelineMarkerErrors} = require('./ui/messages-zh-cn.js');
+const {projectSpeedFormat, timelineMarkerErrors, batchRandom:batchRandomMessages} = require('./ui/messages-zh-cn.js');
 const { normalizeSettings: normalizeNarrationTrim, smartDefaults, legacyDefaults } = require('./ui/narration-trim.js');
 
 const musicMix = require('./ui/music-mix.js');
+const batchVariations = require('./ui/batch-variations.js');
 
 const format = 'sdworkbench';
-const version = 6;
+const version = 7;
 /** @typedef {{start:number,end:number,reverse?:boolean,mirror?:boolean,rotation?:number,crop?:{x:number,y:number,width:number,height:number}}} EditRange */
 /** @typedef {{id:string,ranges:EditRange[]}} EditRecipe */
 /** @typedef {Map<string, Record<string, any>>} AssetCatalog */
@@ -37,6 +38,7 @@ const migrations = new Map([
   [3, project => ({ ...project, version: 4, config: {...project.config, timelineMarkers:[]} })],
   [4, project => ({ ...project, version: 5, config: {...project.config, narrationTrim: legacyDefaults} })],
   [5, project => ({ ...project, version: 6, config: {...project.config, musicMix: musicMix.legacyDefaults} })],
+  [6, project => ({ ...project, version: 7, config: {...project.config, batchRandom: batchVariations.newSettings()} })],
 ]);
 function supportedProject(project) {
   return project?.format === format && (project.version === version || migrations.has(project.version));
@@ -94,7 +96,7 @@ function normalizeScriptModel(value) {
   return script;
 }
 
-function cleanConfig(config, migrateOldSpeed = false) {
+function cleanConfig(config, migrateOldSpeed = false, legacyBatchFields = migrateOldSpeed) {
   if (!Array.isArray(config?.shots) || config.shots.length > maxShots
       || !Array.isArray(config.musicIds) || config.musicIds.length > maxCandidates) {
     throw new Error('工程中的分镜或配乐数量无效。');
@@ -131,6 +133,7 @@ function cleanConfig(config, migrateOldSpeed = false) {
     candidateVideoLanes(shot, maxCandidates);
     return Array.from(shot, (clip) => {
       const id = record(clip?.id, 'visual');
+      const preference = legacyBatchFields ? 'normal' : batchVariations.normalizePreference(clip.batchPreference);
       if (![clip.start, clip.end].every(Number.isFinite) || clip.start < 0 || clip.end < clip.start) {
         throw new Error(`第 ${index + 1} 组分镜的裁切时间无效。`);
       }
@@ -181,6 +184,7 @@ function cleanConfig(config, migrateOldSpeed = false) {
       }
       return {
         id, start: clip.start, end: clip.end,
+        ...(preference !== 'normal' && {batchPreference: preference}),
         ...(sourceEdit && { sourceEdit }),
         ...(clip.videoLane !== undefined && { videoLane: clip.videoLane }),
         ...(clip.videoStart !== undefined && { videoStart: clip.videoStart }),
@@ -215,6 +219,7 @@ function cleanConfig(config, migrateOldSpeed = false) {
     const trim = config.narrationTrim === undefined ? smartDefaults : config.narrationTrim;
     projectConfig.narrationTrim = normalizeNarrationTrim(trim);
     projectConfig.musicMix = musicMix.normalizeSettings(config.musicMix === undefined ? musicMix.smartDefaults : config.musicMix);
+    projectConfig.batchRandom = batchVariations.normalizeSettings(config.batchRandom);
   }
   if (!migrateOldSpeed && config.timelineMarkers !== undefined) {
     projectConfig.timelineMarkers = normalizeTimelineMarkers(config.timelineMarkers, timelineMarkerErrors);
@@ -235,6 +240,10 @@ function cleanConfig(config, migrateOldSpeed = false) {
   if (config.mutedVideoTracks !== undefined) projectConfig.mutedVideoTracks = normalizeMutedVideoTracks(config.mutedVideoTracks);
   if (config.trackControls !== undefined) projectConfig.trackControls = require('./ui/track-controls.js').normalize(config.trackControls);
   if (config.subprojects !== undefined) projectConfig.subprojects = normalizeSubprojects(config.subprojects, shots.length, cleanShot,(id)=>record(id,'audio'));
+  if (!legacyBatchFields && config.batchSubprojectScope !== undefined) {
+    if (typeof config.batchSubprojectScope !== 'boolean') throw Error(batchRandomMessages.invalidSettings);
+    if (config.batchSubprojectScope && projectConfig.subprojects) projectConfig.batchSubprojectScope = true;
+  }
   if (config.materialFolderKeys !== undefined) {
     const keys = config.materialFolderKeys;
     if (!Array.isArray(keys) || keys.length > 16 || !keys.every((key) => typeof key === 'string' && /^[a-f0-9]{64}$/.test(key))) throw new Error('工程素材文件夹无效。');
@@ -390,11 +399,10 @@ function validateCuts(config, assets) {
   const populated = config.shots.flatMap((shot, index) => shot.length ? [index] : []);
   // Empty shots are useful while editing but cannot be part of a render plan.
   if (populated.length) {
-    const count = populated.length === config.shots.length ? config.count : 1;
     planMontage({
       ...config,
       // Inspect the cuts of every saved candidate, including tracks excluded from the current export.
-      shots: populated.map((index) => config.shots[index].map((clip) => ({ ...clip, enabled: true }))),
+      shots: populated.map((index) => config.shots[index].map((clip) => ({ ...clip, enabled: true, batchPreference:'normal' }))),
       ...(config.packaging && { packaging: {
         ...config.packaging,
         segmentNarration: populated.map((index) => config.packaging.segmentNarration[index] ?? []),
@@ -409,7 +417,7 @@ function validateCuts(config, assets) {
       shotTransitions: config.shotTransitions && populated.map((index) => config.shotTransitions[index]),
       musicStartShot: populated.includes(config.musicStartShot) ? populated.indexOf(config.musicStartShot) : null,
       wholeStartShots: config.wholeStartShots?.map((i)=>populated.includes(i) ? populated.indexOf(i) : null),
-      count,
+      count: 1,
     }, assets, () => 0);
   }
 }
@@ -596,8 +604,10 @@ async function replaceProjectFile(stage, file, expectedDraftRevision = undefined
 
 /** @param {Record<string, any>} project */
 function projectReferences(project) {
+  const legacyBatchFields = project?.version < 7;
   project = migrateProject(project);
-  const { references, config } = cleanConfig(project.config);
+  if (project.config?.batchRandom === undefined) throw Error(batchRandomMessages.invalidSettings);
+  const { references, config } = cleanConfig(project.config, false, legacyBatchFields);
   if (!Array.isArray(project.assets) || project.assets.length !== references.size) throw new Error('工程的素材清单与引用不一致。');
   const declared = new Set();
   const rows = project.assets.map((row) => {

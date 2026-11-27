@@ -43,7 +43,7 @@ const { isLocalPath, isMaterialPath, isSharedMaterialPath, materialPathKey, chec
 const scheme = 'sd-workbench';
 const page = `${scheme}://app/index.html`;
 const uiFiles = new Set(['/index.html', '/app.js', '/styles.css', '/dialog-focus.js', '/creative-service.js', '/script-workspace.js', '/script-workspace.css',
-  '/editor-text.js', '/text-presets.js', '/caption-inspector.js', '/caption-inspector.css', '/audio-tools.js', '/waveform.js', '/narration-trim.js', '/music-mix.js', '/draft-music.js', '/voice-alignment.js', '/draft-transport.js',
+  '/editor-text.js', '/text-presets.js', '/caption-inspector.js', '/caption-inspector.css', '/audio-tools.js', '/waveform.js', '/narration-trim.js', '/music-mix.js', '/draft-music.js', '/batch-variations.js', '/voice-alignment.js', '/draft-transport.js',
   '/track-organizer.js', '/cover-editor.js', '/visual-editor.js', '/batch-edit.js',
   '/editor-controls.js', '/material-library-view.js', '/timeline-packaging-state.js', '/timeline.js', '/timeline-edit-controls.js', '/timeline-selection.js', '/timeline.css', '/cut-filmstrip.js', '/cut-picture-view.js', '/video-cut-timeline.js', '/cut-track.js', '/cut-track.css', '/layer-motion.js', '/layer-motion.css', '/subprojects.js',
   '/track-workspace.css', '/edit-history.js', '/track-tools.js', '/track-controls.js', '/track-tools.css', '/cloud-tts-dialog.js', '/cloud-tts-dialog.css',
@@ -1810,6 +1810,13 @@ async function launchDesktop({
     return snapshot;
   }
 
+  function publishPreviewBatch(config, plans) {
+    const {batchSummary} = plans;
+    if (!plans.length) return {id:null,entries:[],batchSummary};
+    previewBatch = createPreviewBatch(config, catalog, plans);
+    return {id:previewBatch.id,entries:previewBatch.entries,batchSummary};
+  }
+
   handle('workbench:prepare-preview', async (request) => {
     if (job || pickerOpen) throw new Error('请先完成当前操作。');
     job = new AbortController();
@@ -1823,8 +1830,7 @@ async function launchDesktop({
       const settings=await performanceCache.settledSettings();
       if (signal.aborted || settings.hdrMode!==renderConfig.hdrMode) return null;
       if (speedChallenge) return {speedChallenge};
-      previewBatch = createPreviewBatch(renderConfig, catalog, plans);
-      return { id: previewBatch.id, entries: previewBatch.entries };
+      return publishPreviewBatch(renderConfig, plans);
     } catch (error) {
       if (signal.aborted) return null;
       throw error;
@@ -1887,6 +1893,9 @@ async function launchDesktop({
         : await planWithSpeedChoices(renderConfig,undefined,planningCatalog(renderConfig),{signal,response:speedResponse,analyzePauses:checkedNarrationPauses});
       if (signal.aborted) return null;
       if (speedChallenge) return {speedChallenge};
+      if (!chosen && plans.batchSummary?.reason) {
+        return {...publishPreviewBatch(renderConfig, plans),partialPreview:true};
+      }
       const selection = await dialogs.showOpenDialog(win, { title: '选择导出目录', properties: ['openDirectory', 'createDirectory'] });
       if (selection.canceled) return null;
       await checkPlanFolderFiles(plans, signal);
@@ -1899,6 +1908,7 @@ async function launchDesktop({
           if (!win.isDestroyed()) win.webContents.send('workbench:progress', data);
         },
       });
+      if (plans.batchSummary) result.batchSummary = plans.batchSummary;
       for (const file of result.results) published.add(file.path);
       exportDiagnostic = { phase: result.cancelled ? 'cancelled' : 'finished', count: plans.length,
         saved: result.results.length, failed: result.failures.length };

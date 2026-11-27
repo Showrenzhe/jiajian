@@ -13,6 +13,7 @@ const { candidateVideoLanes, pictureSpan, emptyVideoCells, usesPlacedVideoSource
 const trackControls = require('./ui/track-controls.js');
 const narrationTrim = require('./ui/narration-trim.js');
 const musicMix = require('./ui/music-mix.js');
+const batchVariations = require('./ui/batch-variations.js');
 const { prepareMusicCycle, appendMusic } = require('./music-render.cjs');
 const { normalizeFinalMix } = require('./music-loudness.cjs');
 const {narrationTrim:trimMessages} = require('./ui/messages-zh-cn.js');
@@ -440,50 +441,6 @@ function normalizeSubtitleStyle(value = {}) {
   return style;
 }
 
-function drawCombinations(shots, count, random) {
-  if (count === 1) return [shots.map(shot => Math.floor(random() * shot.length))];
-  // Advance every group's shuffled deck together. After their common period,
-  // shift to a new orbit. gcd(previous period, size) counts distinct offsets:
-  // this covers the Cartesian product without rejection sampling or repeats.
-  let period = 1n;
-  const decks = shots.map(group => {
-    const size = BigInt(group.length);
-    let a = period, b = size;
-    while (b) [a, b] = [b, a % b];
-    period = period / a * size;
-    const order = group.map((_, i) => i);
-    for (let i = 0; i < order.length - 1; i++) {
-      const j = i + Math.floor(random() * (order.length - i));
-      [order[i], order[j]] = [order[j], order[i]];
-    }
-    // Original and mirrored variants share a source. Interleave those variants
-    // so both versions of one file don't crowd out the other shots in a short batch.
-    if (group.some(item => item?.mirror)) {
-      const variants = new Map();
-      for (const index of order) {
-        const source = group[index].asset;
-        if (!variants.has(source)) variants.set(source, []);
-        variants.get(source).push(index);
-      }
-      const bySource = [...variants.values()];
-      order.length = 0;
-      for (let pass = 0; order.length < group.length; pass++) {
-        for (const items of bySource) if (pass < items.length) order.push(items[pass]);
-      }
-    }
-    return { order, offsets: a };
-  });
-  return Array.from({length: count}, (_, i) => {
-    const step = BigInt(i) % period;
-    let orbit = BigInt(i) / period;
-    return decks.map(({order, offsets}) => {
-      const shift = orbit % offsets;
-      orbit /= offsets;
-      return order[Number((step + shift) % BigInt(order.length))];
-    });
-  });
-}
-
 function normalizeGeneratedCaptions(value, config) {
   if (value == null) return {};
   if (![Object.prototype, null].includes(Object.getPrototypeOf(value))) throw new Error('口播字幕设置无效。');
@@ -732,7 +689,9 @@ function completeDisplacedShots(clips, sourceShots, indices, placementClocks, fp
   return clips.concat(extra);
 }
 
-function planMontage(config, catalog, random = Math.random, batchLimit = maxMontageBatch, measuredPauses = undefined) {
+function planMontage(config, catalog, random = undefined, batchLimit = maxMontageBatch, measuredPauses = undefined) {
+  const batchSettings = batchVariations.normalizeSettings(config?.batchRandom);
+  random ??= batchVariations.planningRandom(batchSettings, config?.subprojects?.active);
   const checkLayerAsset = (id, kind) => {
     const expected = kind === 'sound' ? ['audio'] : kind === 'lut' ? ['lut'] : kind === 'sticker' ? ['image'] : ['image', 'video'];
     requireAsset(catalog, id, ...expected);
@@ -774,6 +733,7 @@ function planMontage(config, catalog, random = Math.random, batchLimit = maxMont
     const fullSources = new Map();
     const lanes = candidateVideoLanes(shot, maxCandidates);
     const originals = shot.flatMap((clip, candidateIndex) => {
+      const batchPreference = batchVariations.normalizePreference(clip?.batchPreference);
       if (clip?.enabled !== undefined && typeof clip.enabled !== 'boolean') throw new Error('候选参与状态无效。');
       if (clip?.sourceMuted !== undefined && typeof clip.sourceMuted !== 'boolean') throw new Error('片段原声静音状态无效。');
       if (clip?.enabled === false || !trackControls.participates(controls,'vis'+lanes[candidateIndex])) return [];
@@ -783,6 +743,8 @@ function planMontage(config, catalog, random = Math.random, batchLimit = maxMont
       const layers = clip.layers === undefined ? {} : {
         layers: normalizeLayers(clip.layers, checkLayerAsset).filter(layer=>trackControls.participates(controls, trackControls.layerKey(layer))),
       };
+      layers.batchSlot = candidateIndex;
+      layers.batchPreference = batchPreference;
       layers.videoLane = lanes[candidateIndex];
       layers.originalMaterialId=clip.sourceEdit?.id ?? clip.id;
       if(clip.videoWindow!==undefined) layers.videoWindow=requireNumber(clip.videoWindow,Number.MIN_VALUE,Number.MAX_SAFE_INTEGER,'视频轨片段时长');
@@ -856,10 +818,12 @@ function planMontage(config, catalog, random = Math.random, batchLimit = maxMont
       ...(config.useMirrors ? candidates.map(candidate=>({...candidate,mirror:true})) : []),
     ];
     const chosen=preferSolo(originals,clip=>controls?.['vis'+clip.videoLane]?.solo);
-    const pictureShots=variants(videoGroupLeaders(chosen));
+    const leaders = batchVariations.eligibleCandidates(videoGroupLeaders(chosen));
+    const pictureShots=variants(leaders);
     const all=variants(chosen.map(c=>fullSources.get(c) ?? c));
     // Mirror variants share a sequence with pictures of the same orientation only.
-    fullSourceShots.push([...videoGroupLeaders(all.filter(clip=>!clip.mirror)),...videoGroupLeaders(all.filter(clip=>clip.mirror))]);
+    const leaderSlots = new Set(leaders.map(c => c.batchSlot));
+    fullSourceShots.push(all.filter(c => leaderSlots.has(c.batchSlot)));
     allSourcePictures.push(all);
     return pictureShots;
   });
@@ -875,9 +839,6 @@ function planMontage(config, catalog, random = Math.random, batchLimit = maxMont
   const pack = trackControls.enabledPackaging(normalizePackaging(config.packaging ?? {}, checkLayerAsset, shots.length),controls);
   const packaging = packagingChoices(pack, shots.length);
   const coverShot = coverSettings?.mode === 'first-shot';
-  const groups = shots.map((shot,i) => coverShot && i === 0 ? [shot[0]] : shot).concat(voiceGroups, packaging.groups);
-  const combinations = groups.reduce((total, group) => Math.min(batchLimit, total * group.length), 1);
-  const count = requireNumber(config.count, 1, combinations, '生成数量');
   if (!Array.isArray(config.musicIds) || config.musicIds.length > maxCandidates || new Set(config.musicIds).size !== config.musicIds.length) {
     throw new Error('配乐库设置无效。');
   }
@@ -900,30 +861,39 @@ function planMontage(config, catalog, random = Math.random, batchLimit = maxMont
   const gains = new Map(normalizeVolumeOverrides(config.volumeOverrides??[],(id)=>{requireAsset(catalog,id,'audio');return id;},shots.length)
     .map(row=>[JSON.stringify([row.kind,row.id,row.shot??null,row.track??null]),row.value/100]));
   const gain=(kind,id,shot,track)=>gains.get(JSON.stringify([kind,id,shot??null,track??null]));
-  let draws = drawCombinations(groups, count, random);
-  // With ordered narration, repeated takes of the same picture combination
-  // follow the rows from top to bottom, retaining the shuffled picture order.
+  const extraSizes = [...voiceGroups, ...packaging.groups].map(group => group.length);
+  extraSizes.push(Math.max(1, musicRows.length));
+  const space = batchVariations.combinationCount([...shots.map(shot => shot.length), ...extraSizes]);
+  // Saved v7 counts can outlive a deleted track or candidate. Return the
+  // available plans and their actual coverage, within the same batch cap.
+  const batchCap = Math.min(maxMontageBatch, batchLimit);
+  const limit = config.batchRandom !== undefined || space >= BigInt(batchCap) ? batchCap : Number(space);
+  const count = requireNumber(config.count, 1, limit, '生成数量');
+  const {rows, summary} = batchVariations.drawBatch({shots, extraSizes, count, settings: batchSettings,
+    random, unordered: config.unordered, pinOpening: coverShot});
+  // With ordered narration, repeated takes of the same pictures follow the
+  // narration rows top to bottom. Keep each validated picture order in place.
   if (segmented && config.segmentNarrationSelection !== 'random' && voiceGroups[0].length > 1) {
     const takes = new Map();
-    const keys = draws.map(row => row.slice(0, shots.length).join(','));
-    draws.forEach((row, index) => {
+    const keys = rows.map(({indices}) => indices.slice(0, shots.length).join(','));
+    rows.forEach(({indices}, index) => {
       if (!takes.has(keys[index])) takes.set(keys[index], []);
-      takes.get(keys[index]).push(row);
+      takes.get(keys[index]).push(indices);
     });
-    for (const rows of takes.values()) rows.sort((a,b) => b[shots.length] - a[shots.length]);
-    draws = keys.map(key => takes.get(key).pop());
+    for (const variants of takes.values()) variants.sort((a,b) => b[shots.length] - a[shots.length]);
+    rows.forEach((row, i) => { row.indices = takes.get(keys[i]).pop(); });
   }
-  return draws.map((indices) => {
+  const plans = rows.map(({indices, order}) => {
     const speedChallenges=[];
     const speedOptions={range:config.autoSpeedRange,choices:config.batchSpeedChoices,report:issue=>speedChallenges.push(issue)};
     const lookRandom=config.autoSpeedRange ? effectRandom(random) : random;
-    if (coverShot) indices[0] = Math.min(shots[0].length - 1,Math.floor(random()*shots[0].length));
     const narrationChoices = indices.slice(shots.length, shots.length + voiceGroups.length);
     const selection = packaging.select(indices.slice(shots.length + voiceGroups.length));
     const wholeTrackIndex = wholeRows[narrationChoices[0] ?? 0];
     const { narration = null, subtitles = null, caption = null, speed: narrationSpeed = 1 } = wholeTracks[wholeTrackIndex] ?? {};
     const wholeDuration = narration ? narration.duration/narrationSpeed : 0;
-    const scenes = shots.map((fixedShot, index) => {
+    const scenes = order.map(index => {
+      const fixedShot = shots[index];
       const match = segmented?.pick(narrationChoices, index);
       const hasVoice = segmented ? Boolean(match) : Boolean(narration);
       const shot = priority==='voice' && alignment==='fill' && hasVoice ? fullSourceShots[index] : fixedShot;
@@ -944,13 +914,6 @@ function planMontage(config, catalog, random = Math.random, batchLimit = maxMont
       };
       return { clip, shot, index };
     });
-    if (config.unordered) {
-      const first = coverShot ? 1 : 0;
-      for (let index = scenes.length - 1; index > first; index -= 1) {
-        const other = first + Math.floor(random() * (index + 1 - first));
-        [scenes[index], scenes[other]] = [scenes[other], scenes[index]];
-      }
-    }
     const musicStartIndex = musicStartShot === null ? 0 : scenes.findIndex(({ index }) => index === musicStartShot);
     let clips = scenes.map(({ clip }) => clip);
     if (clips.at(-1).transition) clips.at(-1).transition = null;
@@ -1083,7 +1046,7 @@ function planMontage(config, catalog, random = Math.random, batchLimit = maxMont
     });
     const videoCues=scheduled.filter((layer)=>layer.sourceCaption).map((l)=>({start:Math.round(l.start*1000),end:Math.round(l.end*1000),text:l.text,...(l.highlights && {highlights:l.highlights})})).filter((c)=>c.end>c.start);
     const cover = selectCover(coverSettings,catalog,duration,config.fps,random);
-    const musicIndex=musicRows[Math.floor(random()*musicRows.length)];
+    const musicIndex=musicRows[indices.at(-1)];
     const voiceId=wholeTrackIndex?config.extraWholeTracks?.[wholeTrackIndex-1]?.narrationId:config.narrationId;
     return {
       kind: 'montage', clips, size, fps: config.fps, fit: config.fit, backgroundColor,
@@ -1104,6 +1067,8 @@ function planMontage(config, catalog, random = Math.random, batchLimit = maxMont
       duration: duration + (cover?.frames ?? 0)/config.fps,
     };
   });
+  Object.defineProperty(plans, 'batchSummary', {value: summary});
+  return plans;
 }
 
 function planExtraction(ids, catalog) {

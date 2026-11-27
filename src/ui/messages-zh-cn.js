@@ -4,6 +4,16 @@
   if (typeof window !== 'undefined') window.editorMessages = messages;
   if (typeof module === 'object' && module.exports) module.exports = messages;
 })(Object.freeze({
+  batchRandom: {
+    noProjects:'上次参与的子工程目前没有可生成的组合，请重新选择子工程。',
+    invalidSettings:'批次随机设置无效。', invalidPreference:'候选的批量使用偏好无效。',
+    diversity:'批次多样性', different:'至少相差的分镜数', opening:'相邻成片使用不同开头', seed:'批次种子',
+    same:'用同一种子重新生成', fresh:'换一批', preference:'组合偏好', normal:'普通', required:'必选', low:'降低出现率',
+    preparing:'正在生成预览组合…', nearLimit:'已接近组合上限，可增加候选以获得更多组合。',
+    coverage:percent=>'预计覆盖率 '+percent, partial:(actual,requested)=>'本次生成 '+actual+' / '+requested+' 条',
+    impossible:'当前条件下已没有更多符合要求的组合。', budget:'已达到本次搜索次数上限。',
+    actualCoverage:percent=>'实际覆盖率 '+percent, space:size=>'理论组合 '+size+' 种',
+  },
   musicMix: {
     title:'混音', mode:'混音方式', smart:'智能混音', legacy:'沿用旧工程混音',
     ducking:'口播时压低配乐', duckDb:'压低幅度（dB）', releaseMs:'恢复时间（ms）',
