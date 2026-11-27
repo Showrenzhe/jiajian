@@ -193,6 +193,10 @@ async function check() {
     await actualClick(video);
     await pressDelete();
     await wait(count(video)+'===2 && !'+query(tile(files.red))+'.dataset.used','删除一个候选应移除它的使用标志并保留源素材');
+    await wait(query('#workspace-toast-undo')+'.checkVisibility()', '单个删除也应出现撤销');
+    await click('#add-shot');
+    assert.ok(await read(query('#workspace-toast-undo')+'.hidden'),'再编辑时，旧提示不能撤销新增分镜');
+    await undo();
     await actualClick(video);
     await wait(count(video+'.sequence-marked')+'===1','点选已有候选');
     await clickBlank(slot);
@@ -241,8 +245,9 @@ async function check() {
     await wait(count(video+'.sequence-marked')+'===2','鼠标框选两个候选');
     await pressDelete();
     await wait(count(video)+'===1 && '+count('.material-used')+'===1','单次 Del 移除两个候选');
-    await undo();
+    await actualClick('#workspace-toast-undo');
     await wait(count(video)+'===3 && '+count('.material-used')+'===3','一次撤销恢复整个选区');
+    assert.equal(await read(query('#workspace-toast-undo')+'.hidden'),true,'撤销删除后应收起同一个撤销按钮');
 
     picks.push({ title:'选择配乐', files:[files.music] });
     await click('#inspector-tab-music');

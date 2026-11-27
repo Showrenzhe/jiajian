@@ -34,6 +34,8 @@
   <script src="./cloud-tts-dialog.js" defer></script>
   <link rel="stylesheet" href="./editing-help.css">
   <link rel="stylesheet" href="./liquid-glass.css">
+  <link rel="stylesheet" href="./workspace-controls.css">
+  <link rel="stylesheet" href="./home-workspace.css">
   <script src="./messages-zh-cn.js" defer></script>
   <script src="./cut-shortcuts.js" defer></script>
   <script src="./editing-help.js" defer></script>
@@ -67,6 +69,7 @@
   <script src="./timeline.js" defer></script>
   <script src="./editor-text.js" defer></script>
   <script src="./material-folders.js" defer></script>
+  <script src="./workspace-toast.js" defer></script>
   <script src="./app.js" defer></script>
 </head>
 <body>
@@ -219,12 +222,13 @@
                 </div>
               </dialog>
             </div>
-            <section id="home-local-tools" class="home-local-tools" aria-labelledby="local-tools-heading">
+            <section id="home-local-tools" class="home-local-tools" data-glass-surface="home" aria-labelledby="local-tools-heading">
               <h2 id="local-tools-heading">本地创作</h2>
               <button type="button" id="home-import"><svg class="ui-icon" aria-hidden="true"><use href="#icon-import"></use></svg>导入素材</button>
-              <button type="button" id="tab-montage"><svg class="ui-icon" aria-hidden="true"><use href="#icon-clapper"></use></svg>视频混剪</button>
-              <button type="button" id="tab-scene-split"><svg class="ui-icon" aria-hidden="true"><use href="#icon-scene"></use></svg>视频场景 AI 分割</button>
-              <button type="button" id="tab-script"><svg class="ui-icon" aria-hidden="true"><use href="#icon-script"></use></svg>脚本编辑</button>
+              <button type="button" id="home-montage" class="home-entry-card home-entry-primary"><svg class="ui-icon" aria-hidden="true"><use href="#icon-clapper"></use></svg></button>
+              <button type="button" id="tab-montage" class="home-entry-card"><svg class="ui-icon" aria-hidden="true"><use href="#icon-folderOpen"></use></svg></button>
+              <button type="button" id="tab-scene-split" class="home-entry-card"><svg class="ui-icon" aria-hidden="true"><use href="#icon-scene"></use></svg></button>
+              <button type="button" id="tab-script" class="home-entry-card"><svg class="ui-icon" aria-hidden="true"><use href="#icon-script"></use></svg></button>
               <button type="button" id="tab-audio"><svg class="ui-icon" aria-hidden="true"><use href="#icon-audio"></use></svg>音频提取</button>
             </section>
           </section>
@@ -238,7 +242,7 @@
       </main>
 
       <main id="project-workspace" class="home project-workspace" hidden>
-        <div class="workspace-heading"><h1 tabindex="-1">视频混剪</h1><button type="button" id="project-new" class="blue-button"><svg class="ui-icon" aria-hidden="true"><use href="#icon-plus"></use></svg>新建剪辑</button></div>
+        <div class="workspace-heading"><h1 tabindex="-1">工程管理</h1><button type="button" id="project-new" class="blue-button"><svg class="ui-icon" aria-hidden="true"><use href="#icon-plus"></use></svg>新建剪辑</button></div>
         <div class="page-tabs"><span>我的项目</span><button type="button" id="project-open-file" class="home-outline">打开本地工程</button><button type="button" id="project-continue" class="home-outline" hidden>返回当前编辑</button></div>
         <p id="project-list-status" role="status"></p>
         <ul id="project-list" class="project-list"></ul>
@@ -1055,5 +1059,9 @@
     <div class="speed-overflow-actions"></div>
     <button type="button" class="secondary" data-speed-cancel data-speed-text="cancel"></button>
   </dialog>
+  <div id="workspace-toast" data-glass-surface="toast" hidden>
+    <span id="workspace-toast-message" role="status"></span>
+    <button id="workspace-toast-undo" type="button" hidden></button>
+  </div>
 </body>
 </html>

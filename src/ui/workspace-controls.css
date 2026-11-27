@@ -1,0 +1,134 @@
+/* The monitor, library and inspector are opaque. Only their controls use the
+   shared material, so moving footage never changes the surrounding text. */
+.app-frame[data-mode="montage"] {
+  --workspace-gutter: 8px;
+  --workspace-radius: 14px;
+  --workspace-tool-fill: var(--lg-tint);
+  --workspace-tool-edge: var(--lg-rim);
+  --workspace-tool-inner: var(--lg-inner);
+}
+@media (max-width: 940px) {
+  .app-frame[data-mode="montage"] #editor-workspace { padding-inline: var(--workspace-gutter); }
+}
+:root[data-glass="off"] .app-frame[data-mode="montage"] {
+  --workspace-tool-fill: var(--surface-solid);
+  --workspace-tool-edge: var(--hairline);
+  --workspace-tool-inner: none;
+}
+.app-frame[data-mode="montage"] :is(.editor-materials, .editor-player, .editor-properties) > .panel-heading {
+  flex-shrink: 0;
+  border-bottom: 1px solid var(--workspace-tool-edge);
+  background: var(--workspace-tool-fill);
+  box-shadow: var(--workspace-tool-inner);
+}
+.app-frame[data-mode="montage"] .editor-materials > .panel-heading {
+  padding: 5px 8px;
+  border-radius: var(--r-control);
+}
+.app-frame[data-mode="montage"] .editor-player:not(:popover-open, :fullscreen) {
+  position: relative;
+}
+.app-frame[data-mode="montage"] #player-transport {
+  position: absolute;
+  z-index: 2;
+  inset: auto 0 14px;
+  width: min(400px, calc(100% - 24px));
+  margin-inline: auto;
+  padding: 1px 9px;
+  border: 1px solid var(--workspace-tool-edge);
+  border-radius: var(--r-pill);
+  background: var(--workspace-tool-fill);
+  backdrop-filter: var(--workspace-filter, none);
+  box-shadow: var(--workspace-tool-inner);
+}
+.app-frame[data-mode="montage"] #player-transport .player-control-row {
+  min-height: 34px;
+}
+.player-control-row .player-picker {
+  min-width: 32px;
+  height: 32px;
+}
+.app-frame[data-mode="montage"] #player-transport:has(.player-source-scrubber:not([hidden])) {
+  border-radius: 19px;
+}
+.player-source-scrubber { margin-inline: 8px; }
+.app-frame[data-mode="montage"] #player-transport[data-idle]:not(:has(:focus-visible, :active, :popover-open)) {
+  opacity: 0;
+  pointer-events: none;
+}
+/* Keep deliberately parked panels scrollable, including their playback tools. */
+@container editor-area (height < 150px) or (width < 172px) {
+  .app-frame[data-mode="montage"] #player-transport {
+    position: relative;
+    inset: auto;
+    align-self: center;
+    margin-block-end: 4px;
+  }
+}
+.app-frame[data-mode="montage"] :is(#inspector-tabs.p-segmented, .caption-segments) {
+  border: 1px solid var(--workspace-tool-edge);
+  border-radius: var(--r-pill);
+  background: var(--workspace-tool-fill);
+  box-shadow: var(--workspace-tool-inner);
+}
+#inspector-tabs.p-segmented::before, #inspector-tabs .inspector-tab, .caption-segments input + * {
+  border-radius: var(--r-pill);
+}
+.app-frame[data-mode="montage"] :is(.inspector-body, .materials-toolbar)
+  :is(select, input:is([type="text"], [type="search"], [type="number"])),
+.app-frame[data-mode="montage"] #material-search {
+  border-radius: var(--r-pill);
+}
+.app-frame[data-mode="montage"] input[type="range"]:not(.color-wheel-axis input) {
+  accent-color: var(--system-blue);
+}
+.app-frame[data-mode="montage"] input[type="range"]:not(.color-wheel-axis input)::-webkit-slider-runnable-track {
+  border-radius: var(--r-pill);
+}
+.app-frame[data-mode="montage"] :is(input:not([type="checkbox"]), select, .inspector-tab):focus-visible {
+  outline: 2px solid var(--focus-ring);
+  outline-offset: 1px;
+}
+.layout-edit-action {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+}
+[data-layout-editing] .layout-edit-action {
+  padding-inline-start: 9px;
+  border: 1px solid var(--workspace-tool-edge);
+  border-radius: var(--r-pill);
+  background: var(--workspace-tool-fill);
+  box-shadow: var(--workspace-tool-inner);
+  white-space: nowrap;
+}
+#editor-workspace[data-layout-editing] {
+  --layout-edit-transform: translate(1%, 1%) scale(.98);
+}
+#editor-workspace[data-layout-editing] #player-transport { backdrop-filter: none; }
+#editor-workspace[data-layout-editing] .panel-layout-box { transition: none; }
+#editor-workspace[data-layout-editing] .panel-layout-pane:not([data-floating]) {
+  transform-origin: top left;
+  transform: var(--layout-edit-transform);
+  outline: 1px solid var(--selected-edge);
+  outline-offset: -1px;
+  box-shadow: 0 0 0 1px var(--selected-edge), 0 0 8px color-mix(in srgb, var(--accent) 18%, transparent);
+}
+@media (prefers-reduced-motion: no-preference) {
+  #player-transport { transition: opacity 180ms ease-out; }
+  #editor-workspace .panel-layout-pane[data-lifted] { transition-property: transform; }
+  .app-frame[data-mode="montage"] :is(.inspector-body, .materials-toolbar)
+    :is(select, input:is([type="search"], [type="number"], [type="text"])):enabled:active,
+  #inspector-tabs .inspector-tab:enabled:active, .caption-segments label:active > input:enabled + *,
+  .p-switch:active > input:enabled + span,
+  .app-frame[data-mode="montage"] input[type="range"]:enabled:active::-webkit-slider-thumb {
+    transform: scale(.98);
+  }
+}
+@media (prefers-reduced-transparency: reduce), (prefers-contrast: more), (forced-colors: active) {
+  .app-frame[data-mode="montage"] {
+    --workspace-tool-fill: var(--surface-solid);
+    --workspace-tool-edge: var(--hairline);
+    --workspace-tool-inner: none;
+  }
+}

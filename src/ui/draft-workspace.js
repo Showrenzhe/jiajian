@@ -79,7 +79,7 @@
     return { stage, reset, flush, forget, invalidate: () => { savedKey = undefined; } };
   };
 
-  window.mountDraftLibrary = (container, { load, open, remove, notify, importMaterials, showEmptyImport }) => {
+  window.mountDraftLibrary = (container, { load, open, remove, notify, onDeleted, importMaterials, showEmptyImport }) => {
     const $ = (selector) => container.querySelector(selector);
     const list = $('#draft-list');
     const search = $('#draft-search');
@@ -160,7 +160,7 @@
         await remove(draft);
         drafts = drafts.filter(item => item.id !== draft.id);
         render();
-        notify('已删除草稿“' + draft.name + '”。');
+        onDeleted(draft.name);
       } catch (error) {
         notify('删除草稿失败。' + error.message);
       } finally {
@@ -221,6 +221,7 @@
       const cover = document.createElement('span');
       const copy = document.createElement('span');
       const name = document.createElement('strong');
+      const badge = document.createElement('span');
       const time = document.createElement('time');
       row.className = 'draft-card';
       button.type = 'button';
@@ -248,14 +249,18 @@
       cover.append(image);
       copy.className = 'draft-card-copy';
       name.textContent = draft.name;
+      badge.className = 'draft-meta';
       time.dateTime = draft.updatedAt;
       time.textContent = formatter.format(new Date(draft.updatedAt));
+      time.setAttribute('aria-label', window.editorMessages.workspaceHome.edited(time.textContent));
       if (Number.isFinite(draft.duration)) {
         const seconds = Math.round(draft.duration);
-        time.append(` · ${Math.floor(seconds / 60)}:${String(seconds % 60).padStart(2, '0')}`);
-      }
-      copy.append(name, time);
-      button.append(cover, copy);
+        badge.append(`${Math.floor(seconds / 60)}:${String(seconds % 60).padStart(2, '0')} · `);
+      } else badge.append('— · ');
+      if (Number.isInteger(draft.shotCount)) badge.append(window.editorMessages.workspaceHome.shots(draft.shotCount) + ' · ');
+      badge.append(time);
+      copy.append(name);
+      button.append(cover, copy, badge);
       row.addEventListener('contextmenu', event => {
         event.preventDefault();
         showMenu(draft, button, event.clientX, event.clientY);
@@ -291,7 +296,11 @@
       if (focusId) (cardFor(focusId) ?? $('#draft-heading')).focus({ preventScroll: true });
       if (visible.length) showStatus('');
       else if (query) showStatus('没有匹配的草稿', '可以换个名称再试。', '清空搜索');
-      else showStatus('还没有本地草稿', '开始剪辑后，草稿会自动保存到本机。', showEmptyImport() ? '导入素材' : '');
+      else {
+        const canImport = showEmptyImport();
+        const labels = window.editorMessages.workspaceHome;
+        showStatus('还没有本地草稿', canImport ? labels.emptyDrafts : labels.emptyHome, canImport ? '导入素材' : '');
+      }
     }
 
     async function refresh() {

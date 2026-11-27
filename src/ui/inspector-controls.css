@@ -47,12 +47,13 @@ SOFTWARE.
   pointer-events: none;
   top: 2px;
   bottom: 2px;
-  left: calc(var(--p-seg-index) * 100% / var(--p-seg-count) + 2px);
+  left: 2px;
   width: calc(100% / var(--p-seg-count) - 4px);
   border-radius: 6px;
   background: light-dark(var(--surface), #52565e);
   box-shadow: 0 1px 3px rgb(20 28 36 / 16%);
-  transition: left .25s cubic-bezier(.3, 1.1, .4, 1);
+  transform: translateX(calc(var(--p-seg-index) * (100% + 4px)));
+  transition: transform .25s cubic-bezier(.3, 1.1, .4, 1);
 }
 #inspector-tabs .inspector-tab {
   position: relative;
@@ -99,7 +100,6 @@ SOFTWARE.
   height: var(--p-switch-track-h);
   border-radius: 999px;
   background: color-mix(in srgb, var(--ink) 28%, var(--surface));
-  transition: background .2s ease-out;
 }
 .p-switch > input + span::after {
   content: "";
@@ -111,10 +111,10 @@ SOFTWARE.
   border-radius: 999px;
   background: white;
   box-shadow: 0 1px 2px rgb(0 0 0 / 16%);
-  transition: left .2s cubic-bezier(.3, 1.1, .4, 1);
+  transition: transform .2s cubic-bezier(.3, 1.1, .4, 1);
 }
 .p-switch > input:checked + span { background: var(--action-fill); }
-.p-switch > input:checked + span::after { left: calc(var(--p-switch-knob-inset) + var(--p-switch-travel)); }
+.p-switch > input:checked + span::after { transform: translateX(var(--p-switch-travel)); }
 .p-switch > input:focus-visible + span { outline: 2px solid var(--focus-ring); outline-offset: 2px; }
 .p-switch:has(input:disabled) { opacity: .55; cursor: default; }
 

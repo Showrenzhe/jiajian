@@ -4,6 +4,15 @@
   if (typeof window !== 'undefined') window.editorMessages = messages;
   if (typeof module === 'object' && module.exports) module.exports = messages;
 })(Object.freeze({
+  timelineFrame: frame => `第 ${frame} 帧`,
+  layoutEdit: { hint: '布局调整中 · Esc 撤销', done: '完成', start: '调整布局' },
+  workspaceHome: {
+    montage: '视频混剪', projects: '工程管理', script: '脚本创作', scene: '场景 AI 分割',
+    emptyHome: '在「视频混剪」中添加素材，佳剪会自动保存第一份草稿。',
+    emptyDrafts: '导入视频或图片，开始第一份草稿。', shots: n => `${n} 个分镜`,
+    edited: t => `最后编辑 ${t}`, removed: '已删除所选内容。', undone: '已撤销删除。',
+    draftDeleted: name => `已删除草稿“${name}”。`,
+  },
   glassEffect: {
     label: '玻璃效果', full: '完整', lite: '精简', off: '关闭',
     compatibility: '软件渲染兼容模式已关闭玻璃效果。退出兼容模式并重启佳剪后，将恢复你的选择。',

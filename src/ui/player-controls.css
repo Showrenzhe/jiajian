@@ -176,7 +176,7 @@
   #player-time, #player-duration { font-size: 10px; }
   #player-play { width: 23px; }
 }
-@container player-controls (width < 270px) {
+@container player-controls (width < 350px) {
   .player-control-row { grid-template-columns: 1fr auto 1fr; }
   .player-clocks { display: contents; }
   .player-times, #player-play, #player-more { grid-row: 1; }

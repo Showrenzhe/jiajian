@@ -47,7 +47,8 @@ const uiFiles = new Set(['/index.html', '/app.js', '/styles.css', '/dialog-focus
   '/track-workspace.css', '/edit-history.js', '/track-tools.js', '/track-controls.js', '/track-tools.css', '/cloud-tts-dialog.js', '/cloud-tts-dialog.css',
   '/cloud-tts-settings.js', '/cut-shortcuts.js', '/messages-zh-cn.js', '/editing-help.js', '/editing-help.css', '/cloud-tts-settings.css', '/split-view.js', '/panel-layout.js', '/material-folders.js', '/draft-workspace.js', '/player-tools.js', '/assets/jiajian-logo.png', '/assets/project-cover.jpg',
   '/glass-material.css', '/liquid-glass.css', '/glass-effect.js', '/inspector-controls.css', '/editor-surfaces.css', '/player-controls.css', '/appearance.js', '/appearance.css', '/software-updates.js',
-  '/color-wheel.js', '/color-wheel.css', '/menu-motion.js', '/menu-motion.css']);
+  '/color-wheel.js', '/color-wheel.css', '/menu-motion.js', '/menu-motion.css',
+  '/workspace-controls.css', '/home-workspace.css', '/workspace-toast.js']);
 const maxCatalog = (maxShots + 1) * (maxCandidates + maxWholeTracks);
 const maxSubtitleBatchBytes = 1024 * 1024;
 const maxSpeechJobs = maxShots;

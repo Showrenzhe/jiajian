@@ -24,8 +24,15 @@ async function run() {
   const ids = ['materials', 'inspector', 'timeline'];
   const selectors = ['#materials-pane', '#montage-inspector', '#montage-pane', '.editor-player'];
   const paneSelectors = Object.fromEntries([...ids, 'player'].map((id, index) => [id, selectors[index]]));
-  const snapshot = () => evaluate(`Object.fromEntries(${JSON.stringify(selectors)}.map(selector =>
-    [selector, document.querySelector(selector).getBoundingClientRect().toJSON()]))`);
+  // Geometry checks compare the full panel footprint across editing, landing
+  // and reopening. Pickup checks below measure the actual painted rectangle.
+  const snapshot = () => evaluate(`Object.fromEntries(${JSON.stringify(selectors)}.map(selector => {
+    const pane = document.querySelector(selector);
+    const box = pane.getBoundingClientRect();
+    if (!pane.closest('[data-layout-editing]')) return [selector, box.toJSON()];
+    const width = box.width / .98, height = box.height / .98;
+    return [selector, new DOMRect(box.x - width * .01, box.y - height * .01, width, height).toJSON()];
+  }))`);
   const visible = () => evaluate('[...document.querySelectorAll(".workspace-divider")].filter(el => el.checkVisibility()).length');
   function size(boxes, id) {
     return boxes[selectors[ids.indexOf(id)]][id === 'timeline' ? 'height' : 'width'];
@@ -134,7 +141,7 @@ async function run() {
     const [bottom, ...top] = Object.values(boxes).sort((a, b) => b.top - a.top);
     const [left, middle, right] = top.sort((a, b) => a.left - b.left);
     const gutter = middle.left - left.right;
-    assert.ok(gutter >= 6 && gutter <= 8, 'The panels should have a compact visible gutter, got ' + gutter);
+    assert.ok(gutter >= 7.95 && gutter <= 10.05, 'The panels should have an 8–10 px gutter, got ' + gutter);
     near(bottom.left, left.left);
     near(bottom.right, right.right);
     near(right.left - middle.right, gutter);
@@ -562,8 +569,8 @@ async function run() {
   assert.ok(await evaluate(`Object.values(document.querySelectorAll('.panel-layout-pane')).every(el => {
     const style = getComputedStyle(el);
     return ['borderTopLeftRadius','borderTopRightRadius','borderBottomLeftRadius','borderBottomRightRadius']
-      .every(prop => parseFloat(style[prop]) >= 8);
-  })`), 'All four corners should separate each panel from the desktop');
+      .every(prop => parseFloat(style[prop]) === 14) && style.backdropFilter === 'none';
+  })`), 'Each content pane should have four 14 px corners and an unfiltered surface');
   assert.deepEqual(await evaluate(`[...document.querySelectorAll('.workspace-divider')].map(el => {
     const controlled = document.getElementById(el.getAttribute('aria-controls'));
     return [el.getAttribute('role'), el.getAttribute('aria-orientation'), controlled?.checkVisibility(), el.tabIndex];
@@ -655,7 +662,7 @@ async function run() {
   near(compact['.editor-player'].width, 76);
   near(compact['.editor-player'].height, 52);
   await checkSpanTargets();
-  near(checkGutters(compact), 6);
+  near(checkGutters(compact), 8);
   const compactScroll = await evaluate(`(() => {
     const player = document.querySelector('.editor-player');
     player.scrollTo(40, 20);
@@ -668,6 +675,13 @@ async function run() {
   await move('materials', 20);
   const beforeEditing = await snapshot();
   await adjust();
+  assert.equal(await evaluate("document.querySelector('.layout-editing-banner').textContent"), '布局调整中 · Esc 撤销');
+  assert.equal(await evaluate("document.querySelector('#panel-layout-toggle').textContent"), '完成');
+  assert.ok(await evaluate(`[...document.querySelectorAll('.panel-layout-pane')].every(pane => {
+    const box = pane.getBoundingClientRect();
+    return Math.abs(box.width - .98 * pane.offsetWidth) < .6 && Math.abs(box.height - .98 * pane.offsetHeight) < .6
+      && getComputedStyle(pane).boxShadow !== 'none';
+  })`), 'each pane shrinks to 98% around its centre in layout mode');
   assert.equal(await visible(), 3);
   assert.deepEqual(await evaluate(`(() => {
     const handle = (pane, edge) => document.querySelector('.panel-layout-box[data-pane="' + pane + '"] [data-edge="' + edge + '"]');

@@ -21,7 +21,7 @@ function pixel(image, x, y) {
   return [r,g,b];
 }
 
-module.exports = async function capture({win,wc,read,click,wait,key,select,output}) {
+module.exports = async function capture({win,wc,read,click,wait,key,select,readyPicture,draft,output}) {
   await fs.mkdir(output,{recursive:true});
   const results = [];
   const bounds = [];
@@ -30,6 +30,18 @@ module.exports = async function capture({win,wc,read,click,wait,key,select,outpu
   const dialog = '#editing-help-dialog';
   const quit = () => key('Escape','Escape');
   const moving = () => read('new Promise(resolve=>requestAnimationFrame(()=>requestAnimationFrame(resolve)))');
+  const titleControls=['.titlebar','#title-home','#app-settings','#software-update-entry'];
+  const editorControls=[...titleControls,'#materials-pane','#player-pane','#montage-inspector','#montage-pane',
+    '#player-transport','#player-time','#player-play','#player-more','.timeline-header','#timeline-tracks-tab','#timeline-view','#timeline-tracks-panel',
+    '.sequence-ruler .sequence-head','.sequence-cursor-clock'];
+  const draftCard='#draft-list [data-draft-id="'+draft.id+'"]';
+  const homeControls=[...titleControls,'#home-heading','#home-create','#home-open-project','#home-montage','#tab-montage',
+    '#tab-scene-split','#tab-script',draftCard,draftCard+' .draft-meta'];
+  async function navigate(selector,mode) {
+    await click(selector);
+    await wait('document.querySelector(".app-frame").dataset.mode==='+JSON.stringify(mode)+' && !document.documentElement.classList.contains("workspace-transitioning")');
+    await moving();
+  }
 
   async function snapshot(name, width, height) {
     await moving();
@@ -39,14 +51,17 @@ module.exports = async function capture({win,wc,read,click,wait,key,select,outpu
   }
   async function surfaces(selector, mode) {
     const info = await read(`(() => {
-      const visible=[...document.querySelectorAll('.glass')].filter(el=>el.checkVisibility({visibilityProperty:true}));
-      const surfaces=visible.map(el=>({id:el.id,filter:getComputedStyle(el).backdropFilter}));
+      const onscreen=el=>{
+        const r=el.getBoundingClientRect();
+        return r.width>0 && r.height>0 && r.right>0 && r.left<innerWidth && r.bottom>0 && r.top<innerHeight
+          && el.checkVisibility({visibilityProperty:true,opacityProperty:true});
+      };
+      const visible=[...document.querySelectorAll('.glass')].filter(onscreen);
+      const surfaces=visible.map(el=>({id:el.id || el.dataset.glassSurface || el.className,filter:getComputedStyle(el).backdropFilter}));
       const box=el=>{const r=el.getBoundingClientRect();return {x:Math.round(r.x),y:Math.round(r.y),width:Math.round(r.width),height:Math.round(r.height)}};
       const filtered = [];
       for (const el of document.querySelectorAll('body *')) {
-        if (!el.checkVisibility({visibilityProperty:true,opacityProperty:true})) continue;
-        const rect=el.getBoundingClientRect();
-        if (rect.width<=0 || rect.height<=0 || rect.right<=0 || rect.left>=innerWidth || rect.bottom<=0 || rect.top>=innerHeight) continue;
+        if (!onscreen(el)) continue;
         const name=el.id ? '#'+el.id : el.localName+'.'+[...el.classList].join('.');
         const pseudos=['', '::before', '::after'];
         if (el.matches('dialog:modal,:popover-open')) pseudos.push('::backdrop');
@@ -58,17 +73,43 @@ module.exports = async function capture({win,wc,read,click,wait,key,select,outpu
         }
       }
       const title=box(document.querySelector('.titlebar'));
-      return {surface:box(document.querySelector(${JSON.stringify(selector)})),title,surfaces,filtered,
-        allowed:visible.every(el=>el.matches('dialog,#app-settings,#software-update-entry,#video-track-menu,#material-context-menu,#draft-context-menu'))};
+      return {surface:box(document.querySelector(${JSON.stringify(selector)})),title,surfaces,filtered};
     })()`);
     assert.ok(info.filtered.length <= (mode==='off' ? 0 : 4), JSON.stringify({selector,mode,filtered:info.filtered}));
-    assert.ok(info.allowed && info.surfaces.length <= 4, JSON.stringify(info));
-    assert.deepEqual(info.surfaces.map(s=>s.id).sort(),['app-settings','software-update-entry',selector.slice(1)].sort());
-    for (const {id,filter} of info.surfaces) {
-      const shadowedTitle = selector===dialog && id!==selector.slice(1);
-      assert.equal(filter === 'none',mode!=='full' || shadowedTitle,JSON.stringify(info));
+    assert.ok(info.surfaces.length <= 4, JSON.stringify({selector,mode,surfaces:info.surfaces}));
+    if(mode==='full') assert.ok(info.filtered.length>0, selector+' 完整档应有实际玻璃采样');
+    const functional=selector==='#editor-workspace' ? '#player-transport' : selector==='#home' ? '#home-local-tools' : null;
+    if (functional) {
+      assert.equal(info.filtered.some(row=>row.node===functional),mode==='full',
+        functional+' 应随档位切换实际采样 '+JSON.stringify(info.filtered));
+    }
+    if(selector===menu || selector===dialog) {
+      const top=info.surfaces.find(s=>s.id===selector.slice(1));
+      assert.ok(top,selector+' 应作为前景玻璃显示');
+      assert.equal(top.filter==='none',mode!=='full',JSON.stringify({selector,mode,top}));
     }
     return info;
+  }
+  async function checkBounds(required, optional=[]) {
+    const geometry=await read(`(() => {
+      const boxes=[];
+      for(const selector of ${JSON.stringify(required.concat(optional))}) {
+        const nodes=[...document.querySelectorAll(selector)].filter(el=>el.checkVisibility({visibilityProperty:true,opacityProperty:true}));
+        for(const el of nodes){
+          const r=el.getBoundingClientRect();
+          boxes.push({selector,id:el.id,left:r.left,top:r.top,right:r.right,bottom:r.bottom});
+        }
+      }
+      const doc=document.documentElement;
+      return {width:innerWidth,height:innerHeight,pageWidth:doc.scrollWidth,boxes};
+    })()`);
+    assert.ok(geometry.pageWidth<=geometry.width+1,'页面存在横向溢出 '+JSON.stringify(geometry));
+    for(const selector of required) assert.ok(geometry.boxes.some(b=>b.selector===selector),'应显示 '+selector);
+    for(const box of geometry.boxes) {
+      assert.ok(box.left>=-1 && box.right<=geometry.width+1 && box.top>=-1 && box.bottom<=geometry.height+1
+        && box.right>box.left && box.bottom>box.top,'控件越出窗口 '+JSON.stringify({box,width:geometry.width,height:geometry.height}));
+    }
+    return geometry.boxes;
   }
   async function contrastSamples(theme, mode) {
     for (const [slot,behind] of [[3,0],[4,255]]) {
@@ -121,10 +162,63 @@ module.exports = async function capture({win,wc,read,click,wait,key,select,outpu
       await wait('document.documentElement.dataset.glass==='+JSON.stringify(mode)+' && document.documentElement.dataset.theme==='+JSON.stringify(theme)+' && !document.documentElement.hasAttribute("data-theme-changing")');
       await quit();
       await delay(220);
+      await wait(`[...document.querySelectorAll('.sequence-video [data-move-candidate]')].every(clip => {
+        const images = [...clip.querySelectorAll('.sequence-frames img')];
+        return images.length > 0 && images.every(img => img.complete && img.naturalWidth > 0);
+      })`);
+      const editorInfo=await surfaces('#editor-workspace',mode);
+      let sidebarFilters;
+      if (width===1366 && theme==='light' && mode==='full') {
+        await click('#nav-toggle');
+        await wait('document.querySelector("#nav-toggle").ariaExpanded==="true"');
+        await delay(250);
+        sidebarFilters=(await surfaces('#editor-workspace',mode)).filtered;
+        assert.ok(sidebarFilters.some(el=>el.node==='#workspace-navigation'));
+        await click('#nav-toggle');
+        await wait('document.querySelector("#nav-toggle").ariaExpanded==="false"');
+        await delay(250);
+      }
+      const editorBoxes=await checkBounds(editorControls,['.player-control-row .player-picker','.player-control-row #player-duration',
+        '.player-control-row #player-fullscreen','.track-toolbar > button','.track-edit-actions > button']);
+      await snapshot(name+'-editor',width,height);
+      let layout;
+      if(width===1366 && theme==='light' && mode==='full') {
+        await click('#panel-layout-toggle');
+        await wait('document.querySelector("#layout-editing-hint").checkVisibility()');
+        await delay(250);
+        layout=await surfaces('#layout-editing-hint',mode);
+        await checkBounds([...titleControls,'#layout-editing-hint','#panel-layout-toggle']);
+        await snapshot(name+'-layout',width,height);
+        await quit();
+        await wait('!document.querySelector("#layout-editing-hint").checkVisibility()');
+      }
+      const shotStrip='.sequence-shots [data-reorder-shot]';
+      const shotTitles=()=>read('[...document.querySelectorAll('+JSON.stringify(shotStrip)+')].map(el=>el.textContent)');
+      const original=await shotTitles();
+      assert.equal(original.length,draft.shotCount);
+      await navigate('#title-home','home');
+      const card='document.querySelector('+JSON.stringify(draftCard)+')';
+      await wait(card+'?.querySelector(".draft-cover img")?.naturalWidth > 0');
+      const badge=await read(`(() => {
+        const card=${card}, cover=card.querySelector('.draft-cover').getBoundingClientRect();
+        const badge=card.querySelector('.draft-meta'), r=badge.getBoundingClientRect(), time=badge.querySelector('time');
+        return {label:badge.textContent, edited:time.dateTime, inside:r.left>=cover.left-1 && r.top>=cover.top-1
+          && r.right<=cover.right+1 && r.bottom<=cover.bottom+1};
+      })()`);
+      assert.ok(badge.inside && badge.label.includes('0:10') && badge.label.includes('5 个分镜')
+        && Number.isFinite(Date.parse(badge.edited)),'草稿封面的时长、分镜数与编辑时间 '+JSON.stringify(badge));
+      const homeInfo=await surfaces('#home',mode);
+      const homeBoxes=await checkBounds(homeControls);
+      await snapshot(name+'-home',width,height);
+      await navigate('#home-montage','montage');
+      await wait('document.querySelectorAll('+JSON.stringify(shotStrip)+').length==='+original.length);
+      assert.deepEqual(await shotTitles(),original,'从首页续编保留已载入的测试工程');
+      await readyPicture();
       await clickVisible(wc,video,'right');
       await wait('document.querySelector("#video-track-menu:popover-open")');
       await delay(250);
       const menuInfo=await surfaces(menu,mode);
+      await checkBounds([menu]);
       await snapshot(name+'-menu',width,height);
       if (width===1366) await contrastSamples(theme,mode);
       await quit();
@@ -133,6 +227,7 @@ module.exports = async function capture({win,wc,read,click,wait,key,select,outpu
       await wait('document.querySelector("#editing-help-dialog:modal")');
       await delay(250);
       const dialogInfo=await surfaces(dialog,mode);
+      await checkBounds([dialog]);
       const heading = await read(`(() => {
         const title = document.getElementById('editing-help-title');
         const rect = title.getBoundingClientRect(), body = title.parentElement.getBoundingClientRect();
@@ -144,11 +239,12 @@ module.exports = async function capture({win,wc,read,click,wait,key,select,outpu
         name+' 帮助标题应在初始焦点和滚动视口内 '+JSON.stringify(heading));
       await snapshot(name+'-dialog',width,height);
       bounds.push({name,menu:menuInfo.surface,dialog:dialogInfo.surface,title:menuInfo.title,heading,
-        menuFilters:menuInfo.filtered,dialogFilters:dialogInfo.filtered});
+        menuFilters:menuInfo.filtered,dialogFilters:dialogInfo.filtered,menuGlass:menuInfo.surfaces,dialogGlass:dialogInfo.surfaces,
+        editor:{...editorInfo,controls:editorBoxes,sidebarFilters},home:{...homeInfo,controls:homeBoxes,badge},layout});
       await quit();
       await delay(200);
     }
   }
   await fs.writeFile(path.join(output,'measurements.json'),JSON.stringify({bounds,results},null,2));
-  console.log('16 张实际窗口截图、8 组亮暗缩略图文字对比度、玻璃层范围通过。');
+  console.log('33 张实际窗口截图、8 组亮暗缩略图文字对比度、玻璃层数及界面边界检查通过。');
 };

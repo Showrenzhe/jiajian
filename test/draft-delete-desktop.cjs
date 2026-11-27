@@ -95,6 +95,10 @@ async function edit(root, phase) {
     win.setContentSize(1280, 800);
     await wait(el(card(first)) + ' && ' + el(card(second)) + ' && ' + el(card(keeper)), '首页应载入三份隔离的草稿');
     assert.equal(await read(el('#draft-list') + '.dataset.view'), 'grid');
+    const badge = card(first) + ' .draft-meta';
+    assert.ok(await read(el(badge) + '.innerText.includes("0:01 · 1 个分镜") && ' +
+      el(badge + ' time') + '.dateTime && getComputedStyle(' + el(badge) + ').backdropFilter === "none"'),
+    '封面应显示时长、分镜数与更新时间且不采样背景');
     await click(card(first));
     await wait(mode + ' === "montage" && !' + el('#save-project') + '.disabled', '打开目标草稿');
     await click('#title-home');
@@ -126,8 +130,11 @@ async function edit(root, phase) {
     await openConfirmation(first);
     await click('#draft-delete-confirm');
     await wait('!' + dialog + '.open && !' + el(card(first)), '仅确认后才移除当前编辑过的草稿');
+    assert.ok(await read(el('#workspace-toast') + '.checkVisibility() && ' + el('#workspace-toast-message') + '.textContent.includes(' +
+      JSON.stringify(first) + ') && ' + el('#workspace-toast-undo') + '.hidden'), '删除草稿的通知应指明名称，且不提供虚假的撤销');
     assert.deepEqual((await list()).map(row => row.id).sort(), [origins[second], origins[keeper]].sort());
     await wait(el(card(second)) + ' && ' + el(card(keeper)), '首页应保留其他两份草稿');
+    await wait(el('#workspace-toast') + '.hidden && !document.body.hasAttribute("data-workspace-toast")', '提示应自动收起并释放玻璃层');
 
     await click('#home-create');
     await wait(mode + ' === "montage" && !' + el('#save-project') + '.disabled', '删除后应能新建');

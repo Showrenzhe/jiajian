@@ -23,7 +23,8 @@ function firstVisual(document) {
   const cover = document.config.cover;
   const chosen = cover?.mode === 'library' && cover.items?.[Math.max(0,cover.active ?? 0)];
   const clip = chosen || document.config.shots.find((shot) => Array.isArray(shot) && shot.length)?.[0] || document.assets.find((item) => ['video', 'image'].includes(item?.kind));
-  const asset = clip && document.assets.find((item) => item?.id === clip.id);
+  if (!clip) return null;
+  const asset = document.assets.find((item) => item?.id === clip.id);
   const time = chosen?.time ?? (cover?.mode === 'first-shot' ? clip.ranges?.[0]?.start ?? clip.start : undefined);
   return localCover(asset, time);
 }
@@ -105,7 +106,7 @@ function createDraftStore(directory,resolvePath,inspect,sourceEditDirectory,load
   async function readIndex() {
     try {
       const index=JSON.parse(await readSmallFile(indexPath,16*maxBytes));
-      if(index.version!==1 || !Array.isArray(index.entries) || index.entries.length>maxDrafts ||
+      if(index.version!==2 || !Array.isArray(index.entries) || index.entries.length>maxDrafts ||
           digest(JSON.stringify(index.entries))!==index.checksum) throw Error('索引无效。');
       const cached=new Map();
       for(const row of index.entries) {
@@ -115,7 +116,12 @@ function createDraftStore(directory,resolvePath,inspect,sourceEditDirectory,load
             (row.hash && !/^[a-f0-9]{64}$/.test(row.hash))) throw Error('索引条目无效。');
         const cover=localCover(row.cover,row.cover?.time);
         if(row.cover!==null && !cover) throw Error('索引封面无效。');
-        cached.set(id,{...row,cover,meta:draftMeta(id,row.meta)});
+        const meta=draftMeta(id,row.meta);
+        if(row.meta.shotCount!==undefined) {
+          if(!Number.isSafeInteger(row.meta.shotCount) || row.meta.shotCount<0) throw Error('索引条目无效。');
+          meta.shotCount=row.meta.shotCount;
+        }
+        cached.set(id,{...row,cover,meta});
       }
       return cached;
     } catch {indexDirty=true;return new Map();}
@@ -124,12 +130,23 @@ function createDraftStore(directory,resolvePath,inspect,sourceEditDirectory,load
   async function persistIndex() {
     const entries=[...records.values()];
     const checksum=digest(JSON.stringify(entries));
-    indexDirty=!(await cacheWrite(indexPath,JSON.stringify({version:1,checksum,entries})));
+    indexDirty=!(await cacheWrite(indexPath,JSON.stringify({version:2,checksum,entries})));
   }
 
   async function recordDocument(id,doc,stamp) {
     if(!supportedProject(doc)) throw Error('草稿记录无效。');
     const meta=draftMeta(id,doc.draft);
+    if (Array.isArray(doc.config?.shots)) {
+      meta.shotCount=doc.config.shots.length;
+      if (meta.duration === undefined) {
+        try {
+          const duration = estimateDuration(doc.config);
+          if (duration !== undefined) meta.duration = duration;
+        } catch {
+          // Keep readable draft metadata in the list. Opening reports the damaged shot.
+        }
+      }
+    }
     const jpeg=embeddedThumbnail(doc);
     if(jpeg) await cacheWrite(coverPath(id),jpeg);
     return {meta,cover:firstVisual(doc),embedded:Boolean(jpeg),hash:jpeg ? digest(jpeg) : null,stamp};
@@ -206,9 +223,10 @@ function createDraftStore(directory,resolvePath,inspect,sourceEditDirectory,load
         await writer.sync();
       } finally { await writer.close(); }
       await mirror(meta.id,document.config,() => replaceProjectFile(stage, snapshotPath(meta.id), meta.revision - 1));
-      records.set(meta.id,await recordDocument(meta.id,document,await fileStamp(snapshotPath(meta.id))));
+      const record=await recordDocument(meta.id,document,await fileStamp(snapshotPath(meta.id)));
+      records.set(meta.id,record);
       await persistIndex();
-      return draft;
+      return { ...record.meta };
     } finally { await fs.rm(stage, { force: true }).catch(() => {}); }
   }
 
