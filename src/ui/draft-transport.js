@@ -2,6 +2,7 @@
 
 (() => {
   const alignment = typeof module === 'object' && module.exports ? require('./voice-alignment.js') : window.voiceAlignment;
+  const narrationTrim = typeof module === 'object' && module.exports ? require('./narration-trim.js') : window.narrationTrim;
   const waveformSource = typeof module === 'object' && module.exports ? require('./waveform.js').waveformSource : window.waveformSource;
   const { candidateVideoLanes, pictureSpan, soloLaneSequence, joinedVideoSequence, videoGroupLeaders, usesPlacedVideoSource, placedVideoSpeed, sampleVideoRate, shouldRetimeVideo } = typeof module === 'object' && module.exports ? require('./track-tools.js') : window;
   const controls = typeof module === 'object' && module.exports ? require('./track-controls.js') : window.trackControls;
@@ -48,6 +49,81 @@
     return rows.map(items=>items?.[take] ? take : solo===undefined ? -1 : audioRow(items,'voice',state));
   }
 
+  function voiceMap(state, shot, row, voiceRows, available=Infinity) {
+    const segment=shot!=null;
+    const owner=segment ? state.shots[shot] : null;
+    const asset=segment ? state.segments[shot]?.[row] : state.whole[row]?.asset;
+    if (!asset) return;
+    const speed=state.voiceSpeed?.(asset,owner,row) ?? 1;
+    const ranges=segment ? state.voiceRanges?.(owner,row) : undefined;
+    const picture=state.priority==='picture';
+    const seam=segment && !picture && state.voiceAlignment!=='reference';
+    const trimHead=seam && voiceRows[shot-1]>=0, trimTail=seam && voiceRows[shot+1]>=0;
+    if (state.narrationTrim?.mode!=='smart') {
+      const {narrationStart:trimStart,narrationDuration}=alignment.retainedVoiceRange({narration:asset,narrationRanges:ranges,narrationSpeed:speed},trimHead,trimTail);
+      const retained=Math.min(narrationDuration,available), parts=[];
+      const sources=waveformSource(ranges ?? [{start:0,end:asset.duration}]);
+      let outStart=0;
+      sources.visit(trimStart*speed,(trimStart+retained)*speed,false,(start,end)=>{
+        const outEnd=outStart+(end-start)/speed;
+        parts.push({start,end,outStart,outEnd});
+        outStart=outEnd;
+      });
+      return {parts,duration:retained,trimStart,trimEnd:Math.max(0,sources.duration/speed-trimStart-retained),fadeDuration:0};
+    }
+    const options={asset,caption:state.voiceCaption?.(asset,shot,row),settings:state.narrationTrim,ranges,speed,picture,trimHead,trimTail,available};
+    const proposal=narrationTrim.buildMap(options);
+    if (!state.measuredNarration || (!trimHead && !trimTail && !(available>0 && picture && proposal.reason==='hard'))) return proposal;
+    const measured=state.measuredNarration(asset,state.pauseJobs);
+    return measured===asset ? proposal : narrationTrim.buildMap({...options,asset:measured});
+  }
+
+  function narrationTimeline(state,{starts,widths,total,aligned,voiceClock},voiceRows=segmentVoiceRows(state)) {
+    const windows=voiceClock?.windows;
+    const shotStart=i=>windows?.[i]?.start ?? starts[i] ?? 0;
+    const tracks=new Map();
+    const wholeRow=state.segmented ? -1 : audioRow(state.whole,'whole',state);
+    function track(shot,row) {
+      const key=(shot ?? 'whole')+'/'+row;
+      if (tracks.has(key)) return tracks.get(key);
+      const segment=shot!=null;
+      const start=segment ? shotStart(shot)+state.voiceOffset(shot,row)
+        : state.priority==='picture' ? shotStart(state.whole[row]?.follow) : 0;
+      const end=segment ? windows?.[shot]?.end ?? starts[shot]+widths[shot] : voiceClock?.audioDuration ?? total;
+      const map=(segment && row===voiceRows[shot] ? aligned?.[shot]?.narrationMap : null)
+        ?? voiceMap(state,shot,row,voiceRows,Math.max(0,end-start));
+      const value={start,end,map,active:row===(segment ? voiceRows[shot] : wholeRow)};
+      tracks.set(key,value);
+      return value;
+    }
+    function captions(activeOnly=false) {
+      if (!state.captionTracks) return (state.captions ?? []).map(caption=>{
+        const offset=starts[caption.shot] ?? starts[caption.follow] ?? 0;
+        const at=offset+caption.start-(aligned?.[caption.shot]?.narrationStart ?? 0);
+        return {...caption,start:Math.max(offset,at),end:Math.min(caption.shot==null ? total : offset+widths[caption.shot],at+caption.duration)};
+      });
+      return state.captionTracks.flatMap(({shot,row,entry,open,remove})=>{
+        const selected=shot==null ? wholeRow : voiceRows[shot] ?? -1;
+        if (activeOnly && selected!==row && (selected>=0 || state.segments[shot]?.[row])) return [];
+        const {start,end,map}=track(shot,row);
+        const source=typeof entry==='string' ? entry : {cues:entry.cues.map(cue=>({...cue,original:cue}))};
+        let cues=[];
+        if (map && state.narrationTrim?.mode==='smart') cues=narrationTrim.mapCaptions(map,source,start,2001);
+        else if (map && typeof source!=='string') {
+          const asset=shot==null ? state.whole[row]?.asset : state.segments[shot]?.[row];
+          const speed=state.voiceSpeed?.(asset,state.shots[shot],row) ?? 1;
+          for (const part of map.parts) {
+            alignment.appendLegacyCaptionCues(cues,source,start+part.outStart,part.outEnd-part.outStart,part.start,speed);
+            if (cues.length>2000) break;
+          }
+        } else alignment.appendLegacyCaptionCues(cues,source,start,map?.duration ?? end-start);
+        return cues.map(cue=>({shot,row,start:cue.start/1000,end:cue.end/1000,name:cue.text,highlights:cue.highlights,
+          key:cue.original ?? 'subtitle:'+shot+'/'+row,open,remove:()=>remove(cue.original)}));
+      });
+    }
+    return {track,captions};
+  }
+
   function needsPictureTiming(clip, fixedDuration) {
     return (clip && alignment.fixedSpeedPolicy(clip)) || clip?.matchedDuration || (fixedDuration && clip?.asset?.kind === 'video' && clip.speed !== undefined && !usesPlacedVideoSource(clip,false));
   }
@@ -86,7 +162,8 @@
       const row=voiceRows[i] ?? -1;
       if(row<0) return picture;
       const narration=state.segments[i][row], shot=state.shots[i];
-      return {...picture,narration,narrationRanges:state.voiceRanges(shot,row),
+      const narrationMap=state.narrationTrim?.mode==='smart' && state.priority==='voice' && state.voiceAlignment!=='reference' ? voiceMap(state,i,row,voiceRows) : undefined;
+      return {...picture,narration,narrationMap,narrationRanges:state.voiceRanges(shot,row),
         narrationSpeed:state.voiceSpeed?.(narration,shot,row),voiceOffset:state.voiceOffset(i,row)};
     });
     const fps=state.fps || 30;
@@ -103,20 +180,23 @@
   function timing(state,clipSpan,assetFor,focus) {
     const {shots,settings,whole,segmented,priority}=state;
     const voiceRows=segmentVoiceRows(state);
-    let widths=Array.from({length:shots.length || 3},(_,i)=>{
+    const fps=state.fps || 30;
+    const wholeVoice=whole[audioRow(whole,'whole',state)];
+    const wholeDuration=wholeVoice?.asset ? wholeVoice.asset.duration/(state.voiceSpeed?.(wholeVoice.asset,null,whole.indexOf(wholeVoice)) ?? 1) : 0;
+    const hasSegmentVoice=voiceRows.some(row=>row>=0);
+    const sourceWidths=Array.from({length:shots.length || 3},(_,i)=>{
       const clip=chosen(shots[i],focus,state);
       const row=voiceRows[i] ?? -1;
       const speech=row<0 ? 0 : state.voiceDuration(i,row)+state.voiceOffset(i,row);
       const fixed=settings[i]?.duration;
       const duration=clip?.videoFit==='hold' ? fixed ?? clip.matchedDuration : clip?.matchedDuration ?? fixed;
-      return Math.max(.1,(priority==='voice' && speech) || duration || (clip && clipSpan(clip)) || speech || 3);
+      return (priority==='voice' && speech) || duration || (clip && clipSpan(clip)) || speech || 3;
     });
-    const wholeVoice=whole[audioRow(whole,'whole',state)];
-    const wholeDuration=wholeVoice?.asset ? wholeVoice.asset.duration/(state.voiceSpeed?.(wholeVoice.asset,null,whole.indexOf(wholeVoice)) ?? 1) : 0;
+    const hasPictures=shots.some(shot=>chosen(shot,focus,state));
+    const useVoiceClock=state.narrationTrim && priority==='picture' && hasPictures && (hasSegmentVoice || (!segmented && (wholeDuration || wholeVoice?.subtitles)));
+    let widths=sourceWidths.map(width=>Math.max(useVoiceClock ? 1/fps : .1,width));
     let target=!segmented && priority==='voice' ? wholeDuration : 0;
     let preserve=0;
-    const hasPictures=shots.some(shot=>chosen(shot,focus,state));
-    const hasSegmentVoice=voiceRows.some(row=>row>=0);
     if (!hasPictures && !settings.some((row)=>row?.duration) && !hasSegmentVoice) {
       const pack=controls.enabledPackaging(state.pack,state.trackControls);
       const sounds=[...pack.global,...(pack.composites.find((row)=>row.length) ?? [])];
@@ -142,20 +222,34 @@
       const factor=(target-prefix)/widths.slice(preserve).reduce((sum,width)=>sum+width,0);
       widths=widths.map((width,index)=>index<preserve ? width : width*factor);
     }
-    let total=0;
+    let placedEnd=0, total=0;
     const starts=widths.map((width)=>{const from=total;total+=width;return from;});
     shots.forEach((shot,i)=>{
       const lanes=candidateVideoLanes(shot);
       for(const [j,clip] of shot.entries()) {
         if(!controls.participates(state.trackControls,'vis'+lanes[j])) continue;
-        if(clip.videoStart!==undefined) total=Math.max(total,clip.videoStart+pictureSpan(clip,widths[i]));
-        for(const gap of clip.videoGaps ?? []) total=Math.max(total,gap.start+gap.span);
+        if(clip.videoStart!==undefined) placedEnd=Math.max(placedEnd,clip.videoStart+pictureSpan(clip,widths[i]));
+        for(const gap of clip.videoGaps ?? []) placedEnd=Math.max(placedEnd,gap.start+gap.span);
       }
     });
-    return aligned ? {widths,starts,total,aligned} : {widths,starts,total};
+    total=Math.max(total,placedEnd);
+    let voiceClock;
+    if (useVoiceClock) {
+      // Picture edits share frame boundaries, but their voice can stop inside the last frame.
+      const audioDuration=Math.max(placedEnd,sourceWidths.reduce((sum,width)=>sum+Math.max(1/fps,width),0));
+      let frames=0;
+      const windows=alignment.pictureFrames(sourceWidths,fps).map((count,i)=>{
+        const start=frames/fps;
+        frames+=count;
+        return {start,end:Math.min(audioDuration,start+Math.min(count/fps,sourceWidths[i]))};
+      });
+      voiceClock={windows,audioDuration};
+      if (state.narrationTrim.mode==='smart') total=Math.max(frames/fps,Math.ceil(audioDuration*fps-1e-7)/fps);
+    }
+    return {widths,starts,total,...(aligned && {aligned}),...(voiceClock && {voiceClock})};
   }
 
-  function makePlan(s,{starts,widths,total,aligned},assetFor,sourceRanges,focus) {
+  function makePlan(s,{starts,widths,total,aligned,voiceClock},assetFor,sourceRanges,focus) {
     const entries=[];
     const voiceRows=segmentVoiceRows(s);
     const pack=controls.enabledPackaging(s.pack,s.trackControls);
@@ -169,6 +263,7 @@
     if(!freePictures && aligned && whole?.asset && s.priority==='voice') {
       total=Math.min(total,whole.asset.duration/(s.voiceSpeed?.(whole.asset,null,wholeRow) ?? 1));
     }
+    const speech=narrationTimeline(s,{starts,widths,total,aligned,voiceClock},voiceRows);
     function addText(text,start,end,appearance,key,highlights) {
       if(!text || end<=start || start>=total || !controls.allows(s.trackControls,key,'visual')) return;
       entries.push({text,start,end:Math.min(end,total),appearance,highlights,visual:true});
@@ -309,32 +404,24 @@
           });
         }
       }
-      if(s.segmented) {
-        const row=voiceRows[i] ?? -1;
-        if(row<0) return;
-        const asset=s.segments[i][row], delay=s.voiceOffset(i,row);
-        const speed=s.voiceSpeed?.(asset,shot,row) ?? 1;
-        const ranges=s.voiceRanges(shot,row) ?? [{start:0,end:asset.duration}];
-        const trim=(timed?.narrationStart ?? 0)*speed;
-        const speech=sourceRanges(ranges,trim);
-        const playbackRanges=[];
-        speech.visit(0,Math.min(speech.duration,(span-delay)*speed),false,(start,end)=>playbackRanges.push({start,end}));
-        add('voice',asset,at+delay,span-delay,{ranges:playbackRanges,speed,volume:s.voiceVolume(asset,shot,row),trackKey:'voice'+row});
-        let offset=at+delay;
-        for(const {start,end} of playbackRanges) {
-          const length=Math.min((end-start)/speed,at+span-offset);
-          if(length<=0) break;
-          layers(pack.segmentNarration[i]?.[row],offset,length,start,speed);
-          offset+=length;
-        }
-      }
+      if(s.segmented && voiceRows[i]>=0) appendVoice(i,voiceRows[i],s.segments[i][voiceRows[i]],pack.segmentNarration[i]?.[voiceRows[i]]);
     });
-    if(whole?.asset) {
-      const {asset,follow}=whole, at=s.priority==='picture' ? starts[follow] ?? 0 : 0;
-      const speed=s.voiceSpeed?.(asset,null,wholeRow) ?? 1;
-      add('voice',asset,at,total-at,{volume:s.voiceVolume(asset,null,wholeRow),speed,trackKey:'whole'+wholeRow});
-      layers(pack.wholeNarration[wholeRow],at,Math.min(total-at,asset.duration/speed),0,speed);
+    function appendVoice(shot,row,asset,items) {
+      const {start,map}=speech.track(shot,row);
+      const volume=s.voiceVolume(asset,shot==null ? null : s.shots[shot],row);
+      const key=(shot==null ? 'whole' : 'voice')+row;
+      const speed=s.voiceSpeed?.(asset,shot==null ? null : s.shots[shot],row) ?? 1;
+      const fadeEnd=start+map.duration;
+      for (const part of map.parts) {
+        const at=start+part.outStart, length=part.outEnd-part.outStart;
+        if (asset.url && volume>0 && controls.participates(s.trackControls,key)) entries.push({
+          lane:'voice',asset,start:at,end:at+length,source:part.start,rate:speed,volume:controls.allows(s.trackControls,key,'audio') ? volume : 0,visual:false,
+          ...(map.fadeDuration && at+length>fadeEnd-map.fadeDuration && {fadeEnd,fadeDuration:map.fadeDuration}),
+        });
+        layers(items,at,length,part.start,speed);
+      }
     }
+    if(whole?.asset) appendVoice(null,wholeRow,whole.asset,pack.wholeNarration[wholeRow]);
     const musicRow=audioRow(s.music,'music',s);
     if(musicRow>=0) {
       const at=starts[s.musicAt] ?? 0, asset=s.music[musicRow];
@@ -344,21 +431,18 @@
     layers(pack.composites.find((items)=>items.length),0,total);
     if(pack.textMode==='whole') layers(textGroups.find(row=>row[0]?.length)?.[0],0,total);
     if(style.enabled!==false) {
-      for(const caption of s.captions ?? []) {
+      for(const caption of speech.captions(true)) {
         const ownerActive=caption.shot==null
           ? controls.wholeRowParticipates(s.trackControls,caption.row,Boolean(s.whole[caption.row]?.asset),true)
           : controls.participates(s.trackControls,'voice'+caption.row);
         if(!ownerActive) continue;
         const chosen=caption.shot==null ? wholeRow : voiceRows[caption.shot] ?? -1;
         if(chosen!==caption.row && (chosen>=0 || s.segments[caption.shot]?.[caption.row])) continue;
-        const offset=starts[caption.shot] ?? starts[caption.follow] ?? 0;
-        const trim=aligned?.[caption.shot]?.narrationStart ?? 0;
-        const at=offset+caption.start-trim;
-        const limit=caption.shot==null ? total : offset+widths[caption.shot];
-        addText(caption.name,Math.max(offset,at),Math.min(limit,at+caption.duration),style,'caption'+caption.row,caption.highlights);
+        addText(caption.name,caption.start,caption.end,style,'caption'+caption.row,caption.highlights);
       }
       for(const cue of s.timelineCaptions ?? []) addText(cue.text,cue.start/1000,cue.end/1000,style,'pasted-captions',cue.highlights);
     }
+    if (s.narrationTrim?.mode==='smart' && s.priority==='picture' && (whole?.asset || voiceRows.some(i=>i>=0))) trimmedShotEnd=total;
     if (trimmedShotEnd) {
       const lastEnd=entries.reduce((end,entry)=>Math.max(end,entry.end),0);
       if(lastEnd>0 && lastEnd<trimmedShotEnd) entries.push({gap:true,start:lastEnd,end:trimmedShotEnd});
@@ -588,6 +672,11 @@
           item.lastSample=undefined;item.cycleIndex=undefined;
           node.volume=Math.max(0,Math.min(1,entry.volume/100));node.muted=!node.volume;
         }
+        if (entry.fadeDuration) {
+          const envelope=Math.max(0,Math.min(1,(entry.fadeEnd-at)/entry.fadeDuration));
+          const gain=Math.max(0,Math.min(1,entry.volume/100))*envelope;
+          if (node.volume!==gain) node.volume=gain;
+        }
         if(node.readyState<1) {ready=false;continue;}
         let source=entry.source+(at-entry.start)*entry.rate;
         if(entry.loop)source%=entry.asset.duration;
@@ -799,7 +888,7 @@
     }
     return {toggle,shuttle,pause,updatePlan,scrub,seek,state,stop:()=>halt(),stopForScrub,playing:()=>playing};
   }
-  const api={chosen,timing,makePlan,transport};
+  const api={chosen,timing,narrationTimeline,makePlan,transport};
   if(typeof module==='object' && module.exports) module.exports=api;
   else window.draftTimeline=api;
 })();

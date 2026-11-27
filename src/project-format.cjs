@@ -21,9 +21,10 @@ const { audioSpeed, normalizeMusicSpeeds, normalizeVolumeOverrides } = require('
 const { normalizeLook, inspectLut } = require('./visual-style.cjs');
 const { candidateVideoLanes, normalizeVideoGaps, normalizeTimelineMarkers, placedVideoSpeed, minVideoSpeed } = require('./ui/track-tools.js');
 const {projectSpeedFormat, timelineMarkerErrors} = require('./ui/messages-zh-cn.js');
+const { normalizeSettings: normalizeNarrationTrim, smartDefaults, legacyDefaults } = require('./ui/narration-trim.js');
 
 const format = 'sdworkbench';
-const version = 4;
+const version = 5;
 /** @typedef {{start:number,end:number,reverse?:boolean,mirror?:boolean,rotation?:number,crop?:{x:number,y:number,width:number,height:number}}} EditRange */
 /** @typedef {{id:string,ranges:EditRange[]}} EditRecipe */
 /** @typedef {Map<string, Record<string, any>>} AssetCatalog */
@@ -32,6 +33,7 @@ const migrations = new Map([
   [1, project => ({ ...project, version: 2 })],
   [2, project => ({ ...project, version: 3, config: cleanConfig(project.config, true).config })],
   [3, project => ({ ...project, version: 4, config: {...project.config, timelineMarkers:[]} })],
+  [4, project => ({ ...project, version: 5, config: {...project.config, narrationTrim: legacyDefaults} })],
 ]);
 function supportedProject(project) {
   return project?.format === format && (project.version === version || migrations.has(project.version));
@@ -205,6 +207,11 @@ function cleanConfig(config, migrateOldSpeed = false) {
   const musicIds = Array.from(config.musicIds, (id) => record(id, 'audio'));
   if (new Set(musicIds).size !== musicIds.length) throw new Error('工程中有重复的配乐。');
   const projectConfig = { shots, ratio, resolution, fps, fit, keepAudio, unordered, useOriginal, useMirrors, musicIds, musicVolume, count };
+  // The v2 migration ignores fields that did not yet belong to that format.
+  if (!migrateOldSpeed) {
+    const trim = config.narrationTrim === undefined ? smartDefaults : config.narrationTrim;
+    projectConfig.narrationTrim = normalizeNarrationTrim(trim);
+  }
   if (!migrateOldSpeed && config.timelineMarkers !== undefined) {
     projectConfig.timelineMarkers = normalizeTimelineMarkers(config.timelineMarkers, timelineMarkerErrors);
   }

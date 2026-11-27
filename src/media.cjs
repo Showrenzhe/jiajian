@@ -11,6 +11,8 @@ const { formatSubtitles, normalizeSubtitles, parseSubtitles } = require('./subti
 const { normalizeShotSettings, normalizePictureRanges, normalizeSegmentVoiceCuts, sliceSource } = require('./shot-timing.cjs');
 const { candidateVideoLanes, pictureSpan, emptyVideoCells, usesPlacedVideoSource, soloLaneSequence, joinedVideoSequence, videoGroupLeaders, normalizeVideoGaps, placedVideoSpeed, minVideoSpeed } = require('./ui/track-tools.js');
 const trackControls = require('./ui/track-controls.js');
+const narrationTrim = require('./ui/narration-trim.js');
+const {narrationTrim:trimMessages} = require('./ui/messages-zh-cn.js');
 const { preferSolo } = trackControls;
 const { normalizeCover, selectCover, publishCover } = require('./cover.cjs');
 const { audioSpeed, normalizeMusicSpeeds, normalizeVolumeOverrides } = require('./shot-timing.cjs');
@@ -19,7 +21,7 @@ const { normalizeLayers, normalizeTransform, normalizePackaging, packagingChoice
 const { composeLayers, writeLayerTexts } = require('./packaging-render.cjs');
 const { visualMotion } = require('./layer-motion.cjs');
 const { fontFamily } = require('./text-style.cjs');
-const { maxCandidates, minClipSeconds, minEdgeSilence, audioRate, withOutputFrames, pictureFrames, voiceLength, pieces, repeatVisual, visualDuration, fitVisuals, fitAutomaticVisuals, fixedSpeedPolicy, fixedSpeedVisuals, checkSpeedWindow, placedVideoFrames, fitSegmentedVoice, fitWholeVoice, fitReferenceWhole } = require('./ui/voice-alignment.js');
+const { maxCandidates, minClipSeconds, minEdgeSilence, audioRate, withOutputFrames, pictureFrames, voiceLength, appendLegacyCaptionCues, pieces, repeatVisual, visualDuration, fitVisuals, fitAutomaticVisuals, fixedSpeedPolicy, fixedSpeedVisuals, checkSpeedWindow, placedVideoFrames, fitSegmentedVoice, fitWholeVoice, fitReferenceWhole } = require('./ui/voice-alignment.js');
 const vendorPath = require('./vendor-path.cjs');
 const { isMaterialPath } = require('./material-path.cjs');
 
@@ -55,10 +57,10 @@ const dimensions = {
 /**
  * @param {string} executable
  * @param {string[]} args
- * @param {{signal?: AbortSignal, timeout?: number, onProgress?: (seconds: number) => void, onLine?: (line: string) => void, cwd?: string}} [options]
+ * @param {{signal?: AbortSignal, timeout?: number, progressTimeout?: number, onProgress?: (seconds: number) => void, onLine?: (line: string) => void, cwd?: string}} [options]
  * @returns {Promise<string>}
  */
-function runTool(executable, args, { signal, timeout = 0, onProgress, onLine, cwd } = {}) {
+function runTool(executable, args, { signal, timeout = 0, progressTimeout = 0, onProgress, onLine, cwd } = {}) {
   signal?.throwIfAborted();
 
   return new Promise((resolve, reject) => {
@@ -68,10 +70,12 @@ function runTool(executable, args, { signal, timeout = 0, onProgress, onLine, cw
     let failure;
     const stop = () => child.kill();
     signal?.addEventListener('abort', stop, { once: true });
-    const timer = timeout ? setTimeout(() => {
+    const deadline = () => {
       failure = new Error('读取媒体信息超时。');
       stop();
-    }, timeout) : null;
+    };
+    const timer = timeout ? setTimeout(deadline,timeout) : null;
+    const progressTimer = progressTimeout ? setTimeout(deadline,progressTimeout) : null;
 
     child.on('error', (error) => {
       failure = 'code' in error && error.code === 'ENOENT'
@@ -81,12 +85,21 @@ function runTool(executable, args, { signal, timeout = 0, onProgress, onLine, cw
     child.stderr.setEncoding('utf8');
     child.stderr.on('data', (part) => { errors = (errors + part).slice(-3000); });
 
-    if (onLine || onProgress) {
+    if (onLine || onProgress || progressTimer) {
       const lines = createInterface({ input: child.stdout });
-      lines.on('line', onLine ?? ((line) => {
+      let latest = -1;
+      lines.on('line', line => {
         const match = /^out_time_us=(\d+)$/.exec(line);
-        if (match) onProgress(Number(match[1]) / 1e6);
-      }));
+        if (match) {
+          const mediaTime = Number(match[1]);
+          if (mediaTime > latest) {
+            latest = mediaTime;
+            progressTimer?.refresh();
+          }
+          if (!onLine) onProgress?.(mediaTime / 1e6);
+        }
+        onLine?.(line);
+      });
     } else {
       child.stdout.setEncoding('utf8');
       child.stdout.on('data', (part) => {
@@ -100,6 +113,7 @@ function runTool(executable, args, { signal, timeout = 0, onProgress, onLine, cw
 
     child.once('close', (code) => {
       clearTimeout(timer);
+      clearTimeout(progressTimer);
       signal?.removeEventListener('abort', stop);
       if (signal?.aborted) return reject(signal.reason);
       if (failure || code !== 0) require('./diagnostics.cjs').logToolFailure(executable,args,errors,code);
@@ -279,6 +293,49 @@ async function createTrackProxy(asset, output, signal, edge = 640, retime, {fps 
   if (retime) args.push('-t', time(span));
   args.push('-sn', '-dn', '-map_metadata', '-1', '-movflags', '+faststart', output);
   await runTool(ffmpeg, args, { signal, timeout: retime ? Math.min(300000,Math.max(30000,asset.duration * 1000)) : 0 });
+}
+
+const narrationPauseCache = new WeakMap();
+
+/** @param {InspectedAsset} asset @param {object} settings @param {MediaReadOptions} [options] */
+async function analyzeNarrationPauses(asset, settings, { signal } = {}) {
+  signal?.throwIfAborted();
+  const {thresholdDb,minSilenceMs} = narrationTrim.normalizeSettings(settings);
+  if (asset?.kind !== 'audio' || !Number.isInteger(asset.audioIndex) || asset.audioIndex < 0
+      || !Number.isFinite(asset.duration) || asset.duration <= 0 || typeof asset.path !== 'string' || !path.isAbsolute(asset.path))
+    throw Error(trimMessages.invalidAsset);
+  const fileVersion = async () => {
+    const stat = await fs.stat(asset.path,{bigint:true});
+    return [stat.dev,stat.ino,stat.size,stat.mtimeNs,stat.ctimeNs].join(':');
+  };
+  const version = await fileVersion();
+  signal?.throwIfAborted();
+  const key = [version,thresholdDb,minSilenceMs].join('/');
+  const cache = narrationPauseCache.get(asset) ?? new Map();
+  if (cache.has(key)) return cache.get(key);
+  const pauses = [];
+  let quietStart = null;
+  function finish(end) {
+    if (quietStart !== null && end > quietStart) pauses.push({start:quietStart,end});
+    quietStart = null;
+  }
+  await runTool(ffmpeg, ['-hide_banner','-nostdin','-loglevel','error',...mediaInput,'-threads','1','-i',asset.path,
+    '-map','0:' + asset.audioIndex,'-vn','-sn','-dn','-af',
+    'asetpts=PTS-STARTPTS,silencedetect=noise=' + thresholdDb + 'dB:d=' + minSilenceMs / 1000 + ',ametadata=mode=print:file=-:direct=1',
+    '-nostats','-progress','pipe:1','-f','null','-'], {signal,progressTimeout:30000,onLine(line) {
+      const match = /^lavfi\.silence_(start|end)=([\d.e+-]+)$/u.exec(line);
+      if (!match) return;
+      const time = Math.min(asset.duration, Math.max(0,Number(match[2])));
+      if (match[1] === 'start') quietStart = time;
+      else finish(time);
+    }});
+  finish(asset.duration);
+  if (await fileVersion() !== version) throw Error(trimMessages.fileChanged);
+  signal?.throwIfAborted();
+  if (cache.size >= 4) cache.delete(cache.keys().next().value);
+  cache.set(key,pauses);
+  narrationPauseCache.set(asset,cache);
+  return pauses;
 }
 
 /** @param {InspectedAsset} asset @param {MediaReadOptions} [options] */
@@ -504,29 +561,13 @@ function readShotTransitions(value, count) {
 }
 
 function segmentSpeechDuration(clip) {
+  if (clip.narrationMap) return clip.narrationMap.duration;
   const span = clip.timelineDuration ?? Math.min(clip.outputDuration ?? Infinity, clip.shotDuration ?? clip.duration);
   const available = span - (clip.voiceOffset ?? 0);
   return Math.max(0, Math.min(clip.narrationDuration ?? voiceLength(clip), available));
 }
 
-function appendCaptionCues(cues, caption, offset, speechDuration, speechStart = 0, speed = 1) {
-  if (!caption) return;
-  const start = Math.max(0, Math.ceil(offset * 1000 - 1e-7));
-  const stop = Math.floor((offset + speechDuration) * 1000 + 1e-7);
-  if (stop <= start) return;
-  if (typeof caption === 'string') {
-    cues.push({ start, end: stop, text: caption });
-    return;
-  }
-  const sourceStart = speechStart * 1000;
-  for (const cue of caption.cues) {
-    const shiftedStart = Math.max(start, Math.round(offset * 1000 + (cue.start - sourceStart)/speed));
-    const shiftedEnd = Math.min(Math.round(offset * 1000 + (cue.end - sourceStart)/speed), stop);
-    if (shiftedEnd > shiftedStart) cues.push({ ...cue,start: shiftedStart, end: shiftedEnd });
-  }
-}
-
-function generatedSubtitleTrack({ segmented, clips, narration, caption, duration, narrationSpeed, voiceStart = 0 }) {
+function generatedSubtitleTrack({ segmented, clips, narration, caption, duration, narrationSpeed, voiceStart = 0, narrationMap }) {
   const cues = [];
   if (segmented) {
     let position = 0;
@@ -534,20 +575,25 @@ function generatedSubtitleTrack({ segmented, clips, narration, caption, duration
       const speed = clip.narrationSpeed ?? 1;
       const speechAt = position + (clip.voiceOffset ?? 0);
       const length = clip.caption ? Math.max(0, Math.min(segmentSpeechDuration(clip), duration - speechAt)) : 0;
-      if (clip.caption && clip.narrationRanges && typeof clip.caption !== 'string') {
+      // Allow the subtitle validator to report overflow without materializing
+      // every repetition of an overlapping cue in reordered source ranges.
+      if (clip.narrationMap) cues.push(...narrationTrim.mapCaptions(clip.narrationMap,clip.caption,speechAt,2001-cues.length));
+      else if (clip.caption && clip.narrationRanges && typeof clip.caption !== 'string') {
         const retained = sliceSource(clip.narrationRanges, (clip.narrationStart ?? 0)*speed, length*speed);
         let time = speechAt;
         for (const range of retained) {
-          appendCaptionCues(cues, clip.caption, time, (range.end - range.start)/speed, range.start, speed);
+          appendLegacyCaptionCues(cues, clip.caption, time, (range.end - range.start)/speed, range.start, speed);
           time += (range.end - range.start)/speed;
         }
-      } else if (clip.caption) appendCaptionCues(cues, clip.caption, speechAt, length, (clip.narrationStart ?? 0)*speed, speed);
+      } else if (clip.caption) appendLegacyCaptionCues(cues, clip.caption, speechAt, length, (clip.narrationStart ?? 0)*speed, speed);
       position += clip.timelineDuration ?? clip.outputDuration;
     }
+  } else if (narrationMap) {
+    cues.push(...narrationTrim.mapCaptions(narrationMap,caption,voiceStart));
   } else {
     const available = duration - voiceStart;
     const length = narration ? Math.min(narration.duration/narrationSpeed, available) : available;
-    appendCaptionCues(cues, caption, voiceStart, length, 0, narration ? narrationSpeed : 1);
+    appendLegacyCaptionCues(cues, caption, voiceStart, length, 0, narration ? narrationSpeed : 1);
   }
   return cues.length ? normalizeSubtitles({ name: caption?.name ?? '口播字幕', cues }) : null;
 }
@@ -669,7 +715,7 @@ function completeDisplacedShots(clips, sourceShots, indices, placementClocks, fp
   return clips.concat(extra);
 }
 
-function planMontage(config, catalog, random = Math.random, batchLimit = maxMontageBatch) {
+function planMontage(config, catalog, random = Math.random, batchLimit = maxMontageBatch, measuredPauses = undefined) {
   const checkLayerAsset = (id, kind) => {
     const expected = kind === 'sound' ? ['audio'] : kind === 'lut' ? ['lut'] : kind === 'sticker' ? ['image'] : ['image', 'video'];
     requireAsset(catalog, id, ...expected);
@@ -803,6 +849,8 @@ function planMontage(config, catalog, random = Math.random, batchLimit = maxMont
   const narrationMode = config.narrationMode === undefined ? 'whole' : config.narrationMode;
   if (!['whole', 'segmented'].includes(narrationMode)) throw new Error('请选择有效的口播方式。');
   const captions = normalizeGeneratedCaptions(config.generatedCaptions, config);
+  const trimSettings = narrationTrim.normalizeSettings(config.narrationTrim);
+  const smartTrim = trimSettings.mode === 'smart';
   const segmented = narrationMode === 'segmented' ? segmentNarrationGroups(config, catalog, captions, controls) : null;
   const wholeTracks = segmented ? [] : wholeNarrationTracks(config, catalog, captions,controls);
   const wholeRows=preferSolo(wholeTracks.flatMap((track,i)=>track ? [i] : []), i=>wholeTracks[i].narration && controls?.['whole'+i]?.solo);
@@ -890,7 +938,18 @@ function planMontage(config, catalog, random = Math.random, batchLimit = maxMont
     if (clips.at(-1).transition) clips.at(-1).transition = null;
     const voicePriority = priority === 'voice' && (segmented || narration);
     const pools = scenes.map(({ shot, index }) => visualPool(shot, shot[indices[index]]));
+    function mapSegment(clip, options) {
+      if (!clip.narration) return clip;
+      const id = config.segmentNarrationIds[clip.shotIndex][clip.narrationRow];
+      const narrationMap = narrationTrim.buildMap({asset:clip.narration,ranges:clip.narrationRanges,
+        speed:clip.narrationSpeed,caption:captionFor(captions,id),pauses:measuredPauses?.get(clip.narration),settings:trimSettings,...options});
+      return {...clip,narrationMap};
+    }
     if (voicePriority) {
+      if (smartTrim && segmented) clips = clips.map((clip,i) => mapSegment(clip,{
+        trimHead:alignment !== 'reference' && Boolean(clips[i-1]?.narration),
+        trimTail:alignment !== 'reference' && Boolean(clips[i+1]?.narration),
+      }));
       if (segmented) clips = fitSegmentedVoice(clips, pools, config.fps, alignment,false,speedOptions);
       else if (alignment === 'reference') clips = fitReferenceWhole(clips, wholeDuration, config.fps,pools,speedOptions);
       else clips = fitWholeVoice(clips, pools, wholeDuration, config.fps,speedOptions);
@@ -975,9 +1034,20 @@ function planMontage(config, catalog, random = Math.random, batchLimit = maxMont
     const anchorIndex=followShot==null ? 0 : clips.findIndex((c)=>c.shotIndex===followShot);
     if(anchorIndex<0) throw new Error('整段口播跟随的分镜不存在。');
     const voiceStart=clips.slice(0,anchorIndex).reduce((sum,c)=>sum+(c.outputDuration ?? c.duration),0);
-    const scheduled = chooseLooks(scheduleLayers({ pack, selection, catalog, clips, duration, wholeIndex: wholeTrackIndex, narration,voiceStart,narrationSpeed }),catalog,lookRandom,effectUseCounts);
+    if (smartTrim && segmented && !voicePriority) {
+      let position = 0;
+      clips = clips.map(clip => {
+        const span = clip.timelineDuration ?? clip.outputDuration;
+        const available = Math.min(span, clip.shotDuration ?? clip.duration, audioDuration-position) - (clip.voiceOffset ?? 0);
+        position += span;
+        return mapSegment(clip,{available,picture:true});
+      });
+    }
+    const narrationMap = smartTrim && narration ? narrationTrim.buildMap({asset:narration,speed:narrationSpeed,
+      available:audioDuration-voiceStart,caption:subtitles ?? caption,pauses:measuredPauses?.get(narration),settings:trimSettings,picture:!voicePriority}) : undefined;
+    const scheduled = chooseLooks(scheduleLayers({ pack, selection, catalog, clips, duration, wholeIndex: wholeTrackIndex, narration,voiceStart,narrationSpeed,narrationMap }),catalog,lookRandom,effectUseCounts);
     let voiceSubtitles=subtitleStyle?.enabled === false || (!segmented && !visible('caption'+wholeTrackIndex)) ? null :
-      generatedSubtitleTrack({segmented,clips,narration,caption:subtitles ?? caption,duration:audioDuration,narrationSpeed,voiceStart});
+      generatedSubtitleTrack({segmented,clips,narration,caption:subtitles ?? caption,duration:audioDuration,narrationSpeed,voiceStart,narrationMap});
     if (timelineCaptions && subtitleStyle?.enabled !== false && visible('pasted-captions')) {
       const end=Math.round(duration*1000);
       const pasted=timelineCaptions.cues.filter(cue=>cue.start<end).map(cue=>({...cue,end:Math.min(cue.end,end)}));
@@ -1006,7 +1076,7 @@ function planMontage(config, catalog, random = Math.random, batchLimit = maxMont
       ...(speedChallenges.length && {speedChallenges}),
       narration, narrationVolume:!segmented && !audible('whole'+wholeTrackIndex) ? 0 : (segmented?undefined:gain('whole',voiceId,null,wholeTrackIndex))??narrationVolume, narrationMode, priority, visualDuration: sourceVisualDuration,
       ...(videoCues.length && {videoSubtitles:{name:'视频字幕',cues:videoCues}}),
-      subtitles: voiceSubtitles,...(voiceStart && {voiceStart}),
+      subtitles: voiceSubtitles,...(voiceStart && {voiceStart}),...(narrationMap && {narrationMap}),
       ...(subtitleStyle && { subtitleStyle }),
       ...(wholeTracks.length > 1 && wholeTrackIndex!==undefined && { wholeTrack: wholeTrackIndex + 1 }),
       ...(cover && {cover,contentDuration:duration}),
@@ -1157,28 +1227,57 @@ function montageArgs(plan, { intermediate = false } = {}) {
     ? `scale=${width}:${height}:force_original_aspect_ratio=decrease:force_divisible_by=2:reset_sar=1,pad=${width}:${height}:(ow-iw)/2:(oh-ih)/2:color=${background}`
     : `scale=${width}:${height}:force_original_aspect_ratio=increase:force_divisible_by=2:reset_sar=1,crop=${width}:${height}`;
 
+  function addMappedVoice(asset, map, speed, gain, tail, tag) {
+    const input = inputCount++;
+    const parts = map.parts;
+    const length = Math.round(map.duration * audioRate);
+    const fade = Math.round(map.fadeDuration * audioRate);
+    args.push(...mediaInput, '-t', time(Math.max(...parts.map(part => part.end))), '-i', asset.path);
+    const source = '[' + input + ':' + asset.audioIndex + ']';
+    const split = parts.map((_,i) => '[' + tag + 'raw' + i + ']');
+    const resampled = source + 'aresample=' + audioRate;
+    if (parts.length > 1) filters.push(resampled + ',asplit=' + parts.length + split.join(''));
+    const cuts = parts.map(({start,end},i) => {
+      const label = '[' + tag + 'part' + i + ']';
+      const stream = parts.length === 1 ? resampled + ',' : split[i];
+      filters.push(stream + 'atrim=start_sample=' + Math.round(start * audioRate) + ':end_sample='
+        + Math.round(end * audioRate) + ',asetpts=N/SR/TB' + label);
+      return label;
+    });
+    const join = cuts.join('') + (parts.length > 1 ? 'concat=n=' + parts.length + ':v=0:a=1,' : '');
+    const fadeOut = fade ? ',afade=t=out:ss=' + (length - fade) + ':ns=' + fade : '';
+    filters.push(join + 'aformat=channel_layouts=stereo' + tempoFilter(speed)
+      + ',apad=whole_len=' + length + ',atrim=end_sample=' + length + fadeOut + volumeFilter(gain) + tail + '[' + tag + ']');
+  }
+
   function addVoice(clip, index) {
-    const voiceInput = inputCount++;
     const voiceSpeed = clip.narrationSpeed ?? 1;
     const voiceStart = (clip.narrationStart ?? 0)*voiceSpeed;
     const voiceDuration = segmentSpeechDuration(clip);
     const sampleCount = Math.round((clip.timelineDuration ?? voiceDuration) * audioRate);
     const delay = Math.round((clip.voiceOffset ?? 0) * audioRate);
     const fill = (delay ? `,adelay=${delay}S:all=1` : '') + (alignVoices ? `,apad=whole_len=${sampleCount},atrim=end_sample=${sampleCount},asetpts=N/SR/TB` : '');
-    const sourceDuration = voiceDuration*voiceSpeed;
-    const segments = clip.narrationRanges ? sliceSource(clip.narrationRanges, voiceStart, sourceDuration) : [{ start: voiceStart, end: voiceStart + sourceDuration }];
-    args.push(...mediaInput, '-t', time(Math.max(...segments.map((part) => part.end))), '-i', clip.narration.path);
-    if (segments.length === 1) {
-      filters.push(voiceInputFilter(voiceInput, clip.narration, segments[0].start, time(sourceDuration), clip.voiceGain??narrationVolume, `${fill}[voice${index}]`, voiceSpeed));
+    if (clip.narrationMap && !clip.narrationMap.parts.length) {
+      filters.push(`anullsrc=r=${audioRate}:cl=stereo,atrim=end_sample=${sampleCount}[voice${index}]`);
+    } else if (clip.narrationMap) {
+      addMappedVoice(clip.narration,clip.narrationMap,voiceSpeed,clip.voiceGain??narrationVolume,fill,'voice'+index);
     } else {
-      const branches = segments.map((_, n) => `[s${index}voice${n}]`);
-      filters.push(`[${voiceInput}:${clip.narration.audioIndex}]aresample=${audioRate},asplit=${branches.length}${branches.join('')}`);
-      const outputs = segments.map(({ start, end }, n) => {
-        const output = `[vpart${index}_${n}]`;
-        filters.push(`${branches[n]}atrim=start_sample=${Math.round(start * audioRate)}:end_sample=${Math.round(end * audioRate)},asetpts=N/SR/TB${output}`);
-        return output;
-      });
-      filters.push(`${outputs.join('')}concat=n=${outputs.length}:v=0:a=1,aformat=channel_layouts=stereo${tempoFilter(voiceSpeed)}${volumeFilter(clip.voiceGain??narrationVolume)}${fill}[voice${index}]`);
+      const voiceInput = inputCount++;
+      const sourceDuration = voiceDuration*voiceSpeed;
+      const segments = clip.narrationRanges ? sliceSource(clip.narrationRanges, voiceStart, sourceDuration) : [{ start: voiceStart, end: voiceStart + sourceDuration }];
+      args.push(...mediaInput, '-t', time(Math.max(...segments.map((part) => part.end))), '-i', clip.narration.path);
+      if (segments.length === 1) {
+        filters.push(voiceInputFilter(voiceInput, clip.narration, segments[0].start, time(sourceDuration), clip.voiceGain??narrationVolume, `${fill}[voice${index}]`, voiceSpeed));
+      } else {
+        const branches = segments.map((_, n) => `[s${index}voice${n}]`);
+        filters.push(`[${voiceInput}:${clip.narration.audioIndex}]aresample=${audioRate},asplit=${branches.length}${branches.join('')}`);
+        const outputs = segments.map(({ start, end }, n) => {
+          const output = `[vpart${index}_${n}]`;
+          filters.push(`${branches[n]}atrim=start_sample=${Math.round(start * audioRate)}:end_sample=${Math.round(end * audioRate)},asetpts=N/SR/TB${output}`);
+          return output;
+        });
+        filters.push(`${outputs.join('')}concat=n=${outputs.length}:v=0:a=1,aformat=channel_layouts=stereo${tempoFilter(voiceSpeed)}${volumeFilter(clip.voiceGain??narrationVolume)}${fill}[voice${index}]`);
+      }
     }
     if (positioned) {
       filters.push(`[voice${index}]adelay=${Math.round(speechTime*audioRate)}S:all=1[timedVoice${index}]`);
@@ -1359,10 +1458,13 @@ function montageArgs(plan, { intermediate = false } = {}) {
     filters.push(`[${index}:${music.audioIndex}]aresample=48000,aformat=channel_layouts=stereo${tempoFilter(plan.musicSpeed ?? 1)},volume=${musicVolume},atrim=duration=${time(musicDuration)},asetpts=PTS-STARTPTS${delay}[music]`);
     audioTracks.push('[music]');
   }
-  if (narration) {
-    args.push(...mediaInput, '-i', narration.path);
+  if (narration && (!plan.narrationMap || plan.narrationMap.parts.length)) {
     const delay=plan.voiceStart ? ',adelay='+Math.round(plan.voiceStart*48000)+'S:all=1' : '';
-    filters.push(voiceInputFilter(inputCount, narration, 0, time((duration-(plan.voiceStart ?? 0))*(plan.narrationSpeed ?? 1)), narrationVolume, delay+'[narration]', plan.narrationSpeed));
+    if (plan.narrationMap) addMappedVoice(narration,plan.narrationMap,plan.narrationSpeed ?? 1,narrationVolume,delay,'narration');
+    else {
+      args.push(...mediaInput, '-i', narration.path);
+      filters.push(voiceInputFilter(inputCount, narration, 0, time((duration-(plan.voiceStart ?? 0))*(plan.narrationSpeed ?? 1)), narrationVolume, delay+'[narration]', plan.narrationSpeed));
+    }
     audioTracks.push('[narration]');
   }
   let audioOutput = audioTracks[0];
@@ -1598,5 +1700,5 @@ module.exports = {
   createTrackProxy,
   normalizeMutedVideoTracks,
   videoExtensions, imageExtensions, audioExtensions, maxShots, maxCandidates, maxExports, maxMontageBatch, maxWholeTracks, minClipSeconds, maxStillSeconds,
-  inspectAsset, createFrameThumbnail, createVideoThumbnail, analyzeNarrationSilence, normalizeGeneratedCaptions, normalizeSubtitleStyle, previewSubtitleStyle, planMontage, planExtraction, exportBatch,
+  inspectAsset, createFrameThumbnail, createVideoThumbnail, analyzeNarrationSilence, analyzeNarrationPauses, normalizeGeneratedCaptions, normalizeSubtitleStyle, previewSubtitleStyle, planMontage, planExtraction, exportBatch,
 };

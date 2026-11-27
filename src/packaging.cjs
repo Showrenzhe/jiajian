@@ -140,7 +140,7 @@ function packagingChoices(pack, shotCount) {
   };
 }
 
-function scheduleLayers({ pack, selection, catalog, clips, duration, wholeIndex, narration, voiceStart=0, narrationSpeed=1 }) {
+function scheduleLayers({ pack, selection, catalog, clips, duration, wholeIndex, narration, voiceStart=0, narrationSpeed=1, narrationMap=undefined }) {
   const result = [];
   // Each owner has its own clock. Seek and tempo convert an owner's source range into final output seconds.
   function add(items, offset, span, seek = 0, tempo = 1) {
@@ -154,6 +154,12 @@ function scheduleLayers({ pack, selection, catalog, clips, duration, wholeIndex,
       const end = Math.min(duration, offset + (sourceEnd - seek) / tempo);
       if (end <= start || !Number.isFinite(end)) continue;
       result.push({ ...layer, start, end, mediaStart: (sourceStart - layer.start)*speed+(layer.mediaOffset ?? 0), tempo: tempo*speed, ...(asset && { asset }) });
+    }
+  }
+  function addNarrationLayers(items, offset, map) {
+    for (const part of map.parts) {
+      const span = part.outEnd - part.outStart;
+      add(items,offset + part.outStart,span,part.start,(part.end-part.start)/span);
     }
   }
   let pictureTime = 0;
@@ -189,7 +195,10 @@ function scheduleLayers({ pack, selection, catalog, clips, duration, wholeIndex,
       const row = selection.textRows.length === 1 ? selection.textRows[0] : selection.textRows[clip.shotIndex];
       add(pack.textGroups[row]?.[clip.shotIndex], pictureTime, span);
     }
-    if (clip.narration) {
+    if (clip.narrationMap) {
+      const items = pack.segmentNarration[clip.shotIndex]?.[clip.narrationRow];
+      addNarrationLayers(items,speechTime+(clip.voiceOffset ?? 0),clip.narrationMap);
+    } else if (clip.narration) {
       const items = pack.segmentNarration[clip.shotIndex]?.[clip.narrationRow];
       const keep = clip.narrationRanges ?? [{ start: 0, end: clip.narration.duration }];
       const delay = clip.voiceOffset ?? 0;
@@ -204,7 +213,8 @@ function scheduleLayers({ pack, selection, catalog, clips, duration, wholeIndex,
     pictureTime += span;
     speechTime += clip.timelineDuration ?? span;
   }
-  if (narration) add(pack.wholeNarration[wholeIndex], voiceStart, Math.min(duration-voiceStart, narration.duration/narrationSpeed), 0, narrationSpeed);
+  if (narrationMap) addNarrationLayers(pack.wholeNarration[wholeIndex],voiceStart,narrationMap);
+  else if (narration) add(pack.wholeNarration[wholeIndex], voiceStart, Math.min(duration-voiceStart, narration.duration/narrationSpeed), 0, narrationSpeed);
   add(pack.composites[selection.composite], 0, duration);
   if (pack.textMode === 'whole') add(pack.textGroups[selection.textRows[0]]?.[0], 0, duration);
   add(pack.global, 0, duration);

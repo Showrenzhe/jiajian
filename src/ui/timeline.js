@@ -115,17 +115,28 @@ window.mountEditTimeline = function (host, ctx) {
     tick:(time)=>{playTime=time;syncCursor();ctx.draftTick?.();}, changed:(playing)=>ctx.draftPlaybackChanged?.(playing),
   });
   let confirmedDraftSpeed, choosingDraftSpeed=false;
-  function draftPlan(report) {
+  function draftPlan(report,pauseJobs) {
     const state=ctx.state(), focus=focusClip ?? state.selected;
     if(confirmedDraftSpeed && confirmedDraftSpeed.key===lastKey && confirmedDraftSpeed.focus===focus
         && confirmedDraftSpeed.min===state.autoSpeedRange.min && confirmedDraftSpeed.max===state.autoSpeedRange.max) {
       state.draftSpeedChoices=confirmedDraftSpeed.choices;
     }
     state.onSpeedChallenge=report;
+    state.pauseJobs=pauseJobs;
     const layout=window.draftTimeline.timing(state,clipSpan,ctx.asset,focus);
     return window.draftTimeline.makePlan(state,layout,ctx.asset,window.waveformSource,focus);
   }
+  let playbackRequest=0, waitingForNarration=false;
+  function cancelNarrationPlayback() {
+    ++playbackRequest;
+    if (!waitingForNarration) return false;
+    waitingForNarration=false;
+    ctx.narrationStatus('');
+    return true;
+  }
   async function toggleDraftPlayback(direction) {
+    if (cancelNarrationPlayback() && direction==null) return;
+    const request=playbackRequest;
     if(direction===0) {draftTransport.pause();return;}
     if(draftTransport.playing()) {
       if(direction) draftTransport.shuttle(direction);
@@ -134,11 +145,26 @@ window.mountEditTimeline = function (host, ctx) {
     }
     if(choosingDraftSpeed) return;
     const issues=new Map();
-    const proposed=draftPlan(issue=>{
+    const jobs=new Set();
+    const report=issue=>{
       const previous=issues.get(issue.key), count=(previous?.count ?? 0)+1;
       const extreme=!previous || (issue.direction==='high' ? issue.required>previous.required : issue.required<previous.required);
       issues.set(issue.key,{...(extreme ? issue : previous),count});
-    });
+    };
+    let proposed=draftPlan(report,jobs);
+    if (jobs.size) {
+      const key=lastKey, focus=focusClip;
+      waitingForNarration=true;
+      ctx.narrationStatus(window.editorMessages.narrationTrim.measuring);
+      const ready=await Promise.all(jobs);
+      if (request!==playbackRequest) return;
+      waitingForNarration=false;
+      ctx.narrationStatus('');
+      if (key!==lastKey || focus!==focusClip || ctx.busy()) return;
+      if (ready.includes(false)) {ctx.narrationStatus(window.editorMessages.narrationTrim.unavailable);return;}
+      issues.clear();
+      proposed=draftPlan(report);
+    }
     if(!issues.size) {draftTransport.toggle(proposed,playTime,direction);return;}
     const key=lastKey, focus=focusClip ?? ctx.state().selected, limits=window.videoSpeedControls.range;
     choosingDraftSpeed=true;
@@ -677,6 +703,7 @@ window.mountEditTimeline = function (host, ctx) {
   }
   function showCellMenu(cell,x,y,alt=false) {
     clearContextHint();
+    contextHint.textContent='';
     closeVideoMenu();
     if(!cell || ctx.busy() || cell.closest('[data-track-locked]')) return;
     const slot=candidateSlots.get(cell), entry=clipMenus.get(cell);
@@ -954,6 +981,7 @@ window.mountEditTimeline = function (host, ctx) {
     refreshFrame=undefined;
     cancelFilmstripUpdate();
     clearContextHint();
+    contextHint.textContent='';
     closeVideoMenu();
     if (!host.clientWidth) {relayoutZoom=undefined;return;}
     layerDrag?.cancel();
@@ -967,6 +995,7 @@ window.mountEditTimeline = function (host, ctx) {
     const columns=s.shots.length || 3;
     layoutFocus=focusClip ?? s.selected;
     const layout=window.draftTimeline.timing(s,clipSpan,ctx.asset,layoutFocus);
+    const speech=window.draftTimeline.narrationTimeline(s,layout);
     scrubWithDraftPlan=s.shots.some(group=>group.some(clip=>clip.speedOverflow))
       || Object.entries(s.trackControls ?? {}).some(([id,flags])=>flags.disabled || /^vis\d+$/.test(id) && (flags.hidden || flags.solo))
       || layout.aligned?.some((part,i)=>part?.clip?.speed !== undefined && s.settings[i]?.duration
@@ -1227,8 +1256,9 @@ window.mountEditTimeline = function (host, ctx) {
       const asset=voice.asset;
       const si=s.shots.indexOf(voice.shot), delay=si>=0 ? s.voiceOffset(si,voice.row) : 0;
       const speed=asset ? s.voiceSpeed(asset,voice.shot,voice.row) : 1;
-      const duration=!asset ? undefined : si>=0 ? s.voiceDuration(si,voice.row) : asset.duration/speed;
-      const displayed=Math.min(Math.max(0,span-delay),duration ?? span);
+      const track=asset && speech.track(si<0 ? null : si,voice.row);
+      if (track) from=track.start-delay;
+      const displayed=track?.map?.duration ?? Math.max(0,span-delay);
       if(asset) reference(from+delay,displayed);
       const b=block(lane,from+delay,displayed,asset?.name ?? '',asset ? ()=>{
         voiceTarget=voice;focusShot=voice.shot;focusClip=undefined;ctx.voice(voice);
@@ -1240,7 +1270,20 @@ window.mountEditTimeline = function (host, ctx) {
       if (!asset) b.classList.add('sequence-empty');
       else {
         bindMaterialSource(b, asset);
-        waveforms.add(b,asset,{ranges:voice.shot && s.voiceRanges(voice.shot,voice.row),span:displayed*speed,volume:s.voiceVolume(asset,voice.shot,voice.row),
+        const map=track.map;
+        if (map.trimStart || map.trimEnd) {
+          if (track.active && s.narrationTrim?.mode==='smart') scrubWithDraftPlan=true;
+          const labels=window.editorMessages.narrationTrim;
+          const detail=labels.detail(Number(map.trimStart.toFixed(3)),Number(map.trimEnd.toFixed(3)));
+          b.title+=' · '+detail;
+          b.setAttribute('aria-label',asset.name+' · '+detail);
+          b.append(el('span','narration-trim-marker',labels.marker));
+          const show=()=>{contextHint.textContent=detail;};
+          const hide=()=>{if(contextHint.textContent===detail) contextHint.textContent='';};
+          b.addEventListener('focus',show); b.addEventListener('blur',hide);
+          b.addEventListener('pointerenter',show); b.addEventListener('pointerleave',()=>{if(!b.matches(':focus-visible')) hide();});
+        }
+        waveforms.add(b,asset,{ranges:map.parts,span:displayed*speed,fadeTail:map.fadeDuration*speed,volume:s.voiceVolume(asset,voice.shot,voice.row),
           muted:!window.trackControls.allows(s.trackControls,(si>=0?'voice':'whole')+voice.row,'audio')});
         selection.bind(b,'voice:'+si+'/'+voice.row+'/'+asset.id,()=>ctx.removeVoice(voice));
         voiceBlocks.set(b,voice);
@@ -1301,18 +1344,16 @@ window.mountEditTimeline = function (host, ctx) {
         elapsed+=(range.end-range.start)/rate;
       }
     }
-    if(s.captions.length) {
+    const captions=speech.captions();
+    if(captions.length) {
       const lanes=new Map();
-      for (const caption of s.captions) {
+      for (const caption of captions) {
         if(!lanes.has(caption.row)) lanes.set(caption.row,row('口播字幕 '+(caption.row+1),'sequence-caption','caption'+caption.row));
-        const offset=shotTimes[caption.shot] ?? shotTimes[caption.follow] ?? 0;
-        const span=caption.shot==null ? totalTime-offset : widths[caption.shot];
-        const at=caption.start-(layout.aligned?.[caption.shot]?.narrationStart ?? 0);
-        const start=Math.max(0,at),duration=Math.min(span,at+caption.duration)-start;
+        const {start,end}=caption, duration=end-start;
         if(duration>0) {
-          reference(offset+start,duration);
-          const cell=block(lanes.get(caption.row),offset+start,duration,caption.name,()=>{},'双击编辑口播字幕');
-          bindCopy(cell,'字幕',()=>({text:caption.name,highlights:structuredClone(caption.highlights),duration:Math.max(1,Math.round(caption.duration*1000))}));
+          reference(start,duration);
+          const cell=block(lanes.get(caption.row),start,duration,caption.name,()=>{},'双击编辑口播字幕');
+          bindCopy(cell,'字幕',()=>({text:caption.name,highlights:structuredClone(caption.highlights),duration:Math.max(1,Math.round(duration*1000))}));
           selection.bind(cell,caption.key,caption.remove);
           cell.ondblclick=caption.open;
         }
@@ -1338,44 +1379,56 @@ window.mountEditTimeline = function (host, ctx) {
         };
       }
     }
-    function layerRow(target,items,start,span) {
+    function layerRow(target,items,start,span,mapping) {
       const lanes=new Map();
       for(const [i,layer] of (items ?? []).entries()) {
+        if (mapping) {
+          for (const part of mapping.parts) paintLayer(i,layer,part);
+        } else paintLayer(i,layer);
+      }
+      function paintLayer(i,layer,part) {
+        const rate=part ? (part.end-part.start)/(part.outEnd-part.outStart) : 1;
+        const toTime=value=>part ? start+part.outStart+(value-part.start)/rate : start+value;
+        const toSource=value=>part ? part.start+(value-start-part.outStart)*rate : value-start;
+
         const asset=ctx.asset(layer.id), limit=asset?.duration;
         const speed=layer.speed ?? 1;
         const sourceSpan=limit>0 ? (limit-(layer.mediaOffset ?? 0))/speed : Infinity;
         const length=Math.min(layer.end ?? Infinity,span,layer.start+sourceSpan)-layer.start;
+        const leftAt=Math.max(layer.start,part?.start ?? 0);
+        const rightAt=Math.min(layer.start+length,part?.end ?? Infinity);
+        if (part && rightAt<=leftAt) return;
         if(layer.kind==='sound' && asset && target.key!=='local' && target.key!=='voice') reference(start+layer.start,length);
         const id=layer.kind+'-'+(layer.laneId ?? i);
         if(!lanes.has(id)) lanes.set(id,row(target.label+' · '+kinds[layer.kind],'sequence-layer kind-'+layer.kind,target.label+'/'+(target.column ?? 0)+'/'+id,layer));
         const lane=lanes.get(id);
         const title=layer.kind==='text' ? layer.text : asset?.name ?? kinds[layer.kind];
         let dragged=false;
-        const cell=block(lane,start+layer.start,Math.max(.1,length),title,()=>{},title+' · 双击编辑');
+        const cell=block(lane,toTime(leftAt),part ? (rightAt-leftAt)/rate : Math.max(.1,length),title,()=>{},title+' · 双击编辑');
         if (asset) bindMaterialSource(cell, asset);
         if (length>0 && (layer.kind==='sound' || layer.kind==='pip')) {
-          const offset=layer.mediaOffset ?? 0;
-          waveforms.add(cell,asset,{ranges:[{start:offset,end:offset+length*speed}],volume:layer.volume ?? (layer.kind==='pip'?0:100),
+          const offset=(layer.mediaOffset ?? 0)+(leftAt-layer.start)*speed;
+          waveforms.add(cell,asset,{ranges:[{start:offset,end:offset+(rightAt-leftAt)*speed}],volume:layer.volume ?? (layer.kind==='pip'?0:100),
             muted:!window.trackControls.allows(s.trackControls,window.trackControls.layerKey(layer),'audio')});
         }
         selection.bind(cell,layer,()=>removeItem(items,layer));
         const splitInEditor=layer.kind==='sound' || layer.kind==='text';
         function splitAt(at,alt=false) {
-          const absolute=start+layer.start+at;
+          const absolute=toTime(layer.start+at);
           const snap=matchTime(snapAnchors(cell),absolute,alt);
-          if(snap!==undefined && snap-start-layer.start>=.05 && start+layer.start+length-snap>=.05) at=snap-start-layer.start;
+          if(snap!==undefined && toSource(snap)-layer.start>=.05 && layer.start+length-toSource(snap)>=.05) at=toSource(snap)-layer.start;
           return {enabled:at>=.05 && length-at>=.05,run(){
             const offset=at;
             const cut=layer.start+offset;
             layer.laneId ??= crypto.randomUUID();
             const after={...structuredClone(layer),start:cut,mediaOffset:(layer.mediaOffset ?? 0)+offset*speed};
             layer.end=cut;items.splice(i+1,0,after);ctx.change();
-            flashSplit(snap!==undefined && Math.abs(start+cut-snap)<1e-7 ? snap : undefined);
+            flashSplit(snap!==undefined && Math.abs(toTime(cut)-snap)<1e-7 ? snap : undefined);
           }};
         }
         function openLayer(focusSpeed=false) {
           editLayer({...target,items,ensure:()=>items},layer,splitInEditor ? d=>{
-            const split=splitAt(playTime-start-layer.start);
+            const split=splitAt(toSource(playTime)-layer.start);
             const button=btn('在播放头分割',()=>{d.wrapper.close();split.run();});
             button.disabled=!split.enabled;
             return button;
@@ -1385,7 +1438,7 @@ window.mountEditTimeline = function (host, ctx) {
         bindClipMenu(cell,{
           speed:layer.kind==='sound' ? ()=>openLayer(true) : undefined,
           edit:splitInEditor ? undefined : ()=>openLayer(),
-          split:splitInEditor ? undefined : (x,alt)=>splitAt(x===undefined ? playTime-start-layer.start : (x-cell.getBoundingClientRect().left)/timeScale,alt),
+          split:splitInEditor ? undefined : (x,alt)=>splitAt(x===undefined ? toSource(playTime)-layer.start : leftAt-layer.start+(x-cell.getBoundingClientRect().left)/timeScale*rate,alt),
         });
         const left=el('span','sequence-edge'),right=el('span','sequence-edge');
         left.title='调整入点';right.title='调整出点';cell.prepend(left);cell.append(right);
@@ -1409,22 +1462,22 @@ window.mountEditTimeline = function (host, ctx) {
           }
           function cancelLayer() {
             finishLayer();
-            cell.style.left=(start+original)*timeScale+'px';
-            cell.style.width=Math.max(2,length*timeScale-2)+'px';
+            cell.style.left=toTime(leftAt)*timeScale+'px';
+            cell.style.width=Math.max(2,(rightAt-leftAt)/rate*timeScale-2)+'px';
           }
           layerDrag={cancel:cancelLayer,alt(value) {alt=value;if(dragged) moveLayer(latestX);}};
           function moveLayer(clientX) {
-            const delta=(clientX-x)/timeScale;
+            const delta=(clientX-x)/timeScale*rate;
             if(edge==='left') a=snap(Math.max(Math.max(0,original-(layer.mediaOffset ?? 0)/speed),Math.min(b-.05,original+delta)));
             else if(edge==='right') b=snap(Math.min(span,original+sourceSpan,Math.max(a+.05,oldEnd+delta)));
             else {
               a=snap(Math.max(0,Math.min(span-.05,original+delta)));
               b=snap(a+length);
             }
-            const first=edge==='right' ? undefined : matchTime(anchors,start+a,alt);
-            const last=edge==='left' ? undefined : matchTime(anchors,start+b,alt);
-            const firstDelta=first===undefined ? Infinity : first-start-a;
-            const lastDelta=last===undefined ? Infinity : last-start-b;
+            const first=edge==='right' ? undefined : matchTime(anchors,toTime(a),alt);
+            const last=edge==='left' ? undefined : matchTime(anchors,toTime(b),alt);
+            const firstDelta=first===undefined ? Infinity : toSource(first)-a;
+            const lastDelta=last===undefined ? Infinity : toSource(last)-b;
             const adjustStart=Math.abs(firstDelta)<=Math.abs(lastDelta);
             const deltaSnap=adjustStart ? firstDelta : lastDelta;
             const toA=edge==='right' ? a : a+deltaSnap, toB=edge==='left' ? b : b+deltaSnap;
@@ -1435,7 +1488,8 @@ window.mountEditTimeline = function (host, ctx) {
               a=Math.max(0,toA);b=toB;guide=adjustStart ? first : last;
             }
             showSnap(guide);
-            cell.style.left=(start+a)*timeScale+'px';cell.style.width=Math.max(2,(b-a)*timeScale-2)+'px';
+            const from=Math.max(a,part?.start ?? 0),until=Math.min(b,part?.end ?? Infinity);
+            cell.style.left=toTime(from)*timeScale+'px';cell.style.width=Math.max(2,(until-from)/rate*timeScale-2)+'px';
           }
           cell.onpointermove=(event)=>{
             if(event.pointerId!==e.pointerId || (Math.abs(event.clientX-x)<5 && !dragged)) return;
@@ -1465,8 +1519,14 @@ window.mountEditTimeline = function (host, ctx) {
     p.textGroups.forEach((cols,i)=>cols.forEach((items,j)=>{if(p.textMode==='segmented' || j===0) layerRow({key:'text'+i,label:'文字组 '+(i+1),column:j},items,shotTimes[j] ?? 0,p.textMode==='segmented' ? widths[j] : totalTime);}));
     layerRow({key:'global',label:'全局'},p.global,0,totalTime);
     s.shots.forEach((shot,i)=>shot.forEach((clip,j)=>layerRow({key:'local',label:'候选 '+(i+1)+'-'+(j+1),clip},clip.layers,clip.videoStart ?? shotTimes[i],window.pictureSpan(clip,widths[i]))));
-    if(s.segmented) p.segmentNarration.forEach((tracks,i)=>tracks.forEach((items,j)=>layerRow({key:'voice',label:'口播 '+(i+1)+'-'+(j+1)},items,shotTimes[i] ?? 0,widths[i] ?? 0)));
-    else p.wholeNarration.forEach((items,i)=>layerRow({key:'voice',label:'整段口播 '+(i+1)},items,0,totalTime));
+    function voiceLayerRow(shot,row,items,label) {
+      if (!items?.length) return;
+      const {start,map}=speech.track(shot,row);
+      const asset=shot==null ? s.whole[row]?.asset : s.segments[shot]?.[row];
+      if (asset && map) layerRow({key:'voice',label},items,start,asset.duration,map);
+    }
+    if(s.segmented) p.segmentNarration.forEach((tracks,i)=>tracks.forEach((items,j)=>voiceLayerRow(i,j,items,'口播 '+(i+1)+'-'+(j+1))));
+    else p.wholeNarration.forEach((items,i)=>voiceLayerRow(null,i,items,'整段口播 '+(i+1)));
     snapGeometry=blocks.filter(({node})=>!node.classList.contains('sequence-empty'));
     editControls.attach(ruler,timeScale);
     canvas.append(cursor);
@@ -2583,7 +2643,7 @@ window.mountEditTimeline = function (host, ctx) {
     get selectedCandidate(){return candidateSlots.get(selection.single())?.clip;},textSettings:()=>textSettings(ctx.state()),
     toggleDraftPlayback,
     seekDraft:draftTransport.seek,draftState:draftTransport.state,
-    stopDraftPlayback:draftTransport.stop,isDraftPlaying:draftTransport.playing,
+    stopDraftPlayback:()=>{cancelNarrationPlayback();draftTransport.stop();},isDraftPlaying:draftTransport.playing,
     canPlayDraft:()=>draftDuration()>0,draftDuration,get playheadTime(){return playTime;},
     zoom,zoomFromCards(level) {
       const scale=standardScales[level-1];

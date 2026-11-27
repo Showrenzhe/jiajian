@@ -576,3 +576,6 @@ progress { display: block; width: 100%; margin: 6px 0; }
 #missing-materials { padding: 6px 10px; }
 #missing-materials ul { max-height: 9em; overflow: auto; padding-inline-start: 20px; }
 #missing-materials summary { cursor: pointer; }
+
+/* Keep this disclosure visible below the inspector's sticky tab strip when focused. */
+#narration-trim-settings > summary { scroll-margin-block-start: 44px; }
