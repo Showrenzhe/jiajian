@@ -366,14 +366,26 @@
     return entries.sort((a,b)=>a.start-b.start);
   }
 
-  function transport(stage,{tick,changed,previewSource,handoff}) {
+  function transport(stage,{tick,changed,previewSource,handoff,getRange}) {
     const overlay=document.createElement('div');
     overlay.className='draft-transport-preview';overlay.hidden=true;
     const label=document.createElement('span');
     overlay.append(label);stage.append(overlay);
     let playing=false, media=new Map(), entries=[], active=[], next=0, time=0, end=0, stamp, frame;
     let visual=false, canProxy=false, priming=false;
-    let currentPicture, preloadQueues=[];
+    let currentPicture, preloadQueues=[], reverseEntries;
+    let shuttleRate=1, shuttling=false;
+    function bounds() {
+      const range=getRange?.();
+      const start=Math.max(0,range?.inPoint ?? 0), stop=Math.min(end,range?.outPoint ?? end);
+      return range?.loop && range.inPoint!=null && range.outPoint!=null && stop>start
+        ? {start,stop,loop:true} : {start:0,stop:end,loop:false};
+    }
+    function playbackStart(from) {
+      const {start,stop}=bounds();
+      if(shuttleRate<0) return from<=start || from>stop ? stop : from;
+      return from<start || from>=stop-.001 ? start : from;
+    }
     const warmed=new Map();
     const textNodes=new Map();
     const failed=new Set();
@@ -399,7 +411,7 @@
       cancelAnimationFrame(frame);
       discardWarm();
       const visible=!overlay.hidden;
-      playing=false;
+      playing=false;shuttling=false;shuttleRate=1;
       for(const item of media.values()) {
         if(keepFrame && item.node.tagName!=='IMG') item.node.pause();
         else if(!keepFrame) release(item);
@@ -453,7 +465,7 @@
         if(entry.start>at) continue;
         release(item);warmed.delete(entry);
       }
-      if(!playing) return;
+      if(!playing || shuttleRate<0) return;
       for(const queue of preloadQueues) {
         while(queue.index<queue.entries.length && queue.entries[queue.index].start<=at) queue.index++;
         const entry=queue.entries[queue.index];
@@ -499,10 +511,21 @@
       item.endFrameCallback=node.requestVideoFrameCallback(presented);
     }
     function render() {
-      const at=Math.max(0,Math.min(time,end-1e-6));
-      active=active.filter((entry)=>entry.end>at);
-      while(next<entries.length && entries[next].start<=at) {
-        const entry=entries[next++];if(!entry.gap && entry.end>at)active.push(entry);
+      // Only visit newly crossed boundaries and the currently visible lanes.
+      const stop=playing && shuttleRate<0 ? bounds().stop : end;
+      const at=Math.max(0,Math.min(time,stop-1e-6));
+      if(shuttleRate<0) {
+        reverseEntries ??= [...entries].sort((a,b)=>b.end-a.end);
+        active=active.filter(entry=>entry.start<=at);
+        while(next<reverseEntries.length && reverseEntries[next].end>at) {
+          const entry=reverseEntries[next++];
+          if(!entry.gap && entry.start<=at) active.push(entry);
+        }
+      } else {
+        active=active.filter(entry=>entry.end>at);
+        while(next<entries.length && entries[next].start<=at) {
+          const entry=entries[next++];if(!entry.gap && entry.end>at)active.push(entry);
+        }
       }
       // Sort order mirrors the rendered z-index across independently placed lanes.
       let picture, pictureOrder=-Infinity;
@@ -584,11 +607,18 @@
         }
         // Outside Chromium's native rate range, sample on the composition
         // clock, allowing one outstanding seek while the other lanes continue playing.
-        if(sampleVideoRate(entry.rate)) {
+        const effectiveRate=entry.rate*shuttleRate/item.sourceScale;
+        item.sampled=shuttleRate<0 || sampleVideoRate(effectiveRate);
+        if(item.sampled) {
           if(!node.paused) node.pause();
-          const halfFrame=.5/(entry.asset.fps || 30);
-          const sourceEnd=entry.loop ? entry.asset.duration : entry.source+(entry.cycle || (entry.end-entry.start)*entry.rate);
-          const target=Math.min(source,Math.max(entry.source,Math.min(entry.asset.duration,sourceEnd)-halfFrame));
+          // Chromium has no backwards media clock. Keep audio silent while
+          // shuttling backwards and seek each visible decoder independently.
+          if(!entry.visual) continue;
+          const halfFrame=.5/(item.mediaFps || entry.asset.fps || 30);
+          const sourceEnd=entry.loop || entry.cycleParts ? entry.asset.duration : entry.source+(entry.cycle || (entry.end-entry.start)*entry.rate);
+          const first=entry.cycleParts || entry.loop ? 0 : entry.source/item.sourceScale;
+          const last=Math.min(entry.asset.duration,sourceEnd)/item.sourceScale-halfFrame;
+          const target=Math.min(source/item.sourceScale,Math.max(first,last));
           if(!node.seeking) {
             if(item.targetSet && node.readyState>=2) {
               item.sampleReady=true;
@@ -605,7 +635,7 @@
         const frozen=entry.rate===0;
         if(frozen && !node.paused)node.pause();
         source/=item.sourceScale;
-        const rate=frozen ? 1 : Math.max(.0625,Math.min(16,entry.rate/item.sourceScale));
+        const rate=frozen ? 1 : Math.max(.0625,Math.min(16,effectiveRate));
         if(node.playbackRate!==rate)node.playbackRate=rate;
         // Media time is measured in source seconds. A 5.67× source moves
         // 0.28 seconds in just 50 ms of timeline time.
@@ -640,7 +670,7 @@
       for(const item of media.values()) {
         const {node,asset}=item;
         if(node.tagName==='IMG')continue;
-        if(!playing || priming || item.entry?.rate===0 || sampleVideoRate(item.entry?.rate)) {if(!node.paused)node.pause();continue;}
+        if(!playing || priming || item.entry?.rate===0 || item.sampled) {if(!node.paused)node.pause();continue;}
         if(node.paused && !node.ended && !node.seeking && node.readyState>=2) {
           const src=node.src;
           node.play().catch(error=>{
@@ -653,19 +683,26 @@
     }
     function step(now) {
       if(!playing) return;
-      if(!priming) time=Math.min(end,time+Math.max(0,(now-stamp)/1000));
-      stamp=now;
+      const {start,stop,loop}=bounds();
+      const target=priming ? time : time+Math.max(0,(now-stamp)/1000)*shuttleRate;
+      const finished=shuttleRate>0 ? target>=stop : target<=start;
+      if(loop && (finished || target<start || target>stop)) {
+        const span=stop-start;
+        const offset=((target-start)%span+span)%span;
+        seek(shuttleRate<0 && offset===0 ? stop : start+offset);
+        return;
+      }
+      time=Math.max(start,Math.min(stop,target));stamp=now;
       render();tick(time);
-      if(time>=end || (failed.size && entries.every((e)=>e.gap || failed.has(e.asset)))) {
-        halt(true);
-        if(time>=end && sampleVideoRate(currentPicture?.rate)) seek(end);
+      if(finished || (failed.size && entries.every((e)=>e.gap || failed.has(e.asset)))) {
+        pause();
         return;
       }
       frame=requestAnimationFrame(step);
     }
     function setPlan(plan) {
       discardWarm();
-      entries=plan;active=[];next=0;
+      entries=plan;reverseEntries=undefined;active=[];next=0;
       // Preload the next picture and independently timed sounds before a cut.
       preloadQueues=[
         plan.filter(entry=>entry.asset && entry.visual && !entry.layer),
@@ -690,12 +727,25 @@
       } else if(playing) halt(true);
       seek(seconds);
     }
-    function toggle(plan,from) {
-      if(playing){halt(true);if(sampleVideoRate(currentPicture?.rate)) seek(time);return true;}
+    function pause() {
+      if(!playing) return;
+      const align=shuttling || media.get(currentPicture?.lane)?.sampled;
+      halt(true);
+      if(align) seek(time);
+    }
+    function shuttle(direction) {
+      shuttleRate=shuttling && Math.sign(shuttleRate)===direction ? direction*Math.min(8,Math.abs(shuttleRate)*2) : direction;
+      shuttling=true;
+      seek(playbackStart(time));
+      changed(true);
+    }
+    function toggle(plan,from,rate) {
+      if(playing){pause();return true;}
       if(!plan.length) return false;
       handoff.capture();handoff.moveTo(overlay);
       halt(false,true);failed.clear();setPlan(plan);
-      time=from>=end-.001 ? 0 : Math.max(0,from);
+      shuttleRate=rate ?? 1;shuttling=rate!==undefined;
+      time=playbackStart(from);
       document.getElementById('preview')?.pause();
       overlay.hidden=false;playing=true;priming=true;changed(true);tick(time);
       stamp=performance.now();render();frame=requestAnimationFrame(step);return true;
@@ -713,7 +763,8 @@
       if(!entries.length) playing=false;
       discardWarm();
       for(const queue of preloadQueues) queue.index=0;
-      active=[];next=0;time=Math.max(0,entries.length ? Math.min(end,seconds) : seconds);
+      const {start,stop}=playing ? bounds() : {start:0,stop:end};
+      active=[];next=0;time=Math.max(start,entries.length ? Math.min(stop,seconds) : seconds);
       for(const item of media.values()) {
         item.targetSet=false;item.heldEnd=false;item.sampleReady=false;
         if(item.endFrameCallback!==undefined) {
@@ -739,14 +790,14 @@
           break;
         }
       }
-      return {time,end,playing,visual,canProxy,proxy};
+      return {time,end,playing,visual,canProxy,proxy,shuttling:playing && shuttling,rate:playing ? shuttleRate : 0};
     }
     function stopForScrub() {
       if(overlay.hidden) return;
       handoff.capture();handoff.moveTo(stage.querySelector('.player-picture'));
       halt();
     }
-    return {toggle,updatePlan,scrub,seek,state,stop:()=>halt(),stopForScrub,playing:()=>playing};
+    return {toggle,shuttle,pause,updatePlan,scrub,seek,state,stop:()=>halt(),stopForScrub,playing:()=>playing};
   }
   const api={chosen,timing,makePlan,transport};
   if(typeof module==='object' && module.exports) module.exports=api;

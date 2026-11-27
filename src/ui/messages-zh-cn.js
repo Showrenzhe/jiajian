@@ -4,6 +4,10 @@
   if (typeof window !== 'undefined') window.editorMessages = messages;
   if (typeof module === 'object' && module.exports) module.exports = messages;
 })(Object.freeze({
+  timelineEdits: {
+    snap:'吸附', tools:'时间线标记与区间', rename:'重命名标记', name:'标记名称', save:'保存',
+    marker:number=>'标记 '+number, split:'已分割当前素材中播放头所在的片段。',
+  },
   timelineFrame: frame => `第 ${frame} 帧`,
   commandTitles: {
     palette:'命令面板', 'editing-help':'剪辑帮助', 'play-timeline':'播放或暂停时间线',
@@ -28,9 +32,15 @@
     'layout-controls':'调整轨高与面板尺寸…', 'track-slice':'自动切片', 'track-clean':'清理空分镜',
     'track-reset':'重置', 'timeline-fit':'适配', 'tracks-expand-all':'全部展开', 'tracks-collapse-all':'全部折叠',
     'preview-generating':'正在生成…', 'preview-regenerate':'重新生成预览', 'extract-audio':'开始提取', 'export-selected':'导出已选',
+    'timeline-snap':'切换吸附', 'timeline-in':'设置入点', 'timeline-out':'设置出点',
+    'timeline-clear-in':'清除入点', 'timeline-clear-out':'清除出点', 'timeline-loop':'循环预览入出点区间',
+    'timeline-marker-add':'添加标记点', 'timeline-marker-rename':'重命名标记点', 'timeline-marker-delete':'删除标记点',
+    'timeline-marker-prev':'跳到上一个标记点', 'timeline-marker-next':'跳到下一个标记点',
+    'timeline-reverse':'时间线倒放', 'timeline-pause':'暂停时间线预览', 'timeline-forward':'时间线正放',
     'timeline-copy':'复制', 'timeline-paste':'粘贴',
   },
   commandKeywords:{'settings.appearance':['外观','软件设置','玻璃效果'], 'settings.shortcuts':['快捷键设置','自定义快捷键']},
+  shuttleStatus:rate => (rate < 0 ? '倒放' : '正放') + ' ' + Math.abs(rate) + '×',
   commandMaterialRemoveCount:count=>`从素材库移除 ${count} 项`,
   shortcutScopes:{global:'全应用', editing:'剪辑台与脚本创作', montage:'剪辑台', timeline:'时间线', cut:'片段裁剪', material:'素材库', videoMenu:'视频片段菜单'},
   commandPalette: {
@@ -42,7 +52,7 @@
   shortcutNames: {Space:'空格', Escape:'Esc', DoubleClick:'双击视频片段', ArrowKeys:'方向键',
     'Shift+/':'?', 'Alt+ArrowLeft':'Alt+←', 'Alt+ArrowRight':'Alt+→'},
   shortcutSettings: {
-    title:'快捷键', instructions:'选中键位后按下新组合键。按 Esc 取消录制。', project:'工程', clips:'片段剪辑',
+    title:'快捷键', instructions:'选中键位后按下新组合键。按 Esc 取消录制。', project:'工程', timeline:'主时间线', clips:'片段剪辑',
     reset:'恢复默认', done:'完成', recording:'请按键…', assign:'设置键位', unbound:'未绑定',
     bindLabel:(title,slot,key)=>title+(slot ? '备用' : '')+'快捷键，'+(key || '未设置'),
     clearLabel:(title,slot)=>'清除'+title+(slot ? '备用' : '')+'快捷键',
@@ -74,6 +84,12 @@
     expired:'倍速选择对应的混剪设置已变化，请重新生成。',
     invalidChoice:'请选择有效的倍速处理方式。',
     drawChanged:'原混剪组合已失效，请重新生成。',
+  },
+  timelineMarkerErrors: {
+    count:'每个工程最多可保存 2000 个时间线标记。',
+    id:'工程内的标记编号无效或重复。',
+    name:'标记名称应为 1 至 100 字的单行文本。',
+    time:'标记位置应为从工程起点算起的有效秒数。',
   },
   projectSpeedFormat: {
     invalidMode: index => `第 ${index + 1} 组分镜的倍速模式无效。`,

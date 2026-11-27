@@ -53,17 +53,19 @@ async function check() {
     '-f','lavfi','-i','sine=frequency=440:duration=12','-c:v','libx264','-c:a','aac','-threads','1',fastSource]);
   const speech=path.join(root,'半秒口播.wav');
   await ffmpeg(['-f','lavfi','-i','sine=frequency=660:duration=0.5',speech]);
+  // These saved pre-v3 placements already have their 24× / 5.67× rates.
+  // Test decoder behavior without prompting for a new automatic alignment.
   const fastProject=path.join(root,'自动倍速分镜.sdworkbench');
   await saveProject(fastProject,{...config,priority:'voice',narrationMode:'segmented',segmentNarrationIds:[['voice']],
     shotSettings:[{duration:.5}],shots:[[
-    {id:'fast',start:0,end:12,speed:24,autoFitSpeed:true,videoStart:0,videoDuration:.5,videoFit:'hold'}
+    {id:'fast',start:0,end:12,speed:24,speedMode:'legacy',autoFitSpeed:true,videoStart:0,videoDuration:.5,videoFit:'hold'}
   ]]},new Map([['fast',await inspectAsset(fastSource,'video')],['voice',await inspectAsset(speech,'audio')]]));
   const twoSeconds=path.join(root,'两秒口播.wav');
   await ffmpeg(['-f','lavfi','-i','sine=frequency=550:duration=2',twoSeconds]);
   const continuousProject=path.join(root,'倍速画面与连续音轨.sdworkbench');
   await saveProject(continuousProject,{...config,keepAudio:true,priority:'voice',narrationMode:'segmented',segmentNarrationIds:[['speech']],
     musicIds:['speech'],shotSettings:[{duration:2}],shots:[[
-      {id:'video',start:0,end:11.34,speed:5.67,autoFitSpeed:true,videoStart:0,videoDuration:2,videoFit:'hold'}
+      {id:'video',start:0,end:11.34,speed:5.67,speedMode:'legacy',autoFitSpeed:true,videoStart:0,videoDuration:2,videoFit:'hold'}
     ]]},new Map([['video',await inspectAsset(fastSource,'video')],['speech',await inspectAsset(twoSeconds,'audio')]]));
   const projects=[project,plain,layered,fastProject,continuousProject];
   const win = await launchDesktop({show:false, dataDirectory:path.join(root,'profile'), dialogs:{
@@ -204,6 +206,28 @@ async function check() {
     await waitFor(()=>samples.length-settled>=4 && samples.at(-1).t-samples[settled].t>=190,'compositor samples after the final seek');
     record('rapidScrub',samples.slice(from),['red','blue']);
     assert.ok(samples.slice(settled).every(isLastBlue),'latest target remains visible after asynchronous completions: '+JSON.stringify(samples.slice(settled)));
+    await read("document.getElementById('timeline-clock').focus()");
+    async function shuttleKey(letter) {
+      for (const type of ['rawKeyDown','keyUp']) await wc.debugger.sendCommand('Input.dispatchKeyEvent',{
+        type,key:letter,code:'Key'+letter.toUpperCase(),windowsVirtualKeyCode:letter.toUpperCase().charCodeAt(0),
+      });
+    }
+    from=samples.length;
+    await shuttleKey('j');await shuttleKey('j');
+    await waitFor(()=>stable('red') && samples.at(-1).head<.82,'2× reverse crosses from blue into red');
+    await shuttleKey('k');
+    const paused=()=>read("document.querySelector('#timeline-play').ariaPressed==='false'");
+    await waitFor(paused,'reverse paused');
+    assert.ok(samples.slice(from).some(frame=>frame.c==='blue'),'blue was visible during reverse playback');
+    await shuttleKey('l');await shuttleKey('l');
+    await waitFor(()=>stable('blue') && samples.at(-1).head>1.20,'2× forward returns to blue');
+    await shuttleKey('k');await waitFor(paused,'forward paused');
+    const alignment=await read(`(() => {
+      const picture=document.querySelector('.draft-transport-preview:not([hidden]) video.draft-main');
+      return {rate:picture.playbackRate,paused:picture.paused,drift:Math.abs(picture.currentTime+1-timeline.playheadTime)};
+    })()`);
+    assert.ok(alignment.rate===1 && alignment.paused && alignment.drift<.03,'pause lands on the visible frame '+JSON.stringify(alignment));
+    results.shuttleAcrossCut=alignment;
     from=samples.length;
     await seek(2.24);
     const gapSamples=()=>samples.slice(from).filter(frame=>Math.abs(frame.head-2.24)<.03);

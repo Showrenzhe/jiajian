@@ -19,11 +19,11 @@ const { normalizeShotSettings, normalizePictureRanges, normalizeSegmentVoiceCuts
 const { normalizeCover } = require('./cover.cjs');
 const { audioSpeed, normalizeMusicSpeeds, normalizeVolumeOverrides } = require('./shot-timing.cjs');
 const { normalizeLook, inspectLut } = require('./visual-style.cjs');
-const { candidateVideoLanes, normalizeVideoGaps, placedVideoSpeed, minVideoSpeed } = require('./ui/track-tools.js');
-const {projectSpeedFormat} = require('./ui/messages-zh-cn.js');
+const { candidateVideoLanes, normalizeVideoGaps, normalizeTimelineMarkers, placedVideoSpeed, minVideoSpeed } = require('./ui/track-tools.js');
+const {projectSpeedFormat, timelineMarkerErrors} = require('./ui/messages-zh-cn.js');
 
 const format = 'sdworkbench';
-const version = 3;
+const version = 4;
 /** @typedef {{start:number,end:number,reverse?:boolean,mirror?:boolean,rotation?:number,crop?:{x:number,y:number,width:number,height:number}}} EditRange */
 /** @typedef {{id:string,ranges:EditRange[]}} EditRecipe */
 /** @typedef {Map<string, Record<string, any>>} AssetCatalog */
@@ -31,6 +31,7 @@ const version = 3;
 const migrations = new Map([
   [1, project => ({ ...project, version: 2 })],
   [2, project => ({ ...project, version: 3, config: cleanConfig(project.config, true).config })],
+  [3, project => ({ ...project, version: 4, config: {...project.config, timelineMarkers:[]} })],
 ]);
 function supportedProject(project) {
   return project?.format === format && (project.version === version || migrations.has(project.version));
@@ -204,6 +205,9 @@ function cleanConfig(config, migrateOldSpeed = false) {
   const musicIds = Array.from(config.musicIds, (id) => record(id, 'audio'));
   if (new Set(musicIds).size !== musicIds.length) throw new Error('工程中有重复的配乐。');
   const projectConfig = { shots, ratio, resolution, fps, fit, keepAudio, unordered, useOriginal, useMirrors, musicIds, musicVolume, count };
+  if (!migrateOldSpeed && config.timelineMarkers !== undefined) {
+    projectConfig.timelineMarkers = normalizeTimelineMarkers(config.timelineMarkers, timelineMarkerErrors);
+  }
   if (config.proxyEnabled !== undefined) {
     if (typeof config.proxyEnabled !== 'boolean') throw new Error('草稿代理开关无效。');
     projectConfig.proxyEnabled = config.proxyEnabled;
@@ -518,7 +522,7 @@ async function verifyUpgradeBackup(file, bytes) {
 async function publishBackupDirectory(file, temp, bytes) {
   // exFAT does not support hard links. Renaming a directory containing the complete, synced
   // file is atomic and cannot replace another non-empty backup directory.
-  const directory = file + '.pre-v3';
+  const directory = file + '.pre-v' + version;
   const stage = await fs.mkdtemp(path.join(path.dirname(file),'.backup-dir-'));
   const stagedFile = path.join(stage,path.basename(file));
   try {
@@ -536,7 +540,7 @@ async function publishBackupDirectory(file, temp, bytes) {
 
 async function backupBeforeUpgrade(file, snapshot) {
   const ext = path.extname(file);
-  const backup = path.join(path.dirname(file), path.basename(file, ext) + '.pre-v3' + ext);
+  const backup = path.join(path.dirname(file), path.basename(file, ext) + '.pre-v' + version + ext);
   const temp = path.join(path.dirname(file), '.backup-' + randomUUID() + '.tmp');
   const writer = await fs.open(temp, 'wx', 0o600);
   try {

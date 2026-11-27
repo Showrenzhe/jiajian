@@ -62,6 +62,7 @@ let selected;
 let trackPreviewClock;
 let proxyResume;
 let projectProxyEnabled = true;
+let timelineMarkers = [];
 let pendingTimelineSeek;
 let previewBatch;
 let projectName = '';
@@ -2573,7 +2574,8 @@ function updateControls(group, keepDraftPlayback = false) {
   const config = mode === 'montage' || previewBatch || projectName ? montageConfig() : null;
   if (busy && operation !== 'quick-save') timeline?.stopDraftPlayback();
   const configKey = config ? JSON.stringify(config) : '';
-  if (mode === 'montage') timeline?.refresh(configKey,keepDraftPlayback);
+  const renderKey = config?.timelineMarkers ? JSON.stringify(renderConfig(config)) : configKey;
+  if (mode === 'montage') timeline?.refresh(renderKey,keepDraftPlayback);
   if (mode === 'montage' && !busy) {
     if (editHistory?.record(config, group ? { group } : undefined)) {
       editRevision++;
@@ -2581,7 +2583,7 @@ function updateControls(group, keepDraftPlayback = false) {
     }
     draftAutosave.stage(draftTitle(), configKey);
   }
-  if (previewBatch && previewBatch.configKey !== configKey) discardPreviewBatch();
+  if (previewBatch && previewBatch.configKey !== renderKey) discardPreviewBatch();
   const projectStatus = $('#project-status');
   projectStatus.textContent = draftTitle();
   projectStatus.title = projectStatus.textContent;
@@ -3825,6 +3827,7 @@ function montageConfig() {
   const captionIds = new Set([narration?.id, ...extras.map((track) => track.narrationId), ...segments.flat()]);
   return {
     proxyEnabled:projectProxyEnabled,
+    ...(timelineMarkers.length && {timelineMarkers}),
     shots: shots.map((shot) => shot.map(serializeClip)),
     ...(folderKeys.length && { materialFolderKeys: folderKeys }),
     ...(libraryFolders.length && {libraryFolders:structuredClone(libraryFolders)}),
@@ -4093,8 +4096,12 @@ function syncPreviewSelection() {
   updateControls();
 }
 
+function renderConfig({timelineMarkers: _markers, ...renderSettings}) {
+  return renderSettings;
+}
+
 function planningConfig(config,range=window.videoSpeedControls.range) {
-  return {...config,autoSpeedRange:range};
+  return {...renderConfig(config),autoSpeedRange:range};
 }
 
 async function withSpeedChoices(settings,run) {
@@ -4143,7 +4150,7 @@ async function preparePreview(scope) {
     previewBatch = {
       ...result,
       autoSpeedRange:settings.autoSpeedRange,
-      configKey: JSON.stringify(config),
+      configKey: JSON.stringify(renderConfig(config)),
       selected: new Set(result.entries.filter(previewFilter()).map(({ index }) => index)),
     };
     renderPreviewBatch();
@@ -4265,6 +4272,7 @@ async function quickSaveProject() {
 
 function restoreProject({ name, config, assets = [], folders = [], projectToken: openedToken }, { retainHistory = false, draft } = {}) {
   projectProxyEnabled=config.proxyEnabled ?? true;
+  timelineMarkers = structuredClone(config.timelineMarkers ?? []);
   const byId = retainHistory ? editAssets : new Map(assets.map((asset) => [asset.id, asset]));
   if(!retainHistory)sourceNames.clear();
   for(const [id,asset] of byId){if(!sourceNames.has(id))sourceNames.set(id,asset.name);asset.name=sourceNames.get(id);}
@@ -5445,7 +5453,7 @@ function timelineState() {
   }
   if(segmented) segments.forEach((tracks,i)=>tracks.forEach((asset,j)=>appendCaptions(asset,null,j,i)));
   else whole.forEach((track,j)=>appendCaptions(track.asset,track.subtitles,j,null));
-  return {shots, segments, whole, autoSpeedRange:window.videoSpeedControls.range, timelineCaptions, music, maxCandidates, musicAt:shots.indexOf(musicStartFrom), segmented, captions, subtitleStyle:captionInspector.read(),
+  return {shots, segments, whole, autoSpeedRange:window.videoSpeedControls.range, timelineMarkers, timelineCaptions, music, maxCandidates, musicAt:shots.indexOf(musicStartFrom), segmented, captions, subtitleStyle:captionInspector.read(),
     segmentNarrationSelection:$('#segment-narration-selection').value,
     trackControls:monitoredTrackControls(),
     keepAudio:$('#keep-audio').checked,
@@ -5740,6 +5748,7 @@ function createSourceCommit(clip, sessionActive) {
 cutEditor = window.createCutTrackEditor({
   container: $('#timeline-cut-editor'), getSceneCuts:()=>sceneCuts, getShots:()=>shots.map((_,i)=>({name:shotLabel(i)})),
   mountMonitor: playerTools.mountCutMonitor,
+  getEditSnap:clip=>timeline.editControls.sourceSnap(clip),
   previewProxy:asset=>previewProxy(asset,usePreviewProxy(asset,true)),
   retimedPreview:async(asset,rate)=>{
     const original=!usePreviewProxy(asset,true);
@@ -5808,6 +5817,14 @@ timeline = window.mountEditTimeline($('#timeline-clock'), {
   recognize:(asset)=>api.recognizeSpeech(asset.id),importSrt:()=>api.pickSubtitles(),cancelRecognition:()=>api.cancel(),
   captions:editVideoCaptions,slices:(asset)=>cutEditor.openSlices(asset),
   state:timelineState, busy:()=>Boolean(operation), thumbnail:(id,time)=>api.clipThumbnail(id,time), asset:(id)=>editAssets.get(id),
+  getTimelineMarkers:()=>timelineMarkers,
+  setTimelineMarkers(next) {
+    if (operation) return false;
+    try { timelineMarkers = window.normalizeTimelineMarkers(next, window.editorMessages.timelineMarkerErrors); }
+    catch (error) { say(error.message); return false; }
+    updateControls(undefined, true);
+    return true;
+  },
   change:renderLists, scroll:updateTrackScrollbar, zoomScroll:zoomTrackScrollbar, showZoom:showTrackZoom, setCardZoom,
   showAxis:()=>$('#track-preview-axis').checked,
   shotSettings:async(shot,value)=>{
@@ -5981,6 +5998,9 @@ $('#shots').addEventListener('keydown',(event)=>{
 function syncTimelinePlayButton() {
   const button=$('#timeline-play');
   const playing=Boolean(timeline?.isDraftPlaying());
+  const draft=timeline?.draftState(), status=$('#timeline-shuttle-status');
+  status.hidden=!draft?.shuttling;
+  status.textContent=draft?.shuttling ? window.editorMessages.shuttleStatus(draft.rate) : '';
   if (button.ariaPressed !== String(playing)) {
     button.ariaPressed = String(playing);
     document.body.toggleAttribute('data-timeline-playing', playing);
@@ -5988,13 +6008,13 @@ function syncTimelinePlayButton() {
   const title=playing ? window.editorMessages.commandTitles['pause-timeline'] : commandRegistry.get('play-timeline').title;
   presentEditorCommand(button,'play-timeline',{title});
 }
-function toggleTimelinePlayback() {
+function toggleTimelinePlayback(direction) {
   if(operation || mode!=='montage') return;
   if (playerTools.monitoringCut) { say('请先应用或取消片段剪辑，再播放时间线。'); return; }
   materialPreviewRequest++;
   if(proxyResume) proxyResume.playing=false;
   playerTools.pause();
-  timeline.toggleDraftPlayback();
+  return timeline.toggleDraftPlayback(direction);
 }
 
 player.addEventListener('play',()=>{if(!player.paused) timeline?.stopDraftPlayback();syncTimelinePlayButton();});
@@ -6163,7 +6183,25 @@ function mountEditorCommands() {
     if (insertShot(shots.length)) visualTrackLane.lastElementChild.querySelector('.add-candidate').focus();
   }});
   commandRegistry.bind('quick-save', {when:montage, run:quickSaveProject});
-  commandRegistry.bind('play-timeline', {when:context => editingTimeline(context) && !$('#timeline-play').disabled, run:toggleTimelinePlayback});
+  commandRegistry.bind('play-timeline', {when:context => editingTimeline(context) && !$('#timeline-play').disabled, run:()=>toggleTimelinePlayback()});
+  const mainTimeline = () => montage() && $('#timeline-cut-editor').hidden &&
+    !$('#timeline-tracks-panel').hidden && $('#timeline-view').value === 'time';
+  for (const [id,direction] of [['timeline-reverse',-1],['timeline-pause',0],['timeline-forward',1]]) {
+    commandRegistry.bind(id,{when:() => mainTimeline() && (direction===0 ? timeline.isDraftPlaying() : timeline.canPlayDraft()),
+      run:() => toggleTimelinePlayback(direction)});
+  }
+  for (const command of commandRegistry.list().filter(command => command.customizable && command.scope === 'timeline' &&
+    !['timeline-reverse','timeline-pause','timeline-forward'].includes(command.id))) {
+    const {id}=command;
+    commandRegistry.bind(id,{when:() => (mainTimeline() || (id==='timeline-snap' && montage() && playerTools.monitoringCut)) &&
+      timeline.editControls.can(id), run:context => timeline.editControls.run(id,context)});
+  }
+  document.addEventListener('keydown', event => {
+    const id=window.cutShortcuts.actionFor(event), command=commandRegistry.get(id);
+    if (command?.scope !== 'timeline' || !window.cutShortcuts.onMainTimeline(event) || !command.when()) return;
+    event.preventDefault();
+    if (!event.repeat) commandRegistry.execute(id,{target:event.target});
+  });
   for (const action of ['undo', 'redo']) {
     const availableHistory = () => action === 'undo' ? editHistory?.canUndo() : editHistory?.canRedo();
     commandRegistry.bind('project-' + action, {when:context => editingTimeline(context) && availableHistory(), run:() => changeHistory(action)});

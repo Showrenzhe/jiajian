@@ -248,7 +248,21 @@
     return !voicePriority && clip?.asset?.kind === 'video' && clip.videoStart !== undefined
       && clip.videoDuration !== undefined && clip.matchedDuration === undefined;
   }
-  const tools = { splitRanges, candidateVideoLanes, pinCandidateLanes, minVideoSpeed, fitVideoSpeed, videoSpeedDecision, applyVideoSpeedDecision, placedVideoSpeed, sampleVideoRate, shouldRetimeVideo, nativeVideoRate, pictureSpan, videoLaneCells, emptyVideoCells,
+  function normalizeTimelineMarkers(rows, errors) {
+    if (!Array.isArray(rows) || rows.length > 2000) throw new Error(errors.count);
+    const ids = new Set();
+    return Array.from(rows, row => {
+      if (typeof row?.id !== 'string' || !/^[\w-]{1,64}$/.test(row.id) || ids.has(row.id)) throw new Error(errors.id);
+      if (!Number.isFinite(row.time) || row.time < 0) throw new Error(errors.time);
+      if (typeof row.name !== 'string' || /[\x00-\x1f\x7f-\x9f]/.test(row.name)) throw new Error(errors.name);
+      const name = row.name.trim();
+      if (!name.length || name.length > 100) throw new Error(errors.name);
+      ids.add(row.id);
+      return {id:row.id, name, time:row.time};
+    });
+  }
+
+  const tools = { normalizeTimelineMarkers, splitRanges, candidateVideoLanes, pinCandidateLanes, minVideoSpeed, fitVideoSpeed, videoSpeedDecision, applyVideoSpeedDecision, placedVideoSpeed, sampleVideoRate, shouldRetimeVideo, nativeVideoRate, pictureSpan, videoLaneCells, emptyVideoCells,
     reservedVideoCells, normalizeVideoGaps, videoGroupLeaders, joinedVideoSequence, soloLaneSequence, usesPlacedVideoSource };
   if (typeof module === 'object' && module.exports) module.exports = tools;
   else Object.assign(window, tools);

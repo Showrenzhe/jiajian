@@ -9,7 +9,7 @@ window.mountVideoCutTimeline = function mountVideoCutTimeline(host, clip, option
   const clamp = (value, low, high) => Math.min(high, Math.max(low, value));
   const frame = 1 / (asset.fps > 0 ? asset.fps : 30);
   const abort = new AbortController();
-  const watch = (node, type, callback) => node.addEventListener(type, callback, {signal: abort.signal});
+  const watch = (node, type, callback, capture=false) => node.addEventListener(type, callback, {signal: abort.signal,capture});
   const node = (type, className, text) => {
     const item = document.createElement(type);
     if (className) item.className = className;
@@ -95,6 +95,24 @@ window.mountVideoCutTimeline = function mountVideoCutTimeline(host, clip, option
   const status = text => { message.textContent = text; };
   const buttons = {};
   const registry = window.editorCommands;
+  const snapState = window.timelineSnapping;
+  let altHeld=false, guideTimer;
+  const sourceGuide=node('i','timeline-snap-guide'), sequenceGuide=node('i','timeline-snap-guide');
+  timeline.append(sourceGuide);sequence.append(sequenceGuide);
+  function guide(at,sequenceTime=false,flash=false) {
+    clearTimeout(guideTimer);
+    sourceGuide.hidden=sequenceTime || at===undefined;
+    sequenceGuide.hidden=!sequenceTime || at===undefined;
+    if(at!==undefined) {
+      const line=sequenceTime ? sequenceGuide : sourceGuide;
+      line.style.left=(100*at/(sequenceTime ? total : asset.duration))+'%';
+      if(flash) guideTimer=setTimeout(()=>guide(),320);
+    }
+  }
+  guide();
+  function projectAnchors() {
+    return (options.getEditSnap?.() ?? []).map(elapsed=>elapsed*speed).filter(at=>at>=0 && at<=total);
+  }
   const cutActions = ['undo', 'redo', 'split', 'trim-left', 'trim-right', 'reverse', 'mirror', 'crop', 'rotate'];
   const frameSteps = {'frame-back':-1, 'frame-forward':1, 'frames-back':-10, 'frames-forward':10};
   const handlers = new Map();
@@ -122,6 +140,10 @@ window.mountVideoCutTimeline = function mountVideoCutTimeline(host, clip, option
   button('undo', '撤销', '', () => travel('undo'), tools);
   button('redo', '重做', '', () => travel('redo'), tools);
   button('split', '分割', '', () => cut('split'), tools);
+  const snapButton=button('timeline-snap', window.editorMessages.timelineEdits.snap, '',
+    () => registry.execute('timeline-snap',{target:snapButton}), tools);
+  snapButton.dataset.timelineSnap='';
+  snapButton.setAttribute('aria-pressed',String(snapState.enabled));
   button('trim-left', '剪掉左侧', '', () => cut('trim-left'), tools);
   button('trim-right', '剪掉右侧', '', () => cut('trim-right'), tools);
   const speedLabel = node('label', 'video-cut-speed', '倍速');
@@ -478,17 +500,30 @@ window.mountVideoCutTimeline = function mountVideoCutTimeline(host, clip, option
   function cut(action) {
     if (pendingApply || drag) return;
     pause();
-    const i = indexAt(head), range = ranges[i], source = sourceAt(i, head);
+    const i = indexAt(head), range = ranges[i];
+    let cutAt=head, snapped;
+    if(action==='split' && snapState.enabled && !altHeld && head>starts[i] && head<starts[i+1]) {
+      const width=sequence.hidden ? lane.clientWidth : sequence.clientWidth;
+      const usable=projectAnchors().filter(at=>at-starts[i]>=minimum-1e-7 && starts[i+1]-at>=minimum-1e-7);
+      snapped=snapState.nearest(snapState.sorted(usable),head,6*total/Math.max(1,width));
+      cutAt=snapped ?? head;
+    }
+    const source = sourceAt(i, cutAt);
     if (head <= starts[i] || head >= starts[i + 1]) return status('请把播放头移到要剪的片段内。');
     const early = {...range, end: source}, late = {...range, start: source};
     const left = range.reverse ? late : early, right = range.reverse ? early : late;
     const retained = action === 'split' ? [left, right] : [action === 'trim-left' ? right : left];
     if (retained.some(part => part.end - part.start < minimum - 1e-7)) return status('每段至少保留 0.1 秒。');
     if (action === 'split' && ranges.length >= maxRanges) return status('每个素材最多保留 2000 段。');
+    head=cutAt;
     ranges = ranges.toSpliced(i, 1, ...retained);
     selected = action === 'split' ? i + 1 : i;
     if (action === 'trim-left') head = starts[i];
     record(action === 'trim-right' ? lastFrame(left) : undefined);
+    if(action==='split') {
+      status(window.editorMessages.timelineEdits.split);
+      if(snapped!==undefined) guide(source,false,true);
+    }
   }
   function remove() {
     if (pendingApply || drag || ranges.length === 1) return;
@@ -780,6 +815,7 @@ window.mountVideoCutTimeline = function mountVideoCutTimeline(host, clip, option
     previewAt(frameAt(index, head));
   }
   function dragAt(event) {
+    drag.lastX=event.clientX;
     const {box, index, edge, before, x, surface} = drag;
     if (!edge) {
       const fraction = clamp((event.clientX - box.left) / box.width, 0, 1);
@@ -794,6 +830,9 @@ window.mountVideoCutTimeline = function mountVideoCutTimeline(host, clip, option
       if (proposed >= asset.duration - frame / 2) value = asset.duration;
       else value = Math.round(proposed / frame) * frame;
     }
+    const target=Math.abs(delta)>=frame/2 && snapState.enabled && !event.altKey ? snapState.nearest(drag.anchors,proposed,6*asset.duration/box.width) : undefined;
+    if(target!==undefined) value=target;
+    guide(target);
     if (value === drag.lastValue) return;
     drag.lastValue = value;
     editEdge(before, index, edge, value);
@@ -801,7 +840,9 @@ window.mountVideoCutTimeline = function mountVideoCutTimeline(host, clip, option
   function finishDrag(cancel) {
     if (!drag) return;
     const {id, before, oldHead, oldSelection, edge, index, surface} = drag;
+    cancelAnimationFrame(drag.frame);
     drag = undefined;
+    guide();
     delete timeline.dataset.dragging;
     if (surface.hasPointerCapture(id)) surface.releasePointerCapture(id);
     if (cancel) {
@@ -826,6 +867,19 @@ window.mountVideoCutTimeline = function mountVideoCutTimeline(host, clip, option
     event.preventDefault();
     pause();
     drag = {id: event.pointerId, edge, index: selected, x: event.clientX, box, surface, before: ranges, oldHead, oldSelection};
+    if(edge) {
+      const [lo,hi]=edgeLimits(ranges[selected],edge);
+      const anchors=[0,asset.duration,sourceAt(playheadIndex(),oldHead)];
+      for(const [i,range] of ranges.entries()) {
+        if(i!==selected || edge!=='start') anchors.push(range.start);
+        if(i!==selected || edge!=='end') anchors.push(range.end);
+      }
+      for(const at of projectAnchors()) {
+        const index=indexAt(at);
+        anchors.push(sourceAt(index,at));
+      }
+      drag.anchors=snapState.sorted(anchors.filter(at=>at>=lo && at<=hi));
+    }
     timeline.dataset.dragging = edge ?? 'playhead';
     surface.setPointerCapture(event.pointerId);
     (handle || segment || playhead).focus({preventScroll: true});
@@ -833,7 +887,14 @@ window.mountVideoCutTimeline = function mountVideoCutTimeline(host, clip, option
   }
   for (const surface of [timeline, sequence]) {
     watch(surface, 'pointerdown', startDrag);
-    watch(surface, 'pointermove', event => { if (drag?.id === event.pointerId) dragAt(event); });
+    watch(surface, 'pointermove', event => {
+      if(drag?.id!==event.pointerId) return;
+      drag.pendingPoint={clientX:event.clientX,altKey:event.altKey};
+      if(drag.frame===undefined) drag.frame=requestAnimationFrame(()=>{
+        drag.frame=undefined;
+        dragAt(drag.pendingPoint);
+      });
+    });
     watch(surface, 'pointerup', event => {
       if (drag?.id !== event.pointerId) return;
       dragAt(event);
@@ -842,7 +903,17 @@ window.mountVideoCutTimeline = function mountVideoCutTimeline(host, clip, option
     watch(surface, 'pointercancel', event => { if (drag?.id === event.pointerId) finishDrag(true); });
     watch(surface, 'lostpointercapture', event => { if (drag?.id === event.pointerId) finishDrag(true); });
   }
-  watch(window, 'blur', () => { if (drag) finishDrag(true); });
+  function trackAlt(event) {
+    if(event.key!=='Alt') return;
+    altHeld=event.type==='keydown';
+    if(drag?.edge) {
+      if(drag.pendingPoint) drag.pendingPoint.altKey=altHeld;
+      dragAt({clientX:drag.pendingPoint?.clientX ?? drag.lastX,altKey:altHeld});
+    }
+  }
+  watch(window,'keydown',trackAlt,true);
+  watch(window,'keyup',trackAlt,true);
+  watch(window, 'blur', () => { altHeld=false;if (drag) finishDrag(true); });
   function canExecute(id) {
     return !pendingApply && !drag && (frameSteps[id] !== undefined || (handlers.has(id) && !buttons[id].disabled));
   }
@@ -881,7 +952,7 @@ window.mountVideoCutTimeline = function mountVideoCutTimeline(host, clip, option
       return;
     }
     const action = window.cutShortcuts?.actionFor(event);
-    if (frameSteps[action] || cutActions.includes(action)) {
+    if (frameSteps[action] || cutActions.includes(action) || action==='timeline-snap') {
       event.preventDefault();
       event.stopPropagation();
       if (!event.repeat || frameSteps[action]) registry.execute(action, {target:event.target});
@@ -967,6 +1038,8 @@ window.mountVideoCutTimeline = function mountVideoCutTimeline(host, clip, option
     mode: 'cut', video, isDirty, apply, canExecute, execute, discard: options.close,
     destroy() {
       disposed = true;
+      if(drag) finishDrag(true);
+      clearTimeout(guideTimer);
       pendingApply?.abort();
       abort.abort();
       pause();

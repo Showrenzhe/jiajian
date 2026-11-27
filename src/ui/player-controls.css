@@ -169,6 +169,10 @@
   pointer-events: none;
 }
 .player-picture[data-track-hidden] .preview-frame-hold { visibility: hidden; }
+#timeline-shuttle-status { white-space: nowrap; font-variant-numeric: tabular-nums; }
+@container player-controls (width < 350px) {
+  #timeline-shuttle-status:not([hidden]) ~ #player-duration { display: none; }
+}
 @container player-controls (max-width: 330px) {
   .player-control-row { gap: 2px; }
   .player-display, .player-clocks, .player-times { gap: 3px; }

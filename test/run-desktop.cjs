@@ -10,6 +10,7 @@ const smoke = [
   'draft-delete-desktop.cjs',
   'cut-shortcuts-desktop.cjs',
   'command-palette-desktop.cjs',
+  'timeline-edit-controls-desktop.cjs',
   'software-update-desktop.cjs',
   goldenFrames,
 ];
@@ -46,6 +47,9 @@ async function run() {
           TMP: scenarioTemp,
           TMPDIR: scenarioTemp,
         });
+      } else if (name === 'timeline-edit-controls-desktop.cjs') {
+        scenarioTemp = await fs.mkdtemp(path.join(tempDirectory, 'jiajian-timeline-edits-'));
+        env.JIAJIAN_TIMELINE_TEST_ROOT = scenarioTemp;
       } else if (name === 'interaction-frames-desktop.cjs') {
         scenarioTemp = await fs.mkdtemp(path.join(tempDirectory, 'jiajian-bench-'));
         env.JIAJIAN_FRAME_BENCH_ROOT = scenarioTemp;

@@ -53,6 +53,7 @@
   <script src="./draft-transport.js" defer></script>
   <script src="./audio-tools.js" defer></script>
   <script src="./subprojects.js" defer></script>
+  <script src="./timeline-edit-controls.js" defer></script>
   <script src="./cut-filmstrip.js" defer></script>
   <script src="./cut-picture-view.js" defer></script>
   <script src="./video-cut-timeline.js" defer></script>
@@ -545,6 +546,7 @@
           <div class="player-control-row">
             <div class="player-clocks">
               <span class="player-times">
+              <output id="timeline-shuttle-status" class="compact" role="status" hidden></output>
               <span id="player-time" title="当前时间（时:分:秒:帧）">00:00:00:00</span>
               <span id="player-duration" title="总时长（时:分:秒:帧）">00:00:00:00</span>
               </span>
