@@ -193,7 +193,7 @@ window.mountEditTimeline = function (host, ctx) {
     svg.append(use);
     return svg;
   }
-  function clipHeader(name,kind,sourceSeconds,detail,muted=false) {
+  function clipHeader(name,kind,sourceSeconds,detail,muted=false,speed) {
     const label=el('span','sequence-clip-label');
     if(muted && kind==='video') label.append(icon('track-mute'));
     label.append(el('span','sequence-clip-name',name));
@@ -205,6 +205,11 @@ window.mountEditTimeline = function (host, ctx) {
     const duration=Number.isFinite(sourceSeconds) ? sourceSeconds.toFixed(2)+' 秒' : '—';
     const badge=el('span','sequence-clip-duration sequence-source-duration',duration);
     badge.title='原片时长 '+duration;
+    if(speed!==undefined) {
+      const extreme=speed>2 || speed<.5;
+      badge.dataset.speedBadge=(extreme ? '⚠ ' : '')+window.videoSpeedControls.rateLabel(speed);
+      badge.toggleAttribute('data-extreme',extreme);
+    }
     header.append(label,badge);
     return header;
   }
@@ -1055,15 +1060,8 @@ window.mountEditTimeline = function (host, ctx) {
         const match=clip.videoWindow===undefined && clip.videoDuration===undefined && Number.isFinite(clip.matchedDuration) ? clip.matchedDuration.toFixed(2)+' 秒 · 已匹配' : '';
         const detail=(match || duration)+(clip.sourceMuted ? ' · 已静音' : '');
         const source=clip.sourceEdit?.asset ?? clip.asset;
-        const label=clipHeader(clip.asset.name,clip.asset.kind,source.duration,detail,clip.sourceMuted);
+        const label=clipHeader(clip.asset.name,clip.asset.kind,source.duration,detail,clip.sourceMuted,clip.speed ?? 1);
         b.replaceChildren(label);
-        if(clip.asset.kind==='video') {
-          const rate=clip.speed ?? 1, extreme=rate>2 || rate<.5;
-          const badge=el('span','sequence-speed-badge',(extreme ? '⚠ ' : '')+window.videoSpeedControls.rateLabel(rate));
-          badge.toggleAttribute('data-extreme',extreme);
-          badge.title=window.videoSpeedControls.describe(clip);
-          b.append(badge);
-        }
         const original=source.kind==='video' && Number.isFinite(source.duration) ? ' · 原片 '+source.duration.toFixed(2)+' 秒' : '';
         b.title=clip.asset.name+original+(clip.asset.kind==='video' ? ' · '+window.videoSpeedControls.describe(clip) : '')+' · 双击进入裁剪 · 轨道占用 '+summary(span)+' · '+(match ? detail : '候选时长 '+detail)+' · 拖至视频轨下方新建轨道，Alt＋上下键换轨，Alt＋左右键移动分镜中的候选';
         b.setAttribute('aria-label',b.title);

@@ -117,6 +117,35 @@ async function run() {
     const clip = doc.config.shots[0][0];
     for (const [key,value] of Object.entries(expected)) assert.equal(clip[key],value,key);
   }
+  async function verifySpeedBadge(description,rate,extreme) {
+    const clipButton=el(shot), badge=el(shot+' .sequence-source-duration[data-speed-badge]');
+    const content='getComputedStyle('+badge+', "::after").content';
+    await wait(clipButton+'.title.includes('+JSON.stringify(description)+')','时间线反映已确认的倍率和来源');
+    const labels=()=>read('['+clipButton+'.title,'+clipButton+'.getAttribute("aria-label")]');
+    const originalLabels=await labels();
+    for(const label of originalLabels) assert.ok(label.includes(description));
+    assert.equal(await read(badge+'.hasAttribute("data-extreme")'),extreme);
+
+    const zoom=el('#track-zoom');
+    await click('#track-more');
+    await click('#track-zoom');
+    for(const [key,keyCode] of [['Home',36],['End',35],['Home',36]]) {
+      for(const type of ['rawKeyDown','keyUp']) {
+        await wc.debugger.sendCommand('Input.dispatchKeyEvent',{type,key,code:key,windowsVirtualKeyCode:keyCode});
+      }
+      const wide=key==='End';
+      await wait(zoom+'.value==='+zoom+(wide ? '.max' : '.min'),'时间线缩放到'+key);
+      await wait(clipButton+'.getBoundingClientRect().width'+(wide ? '>120' : '<48'),'实际改变片段宽度');
+      if(wide) {
+        await wait(content+'.includes('+JSON.stringify(rate)+')','放大后即时显示倍率');
+        assert.equal((await read(content)).includes('⚠'),extreme);
+      } else {
+        assert.equal(await read(content),'none','窄片段不绘制完整倍率角标');
+      }
+      assert.deepEqual(await labels(),originalLabels,'缩放保留悬停和无障碍说明');
+    }
+    await escape();
+  }
   const dialog = el('#speed-overflow-dialog');
   const choices = () => read('[...document.querySelectorAll("#speed-overflow-dialog [data-speed-choice]")].map(b=>b.dataset.speedChoice)');
   try {
@@ -157,7 +186,7 @@ async function run() {
     await click('#track-speed-auto');
     await click('[data-speed-choice="trim-end"]');
     await wait(el('#track-speed')+'.valueAsNumber===3','保留片尾并按上限播放');
-    assert.match(await read(el(shot+' .sequence-speed-badge[data-extreme]')+'.textContent'),/⚠.*3/);
+    await verifySpeedBadge('自动对齐 ×3 · 保留片尾','×3',true);
     await save(high,{speed:3,speedMode:'auto',speedOverflow:'trim-end'});
     const tail=JSON.parse(await fs.readFile(high)).config.shots[0][0].ranges;
     assert.deepEqual(tail,[{start:5,end:8}]);
@@ -173,6 +202,8 @@ async function run() {
     assert.deepEqual(await fs.readFile(path.join(root,'高倍速.pre-v3.jiajian')),original);
     await open('#open-project',high);
     assert.match(await read(el('#track-speed-source')+'.textContent'),/手动.*×1/);
+
+    await verifySpeedBadge('手动锁定 ×1','×1',false);
 
     win.setContentSize(1366,768);
     await theme('light');
