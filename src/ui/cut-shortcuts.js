@@ -31,12 +31,24 @@
     return (event.ctrlKey || event.metaKey ? 'Ctrl+' : '') + (event.altKey ? 'Alt+' : '') +
       (event.shiftKey ? 'Shift+' : '') + key;
   }
+  // Project save and snapping also work inside the trim editor. Other trim and
+  // timeline commands may use the same key because their focus domains are disjoint.
+  function domainsOverlap(a,b) {
+    return a==='quick-save' || b==='quick-save' || a==='timeline-snap' || b==='timeline-snap' ||
+      registry.get(a).scope===registry.get(b).scope;
+  }
   function load() {
     const initial = defaults();
     try {
       const raw = localStorage.getItem(storageKey);
       if (!raw) return initial;
-      const data = JSON.parse(raw), owned = new Set(), missing = [];
+      const data = JSON.parse(raw), owned = new Map(), missing = [];
+      function claim(key,id) {
+        const owners=owned.get(key) ?? [];
+        if (owners.some(owner=>domainsOverlap(owner,id))) return false;
+        owners.push(id);owned.set(key,owners);
+        return true;
+      }
       if (data?.version !== 1) return initial;
       for (const [id, slots] of Object.entries(initial)) {
         const saved = data.bindings?.[id];
@@ -48,17 +60,14 @@
         const migrated = saved.map(key => registry.fixedOwner(key, id)?.id === 'editing-help' ? null : key);
         for (const key of migrated) {
           if (key === null) continue;
-          if (!allowed(key) || owned.has(key)) return defaults();
-          owned.add(key);
+          if (!allowed(key) || !claim(key,id)) return defaults();
         }
         initial[id] = migrated;
       }
       // Preserve previous assignments when a later release adds a command with a default key.
       for (const id of missing) {
         initial[id] = initial[id].map(key => {
-          if (!key || owned.has(key)) return null;
-          owned.add(key);
-          return key;
+          return key && claim(key,id) ? key : null;
         });
       }
     } catch { return defaults(); }
@@ -70,13 +79,30 @@
   function actionFor(event) {
     if (event.defaultPrevented || activeDialog?.open) return;
     const key = chord(event);
-    return key && commands.find(({id}) => bindings[id].includes(key))?.id;
+    if (!key) return;
+    const matches=commands.filter(({id}) => bindings[id].includes(key));
+    if (matches.length<2) return matches[0]?.id;
+    const cut=event.target.closest?.('#timeline-cut-editor[data-mode="cut"], #player-pane[data-cut-monitor]');
+    return matches.find(command=>command.scope===(cut ? 'cut' : 'timeline'))?.id;
+  }
+  function onMainTimeline(event) {
+    const target=event.target;
+    if (event.defaultPrevented || event.isComposing || target.isContentEditable ||
+        target.closest?.('input, textarea, select, [role="textbox"], [role="separator"], [role="menu"], dialog, a') ||
+        document.querySelector('dialog[open], :popover-open:not(#player-pane), .app-frame[data-navigation="floating"]') ||
+        !document.querySelector('.app-frame[data-mode="montage"] #timeline-cut-editor[hidden]')) return false;
+    if (target.closest?.('#player-pane')) {
+      const heading=document.getElementById('preview-heading');
+      return heading.hidden || heading.textContent==='轨道预览';
+    }
+    return target===document.body || Boolean(target.closest?.('#timeline-tracks-panel, .track-toolbar, #timeline-view-actions'));
   }
   function ownsPaletteKey(event) {
     const action = actionFor(event);
     if (!action || !registry.keysFor('palette').includes(chord(event)) ||
         !document.querySelector('.app-frame[data-mode="montage"]') || document.querySelector('dialog[open]')) return false;
     if (action === 'quick-save') return true;
+    if (registry.get(action).scope === 'timeline' && onMainTimeline(event)) return registry.get(action).when();
     const target = event.target;
     if (target.isContentEditable || target.closest?.('input, textarea, select')) return false;
     return registry.get(action).when({target}) && Boolean(target.closest?.('#timeline-cut-editor[data-mode="cut"]') ||
@@ -103,7 +129,8 @@
     dialog.setAttribute('aria-labelledby', 'cut-shortcuts-title');
     dialog.innerHTML = '<header class="cloud-settings-heading"><h2 id="cut-shortcuts-title" tabindex="-1" autofocus>'+text.title+'</h2></header>' +
       '<div class="cloud-settings-body"><p class="cloud-settings-muted">'+text.instructions+'</p>' +
-      '<h3>'+text.project+'</h3><div class="project-shortcut-list"></div><h3>'+text.clips+'</h3>' +
+      '<h3>'+text.project+'</h3><div class="project-shortcut-list"></div>' +
+      '<h3>'+text.timeline+'</h3><div class="timeline-shortcut-list"></div><h3>'+text.clips+'</h3>' +
       '<div class="cut-shortcut-list"></div><output id="cut-shortcuts-status" role="status"></output></div>' +
       '<footer class="cloud-settings-actions"><button type="button" id="cut-shortcuts-reset">'+text.reset+'</button>' +
       '<button type="button" id="cut-shortcuts-close">'+text.done+'</button></footer>';
@@ -137,7 +164,9 @@
       slots.className = 'cut-shortcut-slots';
       title.textContent = label;
       row.append(title, slots);
-      (id === 'quick-save' ? dialog.querySelector('.project-shortcut-list') : list).append(row);
+      const group = registry.get(id).scope;
+      const section = group === 'timeline' ? '.timeline-shortcut-list' : group === 'montage' ? '.project-shortcut-list' : null;
+      (section ? dialog.querySelector(section) : list).append(row);
       bindings[id].forEach((_, slot) => {
         const group = document.createElement('span'), bind = document.createElement('button'), clear = document.createElement('button');
         group.className = 'cut-shortcut-key';
@@ -188,7 +217,7 @@
         status.textContent = text.reserved;
         return;
       }
-      const owner = items.find(item => bindings[item.id][item.slot] === key && item !== recording);
+      const owner = items.find(item => bindings[item.id][item.slot] === key && item !== recording && domainsOverlap(item.id,id));
       if (owner) { status.textContent = text.conflict(key, registry.get(owner.id).title); return; }
       const next = structuredClone(bindings);
       next[id][slot] = key;
@@ -208,6 +237,6 @@
     paint();
     dialog.showModal();
   }
-  window.cutShortcuts = {actionFor, chordFor: chord, ownsPaletteKey, labelFor: registry.labelFor, openSettings,
+  window.cutShortcuts = {actionFor, chordFor: chord, ownsPaletteKey, onMainTimeline, labelFor: registry.labelFor, openSettings,
     entries: () => commands.map(({id,title}) => ({label:title, keys:registry.labelFor(id)}))};
 })();

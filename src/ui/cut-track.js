@@ -220,6 +220,7 @@
       const isCurrent = () => generation === openedAt;
       current = window.mountVideoCutTimeline(host, clip, {
         sourceRanges: options.sourceRanges?.(clip),
+        getEditSnap: () => options.getEditSnap?.(clip) ?? [],
         mountMonitor: options.mountMonitor,
         previewProxy: options.previewProxy,
         retimedPreview: options.retimedPreview,

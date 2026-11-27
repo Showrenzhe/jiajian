@@ -113,7 +113,9 @@ async function check(dir) {
     await mouseClick(host+' .video-cut-ruler',.32);
     await openSettings();
     assert.equal(await label('split'), 'W / Ctrl+B');
-    assert.equal(await read('document.querySelectorAll("#cut-shortcuts-dialog .cut-shortcut-row").length'),14);
+    assert.equal(await read('document.querySelectorAll(".cut-shortcut-list .cut-shortcut-row").length'),13);
+    assert.equal(await read('document.querySelectorAll(".timeline-shortcut-list .cut-shortcut-row").length'),14);
+    assert.equal(await label('timeline-marker-add'),'M');
     assert.equal(await label('quick-save'), 'Ctrl+S');
     const storedBeforeConflict = await read('localStorage.getItem("jiajian.cut-shortcuts.v1")');
     await click(bind('split'));

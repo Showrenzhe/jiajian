@@ -111,7 +111,7 @@ window.mountEditTimeline = function (host, ctx) {
     return scales.sort((a,b)=>a-b);
   }
   const draftTransport=window.draftTimeline.transport(document.querySelector('.preview-stage'),{
-    previewSource:ctx.previewSource, handoff:ctx.previewHandoff,
+    previewSource:ctx.previewSource, handoff:ctx.previewHandoff, getRange:()=>editControls.range(),
     tick:(time)=>{playTime=time;syncCursor();ctx.draftTick?.();}, changed:(playing)=>ctx.draftPlaybackChanged?.(playing),
   });
   let confirmedDraftSpeed, choosingDraftSpeed=false;
@@ -125,8 +125,13 @@ window.mountEditTimeline = function (host, ctx) {
     const layout=window.draftTimeline.timing(state,clipSpan,ctx.asset,focus);
     return window.draftTimeline.makePlan(state,layout,ctx.asset,window.waveformSource,focus);
   }
-  async function toggleDraftPlayback() {
-    if(draftTransport.playing()) {draftTransport.toggle([],playTime);return;}
+  async function toggleDraftPlayback(direction) {
+    if(direction===0) {draftTransport.pause();return;}
+    if(draftTransport.playing()) {
+      if(direction) draftTransport.shuttle(direction);
+      else draftTransport.pause();
+      return;
+    }
     if(choosingDraftSpeed) return;
     const issues=new Map();
     const proposed=draftPlan(issue=>{
@@ -134,14 +139,14 @@ window.mountEditTimeline = function (host, ctx) {
       const extreme=!previous || (issue.direction==='high' ? issue.required>previous.required : issue.required<previous.required);
       issues.set(issue.key,{...(extreme ? issue : previous),count});
     });
-    if(!issues.size) {draftTransport.toggle(proposed,playTime);return;}
+    if(!issues.size) {draftTransport.toggle(proposed,playTime,direction);return;}
     const key=lastKey, focus=focusClip ?? ctx.state().selected, limits=window.videoSpeedControls.range;
     choosingDraftSpeed=true;
     try {
       const choices=await window.videoSpeedControls.collectChoices(issues.values(),limits);
       if(!choices || key!==lastKey || focus!==(focusClip ?? ctx.state().selected)) return;
       confirmedDraftSpeed={key,focus,...limits,choices};
-      draftTransport.toggle(draftPlan(),playTime);
+      draftTransport.toggle(draftPlan(),playTime,direction);
     } finally {choosingDraftSpeed=false;}
   }
   function draftDuration() {
@@ -156,7 +161,43 @@ window.mountEditTimeline = function (host, ctx) {
   cursor.append(cursorClock);
   let scrubPointer, scrubX, scrubFrame, activeSeek;
   let resizeDrag,layerDrag;
-  let locatedMaterial;
+  let locatedMaterial, snapGeometry = [];
+  const snapGuide=el('i','timeline-snap-guide');
+  snapGuide.setAttribute('aria-hidden','true');
+  snapGuide.hidden=true;
+  let guideTimer;
+  function showSnap(at,flash=false) {
+    clearTimeout(guideTimer);
+    snapGuide.hidden=at===undefined;
+    if(at!==undefined) {
+      snapGuide.style.translate=(headWidth+at*timeScale)+'px 0';
+      if(flash) guideTimer=setTimeout(()=>showSnap(),320);
+    }
+  }
+  function snapAnchors(exclude) {
+    const times=[...shotTimes,0,totalTime,playTime];
+    for(const marker of ctx.getTimelineMarkers()) if(marker.time<=totalTime) times.push(marker.time);
+    for(const part of snapGeometry) if(part.node!==exclude) times.push(part.from,part.from+part.duration);
+    return window.timelineSnapping.sorted(times);
+  }
+  const editControls=window.mountTimelineEditControls({
+    ctx,dialog,time:()=>playTime,duration:()=>totalTime,fps:()=>lastState?.fps || 30,
+    seek(time) {
+      ctx.pause();
+      const left=time*timeScale, visible=host.clientWidth-headWidth;
+      if(left<host.scrollLeft || left>host.scrollLeft+visible) host.scrollLeft=Math.max(0,left-visible/2);
+      scrubTime(time);
+    },
+    sourceSnap(clip) {
+      const state=ctx.state(), index=state.shots.findIndex(shot=>shot.includes(clip));
+      if(index<0 || shotTimes[index]===undefined) return [];
+      const start=clip.videoStart ?? shotTimes[index], span=window.pictureSpan(clip,widths[index]);
+      return snapAnchors(candidateNodes.get(clip)).filter(at=>at>=start && at<=start+span).map(at=>at-start);
+    },
+  });
+  function matchTime(anchors,at,alt) {
+    return !alt && window.timelineSnapping.enabled ? window.timelineSnapping.nearest(anchors,at,6/timeScale) : undefined;
+  }
   const blocksBySource = new Map();
   const thumbQueue=[];
   let thumbWorkers=0;
@@ -546,7 +587,7 @@ window.mountEditTimeline = function (host, ctx) {
     }
     return true;
   }
-  function setClipItems(cell,entry,x) {
+  function setClipItems(cell,entry,x,alt) {
     videoMenu.replaceChildren();
     videoMenu.setAttribute('aria-label',menuText.label);
     function add(action,id,image,run) {
@@ -573,7 +614,7 @@ window.mountEditTimeline = function (host, ctx) {
     }
     if(entry.speed) add('speed','clip-speed','settings',entry.speed);
     if(entry.split) {
-      const split=entry.split(x);
+      const split=entry.split(x,alt);
       add('split','split-here','scene',split.run).disabled=!split.enabled;
     }
     if(entry.edit) add('edit','edit-track-clip','settings',entry.edit);
@@ -582,12 +623,12 @@ window.mountEditTimeline = function (host, ctx) {
     window.editorCommands.bind(id,{palette:false, when:context => !ctx.busy() && context?.cell?.isConnected &&
       !context.cell.closest('[data-track-locked]') && typeof context.menuAction === 'function', run:context => context.menuAction()});
   }
-  function showCellMenu(cell,x,y) {
+  function showCellMenu(cell,x,y,alt=false) {
     clearContextHint();
     closeVideoMenu();
     if(!cell || ctx.busy() || cell.closest('[data-track-locked]')) return;
     const slot=candidateSlots.get(cell), entry=clipMenus.get(cell);
-    if(entry) setClipItems(cell,entry,x);
+    if(entry) setClipItems(cell,entry,x,alt);
     else if(slot?.clip) {
       if(!setVideoItems(slot)) return;
     } else {
@@ -629,7 +670,7 @@ window.mountEditTimeline = function (host, ctx) {
     keyboardCell=target.closest('button.sequence-block');
     if(!keyboardCell && clipboard && target.closest('.kind-pip .sequence-content,.kind-sticker .sequence-content') && !target.closest('[data-track-locked]')) return;
     event.preventDefault();
-    showCellMenu(keyboardCell,event.clientX,event.clientY);
+    showCellMenu(keyboardCell,event.clientX,event.clientY,event.altKey);
   },true);
   host.addEventListener('click',event=>{clearContextHint();keyboardCell=event.target.closest('button.sequence-block');},true);
   host.addEventListener('keydown',event=>{
@@ -894,6 +935,7 @@ window.mountEditTimeline = function (host, ctx) {
     }
     const canvas=el('div','sequence-canvas');
     const blocks=[], filmstrips=[];
+    showSnap();
     blocksBySource.clear();
     waveforms.clear();
     canvas.style.width=(timelineWidth+headWidth)+'px';
@@ -1262,13 +1304,17 @@ window.mountEditTimeline = function (host, ctx) {
         }
         selection.bind(cell,layer,()=>removeItem(items,layer));
         const splitInEditor=layer.kind==='sound' || layer.kind==='text';
-        function splitAt(at) {
+        function splitAt(at,alt=false) {
+          const absolute=start+layer.start+at;
+          const snap=matchTime(snapAnchors(cell),absolute,alt);
+          if(snap!==undefined && snap-start-layer.start>=.05 && start+layer.start+length-snap>=.05) at=snap-start-layer.start;
           return {enabled:at>=.05 && length-at>=.05,run(){
-            const offset=Math.round(at*1000)/1000;
+            const offset=at;
             const cut=layer.start+offset;
             layer.laneId ??= crypto.randomUUID();
             const after={...structuredClone(layer),start:cut,mediaOffset:(layer.mediaOffset ?? 0)+offset*speed};
             layer.end=cut;items.splice(i+1,0,after);ctx.change();
+            if(snap!==undefined && Math.abs(start+cut-snap)<1e-7) requestAnimationFrame(()=>showSnap(snap,true));
           }};
         }
         function openLayer(focusSpeed=false) {
@@ -1283,7 +1329,7 @@ window.mountEditTimeline = function (host, ctx) {
         bindClipMenu(cell,{
           speed:layer.kind==='sound' ? ()=>openLayer(true) : undefined,
           edit:splitInEditor ? undefined : ()=>openLayer(),
-          split:splitInEditor ? undefined : x=>splitAt(x===undefined ? playTime-start-layer.start : (x-cell.getBoundingClientRect().left)/timeScale),
+          split:splitInEditor ? undefined : (x,alt)=>splitAt(x===undefined ? playTime-start-layer.start : (x-cell.getBoundingClientRect().left)/timeScale,alt),
         });
         const left=el('span','sequence-edge'),right=el('span','sequence-edge');
         left.title='调整入点';right.title='调整出点';cell.prepend(left);cell.append(right);
@@ -1292,14 +1338,17 @@ window.mountEditTimeline = function (host, ctx) {
           dragged=false;
           const edge=e.target===left ? 'left' : e.target===right ? 'right' : 'move';
           const x=e.clientX, original=layer.start, oldEnd=original+length;
-          let a=original,b=oldEnd,latestX=x,frame;
+          let a=original,b=oldEnd,latestX=x,alt=e.altKey,frame;
+          const anchors=snapAnchors(cell);
           const snap=(v)=>Math.round(v*1000)/1000;
           cell.setPointerCapture(e.pointerId);
           function finishLayer() {
             cancelAnimationFrame(frame);
+            showSnap();
             cell.onpointermove=cell.onpointerup=cell.onpointercancel=cell.onlostpointercapture=null;
             const resizePending=layerDrag?.resizePending;
             layerDrag=undefined;
+            if(cell.hasPointerCapture(e.pointerId)) cell.releasePointerCapture(e.pointerId);
             if(resizePending && refreshFrame===undefined) queueZoomLayout();
           }
           function cancelLayer() {
@@ -1307,7 +1356,7 @@ window.mountEditTimeline = function (host, ctx) {
             cell.style.left=(start+original)*timeScale+'px';
             cell.style.width=Math.max(2,length*timeScale-2)+'px';
           }
-          layerDrag={cancel:cancelLayer};
+          layerDrag={cancel:cancelLayer,alt(value) {alt=value;if(dragged) moveLayer(latestX);}};
           function moveLayer(clientX) {
             const delta=(clientX-x)/timeScale;
             if(edge==='left') a=snap(Math.max(Math.max(0,original-(layer.mediaOffset ?? 0)/speed),Math.min(b-.05,original+delta)));
@@ -1316,19 +1365,34 @@ window.mountEditTimeline = function (host, ctx) {
               a=snap(Math.max(0,Math.min(span-.05,original+delta)));
               b=snap(a+length);
             }
+            const first=edge==='right' ? undefined : matchTime(anchors,start+a,alt);
+            const last=edge==='left' ? undefined : matchTime(anchors,start+b,alt);
+            const firstDelta=first===undefined ? Infinity : first-start-a;
+            const lastDelta=last===undefined ? Infinity : last-start-b;
+            const adjustStart=Math.abs(firstDelta)<=Math.abs(lastDelta);
+            const deltaSnap=adjustStart ? firstDelta : lastDelta;
+            const toA=edge==='right' ? a : a+deltaSnap, toB=edge==='left' ? b : b+deltaSnap;
+            let guide;
+            if(Number.isFinite(deltaSnap) && toA>=-1e-7 && toB-toA>=.05-1e-7 &&
+              (edge==='move' ? toA<=span-.05+1e-7 :
+                toA>=original-(layer.mediaOffset ?? 0)/speed-1e-7 && toB<=Math.min(span,original+sourceSpan)+1e-7)) {
+              a=Math.max(0,toA);b=toB;guide=adjustStart ? first : last;
+            }
+            showSnap(guide);
             cell.style.left=(start+a)*timeScale+'px';cell.style.width=Math.max(2,(b-a)*timeScale-2)+'px';
           }
           cell.onpointermove=(event)=>{
             if(event.pointerId!==e.pointerId || (Math.abs(event.clientX-x)<5 && !dragged)) return;
             dragged=true;
-            latestX=event.clientX;
+            latestX=event.clientX;alt=event.altKey;
             if(frame===undefined) frame=requestAnimationFrame(()=>{frame=undefined;moveLayer(latestX);});
           };
           cell.onpointerup=(event)=>{
             if(event.pointerId!==e.pointerId) return;
-            finishLayer();
-            if(!dragged) return;
+            if(!dragged) {finishLayer();return;}
+            alt=event.altKey;
             moveLayer(event.clientX);
+            finishLayer();
             if(edge==='left') layer.mediaOffset=snap((layer.mediaOffset ?? 0)+(a-original)*speed);
             layer.start=a;layer.end=edge==='move' && layer.end==null ? null : b;
             ctx.change();
@@ -1347,9 +1411,11 @@ window.mountEditTimeline = function (host, ctx) {
     s.shots.forEach((shot,i)=>shot.forEach((clip,j)=>layerRow({key:'local',label:'候选 '+(i+1)+'-'+(j+1),clip},clip.layers,clip.videoStart ?? shotTimes[i],window.pictureSpan(clip,widths[i]))));
     if(s.segmented) p.segmentNarration.forEach((tracks,i)=>tracks.forEach((items,j)=>layerRow({key:'voice',label:'口播 '+(i+1)+'-'+(j+1)},items,shotTimes[i] ?? 0,widths[i] ?? 0)));
     else p.wholeNarration.forEach((items,i)=>layerRow({key:'voice',label:'整段口播 '+(i+1)},items,0,totalTime));
-    canvas.append(cursor);
+    snapGeometry=blocks.filter(({node})=>!node.classList.contains('sequence-empty'));
+    editControls.attach(ruler,timeScale);
+    canvas.append(cursor,snapGuide);
     canvas.onpointerdown=(e)=>{
-      if(e.button!==0 || scrubPointer!=null || resizeDrag || (!ruler.contains(e.target) && e.target!==cursor)) return;
+      if(e.button!==0 || scrubPointer!=null || resizeDrag || e.target.closest('[data-timeline-marker]') || (!ruler.contains(e.target) && e.target!==cursor)) return;
       e.preventDefault();
       scrubPointer=e.pointerId;scrubX=e.clientX;
       host.setPointerCapture(e.pointerId);
@@ -1398,6 +1464,7 @@ window.mountEditTimeline = function (host, ctx) {
         queueFilmstripUpdate(filmstrips);
       }
       scaleRuler(ruler,width,viewportWidth,scroll);
+      editControls.scale(timeScale);
       ctx.showZoom(zoomScales.indexOf(timeScale)+1,zoomScales.length);
       syncCursor(scroll);
     };
@@ -1587,7 +1654,10 @@ window.mountEditTimeline = function (host, ctx) {
   function scrubAt(x,viewport=host.getBoundingClientRect(),scroll=host.scrollLeft) {
     const origin=viewport.left+headWidth+host.clientLeft;
     const visibleX=Math.max(origin,Math.min(viewport.right,x));
-    playTime=Math.max(0,Math.min(totalTime,(visibleX-origin+scroll)/timeScale));
+    scrubTime((visibleX-origin+scroll)/timeScale,scroll);
+  }
+  function scrubTime(time,scroll=host.scrollLeft) {
+    playTime=Math.max(0,Math.min(totalTime,time));
     pastePosition=positionAt(playTime);
     syncCursor(scroll);
     if(scrubWithDraftPlan) {
@@ -1763,6 +1833,7 @@ window.mountEditTimeline = function (host, ctx) {
   function liftCandidate(drag) {
     const {button,clip,startX,startY}=drag;
     const from=button.getBoundingClientRect();
+    drag.grabOffset=(startX-from.left)/timeScale;
     stopCandidateMotion(button);
     drag.home=slotMarker(button);
     drag.windows=referenceWindows(clip);
@@ -1881,13 +1952,30 @@ window.mountEditTimeline = function (host, ctx) {
   function markCandidateDrop(drag,node) {
     const target=candidateSlots.get(node);
     const free=target?.lane!==undefined && !target.clip;
-    const pointer=free ? (drag.x-target.track.getBoundingClientRect().left)/timeScale : undefined;
-    if(node===drag.target && pointer===drag.pointerTime) return;
+    const pointer=target?.track ? (drag.x-target.track.getBoundingClientRect().left)/timeScale : undefined;
+    if(node===drag.target && pointer===drag.pointerTime && drag.lastAlt===drag.alt) return;
+    drag.lastAlt=drag.alt;
     drag.pointerTime=pointer;
     const slot=free ? freeVideoSlot(target,candidateSlots.get(drag.button),drag.owner,pointer,drag.windows) : target;
+    let guide;
+    if(free && !slot.rejection && !slot.gap && !drag.alt && window.timelineSnapping.enabled) {
+      const length=candidateSlots.get(drag.button).span;
+      const placement=window.timelineSnapping.placement(drag.anchors,slot.videoStart,slot.span,length,
+        pointer-drag.grabOffset,6/timeScale);
+      if(placement) {
+        slot.videoStart=placement.start;
+        slot.videoDuration=slot.span=placement.span;
+        guide=placement.guide;
+      }
+    }
     const reason=slot ? slot.rejection || ctx.candidatePlacementError(drag.clip,slot.shot,drag.owner,slot.clip,slot.lane,slot.videoStart,slot.gap ? slot : undefined) : '';
-    if(free && node===drag.target && reason===drag.rejection &&
-       slot.videoStart===drag.slot?.videoStart && slot.span===drag.slot?.span) return;
+    if(slot?.clip && target.track && !reason && !drag.alt && window.timelineSnapping.enabled) {
+      if(Math.abs(pointer-target.start)*timeScale<=6) guide=target.start;
+      else if(Math.abs(pointer-target.start-target.span)*timeScale<=6) guide=target.start+target.span;
+    }
+    showSnap(reason ? undefined : guide);
+    if(node===drag.target && reason===drag.rejection && (!free ||
+       (slot.videoStart===drag.slot?.videoStart && slot.span===drag.slot?.span))) return;
     // Read both motions before changing either slot; a second forced layout here
     // makes crossing a row of short clips substantially more expensive.
     const restore=drag.target?.classList.contains('candidate-displaced') && node!==drag.target
@@ -2065,7 +2153,9 @@ window.mountEditTimeline = function (host, ctx) {
       const tick=el('span','sequence-tick',stamp(t)+(step<1 && t%1 ? '.'+String(Math.round((t%1)*100)).padStart(2,'0') : ''));
       tick.style.left=(t*timeScale)+'px';ticks.append(tick);
     }
-    ruler.replaceChildren(ticks);
+    let tickLayer=ruler.querySelector('.timeline-ticks');
+    if(!tickLayer) {tickLayer=el('div','timeline-ticks');ruler.prepend(tickLayer);}
+    tickLayer.replaceChildren(ticks);
   }
   function scrollCandidateDrag(now) {
     const drag=draggedCandidate;
@@ -2104,6 +2194,7 @@ window.mountEditTimeline = function (host, ctx) {
     drag.x=x;drag.y=y;
     if(!drag.active) {
       if(Math.hypot(x-drag.startX,y-drag.startY)<=5) return;
+      drag.anchors=snapAnchors(drag.button);
       liftCandidate(drag);
       if(!releasing) host.setPointerCapture(drag.id);
     }
@@ -2201,11 +2292,13 @@ window.mountEditTimeline = function (host, ctx) {
     const drag=draggedCandidate;
     if(!drag || event.pointerId!==drag.id || drag.cancelled) return;
     if(!(event.buttons&1)) {finishCandidateDrag(false);return;}
+    drag.alt=event.altKey;
     updateCandidate(drag,event.clientX,event.clientY);
   },true);
   window.addEventListener('pointerup',event=>{
     const drag=draggedCandidate;
     if(!drag || event.pointerId!==drag.id) return;
+    drag.alt=event.altKey;
     if(!drag.cancelled) updateCandidate(drag,event.clientX,event.clientY,true);
     if(drag.active || drag.cancelled) suppressDragClick();
     finishCandidateDrag(!drag.cancelled);
@@ -2227,7 +2320,21 @@ window.mountEditTimeline = function (host, ctx) {
     if(event.target===host && draggedCandidate?.id===event.pointerId && !(event.buttons&1)) finishCandidateDrag(false);
   });
   window.addEventListener('pointercancel',event=>{if(draggedCandidate?.id===event.pointerId) finishCandidateDrag(false);},true);
-  window.addEventListener('blur',()=>finishCandidateDrag(false));
+  function toggleDragAlt(event) {
+    if(event.key!=='Alt') return;
+    const held=event.type==='keydown';
+    layerDrag?.alt(held);
+    if(draggedCandidate?.active && !draggedCandidate.cancelled) {
+      draggedCandidate.alt=held;
+      queueCandidateFrame(draggedCandidate);
+    }
+  }
+  window.addEventListener('keydown',toggleDragAlt,true);
+  window.addEventListener('keyup',toggleDragAlt,true);
+  window.addEventListener('keydown',event=>{
+    if(event.key==='Escape' && layerDrag) {event.preventDefault();layerDrag.cancel();}
+  },true);
+  window.addEventListener('blur',()=>{layerDrag?.cancel();finishCandidateDrag(false);});
   host.ondragover=(e)=>{
     if(e.target.closest('[data-track-locked]')) return;
     const b=e.target.closest('[data-drop-shot]');
@@ -2398,7 +2505,7 @@ window.mountEditTimeline = function (host, ctx) {
     node.focus({preventScroll:true});
     revealCandidateLane(node);
   }
-  return {refresh,refreshMonitoring,syncPlayer,selectClip,addCandidateLayer,toggleCandidateMute,insertBesideCandidate,focusCandidate,locateMaterial,editCaptions,openCardMatchMenu,openCandidateActions,materialVideoDrop,showLibraryLane,clearLibraryLane,previewLibrarySlot,removeSelected:selection.removeSelection,clearSelection:selection.clear,get selectionCount(){return selection.size;},
+  return {editControls,refresh,refreshMonitoring,syncPlayer,selectClip,addCandidateLayer,toggleCandidateMute,insertBesideCandidate,focusCandidate,locateMaterial,editCaptions,openCardMatchMenu,openCandidateActions,materialVideoDrop,showLibraryLane,clearLibraryLane,previewLibrarySlot,removeSelected:selection.removeSelection,clearSelection:selection.clear,get selectionCount(){return selection.size;},
     get selectedShot(){return candidateSlots.get(selection.single())?.shot;},
     get selectedCandidate(){return candidateSlots.get(selection.single())?.clip;},textSettings:()=>textSettings(ctx.state()),
     toggleDraftPlayback,
@@ -2423,7 +2530,7 @@ window.mountEditTimeline = function (host, ctx) {
     reset(newProject=false) {
       finishCandidateDrag(false);
       pastePosition=undefined;
-      if(newProject) clipboard=undefined;
+      if(newProject) {clipboard=undefined;editControls.reset();}
       draftTransport.stop();selection.clear();focusShot=focusClip=voiceTarget=activeSeek=undefined;
       folded.clear();heights.clear();playTime=0;zoomAnchor=undefined;
       if (newProject && fit===false) {

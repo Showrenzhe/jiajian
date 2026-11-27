@@ -37,7 +37,8 @@
     const target = commands.get(targetId);
     // Clip shortcuts run only in the trim editor. The montage quick save listener runs in both surfaces.
     return list().find(command => !command.customizable && command.shortcut.includes(key) &&
-      (command.scope === 'global' || !target || target.scope === 'montage' || command.scope === target.scope));
+      (command.scope === 'global' || !target || target.scope === 'montage' ||
+        (target.scope === 'timeline' && command.scope === 'montage') || command.scope === target.scope));
   }
   function execute(id, context) {
     const command = commands.get(id);
@@ -63,6 +64,13 @@
   editable('frame-forward', keys.forward, '.');
   editable('frames-back', keys.backTen, 'Shift+,');
   editable('frames-forward', keys.forwardTen, 'Shift+.');
+
+  for (const [id, key] of Object.entries({
+    'timeline-in':'I', 'timeline-out':'O', 'timeline-clear-in':'Alt+I', 'timeline-clear-out':'Alt+O',
+    'timeline-marker-add':'M', 'timeline-reverse':'J', 'timeline-pause':'K', 'timeline-forward':'L',
+    'timeline-snap':null, 'timeline-loop':null, 'timeline-marker-prev':null, 'timeline-marker-next':null,
+    'timeline-marker-rename':null, 'timeline-marker-delete':null,
+  })) register({id, scope:'timeline', shortcut:[key], customizable:true, help:true});
 
   function fixed(scope, id, ...shortcut) {
     register({id, scope, shortcut, help: true});
