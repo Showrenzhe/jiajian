@@ -12,6 +12,7 @@ const smoke = [
   'command-palette-desktop.cjs',
   'timeline-edit-controls-desktop.cjs',
   'narration-trim-desktop.cjs',
+  'music-mix-desktop.cjs',
   'software-update-desktop.cjs',
   goldenFrames,
 ];
@@ -51,6 +52,9 @@ async function run() {
       } else if (name === 'narration-trim-desktop.cjs') {
         scenarioTemp = await fs.mkdtemp(path.join(tempDirectory, 'jiajian-trim-'));
         Object.assign(env, {JIAJIAN_NARRATION_TEST_ROOT:scenarioTemp, TEMP:scenarioTemp, TMP:scenarioTemp, TMPDIR:scenarioTemp});
+      } else if (name === 'music-mix-desktop.cjs') {
+        scenarioTemp = await fs.mkdtemp(path.join(tempDirectory, 'jiajian-mix-'));
+        Object.assign(env, {JIAJIAN_MUSIC_TEST_ROOT:scenarioTemp, TEMP:scenarioTemp, TMP:scenarioTemp, TMPDIR:scenarioTemp});
       } else if (name === 'timeline-edit-controls-desktop.cjs') {
         scenarioTemp = await fs.mkdtemp(path.join(tempDirectory, 'jiajian-timeline-edits-'));
         env.JIAJIAN_TIMELINE_TEST_ROOT = scenarioTemp;

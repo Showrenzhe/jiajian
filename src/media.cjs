@@ -12,6 +12,9 @@ const { normalizeShotSettings, normalizePictureRanges, normalizeSegmentVoiceCuts
 const { candidateVideoLanes, pictureSpan, emptyVideoCells, usesPlacedVideoSource, soloLaneSequence, joinedVideoSequence, videoGroupLeaders, normalizeVideoGaps, placedVideoSpeed, minVideoSpeed } = require('./ui/track-tools.js');
 const trackControls = require('./ui/track-controls.js');
 const narrationTrim = require('./ui/narration-trim.js');
+const musicMix = require('./ui/music-mix.js');
+const { prepareMusicCycle, appendMusic } = require('./music-render.cjs');
+const { normalizeFinalMix } = require('./music-loudness.cjs');
 const {narrationTrim:trimMessages} = require('./ui/messages-zh-cn.js');
 const { preferSolo } = trackControls;
 const { normalizeCover, selectCover, publishCover } = require('./cover.cjs');
@@ -57,10 +60,10 @@ const dimensions = {
 /**
  * @param {string} executable
  * @param {string[]} args
- * @param {{signal?: AbortSignal, timeout?: number, progressTimeout?: number, onProgress?: (seconds: number) => void, onLine?: (line: string) => void, cwd?: string}} [options]
+ * @param {{signal?: AbortSignal, timeout?: number, progressTimeout?: number, onProgress?: (seconds: number) => void, onLine?: (line: string) => void, cwd?: string, stderrStats?: boolean}} [options]
  * @returns {Promise<string>}
  */
-function runTool(executable, args, { signal, timeout = 0, progressTimeout = 0, onProgress, onLine, cwd } = {}) {
+function runTool(executable, args, { signal, timeout = 0, progressTimeout = 0, onProgress, onLine, cwd, stderrStats = false } = {}) {
   signal?.throwIfAborted();
 
   return new Promise((resolve, reject) => {
@@ -119,7 +122,7 @@ function runTool(executable, args, { signal, timeout = 0, progressTimeout = 0, o
       if (failure || code !== 0) require('./diagnostics.cjs').logToolFailure(executable,args,errors,code);
       if (failure) return reject(failure);
       if (code !== 0) return reject(new Error(errors.trim() || `媒体工具退出（${code}）。`));
-      resolve(output);
+      resolve(stderrStats ? errors : output);
     });
   });
 }
@@ -198,6 +201,22 @@ async function inspectAsset(file, kind, { signal } = {}) {
     videoIndex: kind === 'audio' ? null : video.index,
     audioIndex: audio?.index ?? null,
   };
+}
+
+// Keep both the decoded output and the input scan bounded for real-time short loops.
+/** @param {InspectedAsset} asset @param {number} speed @param {MediaReadOptions} [options] */
+async function extractShortMusicPcm(asset, speed, {signal} = {}) {
+  if (asset.kind !== 'audio' || !Number.isInteger(asset.audioIndex) || asset.audioIndex < 0 ||
+      !Number.isFinite(speed) || speed < 0.5 || speed > 3 || !(asset.duration > 0 && asset.duration <= 4 && asset.duration / speed <= 4)) return null;
+  const frames = Math.max(1, Math.round(48000 * asset.duration / speed));
+  const input = require('./music-render.cjs').musicInput(tempoFilter(speed));
+  const {stdout} = await execFileAsync(ffmpeg, [
+    '-v','error','-nostdin',...mediaInput,'-t','4','-threads','1','-i',asset.path,'-map','0:'+asset.audioIndex,
+    '-filter_threads','1','-af',input+',apad=whole_len='+frames+',atrim=end_sample='+frames,
+    '-vn','-sn','-dn','-ar','48000','-ac','2','-c:a','pcm_f32le','-f','f32le','pipe:1',
+  ], {signal,windowsHide:true,encoding:'buffer',timeout:12000,maxBuffer:4*48000*2*4});
+  if (stdout.length !== frames*2*4) return null;
+  return {sampleRate:48000,channels:2,samples:new Float32Array(Uint8Array.from(stdout).buffer)};
 }
 
 /** @param {InspectedAsset} asset @param {{start?: number,end?: number}} range @param {MediaReadOptions} [options] */
@@ -295,22 +314,20 @@ async function createTrackProxy(asset, output, signal, edge = 640, retime, {fps 
   await runTool(ffmpeg, args, { signal, timeout: retime ? Math.min(300000,Math.max(30000,asset.duration * 1000)) : 0 });
 }
 
+const {audioContentIdentity} = require('./audio-content-identity.cjs');
 const narrationPauseCache = new WeakMap();
 
-/** @param {InspectedAsset} asset @param {object} settings @param {MediaReadOptions} [options] */
-async function analyzeNarrationPauses(asset, settings, { signal } = {}) {
+/** @param {InspectedAsset} asset @param {object} settings @param {MediaReadOptions & {authorize?:()=>Promise<unknown>}} [options] */
+async function analyzeNarrationPauses(asset, settings, { signal, authorize } = {}) {
   signal?.throwIfAborted();
   const {thresholdDb,minSilenceMs} = narrationTrim.normalizeSettings(settings);
   if (asset?.kind !== 'audio' || !Number.isInteger(asset.audioIndex) || asset.audioIndex < 0
       || !Number.isFinite(asset.duration) || asset.duration <= 0 || typeof asset.path !== 'string' || !path.isAbsolute(asset.path))
     throw Error(trimMessages.invalidAsset);
-  const fileVersion = async () => {
-    const stat = await fs.stat(asset.path,{bigint:true});
-    return [stat.dev,stat.ino,stat.size,stat.mtimeNs,stat.ctimeNs].join(':');
-  };
+  const fileVersion = () => audioContentIdentity(asset.path,{signal,authorize});
   const version = await fileVersion();
   signal?.throwIfAborted();
-  const key = [version,thresholdDb,minSilenceMs].join('/');
+  const key = [version,asset.audioIndex,thresholdDb,minSilenceMs].join('/');
   const cache = narrationPauseCache.get(asset) ?? new Map();
   if (cache.has(key)) return cache.get(key);
   const pauses = [];
@@ -872,6 +889,7 @@ function planMontage(config, catalog, random = Math.random, batchLimit = maxMont
   const timelineCaptions = normalizeSubtitles(config.timelineCaptions);
   const musicPool = config.musicIds.map((id,i) => trackControls.participates(controls,'music'+i) ? requireAsset(catalog, id, 'audio') : null);
   const musicRows = preferSolo(musicPool.flatMap((asset,i)=>asset ? [i] : []), i=>controls?.['music'+i]?.solo);
+  const mixSettings = musicMix.normalizeSettings(config.musicMix);
   const musicVolume = musicRows.length ? requireNumber(config.musicVolume, 0, 100, '配乐音量') / 100 : 0;
   const narrationVolume = config.narrationVolume === undefined ? 1 : requireNumber(config.narrationVolume, 0, 100, '口播音量') / 100;
   const priority = config.priority === undefined ? 'picture' : config.priority;
@@ -1072,6 +1090,8 @@ function planMontage(config, catalog, random = Math.random, batchLimit = maxMont
       ...(config.hdrMode === 'preserve' && {hdrMode: 'preserve'}),
       ...(layers.length && { layers }), ...(selection.composite !== undefined && { composite: selection.composite }),
       keepAudio: config.keepAudio, music: musicPool[musicIndex] ?? null, musicVolume:audible('music'+musicIndex) ? gain('music',config.musicIds[musicIndex])??musicVolume : 0, musicStart,
+      ...(mixSettings.mode === 'smart' && {musicMix:mixSettings,
+        musicGain:musicMix.compensationGain(musicPool[musicIndex]?.musicLoudness,musicRows.length > 1 || mixSettings.compensateManual)}),
       ...(musicSpeeds[musicIndex] && {musicSpeed:musicSpeeds[musicIndex]}), ...(narrationSpeed!==1 && {narrationSpeed}),
       ...(speedChallenges.length && {speedChallenges}),
       narration, narrationVolume:!segmented && !audible('whole'+wholeTrackIndex) ? 0 : (segmented?undefined:gain('whole',voiceId,null,wholeTrackIndex))??narrationVolume, narrationMode, priority, visualDuration: sourceVisualDuration,
@@ -1216,6 +1236,8 @@ function montageArgs(plan, { intermediate = false } = {}) {
   const filters = [];
   const segments = [];
   const voices = [];
+  const speechIntervals = [];
+  const duckMusic = plan.musicMix?.mode === 'smart' && plan.musicMix.ducking && music && musicVolume > 0;
   const pictureRows = [];
   let pictureTime = 0, speechTime = 0;
   let inputCount = 0;
@@ -1256,6 +1278,11 @@ function montageArgs(plan, { intermediate = false } = {}) {
     const voiceDuration = segmentSpeechDuration(clip);
     const sampleCount = Math.round((clip.timelineDuration ?? voiceDuration) * audioRate);
     const delay = Math.round((clip.voiceOffset ?? 0) * audioRate);
+    if (duckMusic && (clip.voiceGain ?? narrationVolume) > 0) {
+      const at = (voiceSampleStarts[index] + delay) / audioRate;
+      const parts = clip.narrationMap?.parts ?? [{outStart:0,outEnd:voiceDuration}];
+      for (const part of parts) speechIntervals.push({start:at+part.outStart,end:at+part.outEnd});
+    }
     const fill = (delay ? `,adelay=${delay}S:all=1` : '') + (alignVoices ? `,apad=whole_len=${sampleCount},atrim=end_sample=${sampleCount},asetpts=N/SR/TB` : '');
     if (clip.narrationMap && !clip.narrationMap.parts.length) {
       filters.push(`anullsrc=r=${audioRate}:cl=stereo,atrim=end_sample=${sampleCount}[voice${index}]`);
@@ -1286,6 +1313,18 @@ function montageArgs(plan, { intermediate = false } = {}) {
     else filters.push(`[bed${index}][voice${index}]amix=inputs=2:duration=first:normalize=0[a${index}]`);
   }
 
+  let nextVoiceSample = 0;
+  const voiceSampleStarts = duckMusic && segmented ? clips.map(clip => {
+    const start = Math.round(nextVoiceSample);
+    const span = ((positioned || alignVoices) ? clip.timelineDuration : undefined) ?? clip.outputDuration ?? clip.duration;
+    nextVoiceSample += positioned ? span*audioRate : Math.round(span*audioRate);
+    return start;
+  }) : [];
+  if (duckMusic && narration && narrationVolume > 0) {
+    const at = plan.voiceStart ?? 0;
+    const parts = plan.narrationMap?.parts ?? [{outStart:0,outEnd:narration.duration/(plan.narrationSpeed ?? 1)}];
+    for (const part of parts) speechIntervals.push({start:at+part.outStart,end:Math.min(duration,at+part.outEnd)});
+  }
   clips.forEach((clip, index) => {
     if (clip.outputFrames === 0 && clip.videoFit !== 'hold') {
       // The sample clock still owns this narration even if both adjacent cuts
@@ -1451,7 +1490,10 @@ function montageArgs(plan, { intermediate = false } = {}) {
   }
   const musicDelay = Math.round(musicStart * 48000);
   const musicDuration = duration - musicDelay / 48000;
-  if (music && musicDuration >= 1 / 48000) {
+  if (music && musicDuration >= 1 / 48000 && plan.musicMix?.mode === 'smart' && musicVolume > 0) {
+    inputCount = appendMusic(plan,speechIntervals,args,filters,inputCount,tempoFilter(plan.musicSpeed ?? 1));
+    audioTracks.push('[music]');
+  } else if (music && musicDuration >= 1 / 48000 && plan.musicMix?.mode !== 'smart') {
     const index = inputCount++;
     args.push(...mediaInput, '-stream_loop', '-1', '-i', music.path);
     const delay = musicDelay > 0 ? `,adelay=${musicDelay}S:all=1` : '';
@@ -1489,7 +1531,7 @@ function montageArgs(plan, { intermediate = false } = {}) {
     '-c:v', 'libx264', '-preset', 'veryfast', '-crf', intermediate ? '16' : '20', '-threads', '4',
     '-pix_fmt', color?.format ?? 'yuv420p', ...encoderColor(color), '-ar', '48000', '-ac', '2',
     '-movie_timescale', String(audioRate),
-    ...(intermediate ? ['-c:a', 'pcm_s16le'] : ['-c:a', 'aac', '-b:a', '160k', '-movflags', '+faststart']),
+    ...(intermediate ? ['-c:a', 'pcm_s16le'] : plan.musicMix?.normalizeLufs ? ['-c:a','alac'] : ['-c:a', 'aac', '-b:a', '160k', '-movflags', '+faststart']),
   ]);
 }
 
@@ -1615,12 +1657,19 @@ async function exportOne(plan, directory, stem, { signal, onProgress }) {
     await writeLayerTexts(plan.layers, temporaryDirectory, temporaryFiles);
     const contentPlan = plan.cover ? {...plan,cover:null,duration:plan.contentDuration} : plan;
     const styled = await prepareLooks(contentPlan,temporaryDirectory,temporaryFiles);
-    const prepared = await prepareVisualTracks(styled, temporaryDirectory, temporaryFiles, { signal, onProgress });
-    await renderFile(prepared.plan, temp, temporaryDirectory, temporaryFiles, { signal, onProgress: prepared.onProgress });
+    const normalizing = Boolean(plan.musicMix?.normalizeLufs);
+    const renderProgress = normalizing && onProgress ? seconds=>onProgress(seconds*0.65) : onProgress;
+    const prepared = await prepareVisualTracks(styled, temporaryDirectory, temporaryFiles, { signal, onProgress:renderProgress });
+    const run = (args,options) => runTool(ffmpeg,args,options);
+    const mixed = await prepareMusicCycle(prepared.plan,temporaryDirectory,temporaryFiles,tempoFilter(plan.musicSpeed ?? 1),run,signal);
+    await renderFile(mixed, temp, temporaryDirectory, temporaryFiles, { signal, onProgress: prepared.onProgress });
     signal?.throwIfAborted();
     if (!(await fs.stat(temp)).size) throw new Error('生成的媒体文件为空。');
-    const complete = await publishCover(plan,temp,temporaryDirectory,temporaryFiles,(args,options)=>runTool(ffmpeg,args,options),signal);
-    return await publish(complete, directory, stem, extension);
+    const complete = await publishCover(plan,temp,temporaryDirectory,temporaryFiles,run,signal);
+    const final = normalizing
+      ? await normalizeFinalMix(complete,plan,temporaryDirectory,temporaryFiles,signal,onProgress) : {file:complete};
+    return {path:await publish(final.file,directory,stem,extension),
+      ...('normalizationNotice' in final && {normalizationNotice:final.normalizationNotice})};
   } catch (error) {
     if (captions && error?.message?.includes("No such filter: 'subtitles'")) {
       throw new Error('当前 FFmpeg 不支持字幕渲染，请使用包含 libass 的 FFmpeg。', { cause: error });
@@ -1656,7 +1705,7 @@ async function exportBatch(plans, directory, { signal, onUpdate = () => {} } = {
         signal,
         onProgress: (seconds) => progress(Math.min(seconds / plan.duration, 0.99)),
       });
-      results.push({ index, name: path.basename(output), path: output });
+      results.push({ index, name: path.basename(output.path), ...output });
     } catch (error) {
       if (signal?.aborted) break;
       failures.push({ index, message: error.message });
@@ -1694,8 +1743,9 @@ async function recognizeLocalSpeech(asset, {signal} = {}) {
 
 module.exports = {
   runTool,
+  tempoFilter,
   supportsHdrToneMap,
-  extractAudioWaveform,
+  extractAudioWaveform, extractShortMusicPcm,
   recognizeLocalSpeech,
   createTrackProxy,
   normalizeMutedVideoTracks,

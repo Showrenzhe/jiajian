@@ -53,6 +53,86 @@ const processedMaterials = [];
 const subprojects = window.createSubprojects({ shots, serialize: serializeClip, revive: (row) => reviveClip(row, editAssets),voiceIO:{read:readScopeVoice,write:writeScopeVoice} });
 const narrationCaptions = new Map();
 let narrationTrimSettings = window.narrationTrim.smartDefaults;
+let musicMixSettings = window.musicMix.smartDefaults;
+const mixLabels = window.editorMessages.musicMix;
+const mixPanel = $('#music-mix-settings');
+const mixFields = [...mixPanel.querySelectorAll('[data-mix-field]')];
+const musicMeasurements = new WeakMap();
+for (const label of mixPanel.querySelectorAll('[data-mix-label]')) label.textContent=mixLabels[label.dataset.mixLabel];
+function showMusicMix(settings) {
+  musicMixSettings=settings;
+  $('#music-mix-values').hidden=settings.mode==='legacy';
+  for (const input of mixFields) {
+    const key=input.dataset.mixField;
+    if (input.type==='checkbox') input.checked=settings[key];
+    else input.value=settings[key] ?? '';
+    input.disabled=!settings.ducking && (key==='releaseMs' || key==='duckDb');
+  }
+}
+function musicMeasurement(asset,recheck=false) {
+  if (!asset?.url || asset.missing || musicMixSettings.mode!=='smart') return;
+  let record=musicMeasurements.get(asset);
+  if (!record || (recheck===true && record.done)) {
+    record={done:false};
+    record.work=api.musicLoudness(asset.id).catch(()=>null).then(result=>{
+      record.done=true;
+      const prior=asset.musicLoudness;
+      asset.musicLoudness=result ?? {integratedLufs:null,truePeakDbtp:null};
+      if (music.includes(asset) && musicMixSettings.mode==='smart') {
+        syncMusicAnalysis();
+        if (timeline?.draftState() && (prior?.integratedLufs!==result?.integratedLufs || prior?.truePeakDbtp!==result?.truePeakDbtp)) timeline.refreshMonitoring();
+      }
+      return true;
+    });
+    musicMeasurements.set(asset,record);
+  }
+  return record.work;
+}
+let shortMusic;
+function musicPcm(asset,speed,jobs) {
+  if (asset.duration>4 || asset.duration/speed>4 || !asset.duration) return;
+  if (shortMusic?.asset!==asset || shortMusic.speed!==speed || (jobs && shortMusic.done)) {
+    const record={asset,speed};
+    record.work=api.shortMusicPcm(asset.id,speed).then(result=>{record.pcm=result;},()=>{}).then(()=>{record.done=true;return true;});
+    shortMusic=record;
+  }
+  jobs?.add(shortMusic.work);
+  return shortMusic.pcm;
+}
+function syncMusicAnalysis() {
+  const failed=musicMixSettings.mode==='smart' && music.some(asset=>asset.musicLoudness && !Number.isFinite(asset.musicLoudness.integratedLufs));
+  const status=$('#music-analysis-status');
+  status.hidden=!failed;
+  status.textContent=failed ? mixLabels.measurementFailed : '';
+}
+showMusicMix(musicMixSettings);
+mixPanel.addEventListener('change',event=>{
+  const input=event.target, key=input.dataset.mixField;
+  if (!key) return;
+  if (!input.validity.valid || (input.type==='number' && input.value==='')) {
+    input.reportValidity();
+    showMusicMix(musicMixSettings);
+    return;
+  }
+  let value=input.value;
+  if (input.type==='checkbox') value=input.checked;
+  else if (input.type==='number') value=input.valueAsNumber;
+  else if (key==='normalizeLufs') value=value ? Number(value) : null;
+  showMusicMix(window.musicMix.normalizeSettings({...musicMixSettings,[key]:value}));
+  music.forEach(musicMeasurement);
+  syncMusicAnalysis();
+  updateControls(undefined,true);
+  if (timeline?.draftState()) timeline.refreshMonitoring();
+});
+function selectedMixIndex() {
+  if (previewBatch?.selected.has(previewBatch.current?.index)) return previewBatch.current.index;
+  return previewBatch?.selected.values().next().value;
+}
+$('#listen-music-mix').addEventListener('click',async()=>{
+  if (!previewBatch) await preparePreview();
+  const index=selectedMixIndex();
+  if (index!==undefined) await playComposition(index);
+});
 const trimLabels = window.editorMessages.narrationTrim;
 const trimPanel = $('#narration-trim-settings');
 const trimMode = $('#narration-trim-mode');
@@ -2725,6 +2805,9 @@ function updateControls(group, keepDraftPlayback = false) {
       : '整段口播保持原速。画面不足先从各自分镜补候选，仍不足则复用同组素材，画面较长时统一加速对齐。')
     : `${segmented ? '每组分镜' : ''}保留完整画面，超出的口播会被裁剪。`;
   $('#prepare-preview').disabled = busy || !validMontage;
+  const listenIndex=selectedMixIndex();
+  $('#listen-music-mix').disabled=busy || (previewBatch ? listenIndex===undefined : !validMontage);
+  $('#music-listen-help').textContent=listenIndex!==undefined ? mixLabels.listenSelected(listenIndex+1) : previewBatch ? mixLabels.listenNone : mixLabels.listenFirst;
   updateMontageSteps();
   $('#timeline-play').disabled=busy || !(validMontage || timeline?.canPlayDraft());
   syncTimelinePlayButton();
@@ -3011,7 +3094,7 @@ async function newProject() {
     if (!await flushCurrentDraft()) return;
     const proxyEnabled=await api.proxyDefault();
     await navigateWorkspace('montage', () => restoreProject({ name: '', assets: [], config: {
-      proxyEnabled, narrationTrim:window.narrationTrim.smartDefaults, shots: [], ratio: '16:9', resolution: 720, fps: 30, fit: 'fit', keepAudio: true, unordered: false,
+      proxyEnabled, narrationTrim:window.narrationTrim.smartDefaults, musicMix:window.musicMix.smartDefaults, shots: [], ratio: '16:9', resolution: 720, fps: 30, fit: 'fit', keepAudio: true, unordered: false,
       useOriginal: true, useMirrors: false, musicIds: [], musicVolume: 35, count: 1,
     } }));
   } finally {
@@ -3301,8 +3384,10 @@ async function importLibraryFiles() {
 }
 
 function renderMusic({ refreshControls = true } = {}) {
+  music.forEach(musicMeasurement);
+  syncMusicAnalysis();
   const list = $('#music-list');
-  $('#music-summary').textContent = music.length ? `${music.length} 首 · 每条成片随机选一首` : '未添加';
+  $('#music-summary').textContent = music.length===1 ? mixLabels.singleTrack : music.length ? `${music.length} 首 · 每条成片随机选一首` : '未添加';
   $('#music-volume-field').hidden = !music.length;
   $('#music-start-field').hidden = !music.length;
   list.hidden = !music.length;
@@ -3773,6 +3858,7 @@ function renderResults({ results, failures }, complete) {
     row.dataset.file=item.path;
     button.addEventListener('click', () => api.reveal(row.dataset.file).catch((error) => say(error.message)));
     row.append(item.name, button);
+    if (item.normalizationNotice==='peak-only') row.append(' · '+mixLabels.peakOnly);
     return row;
   });
   for (const failure of failures) {
@@ -3915,6 +4001,7 @@ function montageConfig() {
     ...(voiceSpeed(narration,null,0)!==1 && {narrationSpeed:voiceSpeed(narration,null,0)}),
     musicStartShot: musicStartFrom ? shots.indexOf(musicStartFrom) : null,
     musicVolume: $('#music-volume').valueAsNumber,
+    musicMix:musicMixSettings,
     narrationId: narration?.id ?? null,
     narrationTrim:narrationTrimSettings,
     narrationVolume: $('#narration-volume').valueAsNumber,
@@ -4215,6 +4302,7 @@ async function preparePreview(scope) {
 
 function playRenderedClip(clip) {
   preview(clip, '成片预览');
+  if (clip.asset.normalizationNotice==='peak-only') say(mixLabels.peakOnly);
   player.play().catch(() => {
     if (selected === clip && !player.error) say('成片预览已就绪，可以在播放器中点击播放。');
   });
@@ -4416,6 +4504,7 @@ function restoreProject({ name, config, assets = [], folders = [], projectToken:
   $('#use-original').checked = config.useOriginal;
   $('#use-mirrors').checked = config.useMirrors;
   $('#music-volume').value = config.musicVolume;
+  showMusicMix(window.musicMix.normalizeSettings(config.musicMix));
   showNarrationTrim(window.narrationTrim.normalizeSettings(config.narrationTrim));
   $('#narration-volume').value = config.narrationVolume === undefined ? 100 : config.narrationVolume;
   $('#narration-mode').value = config.narrationMode ?? 'whole';
@@ -5290,10 +5379,10 @@ $('#apply-narration-recommendation').addEventListener('click',()=>{
   sayProject('已应用口播推荐设置。');
 });
 $('#montage-settings').addEventListener('input', (event) => {
-  if(!event.target.closest('#voice-follow-settings,#narration-trim-settings')) updateControls(event.target.type === 'number' ? event.target : undefined, ['ratio','fps'].includes(event.target.id));
+  if(!event.target.closest('#voice-follow-settings,#narration-trim-settings,#music-mix-settings')) updateControls(event.target.type === 'number' ? event.target : undefined, ['ratio','fps'].includes(event.target.id));
 }, true);
 $('#montage-settings').addEventListener('change', (event) => {
-  if(!event.target.closest('#voice-follow-settings,#narration-trim-settings')) updateControls(undefined, ['ratio','fps'].includes(event.target.id));
+  if(!event.target.closest('#voice-follow-settings,#narration-trim-settings,#music-mix-settings')) updateControls(undefined, ['ratio','fps'].includes(event.target.id));
   if (event.target.id==='fps') {
     timeline?.refreshMonitoring();
     refreshPreviewSources();
@@ -5487,7 +5576,7 @@ function timelineState() {
   if(segmented) segments.forEach((tracks,i)=>tracks.forEach((asset,j)=>collectCaptionTrack(asset,null,j,i)));
   else whole.forEach((track,j)=>collectCaptionTrack(track.asset,track.subtitles,j,null));
   return {shots, segments, whole, autoSpeedRange:window.videoSpeedControls.range, timelineMarkers, timelineCaptions, music, maxCandidates, musicAt:shots.indexOf(musicStartFrom), segmented, captionTracks, subtitleStyle:captionInspector.read(),
-    narrationTrim:narrationTrimSettings, measuredNarration,
+    narrationTrim:narrationTrimSettings, measuredNarration, musicMix:musicMixSettings, musicMeasurement, musicPcm,
     voiceCaption:(asset,shot,row)=>(shot==null ? whole[row]?.subtitles : null) ?? narrationCaptions.get(asset?.id),
     segmentNarrationSelection:$('#segment-narration-selection').value,
     trackControls:monitoredTrackControls(),
@@ -5812,6 +5901,7 @@ cutEditor = window.createCutTrackEditor({
   },
 });
 timeline = window.mountEditTimeline($('#timeline-clock'), {
+  musicBus:playerTools.musicBus,
   previewHandoff, previewSource:timelinePreviewSource,
   draftPlaybackChanged:()=>{syncTimelinePlayButton(); playerTools.sync();},
   draftTick:()=>playerTools.updatePosition(),

@@ -3,6 +3,7 @@
 (() => {
   const alignment = typeof module === 'object' && module.exports ? require('./voice-alignment.js') : window.voiceAlignment;
   const narrationTrim = typeof module === 'object' && module.exports ? require('./narration-trim.js') : window.narrationTrim;
+  const musicMix = typeof module === 'object' && module.exports ? require('./music-mix.js') : window.musicMix;
   const waveformSource = typeof module === 'object' && module.exports ? require('./waveform.js').waveformSource : window.waveformSource;
   const { candidateVideoLanes, pictureSpan, soloLaneSequence, joinedVideoSequence, videoGroupLeaders, usesPlacedVideoSource, placedVideoSpeed, sampleVideoRate, shouldRetimeVideo } = typeof module === 'object' && module.exports ? require('./track-tools.js') : window;
   const controls = typeof module === 'object' && module.exports ? require('./track-controls.js') : window.trackControls;
@@ -425,7 +426,22 @@
     const musicRow=audioRow(s.music,'music',s);
     if(musicRow>=0) {
       const at=starts[s.musicAt] ?? 0, asset=s.music[musicRow];
-      add('music',asset,at,total-at,{volume:s.musicVolume(asset),loop:true,speed:s.musicSpeed?.(asset) ?? 1,trackKey:'music'+musicRow});
+      const speed=s.musicSpeed?.(asset) ?? 1, volume=s.musicVolume(asset), key='music'+musicRow;
+      if (s.musicMix?.mode==='smart') {
+        if (at<total && asset?.url && volume>0 && controls.allows(s.trackControls,key,'audio')) {
+          const rows=s.music.flatMap((item,i)=>item && controls.participates(s.trackControls,'music'+i) ? [i] : []);
+          const random=controls.preferSolo(rows,i=>s.trackControls?.['music'+i]?.solo).length>1;
+          if (s.pauseJobs) {
+            const measured=s.musicMeasurement?.(asset,true);
+            if (measured) s.pauseJobs.add(measured);
+          }
+          const timing=musicMix.loopTiming(asset.duration,speed,s.musicMix.crossfadeMs,total-at);
+          entries.push({lane:'music',smartMusic:true,asset,start:at,end:total,rate:speed,volume,
+            timing,pcm:total-at>timing.length ? s.musicPcm?.(asset,speed,s.pauseJobs) : undefined,
+            envelope:musicMix.duckEnvelope(entries.filter(entry=>entry.lane==='voice' && entry.volume>0),s.musicMix),
+            gain:volume/100*musicMix.compensationGain(asset.musicLoudness,random || s.musicMix.compensateManual)});
+        }
+      } else add('music',asset,at,total-at,{volume,loop:true,speed,trackKey:key});
     }
     layers(pack.global,0,total);
     layers(pack.composites.find((items)=>items.length),0,total);
@@ -450,7 +466,8 @@
     return entries.sort((a,b)=>a.start-b.start);
   }
 
-  function transport(stage,{tick,changed,previewSource,handoff,getRange}) {
+  function transport(stage,{tick,changed,previewSource,handoff,getRange,musicBus,musicError}) {
+    const musicOutput=window.createDraftMusic(musicBus,musicError);
     const overlay=document.createElement('div');
     overlay.className='draft-transport-preview';overlay.hidden=true;
     const label=document.createElement('span');
@@ -492,6 +509,7 @@
       warmed.clear();
     }
     function halt(keepFrame=false, keepCover=false) {
+      musicOutput.stop();
       cancelAnimationFrame(frame);
       discardWarm();
       const visible=!overlay.hidden;
@@ -628,7 +646,9 @@
       }
       if(!picture) handoff.clear(overlay);
       const live=new Set();let ready=true,preparing=false;
+      let musicEntry;
       for(const entry of active) {
+        if (entry.smartMusic) {musicEntry=entry;continue;}
         if(entry.text) {
           live.add(entry);
           if(!textNodes.has(entry)) {
@@ -755,7 +775,11 @@
       }
       // Start (or seek) the composition together. Once rolling, a decoding
       // video must not repeatedly stop narration, music or the timeline clock.
+      if (musicEntry && playing && shuttleRate>0 && !sampleVideoRate(musicEntry.rate*shuttleRate)) {
+        if (!musicOutput.prepare(musicEntry,at,shuttleRate)) ready=false;
+      } else musicOutput.stop();
       if(ready) priming=false;
+      if (musicEntry && playing && !priming && shuttleRate>0 && !sampleVideoRate(musicEntry.rate*shuttleRate)) musicOutput.play(at);
       for(const item of media.values()) {
         const {node,asset}=item;
         if(node.tagName==='IMG')continue;
@@ -797,7 +821,7 @@
         plan.filter(entry=>entry.asset && entry.visual && !entry.layer),
         plan.filter(entry=>entry.asset?.kind==='video' && !entry.visual && entry.volume>0 && !entry.layer),
         plan.filter(entry=>entry.lane==='voice'),
-        plan.filter(entry=>entry.lane==='music'),
+        plan.filter(entry=>entry.lane==='music' && !entry.smartMusic),
       ].filter(entries=>entries.length).map(entries=>({entries,index:0}));
       end=entries.reduce((max,entry)=>Math.max(max,entry.end),0);
       visual=entries.some(entry=>entry.visual);
@@ -841,6 +865,7 @@
     }
     function seek(seconds,reloadSources=false) {
       if(overlay.hidden) return;
+      musicOutput.stop();
       cancelAnimationFrame(frame);
       if(reloadSources) {
         handoff.capture();

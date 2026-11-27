@@ -151,6 +151,9 @@ test('真实静音扫描分参数缓存、拒绝已取消扫描；预览计划�
       pausedFile,
     ]),
   ]);
+  const sameTime = new Date('2025-01-01T00:00:00.000Z');
+  await Promise.all([toneFile,pausedFile].map(file=>fs.utimes(file,sameTime,sameTime)));
+  const before = await fs.stat(pausedFile,{bigint:true});
   const [still, tone, paused] = await Promise.all([
     inspectAsset(stillFile, 'image'),
     inspectAsset(toneFile, 'audio'),
@@ -344,5 +347,8 @@ test('真实静音扫描分参数缓存、拒绝已取消扫描；预览计划�
     );
   }
   await fs.copyFile(toneFile, pausedFile);
+  await fs.utimes(pausedFile,sameTime,sameTime);
+  const after = await fs.stat(pausedFile,{bigint:true});
+  assert.deepEqual([after.size,after.mtimeNs],[before.size,before.mtimeNs]);
   assert.deepEqual(await analyzeNarrationPauses(paused, smartDefaults), [], '同名音频被替换后应重新扫描');
 });

@@ -50,6 +50,8 @@
   <script src="./player-tools.js" defer></script>
   <script src="./waveform.js" defer></script>
   <script src="./narration-trim.js" defer></script>
+  <script src="./music-mix.js" defer></script>
+  <script src="./draft-music.js" defer></script>
   <script src="./voice-alignment.js" defer></script>
   <script src="./draft-transport.js" defer></script>
   <script src="./audio-tools.js" defer></script>
@@ -799,6 +801,23 @@
               <ul id="music-list" class="results" hidden></ul>
               <label id="music-start-field" class="line-field" hidden>配乐起点<select id="music-start-shot"><option value="">从成片开头</option></select></label>
               <label id="music-volume-field" class="line-field" hidden>配乐音量（%）<input id="music-volume" type="number" min="0" max="100" step="1" value="35"></label>
+              <section id="music-mix-settings">
+                <div class="music-mix-heading">
+                  <h3 class="inspector-section-title" data-mix-label="title"></h3>
+                  <button class="secondary" type="button" id="listen-music-mix" data-mix-label="finalListen" aria-describedby="music-listen-help"></button>
+                </div>
+                <label class="line-field"><span data-mix-label="mode"></span><select data-mix-field="mode"><option value="smart" data-mix-label="smart"></option><option value="legacy" data-mix-label="legacy"></option></select></label>
+                <div id="music-mix-values">
+                  <label class="p-switch"><span data-mix-label="ducking"></span><input type="checkbox" role="switch" data-mix-field="ducking"><span aria-hidden="true"></span></label>
+                  <label class="line-field"><span data-mix-label="duckDb"></span><input type="number" min="6" max="12" step="1" data-mix-field="duckDb"></label>
+                  <label class="line-field"><span data-mix-label="releaseMs"></span><input type="number" min="200" max="400" step="1" data-mix-field="releaseMs"></label>
+                  <label class="line-field"><span data-mix-label="crossfadeMs"></span><input type="number" min="100" max="300" step="1" data-mix-field="crossfadeMs"></label>
+                  <label class="p-switch"><span data-mix-label="compensateManual"></span><input type="checkbox" role="switch" data-mix-field="compensateManual"><span aria-hidden="true"></span></label>
+                  <label class="line-field"><span data-mix-label="normalizeLufs"></span><select data-mix-field="normalizeLufs"><option value="" data-mix-label="off"></option><option value="-14">−14 LUFS</option><option value="-16">−16 LUFS</option></select></label>
+                </div>
+                <p class="compact muted" id="music-analysis-status" role="status" hidden></p>
+                <p class="compact muted" id="music-listen-help"></p>
+              </section>
             </div>
             <div id="inspector-panel-montage" data-inspector-panel role="tabpanel" aria-labelledby="inspector-tab-montage" tabindex="0" hidden>
               <h3 class="inspector-section-title">组合规则</h3>

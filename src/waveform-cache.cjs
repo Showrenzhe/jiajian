@@ -1,7 +1,7 @@
 'use strict';
 
 // Multiple lanes can refer to one recording. Share both the decode and its completed peak array.
-function createWaveformCache() {
+function createWaveformCache(maxEntries = 256) {
   const cache = new Map(), pending = new Map(), waiting = [];
   let active = 0, scope = new AbortController();
 
@@ -12,7 +12,7 @@ function createWaveformCache() {
       Promise.resolve().then(()=>task.read(task.signal)).then((waveform)=>{
         if (waveform && !task.signal.aborted) {
           cache.set(task.key,waveform);
-          if (cache.size > 256) cache.delete(cache.keys().next().value);
+          if (cache.size > maxEntries) cache.delete(cache.keys().next().value);
           task.resolve(waveform);
         } else task.resolve(null);
       },()=>task.resolve(null)).finally(()=>{

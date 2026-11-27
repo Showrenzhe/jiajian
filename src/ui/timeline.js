@@ -111,6 +111,7 @@ window.mountEditTimeline = function (host, ctx) {
     return scales.sort((a,b)=>a-b);
   }
   const draftTransport=window.draftTimeline.transport(document.querySelector('.preview-stage'),{
+    musicBus:ctx.musicBus, musicError:()=>ctx.narrationStatus(window.editorMessages.musicMix.playbackFailed),
     previewSource:ctx.previewSource, handoff:ctx.previewHandoff, getRange:()=>editControls.range(),
     tick:(time)=>{playTime=time;syncCursor();ctx.draftTick?.();}, changed:(playing)=>ctx.draftPlaybackChanged?.(playing),
   });
@@ -155,7 +156,7 @@ window.mountEditTimeline = function (host, ctx) {
     if (jobs.size) {
       const key=lastKey, focus=focusClip;
       waitingForNarration=true;
-      ctx.narrationStatus(window.editorMessages.narrationTrim.measuring);
+      ctx.narrationStatus(proposed.some(entry=>entry.smartMusic) ? window.editorMessages.musicMix.preparing : window.editorMessages.narrationTrim.measuring);
       const ready=await Promise.all(jobs);
       if (request!==playbackRequest) return;
       waitingForNarration=false;

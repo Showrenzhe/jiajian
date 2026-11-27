@@ -131,14 +131,14 @@ function mountStereoMeter(stage, meter) {
   const sources = new WeakMap();
   const playing = new Set();
   const samples = new Float32Array(1024);
-  let context, mix, channels, frame;
+  let context, mix, channels, frame, musicPlaying=false;
 
   function render() {
     frame = undefined;
     for (const node of playing) if (node.paused || !node.isConnected) playing.delete(node);
     bars.forEach((bar, i) => {
       let peak = 0;
-      if (playing.size) {
+      if (playing.size || musicPlaying) {
         channels[i].getFloatTimeDomainData(samples);
         for (const sample of samples) peak = Math.max(peak, Math.abs(sample));
       }
@@ -149,11 +149,9 @@ function mountStereoMeter(stage, meter) {
         bar.style.setProperty('--level', level * 100 / 6 + '%');
       }
     });
-    if (playing.size) frame = requestAnimationFrame(render);
+    if (playing.size || musicPlaying) frame = requestAnimationFrame(render);
   }
-  stage.addEventListener('playing', async event => {
-    const node = event.target;
-    if (!(node instanceof HTMLMediaElement)) return;
+  function output() {
     if (!context) {
       context = new AudioContext();
       mix = context.createGain();
@@ -169,6 +167,12 @@ function mountStereoMeter(stage, meter) {
         return analyser;
       });
     }
+    return mix;
+  }
+  stage.addEventListener('playing', async event => {
+    const node = event.target;
+    if (!(node instanceof HTMLMediaElement)) return;
+    output();
     if (context.state !== 'running') await context.resume().catch(() => {});
     if (context.state !== 'running' || node.paused || !node.isConnected) return;
     let source = sources.get(node);
@@ -190,6 +194,10 @@ function mountStereoMeter(stage, meter) {
       }
     }
   }).observe(stage, { childList:true, subtree:true });
+  return {output, playing(value) {
+    musicPlaying=value;
+    if (frame===undefined) render();
+  }};
 }
 
 // The decoder and its proxy seek in source seconds. The selected track clip
@@ -243,7 +251,7 @@ window.mountPlayerTools = ({ panel, getClip, getTrackClock, seekTrackSource, isL
   const image = find('#still-preview');
   const frame = find('.player-picture');
   const stage = find('.preview-stage');
-  mountStereoMeter(stage, find('.stereo-meter'));
+  const musicBus=mountStereoMeter(stage, find('.stereo-meter'));
   const transport = find('#player-transport');
   const play = find('#player-play');
   const position = find('#player-position');
@@ -659,5 +667,5 @@ window.mountPlayerTools = ({ panel, getClip, getTrackClock, seekTrackSource, isL
       sync();
     }};
   }
-  return { sync, updatePosition, reset, closeFloating, pause, seek, step, togglePlay, mountCutMonitor, get monitoringCut() { return Boolean(cut); } };
+  return { sync, updatePosition, reset, closeFloating, pause, seek, step, togglePlay, mountCutMonitor, musicBus, get monitoringCut() { return Boolean(cut); } };
 };

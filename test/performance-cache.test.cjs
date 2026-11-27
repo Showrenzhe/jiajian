@@ -128,3 +128,101 @@ test('媒体任务的设置快照等待已开始的保存，旧导出保留启�
   await assert.rejects(cache.change({hdrMode:'invalid'}));
   assert.equal((await cache.settledSettings()).hdrMode,'preserve');
 });
+
+test('music measurements share disk and in-flight results, enforce access and invalidate equal-size equal-time content',async t=>{
+  const dir=await fs.mkdtemp(path.join(os.tmpdir(),'jiajian-music-cache-'));
+  t.after(()=>fs.rm(dir,{recursive:true,force:true}));
+  const file=path.join(dir,'素材.wav'), fixedTime=new Date('2025-01-01T00:00:00.000Z');
+  async function replace(contents) {
+    await fs.writeFile(file,contents);
+    await fs.utimes(file,fixedTime,fixedTime);
+  }
+  await replace('aaaa');
+  const asset={kind:'audio',path:file,audioIndex:0};
+  const allow=async()=>{};
+  let runs=0;
+  const options={measureMusicLoudness:async source=>{
+    runs++;
+    const contents=await fs.readFile(source.path,'utf8');
+    return contents==='aaaa' ? {integratedLufs:-24,truePeakDbtp:-8} : {integratedLufs:null,truePeakDbtp:null};
+  }};
+  let cache=createPerformanceCache(dir,options);
+  const [first,other]=await Promise.all([cache.musicLoudness(asset,allow),cache.musicLoudness(asset,allow)]);
+  assert.deepEqual(first,other);
+  assert.equal(runs,1);
+  cache.close();
+  cache=createPerformanceCache(dir,options);
+  t.after(()=>cache.close());
+  assert.deepEqual(await cache.musicLoudness(asset,allow),first);
+  await assert.rejects(cache.musicLoudness(asset,()=>{throw Error('denied');}),/denied/);
+  assert.equal(runs,1);
+  const before=await fs.stat(file,{bigint:true});
+  await replace('bbbb');
+  const after=await fs.stat(file,{bigint:true});
+  assert.deepEqual([before.size,before.mtimeNs],[after.size,after.mtimeNs]);
+  const changed=await cache.musicLoudness(asset,allow);
+  assert.notEqual(changed.key,first.key);
+  assert.deepEqual(changed.measurement,{integratedLufs:null,truePeakDbtp:null});
+  assert.equal(runs,2);
+  await cache.musicLoudness({...asset,audioIndex:1},allow);
+  assert.equal(runs,3);
+});
+
+test('changed audio during measurement is discarded and cancelled identity reads leave other callers running', async t=>{
+  const dir=await fs.mkdtemp(path.join(os.tmpdir(),'jiajian-music-identity-'));
+  t.after(()=>fs.rm(dir,{recursive:true,force:true}));
+  const file=path.join(dir,'input.wav');
+  await fs.writeFile(file,'same-length-original');
+  const {audioContentIdentity}=require('../src/audio-content-identity.cjs');
+  const gate=Promise.withResolvers(), controller=new AbortController();
+  const first=audioContentIdentity(file,{signal:controller.signal,authorize:()=>gate.promise});
+  const second=audioContentIdentity(file);
+  controller.abort();
+  await assert.rejects(first,{name:'AbortError'});
+  gate.resolve();
+  assert.equal(await second,require('node:crypto').createHash('sha256').update('same-length-original').digest('hex'));
+  const asset={kind:'audio',path:file,audioIndex:0};
+  const cache=createPerformanceCache(dir,{measureMusicLoudness:async()=>{
+    await fs.writeFile(file,'same-length-replaced');
+    return {integratedLufs:-14,truePeakDbtp:-1};
+  }});
+  t.after(()=>cache.close());
+  assert.equal(await cache.musicLoudness(asset,async()=>{}),null);
+});
+
+test('short stereo PCM uses the same speed filters and exact output sample count within its decode budget',async t=>{
+  const dir=await fs.mkdtemp(path.join(os.tmpdir(),'jiajian-short-music-'));
+  t.after(()=>fs.rm(dir,{recursive:true,force:true}));
+  const file=path.join(dir,'短曲.wav');
+  await require('./fixtures.cjs').ffmpeg(['-f','lavfi','-i','sine=frequency=330:sample_rate=48000:duration=0.3','-c:a','pcm_s16le',file]);
+  const {inspectAsset,extractShortMusicPcm}=require('../src/media.cjs');
+  const asset=await inspectAsset(file,'audio');
+  for (const speed of [0.5,1,2.5]) {
+    const pcm=await extractShortMusicPcm(asset,speed);
+    assert.equal(pcm.sampleRate,48000);
+    assert.equal(pcm.channels,2);
+    assert.equal(pcm.samples.length,Math.round(asset.duration/speed*48000)*2);
+    assert.ok(pcm.samples.some(value=>value>0.01));
+  }
+  for (const speed of [0,3.1,NaN]) assert.equal(await extractShortMusicPcm(asset,speed),null);
+  assert.equal(await extractShortMusicPcm({...asset,duration:5},1),null);
+  assert.equal(await extractShortMusicPcm({...asset,duration:3},0.5),null);
+});
+
+test('a 1000-plan subproject batch checks each shared narration once, and a new batch checks again',async()=>{
+  const {prepareSubprojectPlans}=require('../src/preview-plans.cjs');
+  const projects=Array.from({length:1000},(_,i)=>({id:'p'+i,name:'门店'+i,shots:[]}));
+  const catalog=new Map([['photo',{kind:'video',name:'画面',duration:1}],
+    ['voice',{kind:'audio',name:'口播',duration:4,audioIndex:0}]]);
+  const config={shots:[[{id:'photo',start:0,end:1}]],count:1,ratio:'16:9',resolution:720,fps:30,fit:'fit',
+    keepAudio:false,unordered:false,useOriginal:true,useMirrors:false,musicIds:[],musicVolume:0,
+    priority:'picture',narrationId:'voice',narrationTrim:require('../src/ui/narration-trim.js').smartDefaults,
+    subprojects:{active:null,main:[],projects}};
+  const scope=projects.map(({id})=>({id,count:1}));
+  let calls=0;
+  const options={analyzePauses:async()=>{calls++;return [];}};
+  assert.equal((await prepareSubprojectPlans(config,scope,catalog,options)).length,1000);
+  assert.equal(calls,1);
+  await prepareSubprojectPlans(config,scope.slice(0,2),catalog,options);
+  assert.equal(calls,2);
+});

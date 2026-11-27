@@ -5,6 +5,7 @@ const path = require('node:path');
 const { readBootIdentity, sameBoot } = require('./boot-identity.cjs');
 const {createHash, randomUUID} = require('node:crypto');
 
+const {audioContentIdentity} = require('./audio-content-identity.cjs');
 const filename = 'performance.json';
 const proxyName = /^jj-[0-9a-f]{64}\.mp4$/;
 function readPerformance(directory) {
@@ -33,7 +34,7 @@ async function fingerprint(file, variant) {
   return createHash('sha256').update(JSON.stringify([normalized,info.size,info.mtimeMs,info.ctimeMs,variant])).digest('hex');
 }
 
-function createPerformanceCache(directory, {inspect,thumbnail,encode,supportsHdrToneMap,onSettingsChanged,bootTime=readBootIdentity}) {
+function createPerformanceCache(directory, {inspect,thumbnail,encode,supportsHdrToneMap,onSettingsChanged,measureMusicLoudness,bootTime=readBootIdentity}) {
   let state = readPerformance(directory), writes = Promise.resolve();
   const meta = path.join(directory,'material-cache-v1'), pending = new Map();
   const budget = require('./cache-budget.cjs').createCacheBudget(meta);
@@ -41,6 +42,7 @@ function createPerformanceCache(directory, {inspect,thumbnail,encode,supportsHdr
   let proxyScope = new AbortController(), warmScope = new AbortController(), closing = false;
   let metadataEpoch=0;
   const lifetime = new AbortController();
+  const musicReads = require('./waveform-cache.cjs').createWaveformCache();
   let activeEncode, queuedPreview, queuedWarm, sequence = 0;
   function serializeChange(fn) {
     const update = writes.then(fn);
@@ -135,6 +137,37 @@ function createPerformanceCache(directory, {inspect,thumbnail,encode,supportsHdr
     signal?.throwIfAborted();
     return asset;
   }
+  // The playback and export callers share one bounded queue and one identity-based disk cache.
+  async function musicLoudness(asset, authorize, scope = lifetime.signal) {
+    const file = asset.path;
+    const variant = ['music-loudness-v1',asset.audioIndex];
+    async function identity(signal) {
+      await authorize();
+      const digest = await audioContentIdentity(file,{signal,authorize});
+      const normalized = process.platform === 'win32' ? path.resolve(file).toLowerCase() : path.resolve(file);
+      return createHash('sha256').update(JSON.stringify([normalized,digest,variant])).digest('hex');
+    }
+    const key = await identity(scope);
+    const dest = path.join(meta,key+'.json');
+    const epoch = metadataEpoch;
+    const measurement = await musicReads.get(key,signal => once(dest,async()=>{
+      signal.throwIfAborted();
+      await authorize();
+      const cached = await fs.readFile(dest,'utf8').then(JSON.parse).catch(()=>null);
+      const hit = cached && [cached.integratedLufs,cached.truePeakDbtp].every(v=>v === null || Number.isFinite(v));
+      const result = hit ? {integratedLufs:cached.integratedLufs,truePeakDbtp:cached.truePeakDbtp}
+        : await measureMusicLoudness(asset,{signal});
+      signal.throwIfAborted();
+      if (key !== await identity(signal) || epoch !== metadataEpoch) return null;
+      if (!hit) await atomicWrite(dest,JSON.stringify(result)).then(()=>budget.track(state.location,dest)).catch(()=>{});
+      return result;
+    }));
+    scope.throwIfAborted();
+    await authorize();
+    if (epoch !== metadataEpoch) return null;
+    if (!measurement && await identity(scope) !== key) return null;
+    return {key,measurement};
+  }
   async function poster(asset,options={}) {
     if(asset.kind!=='video') return null;
     const epoch=metadataEpoch;
@@ -189,6 +222,7 @@ function createPerformanceCache(directory, {inspect,thumbnail,encode,supportsHdr
     return serializeChange(async () => {
       warmScope.abort();
       metadataEpoch++;
+      musicReads.reset();
       await resetProxies();
       await Promise.allSettled([...pending.values()]);
       await budget.clear(state.location);
@@ -226,7 +260,7 @@ function createPerformanceCache(directory, {inspect,thumbnail,encode,supportsHdr
     await atomicWrite(marker,JSON.stringify(boot));
     return true;
   }
-  function close() { closing=true;lifetime.abort();warmScope.abort();void resetProxies(); }
-  return {view,settledSettings,change,clear,inspectCached,poster,proxy,preload,close,get settings(){return {...state};}};
+  function close() { closing=true;musicReads.reset();lifetime.abort();warmScope.abort();void resetProxies(); }
+  return {view,settledSettings,change,clear,inspectCached,musicLoudness,resetMusicReads:musicReads.reset,poster,proxy,preload,close,get settings(){return {...state};}};
 }
 module.exports={createPerformanceCache,readPerformance};
