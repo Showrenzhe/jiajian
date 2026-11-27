@@ -399,6 +399,10 @@
 }
 .video-cut-sequence {position:relative;}
 .timeline-snap-guide[hidden],#timeline-clock [data-timeline-marker][hidden] {display:none;}
+/* Keep the track-height guide on its own compositor layer throughout a drag.
+   Crossing an edit edge changes its opacity without rebuilding canvas layout. */
+.sequence-canvas > .timeline-snap-guide {will-change:transform,opacity;}
+.sequence-canvas > .timeline-snap-guide[hidden] {display:block !important;opacity:0;}
 #timeline-snap[aria-pressed="true"],[data-timeline-snap][aria-pressed="true"],#timeline-loop[aria-pressed="true"] {
   color:var(--system-blue);box-shadow:inset 0 0 0 1px currentColor;
 }
