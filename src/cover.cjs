@@ -42,9 +42,10 @@ async function publishCover(plan, rendered, directory, files, run, signal) {
     const zoom = 1.04;
     const sw = Math.ceil(w*zoom/2)*2, sh = Math.ceil(h*zoom/2)*2;
     const x = Math.round((sw-w)*cover.shift), y = Math.round((sh-h)*(1-cover.shift));
-    const filter = `[0:v:0]fps=${fps},tpad=stop_mode=clone:stop=${cover.frames},trim=end_frame=${cover.frames},scale=${sw}:${sh},crop=${w}:${h}:${x}:${y},setsar=1,setpts=PTS-STARTPTS[p];[1:v:0]fps=${fps},setsar=1,setpts=PTS-STARTPTS[b];[p][b]concat=n=2:v=1:a=0[v];[1:a:0]adelay=${Math.round(intro*48000)}S:all=1[a]`;
+    const bodySamples = Math.round((plan.audioDuration ?? plan.contentDuration) * 48000);
+    const filter = `[0:v:0]fps=${fps},tpad=stop_mode=clone:stop=${cover.frames},trim=end_frame=${cover.frames},scale=${sw}:${sh},crop=${w}:${h}:${x}:${y},setsar=1,setpts=PTS-STARTPTS[p];[1:v:0]fps=${fps},setsar=1,setpts=PTS-STARTPTS[b];[p][b]concat=n=2:v=1:a=0[v];[1:a:0]atrim=end_sample=${bodySamples},adelay=${Math.round(intro*48000)}S:all=1[a]`;
     await job(['-ss',cover.start.toFixed(6),'-t',intro.toFixed(6),'-i',rendered,'-i',rendered,'-filter_complex_threads','2','-filter_complex',filter,
-      '-map','[v]','-map','[a]','-c:v','libx264','-threads','2','-preset','veryfast','-crf','18','-c:a','aac','-ar','48000','-t',plan.duration.toFixed(6),body]);
+      '-map','[v]','-map','[a]','-c:v','libx264','-threads','2','-preset','veryfast','-crf','18','-c:a','aac','-ar','48000','-movie_timescale','48000','-t',plan.duration.toFixed(6),body]);
   }
   const image = output('selected-cover.jpg');
   const source = cover.asset;
@@ -61,7 +62,7 @@ async function publishCover(plan, rendered, directory, files, run, signal) {
     '-frames:v','1','-c:v','mjpeg','-q:v','2','-threads','1','-update','1',image]);
   const complete = output('with-cover.mp4');
   await job(['-i',body,'-i',image,'-map','0:v:0','-map','0:a:0','-map','1:v:0','-c','copy',
-    '-disposition:v:1','attached_pic','-metadata:s:v:1','title=Cover','-movflags','+faststart',complete]);
+    '-disposition:v:1','attached_pic','-metadata:s:v:1','title=Cover','-movie_timescale','48000','-movflags','+faststart',complete]);
   return complete;
 }
 
