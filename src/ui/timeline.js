@@ -170,7 +170,7 @@ window.mountEditTimeline = function (host, ctx) {
   snapGuide.width=snapGuide.height=1;
   document.body.append(snapGuide);
   const guideInk=snapGuide.getContext('2d');
-  let guideTimer, guideTime, guideColumn, guideWidth, guideColor, guideBox;
+  let guideTimer, guideFrame, guideTime, guideColumn, guideWidth, guideColor, guideBox;
   function clearGuide() {
     if(guideColumn!==undefined) guideInk.clearRect(guideColumn-1,0,guideWidth+2,1);
     guideColumn=undefined;
@@ -211,10 +211,21 @@ window.mountEditTimeline = function (host, ctx) {
     if(at===undefined) clearGuide(); else paintGuide();
     if(flash) guideTimer=setTimeout(()=>{guideTimer=undefined;showSnap();},320);
   }
+  function dismissSnap() {
+    cancelAnimationFrame(guideFrame);
+    guideFrame=undefined;
+    showSnap();
+  }
+  function flashSplit(at) {
+    dismissSnap();
+    if(at===undefined) return;
+    // The pending timeline draw clears the old guide before painting this cut.
+    guideFrame=requestAnimationFrame(()=>{guideFrame=undefined;showSnap(at,true);});
+  }
   window.addEventListener('scroll',paintGuide,{capture:true,passive:true});
   window.addEventListener('resize',paintGuide);
   matchMedia('(forced-colors: active)').addEventListener('change',()=>{guideBox=undefined;paintGuide();});
-  document.addEventListener('fullscreenchange',()=>showSnap());
+  document.addEventListener('fullscreenchange',dismissSnap);
   function snapAnchors(exclude) {
     const times=[...shotTimes,0,totalTime,playTime];
     for(const marker of ctx.getTimelineMarkers()) if(marker.time<=totalTime) times.push(marker.time);
@@ -1359,7 +1370,7 @@ window.mountEditTimeline = function (host, ctx) {
             layer.laneId ??= crypto.randomUUID();
             const after={...structuredClone(layer),start:cut,mediaOffset:(layer.mediaOffset ?? 0)+offset*speed};
             layer.end=cut;items.splice(i+1,0,after);ctx.change();
-            if(snap!==undefined && Math.abs(start+cut-snap)<1e-7) requestAnimationFrame(()=>showSnap(snap,true));
+            flashSplit(snap!==undefined && Math.abs(start+cut-snap)<1e-7 ? snap : undefined);
           }};
         }
         function openLayer(focusSpeed=false) {
@@ -2395,7 +2406,7 @@ window.mountEditTimeline = function (host, ctx) {
   window.addEventListener('keydown',event=>{
     if(event.key==='Escape' && layerDrag) {event.preventDefault();layerDrag.cancel();}
   },true);
-  window.addEventListener('blur',()=>{layerDrag?.cancel();finishCandidateDrag(false);showSnap();});
+  window.addEventListener('blur',()=>{layerDrag?.cancel();finishCandidateDrag(false);dismissSnap();});
   host.ondragover=(e)=>{
     if(e.target.closest('[data-track-locked]')) return;
     const b=e.target.closest('[data-drop-shot]');
@@ -2590,7 +2601,7 @@ window.mountEditTimeline = function (host, ctx) {
     },
     fold(expanded){folded.clear();for(const node of host.querySelectorAll('[data-lane-key]')) setFold(node,node.dataset.laneKey,!expanded);ctx.scroll();},
     reset(newProject=false) {
-      showSnap();
+      dismissSnap();
       finishCandidateDrag(false);
       pastePosition=undefined;
       if(newProject) {clipboard=undefined;editControls.reset();}

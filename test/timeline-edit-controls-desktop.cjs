@@ -142,10 +142,10 @@ async function run() {
     const start = await point(edge);
     const pxPerSecond = await read(scale);
     const target = {x:start.x+(markerTime-.6)*pxPerSecond+3,y:start.y};
-    const guideAtMarker = `(() => {
+    const guideAtTime = (time,y) => `(() => {
       const canvas=${q(guide)}, rect=canvas.getBoundingClientRect();
-      if(!rect.width || rect.top>${target.y} || rect.bottom<${target.y}) return false;
-      const x=${q(ruler)}.getBoundingClientRect().left+${markerTime}*${scale};
+      if(!rect.width || rect.top>${y} || rect.bottom<${y}) return false;
+      const x=${q(ruler)}.getBoundingClientRect().left+${time}*${scale};
       const column=Math.round((x-rect.left)*canvas.width/rect.width);
       const pixels=canvas.getContext('2d').getImageData(column-1,0,3,1).data;
       const swatch=document.createElement('canvas').getContext('2d');
@@ -154,6 +154,7 @@ async function run() {
       const expected=swatch.getImageData(0,0,1,1).data;
       return [0,4,8].some(start=>expected.every((value,i)=>pixels[start+i]===value));
     })()`;
+    const guideAtMarker = guideAtTime(markerTime,target.y);
     const guideCleared = `(() => {
       const c=${q(guide)}, pixels=c.getContext('2d').getImageData(0,0,c.width,1).data;
       return !pixels.some((v,i)=>i%4===3 && v>0);
@@ -171,6 +172,32 @@ async function run() {
     }
     await mouse('mouseReleased',target);
     await wait(guideCleared);
+    stage = '包装分割的吸附反馈与撤销';
+    const textLayer = '.sequence-layer.kind-text .sequence-block';
+    const splitButton = 'dialog.sequence-dialog:modal footer button:first-of-type';
+    const layerCount = 'document.querySelectorAll('+JSON.stringify(textLayer)+').length';
+    for(const undoBeforePaint of [false,true]) {
+      await seek(.5);
+      const splitTime = await read(cursor);
+      await pressAt(textLayer,'r.width*.7',true);
+      await wait(q(splitButton)+'?.textContent==="在播放头分割" && !'+q(splitButton)+'.disabled');
+      if(undoBeforePaint) {
+        // Undo the actual split from its button's click, before the next paint.
+        await read(q(splitButton)+'.addEventListener("click",()=>'+q('#track-undo')+'.click(),{once:true})');
+      }
+      await click(splitButton);
+      await read('new Promise(done=>requestAnimationFrame(()=>requestAnimationFrame(()=>done(true))))');
+      if(undoBeforePaint) {
+        assert.equal(await read(layerCount),1,'同一帧撤销分割应恢复原包装片段');
+        assert.equal(await read(guideCleared),true,'撤销后旧分割的闪线不得在下一帧重现');
+      } else {
+        assert.equal(await read(layerCount),2,'包装实际分成两个片段');
+        assert.equal(await read(guideAtTime(splitTime,target.y)),true,'刷新轨道后切点仍有吸附线');
+        await wait(guideCleared,'分割结束后闪线自行消失');
+        await click('#track-undo');
+        await wait(layerCount+'===1');
+      }
+    }
     stage = '正反向播放、换向与暂停';
     await seek(1.95);
     await key('l'); await wait(q(status)+'.textContent.includes("1×") && !'+q(status)+'.hidden');
