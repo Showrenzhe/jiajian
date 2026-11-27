@@ -129,7 +129,7 @@
       "narrationSeconds": 0.4,
       "durationMs": 2000,
       "metric": "renderer requestAnimationFrame timestamps",
-      "sourceSha256": "cc631d1cd443855ab1949708df0600c6919e1700412502aa407c11e5855685c8",
+      "sourceSha256": "4230d3d3f3440f86bf7792298544155a7752963e6c3a360ca8216bc6d8edd8ed",
       "driverSha256": "d5ea5209f58177bda362c3098c036f6ada4f64a3fe5bb7125d1d6e988f5ddb4d"
     },
     "results": {
@@ -138,50 +138,50 @@
         "trustedEvents": 0,
         "intervals": 121,
         "medianMs": 16.7,
-        "p95Ms": 16.9,
-        "maxMs": 17.3,
-        "over16_67Ms": 69,
+        "p95Ms": 16.8,
+        "maxMs": 16.9,
+        "over16_67Ms": 73,
         "over25Ms": 0
       },
       "candidateDrag": {
-        "elapsedMs": 2100,
-        "trustedEvents": 127,
-        "intervals": 123,
+        "elapsedMs": 2117,
+        "trustedEvents": 129,
+        "intervals": 124,
         "medianMs": 16.7,
         "p95Ms": 16.8,
         "maxMs": 50,
-        "over16_67Ms": 71,
+        "over16_67Ms": 80,
         "over25Ms": 2
       },
       "playheadScrub": {
         "elapsedMs": 2050,
-        "trustedEvents": 116,
+        "trustedEvents": 128,
         "intervals": 123,
         "medianMs": 16.7,
         "p95Ms": 16.8,
         "maxMs": 17,
-        "over16_67Ms": 77,
+        "over16_67Ms": 75,
         "over25Ms": 0
       },
       "panelResize": {
         "elapsedMs": 2050,
-        "trustedEvents": 130,
+        "trustedEvents": 129,
         "intervals": 123,
         "medianMs": 16.7,
         "p95Ms": 16.8,
-        "maxMs": 16.8,
+        "maxMs": 17.1,
         "over16_67Ms": 75,
         "over25Ms": 0
       },
       "timelineZoom": {
-        "elapsedMs": 2100,
-        "trustedEvents": 42,
+        "elapsedMs": 2050,
+        "trustedEvents": 44,
         "intervals": 123,
         "medianMs": 16.7,
         "p95Ms": 16.8,
-        "maxMs": 33.3,
+        "maxMs": 16.9,
         "over16_67Ms": 77,
-        "over25Ms": 3
+        "over25Ms": 0
       }
     }
   }

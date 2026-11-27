@@ -12,7 +12,7 @@ const { exportBatch, inspectAsset } = require('../src/media.cjs');
 const { loadProject, saveProject } = require('../src/project-format.cjs');
 const { createPreviewBatch, selectPreviewPlans } = require('../src/preview-plans.cjs');
 const { ffmpeg, fixtures } = require('./fixtures.cjs');
-const { dragLibraryItem } = require('./desktop-input.cjs');
+const { clickVisible, dragLibraryItem } = require('./desktop-input.cjs');
 
 app.disableHardwareAcceleration();
 
@@ -236,8 +236,10 @@ async function check() {
     assert.deepEqual(revised.shots[2][0],revised.shots[1][0]);
     assert.equal(revised.timelineCaptions.cues[0].text,'出锅');
     assert.equal(revised.timelineCaptions.cues[0].end-revised.timelineCaptions.cues[0].start,90);
-    await click('#open-project');await wait(query('#notice')+'.textContent.includes("已打开工程")','重开粘贴工程');
-    await click(firstVoice);await click('#selected-voice-settings');
+    await click('#open-project');await wait(query('#notice')+'.textContent.includes("已打开工程：粘贴与倍速")','重开粘贴工程');
+    await wait('!'+query('#material-clear-selection')+'.disabled && '+query(firstVoice)+'.title.includes("2 倍")','重开后口播和操作状态就绪');
+    await read(query(firstVoice)+'.click(); '+query('#selected-voice-settings')+'.click()');
+    await wait('!!document.querySelector("dialog:modal input[type=number]")','重开口播设置');
     assert.equal(await read('document.querySelector("dialog[open] input[type=number]").valueAsNumber'),2);
     await action('关闭');
     const cell=(shot,row)=>'[data-drop-shot="'+shot+'"][data-candidate-index="'+row+'"]';
@@ -271,7 +273,7 @@ async function check() {
     const atSlot=(selector,r)=>'(()=>{const e='+query(selector)+';if(!e)return false;const r=e.getBoundingClientRect();'
       +'return '+['x','y','width','height'].map(k=>'Math.abs(r.'+k+'-'+r[k]+')<3').join(' && ')+'})()';
     const clips='Array.from(document.querySelectorAll(".sequence-video [data-move-candidate]"), e=>[e.dataset.dropShot,e.dataset.candidateIndex,e.querySelector(".sequence-clip-name").textContent])';
-    const dragVisuals='.candidate-moving,.candidate-displaced,.candidate-slot,.candidate-new-lane,[data-candidate-drag]';
+    const dragVisuals='.candidate-moving,.candidate-displaced,.candidate-slot,.candidate-new-lane,[data-candidate-drag],[data-candidate-lifted]';
     const restored=()=>wait('!'+query(dragVisuals+',[data-material-drop],[data-candidate-rejected],[data-drag-rejected]')+' && !'+query('.candidate-drop-hint')+'.textContent','结束拖动应清除悬浮、预览及反馈');
     const source=cell(0,1),middle=cell(1,0),target=cell(2,0),empty=cell(3,0);
     const clipNamed=(selector,name)=>query(selector+' .sequence-clip-name')+'?.textContent==='+JSON.stringify(path.basename(name));
@@ -416,11 +418,15 @@ async function check() {
       await wait('Math.abs('+query('.candidate-moving')+'.getBoundingClientRect().x-'+(lifted.x+14)+')<3','目标格内继续移动时视频跟随指针');
       return moved;
     }
+    const titleFilters = () => read('[...document.querySelectorAll(".titlebar .glass")].map(button => getComputedStyle(button).backdropFilter)');
+    const restingFilters = await titleFilters();
     await previewSwap();
+    assert.deepEqual(await titleFilters(), ['none','none'], '手持视频片段时标题按钮暂停采样');
     await mouse('mouseMoved',emptyPoint);
     await wait(query(empty)+'.dataset.materialDrop==="active" && '+atSlot(target,targetBounds),'切换至空分镜后先前的预览应回位');
     await mouse('mouseMoved',targetPoint);await wait(atSlot('.candidate-displaced',sourceBounds),'再次进入时恢复互换预览');
     await key('Escape',27);await restored();
+    assert.deepEqual(await titleFilters(), restingFilters, 'Esc 放下片段后标题按钮恢复原材质');
     await mouse('mouseReleased',targetPoint);
     await wait(atSlot(source,sourceBounds),'Esc 后原视频回到原行原列');
     assert.deepEqual(await read(clips),originalClips,'Esc 取消互换');
@@ -661,7 +667,7 @@ async function check() {
     await wait(clipNamed(cell(1,3),longVideo)+' && '+rows+'===4','保存重开后同源实例仍在指定的视频轨与分镜');
     const boundedFile=path.join(root,'四秒片段与空轨.sdworkbench');
     await saveProject(boundedFile,{...config,
-      shots:[[{id:'four',start:0,end:4,videoLane:2},{...red,videoLane:0}],[green],[{id:'still',start:0,end:4,videoStart:15}],[{...blue,end:.7,speed:2,videoSubtitles:undefined}]],
+      shots:[[{id:'four',start:0,end:4,videoLane:2},{...red,videoLane:0}],[green],[{id:'still',start:0,end:4,videoStart:15}],[{...blue,end:.7,speed:2,speedMode:'manual',videoSubtitles:undefined}]],
       shotSettings:[null,4,4,.35].map((duration,i)=>({name:'ABCD'[i],duration})),
       shotTransitions:[null,null,null,null],segmentNarrationIds:[[],['music'],[],[]],
       segmentVoiceCuts:[[],[{offset:1.4,ranges:[{start:0,end:.4}]}],[],[]],
@@ -686,13 +692,17 @@ async function check() {
     },libraryType,async()=>{
       await checkPlacement(scrollAxis,scrollScale,5.8,.6,'横向滚动后素材库片段吸附口播终点和字幕起点');
     });
+    // Four source seconds in this 0.6-second drop exceed the default 4× limit.
+    await wait('!!document.querySelector("#speed-overflow-dialog:modal [data-speed-choice=continue]")','新轨落位前确认超限倍速');
+    await clickVisible(wc, '#speed-overflow-dialog [data-speed-choice="continue"]');
     await wait(clipNamed(cell(1,3),longVideo),'横向滚动后的新轨落位');
     const cutWindow=(await loadProject(await saveAs('素材库滚动吸附'))).config.shots[1].at(-1);
+    assert.deepEqual([cutWindow.speed,cutWindow.speedOverflow],[4,'continue'],'新轨按选择的上限继续');
     assert.deepEqual([cutWindow.videoStart,cutWindow.videoDuration].map(n=>Number(n.toFixed(3))),[5.8,.6]);
     await click('#track-undo');await wait(rows+'===3','撤销滚动后的新视频轨');
     await fitTimeline();
     const secondLane='[data-lane-key="vis1"] .sequence-content';
-    async function dragIntoCutWindow(shot,lane,file,destination,at,start,span,acrossCut=false) {
+    async function dragIntoCutWindow(shot,lane,file,destination,at,start,span,{acrossCut=false,choice,speed}={}) {
       await wait('!document.getAnimations().some(a=>a.id==="candidate-arrival")','等待源片归位');
       await read(query('#timeline-tracks-panel')+'.scrollTop=0');
       const origin=await center(cell(shot,lane));
@@ -707,6 +717,11 @@ async function check() {
         await mouse('mouseMoved',point(at));await checkPlacement(axis,scale,start,span,'返回原窗口');
       }
       await mouse('mouseReleased',point(at));await restored();
+      if(choice) {
+        const button='#speed-overflow-dialog:modal [data-speed-choice="'+choice+'"]';
+        await wait('!!'+query(button),'片段移至新窗口后确认超限处理 '+choice);
+        await clickVisible(wc,button);
+      }
       const targetLane=destination===secondLane ? 1 : 3;
       await wait(clipNamed(cell(shot,targetLane),file),'移动后保留素材及所属分镜');
       const after=(await loadProject(await saveAs('窗口落盘-'+shot+'-'+targetLane+'-'+at))).config;
@@ -714,16 +729,17 @@ async function check() {
       assert.ok(Math.abs(result.videoStart-start)<.001);
       const defaultDuration=boundedBaseline.shotSettings[shot].duration ?? (original.end-original.start)/(original.speed ?? 1);
       assert.ok(Math.abs((result.videoDuration ?? defaultDuration)-span)<.001);
-      assert.deepEqual([result.start,result.end,result.speed],[original.start,original.end,original.speed],'时间轴落点保持源入出点和倍速');
+      assert.deepEqual([result.start,result.end],[original.start,original.end],'移动保留源入出点');
+      assert.deepEqual([result.speed,result.speedOverflow],[speed ?? original.speed,choice],'自动片段按新窗口对齐，手动片段保留倍速');
       await click('#track-undo');await wait(clipNamed(cell(shot,lane),file)+' && '+rows+'===3','一次撤销恢复原片和轨数');
       assert.deepEqual((await loadProject(await saveAs('窗口撤销-'+shot+'-'+targetLane+'-'+at))).config,boundedBaseline);
     }
-    await dragIntoCutWindow(0,2,longVideo,secondLane,5.9,5.8,.6,true);
-    await dragIntoCutWindow(0,2,longVideo,secondLane,9.9,8,4);
-    await dragIntoCutWindow(0,2,longVideo,zone,5.9,5.8,.6);
+    await dragIntoCutWindow(0,2,longVideo,secondLane,5.9,5.8,.6,{acrossCut:true,choice:'continue',speed:4});
+    await dragIntoCutWindow(0,2,longVideo,secondLane,9.9,8,4,{speed:1});
+    await dragIntoCutWindow(0,2,longVideo,zone,5.9,5.8,.6,{choice:'continue',speed:4});
     await dragIntoCutWindow(2,0,files.still,'#new-shot-drop',5.9,5.8,.6);
     await dragIntoCutWindow(3,0,files.blue,secondLane,2.65,0,4);
-    await dragIntoCutWindow(1,0,files.green,secondLane,2.65,0,4);
+    await dragIntoCutWindow(1,0,files.green,secondLane,2.65,0,4,{choice:'hold',speed:.25});
 
     const outSource=await center(cell(0,2));
     await mouse('mousePressed',outSource);await mouse('mouseMoved',{x:outSource.x+8,y:outSource.y});
@@ -757,7 +773,8 @@ async function check() {
     assert.ok(Math.abs(await shotBoundary()-boundaryBefore)<1,'重开后分镜与预览切点一致');
 
     const singleFile=path.join(root,'新增轨道原稿.sdworkbench');
-    await saveProject(singleFile,{...config,shots:[[{...red,start:.1,volume:43,layers:[layer('片段包装')]}],[green],[blue]],
+    // This fixture checks held tail frames after a lane move at a user-locked source rate.
+    await saveProject(singleFile,{...config,shots:[[{...red,start:.1,speed:1,speedMode:'manual',volume:43,layers:[layer('片段包装')]}],[green],[blue]],
       mutedVideoTracks:[0]},catalog);
     opens.push(singleFile);await click('#open-project');await verify(['A','B','C']);await fitTimeline();
     const singleBaseline=(await loadProject(await saveAs('新增轨前'))).config;

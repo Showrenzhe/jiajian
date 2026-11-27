@@ -46,7 +46,7 @@
 dialog::backdrop { backdrop-filter: none; }
 dialog:not(.glass), .glass--thick:not(:popover-open) { --lg-filter: none; }
 dialog:not(.glass) { --lg-fill: var(--surface-solid); }
-body:has(:is(#player-play, #timeline-play)[aria-pressed="true"]) dialog {
+body:is([data-preview-playing], [data-timeline-playing]) dialog {
   --lg-filter: none;
   --lg-fill: var(--surface-solid);
 }
@@ -59,10 +59,11 @@ body:has(:is(#player-play, #timeline-play)[aria-pressed="true"]) dialog {
 }
 /* The sidebar, home action, preview readout and script header relinquish their
    slots to an open overlay. Other existing tool popovers keep their material. */
-body:has(dialog.glass, [popover]:popover-open) :is(.tabs, #home-open-project, .preview-readout, .script-workspace-header) {
+body:is([data-glass-dialog], [data-tool-popover-open], [data-candidate-lifted])
+  :is(.tabs, #home-open-project, .preview-readout, .script-workspace-header) {
   backdrop-filter: none;
 }
-body:has(dialog.glass) .titlebar .glass { --lg-filter: none; }
+body:is([data-glass-dialog], [data-candidate-lifted]) .titlebar .glass { --lg-filter: none; }
 
 :root:is([data-glass="lite"], [data-glass="off"]) {
   --glass-filter: none;

@@ -11,6 +11,7 @@ function showGlassOn(dialog) {
   foremostDialog?.classList.remove('glass');
   foremostDialog = dialog;
   foremostDialog?.classList.add('glass');
+  document.body.toggleAttribute('data-glass-dialog', Boolean(dialog));
 }
 
 function displayTransition(dialog) {

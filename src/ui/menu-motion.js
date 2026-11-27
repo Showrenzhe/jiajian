@@ -1,5 +1,15 @@
 'use strict';
 
+// Native menus can be nested. Track their committed toggles once instead of
+// matching the whole editor against :popover-open during every timeline edit.
+const openToolPopovers = new Set();
+document.addEventListener('toggle', ({target, newState}) => {
+  if (newState === 'open' && target.hasAttribute('popover') && !target.classList.contains('candidate-moving')) {
+    openToolPopovers.add(target);
+  } else if (!openToolPopovers.delete(target)) return;
+  document.body.toggleAttribute('data-tool-popover-open', openToolPopovers.size > 0);
+}, true);
+
 // CSS anchor positioning may flip a menu near the window edge. Use its final
 // layout box (unaffected by the transition) to choose the point of origin.
 document.addEventListener('beforetoggle', event => {
