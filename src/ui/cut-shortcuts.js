@@ -2,16 +2,9 @@
 
 (() => {
   const storageKey = 'jiajian.cut-shortcuts.v1';
-  const labels = window.editorMessages.keys;
-  const commands = {
-    undo: [labels.undo, 'Ctrl+Z'], redo: [labels.redo, 'Ctrl+Shift+Z'],
-    split: [labels.split, 'W', 'Ctrl+B'], 'trim-left': [labels.trimLeft, 'Q'], 'trim-right': [labels.trimRight, 'E'],
-    reverse: [labels.reverse, null], mirror: [labels.mirror, null], crop: [labels.crop, null], rotate: [labels.rotate, null],
-    'quick-save': [labels.save, 'Ctrl+S'],
-    'frame-back': [labels.back, ','], 'frame-forward': [labels.forward, '.'],
-    'frames-back': [labels.backTen, 'Shift+,'], 'frames-forward': [labels.forwardTen, 'Shift+.'],
-  };
-  const defaults = () => Object.fromEntries(Object.entries(commands).map(([id, [, ...keys]]) => [id, keys]));
+  const registry = window.editorCommands, text = window.editorMessages.shortcutSettings;
+  const commands = registry.list().filter(command => command.customizable);
+  const defaults = () => Object.fromEntries(commands.map(({id, shortcut}) => [id, [...shortcut]]));
   const reserved = new Set([
     'Ctrl+A', 'Ctrl+C', 'Ctrl+X', 'Ctrl+V', 'Ctrl+F', 'Ctrl+L', 'Ctrl+\\', 'Ctrl+/', 'Shift+/',
     'Ctrl+R', 'Ctrl+W', 'Ctrl+Shift+I', 'Ctrl+Shift+R', 'Alt+F4', 'F5', 'F10', 'F11',
@@ -43,17 +36,16 @@
     try {
       const raw = localStorage.getItem(storageKey);
       if (!raw) return initial;
-      const data = JSON.parse(raw), owned = new Set();
+      const data = JSON.parse(raw), owned = new Set(), missing = [];
       if (data?.version !== 1) return initial;
       for (const [id, slots] of Object.entries(initial)) {
         const saved = data.bindings?.[id];
-        if (saved === undefined && (id === 'quick-save' || id.startsWith('frame'))) {
-          // Earlier settings could already assign Ctrl+S to a clip command.
-          initial[id] = slots.map(key => owned.has(key) ? null : key);
+        if (saved === undefined) {
+          missing.push(id);
           continue;
         }
         if (!Array.isArray(saved) || saved.length !== slots.length) return defaults();
-        const migrated = saved.map(key => key === 'Shift+/' || key === 'Ctrl+/' ? null : key);
+        const migrated = saved.map(key => registry.fixedOwner(key, id)?.id === 'editing-help' ? null : key);
         for (const key of migrated) {
           if (key === null) continue;
           if (!allowed(key) || owned.has(key)) return defaults();
@@ -61,18 +53,34 @@
         }
         initial[id] = migrated;
       }
+      // Preserve previous assignments when a later release adds a command with a default key.
+      for (const id of missing) {
+        initial[id] = initial[id].map(key => {
+          if (!key || owned.has(key)) return null;
+          owned.add(key);
+          return key;
+        });
+      }
     } catch { return defaults(); }
     return initial;
   }
   let bindings = load();
+  registry.setBindingReader(id => bindings[id]);
   let activeDialog;
   function actionFor(event) {
     if (event.defaultPrevented || activeDialog?.open) return;
     const key = chord(event);
-    return key && Object.keys(commands).find(id => bindings[id].includes(key));
+    return key && commands.find(({id}) => bindings[id].includes(key))?.id;
   }
-  function labelFor(action) {
-    return bindings[action]?.filter(Boolean).join(' / ') || '';
+  function ownsPaletteKey(event) {
+    const action = actionFor(event);
+    if (!action || !registry.keysFor('palette').includes(chord(event)) ||
+        !document.querySelector('.app-frame[data-mode="montage"]') || document.querySelector('dialog[open]')) return false;
+    if (action === 'quick-save') return true;
+    const target = event.target;
+    if (target.isContentEditable || target.closest?.('input, textarea, select')) return false;
+    return registry.get(action).when({target}) && Boolean(target.closest?.('#timeline-cut-editor[data-mode="cut"]') ||
+      (target.closest?.('#player-pane[data-cut-monitor]') && !document.querySelector('#player-more-menu:popover-open')));
   }
   function persist(next) {
     localStorage.setItem(storageKey, JSON.stringify({version: 1, bindings: next}));
@@ -93,34 +101,37 @@
     dialog.id = 'cut-shortcuts-dialog';
     dialog.className = 'cloud-settings-dialog';
     dialog.setAttribute('aria-labelledby', 'cut-shortcuts-title');
-    dialog.innerHTML = '<header class="cloud-settings-heading"><h2 id="cut-shortcuts-title" tabindex="-1" autofocus>快捷键</h2></header>' +
-      '<div class="cloud-settings-body"><p class="cloud-settings-muted">选中键位后按下新组合键。按 Esc 取消录制。</p>' +
-      '<h3>工程</h3><div class="project-shortcut-list"></div><h3>片段剪辑</h3>' +
+    dialog.innerHTML = '<header class="cloud-settings-heading"><h2 id="cut-shortcuts-title" tabindex="-1" autofocus>'+text.title+'</h2></header>' +
+      '<div class="cloud-settings-body"><p class="cloud-settings-muted">'+text.instructions+'</p>' +
+      '<h3>'+text.project+'</h3><div class="project-shortcut-list"></div><h3>'+text.clips+'</h3>' +
       '<div class="cut-shortcut-list"></div><output id="cut-shortcuts-status" role="status"></output></div>' +
-      '<footer class="cloud-settings-actions"><button type="button" id="cut-shortcuts-reset">恢复默认</button>' +
-      '<button type="button" id="cut-shortcuts-close">完成</button></footer>';
+      '<footer class="cloud-settings-actions"><button type="button" id="cut-shortcuts-reset">'+text.reset+'</button>' +
+      '<button type="button" id="cut-shortcuts-close">'+text.done+'</button></footer>';
     const list = dialog.querySelector('.cut-shortcut-list'), status = dialog.querySelector('output');
+    const paletteKey = registry.keysFor('palette')[0];
+    const legacyOwner = commands.find(({id}) => bindings[id].includes(paletteKey));
+    if (legacyOwner) status.textContent = text.legacyPalette(paletteKey, legacyOwner.title);
     const items = [];
     let recording;
     function paint() {
       for (const item of items) {
         const key = bindings[item.id][item.slot];
         const pending = recording === item;
-        item.bind.textContent = pending ? '请按键…' : key || '设置键位';
-        item.bind.setAttribute('aria-label', commands[item.id][0] + (item.slot ? '备用' : '') + '快捷键，' + (key || '未设置'));
+        item.bind.textContent = pending ? text.recording : key || text.assign;
+        item.bind.setAttribute('aria-label', text.bindLabel(registry.get(item.id).title, item.slot, key));
         item.bind.setAttribute('aria-pressed', String(pending));
         item.clear.disabled = !key;
       }
     }
-    function save(next, text) {
+    function save(next, confirmation) {
       try {
         persist(next);
         recording = undefined;
-        status.textContent = text;
-      } catch { status.textContent = '快捷键保存失败，请检查本机存储后重试。'; }
+        status.textContent = confirmation;
+      } catch { status.textContent = text.savingFailed; }
       paint();
     }
-    for (const [id, [label]] of Object.entries(commands)) {
+    for (const {id, title: label} of commands) {
       const row = document.createElement('div'), title = document.createElement('span'), slots = document.createElement('div');
       row.className = 'cut-shortcut-row';
       slots.className = 'cut-shortcut-slots';
@@ -134,7 +145,7 @@
         bind.dataset.bindAction = clear.dataset.clearAction = id;
         bind.dataset.slot = clear.dataset.slot = String(slot);
         clear.textContent = '×';
-        clear.title = '清除' + label + (slot ? '备用' : '') + '快捷键';
+        clear.title = text.clearLabel(label, slot);
         clear.setAttribute('aria-label', clear.title);
         const item = {id, slot, bind, clear};
         items.push(item);
@@ -142,7 +153,7 @@
         slots.append(group);
         bind.onclick = () => {
           recording = item;
-          status.textContent = '正在为“' + label + '”录制快捷键。';
+          status.textContent = text.start(label);
           paint();
         };
         bind.onblur = () => {
@@ -151,7 +162,7 @@
         clear.onclick = () => {
           const next = structuredClone(bindings);
           next[id][slot] = null;
-          save(next, '已清除“' + label + '”的键位。');
+          save(next, text.cleared(label));
           bind.focus();
         };
       });
@@ -165,24 +176,26 @@
       if (event.repeat || event.isComposing) return;
       if (event.key === 'Escape') {
         recording = undefined;
-        status.textContent = '已取消录制。';
+        status.textContent = text.cancelled;
         paint();
         return;
       }
       if (['Control', 'Shift', 'Alt', 'Meta'].includes(event.key)) return;
       const key = chord(event), {id, slot} = recording;
+      const fixed = key && registry.fixedOwner(key, id);
+      if (fixed) { status.textContent = text.fixedConflict(key, fixed.title); return; }
       if (!key || !allowed(key)) {
-        status.textContent = '这个键位用于导航、系统操作或现有命令。请选择其他键位。';
+        status.textContent = text.reserved;
         return;
       }
       const owner = items.find(item => bindings[item.id][item.slot] === key && item !== recording);
-      if (owner) { status.textContent = key + ' 已分配给“' + commands[owner.id][0] + '”。请先清除原绑定。'; return; }
+      if (owner) { status.textContent = text.conflict(key, registry.get(owner.id).title); return; }
       const next = structuredClone(bindings);
       next[id][slot] = key;
-      save(next, '已将“' + commands[id][0] + '”设为 ' + key + '。');
+      save(next, text.saved(registry.get(id).title, key));
     }
     dialog.addEventListener('keydown', onKey);
-    dialog.querySelector('#cut-shortcuts-reset').onclick = () => save(defaults(), '已恢复默认快捷键。');
+    dialog.querySelector('#cut-shortcuts-reset').onclick = () => save(defaults(), text.restored);
     dialog.querySelector('#cut-shortcuts-close').onclick = () => dialog.close();
     window.addEventListener('cutshortcutschange', paint);
     dialog.addEventListener('close', () => {
@@ -195,5 +208,6 @@
     paint();
     dialog.showModal();
   }
-  window.cutShortcuts = {actionFor, labelFor, openSettings, entries: () => Object.entries(commands).map(([id,[label]]) => ({label, keys:labelFor(id)}))};
+  window.cutShortcuts = {actionFor, chordFor: chord, ownsPaletteKey, labelFor: registry.labelFor, openSettings,
+    entries: () => commands.map(({id,title}) => ({label:title, keys:registry.labelFor(id)}))};
 })();

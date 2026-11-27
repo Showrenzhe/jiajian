@@ -9,6 +9,7 @@ const smoke = [
   'desktop.cjs',
   'draft-delete-desktop.cjs',
   'cut-shortcuts-desktop.cjs',
+  'command-palette-desktop.cjs',
   'software-update-desktop.cjs',
   goldenFrames,
 ];

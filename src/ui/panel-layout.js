@@ -86,8 +86,9 @@
     const notice = workspace.querySelector('#notice');
     const controls = create('div', { className: 'panel-layout-controls' });
     const messages = window.editorMessages.layoutEdit;
+    const registry = window.editorCommands;
     const toggle = create('button', { id: 'panel-layout-toggle', type: 'button', className: 'secondary', textContent: messages.start });
-    const resetButton = create('button', { id: 'panel-layout-reset', type: 'button', className: 'secondary', textContent: '恢复默认布局' });
+    const resetButton = create('button', { id: 'panel-layout-reset', type: 'button', className: 'secondary', textContent: registry.get('panel-layout-reset').title });
     const choose = create('select', { id: 'panel-layout-target', title: '选择要移动的面板' });
     choose.setAttribute('aria-label', '选择要移动的面板');
     const live = create('span', { id: 'panel-layout-status', className: 'panel-layout-status' });
@@ -251,7 +252,7 @@
 
     function refreshControls() {
       toggle.setAttribute('aria-pressed', String(editing));
-      toggle.textContent = editing ? messages.done : messages.start;
+      presentEditorCommand(toggle,toggle.id,{visible:true});
       if (editing) toggle.setAttribute('aria-describedby', banner.id);
       else toggle.removeAttribute('aria-describedby');
       toggle.title = editing ? '保留本次调整并退出。按 Esc 可取消本次调整。' : '拖动面板交换位置，拖动分隔线调大小。拖动上下两行两侧的箭头可跨列展开或收回。';
@@ -630,13 +631,16 @@
       live.textContent='已切换到'+name+'布局。';
       sync();
     });
-    toggle.addEventListener('click', () => {
+    const onLayout = () => frame?.dataset.mode === 'montage';
+    registry.bind(toggle.id,{when:onLayout, titleFor:() => editing ? messages.done : registry.get(toggle.id).title, run:() => {
       if (editing) return endEditing(false);
       beforeEdit = { slots: { ...slots }, active, split: splitView.snapshot() };
       editing = true;
       live.textContent = '拖到另一块面板上预览交换，松开落位，方向键也可交换。拖动边缘调整大小，按 Esc 取消本次调整。';
       sync();
-    });
+    }});
+    presentEditorCommand(toggle,toggle.id,{visible:true});
+    toggle.addEventListener('click', () => registry.execute(toggle.id));
     document.addEventListener('keydown', (event) => {
       if (!editing || frame?.dataset.mode !== 'montage' || event.key !== 'Escape' || event.defaultPrevented
           || event.repeat || event.isComposing || event.altKey || event.ctrlKey || event.metaKey || event.shiftKey) return;
@@ -655,7 +659,9 @@
       live.textContent = `已选择${pane.label}，按方向键与相邻面板交换。`;
       sync();
     });
-    resetButton.addEventListener('click', () => { reset(); toggle.focus({ preventScroll: true }); });
+    registry.bind(resetButton.id,{when:() => onLayout() && !resetButton.disabled, run:() => {reset();toggle.focus({preventScroll:true});}});
+    presentEditorCommand(resetButton,resetButton.id,{visible:true});
+    resetButton.addEventListener('click', () => registry.execute(resetButton.id));
     window.addEventListener('pointermove', move, { passive: false });
     window.addEventListener('pointerup', finish);
     window.addEventListener('pointercancel', finish);

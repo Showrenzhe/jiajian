@@ -153,7 +153,7 @@ window.mountTimelineSelection = function (host, {busy, changed, removed}) {
     paint();
   },true);
   host.addEventListener('keydown',(event)=>{
-    if (event.key==='Delete' && removeSelection()) {event.preventDefault();event.stopPropagation();}
+    if (event.key==='Delete' && window.editorCommands.execute('delete-selection',{timelineSelection:true})) {event.preventDefault();event.stopPropagation();}
     if (event.key==='Escape' && selected.size) {selected.clear();paint();event.preventDefault();}
   });
   return {bind,attach,removeSelection,get size(){return selected.size;},

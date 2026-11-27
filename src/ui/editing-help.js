@@ -5,6 +5,7 @@
   const entry = get('editing-help-entry');
   const frame = document.querySelector('.app-frame');
   const steps = window.editorMessages.tourSteps;
+  const registry = window.editorCommands;
   function element(tag, value) {
     const result = document.createElement(tag);
     if (value !== undefined) result.textContent = value;
@@ -62,18 +63,19 @@
     dialog.className = 'cloud-settings-dialog';
     body.className = 'cloud-settings-body';
     footer.className = 'cloud-settings-actions';
-    const title = element('h2','剪辑帮助');
+    const title = element('h2',registry.get('editing-help').title);
     title.id = 'editing-help-title';
     title.tabIndex = -1;
     title.autofocus = true;
     dialog.setAttribute('aria-labelledby',title.id);
-    const list = element('dl');
-    const entries = [['快捷键速查','? / Ctrl+/'],['调整分镜顺序','Alt+← / Alt+→'],['进入片段裁剪','双击视频片段'],['播放或暂停时间线','空格'],
-      ['选择素材','方向键 / Home / End'],['打开素材菜单','Shift+F10'],['删除所选素材或时间线片段','Delete'],
-      ['取消拖动、关闭菜单','Esc'],['视频片段菜单静音','M'],['视频片段菜单左右插入分镜','[ / ]'],
-      ...window.cutShortcuts.entries().map(({label,keys})=>[label,keys || '未绑定'])];
-    for (const [name,key] of entries) list.append(element('dt',name),element('dd',key));
-    body.append(title,element('h3','快捷键与手势'),list);
+    body.append(title);
+    for (const [scope, heading] of Object.entries(window.editorMessages.shortcutScopes)) {
+      const list = element('dl');
+      for (const command of registry.list().filter(command => command.help && command.scope === scope)) {
+        list.append(element('dt', command.title), element('dd', registry.labelFor(command.id) || window.editorMessages.shortcutSettings.unbound));
+      }
+      body.append(element('h3', heading), list);
+    }
     footer.append(button('重看剪辑引导',()=>{
       if (frame.dataset.mode === 'montage') dialog.close();
       showTour(0);
@@ -87,13 +89,19 @@
     document.body.append(dialog);
     dialog.showModal();
   }
-  entry.addEventListener('click',openHelp);
+  registry.bind('editing-help', {when: () => !document.querySelector('dialog:modal:not(#command-palette)'), run: openHelp});
+  entry.dataset.commandId = 'editing-help';
+  entry.textContent = registry.get('editing-help').title;
+  entry.setAttribute('aria-label', entry.textContent);
+  entry.setAttribute('aria-keyshortcuts', registry.keysFor('editing-help').map(key => key.replace('Ctrl+', 'Control+')).join(' '));
+  entry.title = entry.textContent + '（' + registry.labelFor('editing-help') + '）';
+  entry.addEventListener('click',() => registry.execute('editing-help'));
   window.addEventListener('keydown',event=>{
     if (event.defaultPrevented || event.isComposing || event.altKey || event.repeat ||
         event.target.closest?.('input,textarea,select,[contenteditable="true"]') || document.querySelector('dialog:modal')) return;
     if (!(event.key==='?' || ((event.ctrlKey||event.metaKey) && !event.shiftKey && (event.code==='Slash'||event.key==='/')))) return;
     event.preventDefault();
     event.stopImmediatePropagation();
-    openHelp();
+    registry.execute('editing-help');
   },true);
 })();

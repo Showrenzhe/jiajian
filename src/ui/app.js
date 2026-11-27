@@ -2,6 +2,14 @@
 
 const $ = (selector) => document.querySelector(selector);
 const api = window.workbench;
+const commandRegistry = window.editorCommands;
+function bindWorkbenchButton(id, run, when = () => mode === 'montage', enabled = button => !button.disabled) {
+  const button = $('#' + id);
+  commandRegistry.bind(id,{when:context => !operation && enabled(button) && when(context) &&
+    (context?.source !== 'palette' || mode !== 'montage' || $('#timeline-cut-editor').hidden), run});
+  presentEditorCommand(button,id,{visible:true});
+  button.addEventListener('click', () => commandRegistry.execute(id,{target:button}));
+}
 const workspaceToast = window.mountWorkspaceToast($('#workspace-toast'));
 const homeLabels = window.editorMessages.workspaceHome;
 const shots = [];
@@ -1062,10 +1070,10 @@ function shotRow(shot, index, previousPosters) {
   row.querySelector('.no-candidates').hidden = shot.length > 0;
   const up = row.querySelector('.move-up');
   up.disabled = index === 0;
-  up.addEventListener('click', () => moveShot(shot, index - 1));
+  up.addEventListener('click', () => commandRegistry.execute('move-shot-left',{shot}));
   const down = row.querySelector('.move-down');
   down.disabled = index === shots.length - 1;
-  down.addEventListener('click', () => moveShot(shot, index + 1));
+  down.addEventListener('click', () => commandRegistry.execute('move-shot-right',{shot}));
   row.querySelector('.remove-shot').addEventListener('click', () => {
     shots.splice(index, 1);
     finishTrackRemoval(shot.includes(selected));
@@ -1669,7 +1677,8 @@ function showMaterialMenu(target, x, y) {
   materialMenuTarget = target;
   $('#material-context-rename').hidden = !target.folder;
   const remove = $('#material-context-remove');
-  remove.querySelector('span').textContent = target.items.length > 1 ? `从素材库移除 ${target.items.length} 项` : '从素材库移除';
+  const removeTitle = commandRegistry.get(remove.id).titleFor({libraryTarget:target});
+  presentEditorCommand(remove,remove.id,{title:removeTitle,visible:true});
   const audio = $('#material-context-audio');
   audio.hidden = !target.items.every((item) => item.kind === 'video' || item.kind === 'audio');
   const bounds = target.anchor.getBoundingClientRect();
@@ -1690,9 +1699,7 @@ materialMenu.addEventListener('click', (event) => {
   if (!button || !materialMenuTarget) return;
   const target = materialMenuTarget;
   materialMenu.hidePopover();
-  if (button.id === 'material-context-remove') removeLibraryItems(target);
-  else if (button.id === 'material-context-rename') renameLibraryFolder(target.items[0]);
-  else if (!operation) openMaterialAudio(target.items);
+  commandRegistry.execute(button.id,{libraryTarget:target});
 });
 materialMenu.addEventListener('keydown', (event) => {
   if (['ArrowDown','ArrowUp','Home','End'].includes(event.key)) {
@@ -1724,13 +1731,13 @@ materialPanel.addEventListener('keydown', (event) => {
     if (!target?.folder) return;
     event.preventDefault();
     event.stopPropagation();
-    if (!event.repeat) renameLibraryFolder(target.items[0]);
+    if (!event.repeat) commandRegistry.execute('material-context-rename',{libraryTarget:target});
   } else if (event.key === 'Delete' && !event.shiftKey) {
     const target = materialMenu.matches(':popover-open') ? materialMenuTarget : libraryTarget(event.target);
     if (!target) return;
     event.preventDefault();
     event.stopPropagation();
-    if (!event.repeat) removeLibraryItems(target);
+    if (!event.repeat) commandRegistry.execute('material-context-remove',{libraryTarget:target});
   } else if ((event.key === 'F10' && event.shiftKey) || event.key === 'ContextMenu') {
     const target = libraryTarget(event.target);
     if (!target) return;
@@ -2675,9 +2682,9 @@ function updateControls(group, keepDraftPlayback = false) {
     $('#priority-help').textContent = '口播保持原速。画面比口播长时裁短，画面比口播短时慢放至口播结束。';
   }
   $('#prepare-preview').hidden = audioMode;
-  $('#prepare-preview').textContent = operation === 'prepare-preview' ? '正在生成…' : previewBatch ? '重新生成预览' : '生成预览';
+  presentEditorCommand($('#prepare-preview'),'prepare-preview',{visible:true});
   $('#start-export').disabled = busy || (audioMode ? audioTargets.length === 0 : previewBatch ? previewBatch.selected.size === 0 : !validMontage);
-  $('#start-export').textContent = audioMode ? '开始提取' : previewBatch ? '导出已选' : '导出';
+  presentEditorCommand($('#start-export'),'start-export',{visible:true});
   $('#cancel-export').hidden = operation !== 'export';
   if (selected && $('#preview-heading').textContent === '轨道预览') {
     syncPreviewClock(selected, '轨道预览');
@@ -4613,9 +4620,7 @@ const workspaceNavigation = (() => {
     frame.dataset.navigation = visible ? (isEditor() ? 'floating' : 'docked') : 'closed';
     if (frame.dataset.navigation !== 'docked') stopMotion();
     toggle.setAttribute('aria-expanded', String(visible));
-    const label = visible ? '收起侧栏' : '展开侧栏';
-    toggle.setAttribute('aria-label', label);
-    toggle.title = label + '（Ctrl+\\）';
+    presentEditorCommand(toggle,'nav-toggle');
   }
 
   function toggleNavigation() {
@@ -4645,7 +4650,11 @@ const workspaceNavigation = (() => {
     closeDrawer();
   }
 
-  toggle.addEventListener('click', toggleNavigation);
+  commandRegistry.bind('nav-toggle',{
+    titleFor:() => window.editorMessages.commandTitles[toggle.getAttribute('aria-expanded') === 'true' ? 'nav-collapse' : 'nav-expand'],
+    when:() => !document.querySelector('dialog:modal'), run:toggleNavigation,
+  });
+  toggle.addEventListener('click', () => commandRegistry.execute('nav-toggle'));
   navigation.addEventListener('click', (event) => {
     if (drawerOpen && event.target.closest('button:enabled')) closeDrawer();
   });
@@ -4664,7 +4673,7 @@ const workspaceNavigation = (() => {
       toggle.focus({ preventScroll: true });
     } else if (event.ctrlKey && !event.altKey && !event.shiftKey && event.code === 'Backslash') {
       event.preventDefault();
-      toggleNavigation();
+      commandRegistry.execute('nav-toggle');
     }
   }, true);
   sync();
@@ -4678,9 +4687,7 @@ $('#tab-drafts').addEventListener('click', async () => {
   window.scrollTo(0, 0);
 });
 $('#home-create').addEventListener('click', newProject);
-$('#title-home').addEventListener('click', showHome);
-$('#app-settings').addEventListener('click', () => openCloudTtsSettings({ showAppearance: true }));
-$('#cut-shortcuts-entry').addEventListener('click', event => window.cutShortcuts.openSettings(event.currentTarget));
+bindWorkbenchButton('title-home', showHome, () => true);
 window.bindSoftwareUpdates(api);
 const creativeWorkspace = window.createCreativeWorkspace({
   api,
@@ -4723,7 +4730,7 @@ const creativeWorkspace = window.createCreativeWorkspace({
   },
 });
 document.addEventListener('click', (event) => { if (event.target.closest('#creative-settings-entry')) creativeWorkspace.settings(); });
-$('#creative-cover').addEventListener('click', () => { if (!operation) creativeWorkspace.open('cover'); });
+bindWorkbenchButton('creative-cover', () => { if (!operation) creativeWorkspace.open('cover'); });
 $('#creative-avatar').addEventListener('click', () => { if (!operation) creativeWorkspace.open('avatar'); });
 for (const [id, key] of [['home-montage','montage'], ['tab-montage','projects'], ['tab-scene-split','scene'], ['tab-script','script']]) {
   const button = $('#' + id);
@@ -4735,10 +4742,8 @@ $('#tab-audio').addEventListener('click', () => setMode('audio'));
 $('#tab-script').addEventListener('click', () => showScript());
 $('#edit-attached-script').addEventListener('click', () => showScript(attachedScript));
 $('#home-import').addEventListener('click', openEditorForImport);
-$('#home-open-project').addEventListener('click', () => openProject());
 $('#tab-scene-split').addEventListener('click', () => setMode('scene-split'));
 $('#project-new').addEventListener('click', newProject);
-$('#project-open-file').addEventListener('click', () => openProject());
 $('#project-continue').addEventListener('click', () => setMode('montage'));
 $('#scene-pick-files').addEventListener('click', () => pickSceneInputs('files'));
 $('#scene-pick-folder').addEventListener('click', () => pickSceneInputs('folder'));
@@ -4779,8 +4784,7 @@ importMenu.addEventListener('click', event => {
   if (!choice || operation) return;
   importMenu.hidePopover();
   importTrigger.focus({preventScroll: true});
-  if (choice === folderChoice) addMaterialFolder();
-  else importLibraryFiles();
+  commandRegistry.execute(choice.id);
 });
 $('#empty-import-visual').addEventListener('click', async (event) => {
   const button = event.currentTarget;
@@ -4792,7 +4796,7 @@ $('#empty-import-visual').addEventListener('click', async (event) => {
   }
 });
 $('#empty-split-narration').addEventListener('click', splitNarrationWithSubs2srs);
-$('#material-folder-import').addEventListener('click', createMaterialFolder);
+bindWorkbenchButton('material-folder-import', createMaterialFolder);
 $('#material-search').addEventListener('input', renderMaterials);
 document.addEventListener('keydown', handlePreviewKey);
 const materialAudio = window.mountAudioTools({
@@ -4818,7 +4822,7 @@ async function openMaterialAudio(items) {
     });
   } catch (error) {materialMessage(error.message);}
 }
-$('#material-audio-open').onclick=()=>openMaterialAudio([...selectedMaterials.values()]);
+bindWorkbenchButton('material-audio-open', () => openMaterialAudio([...selectedMaterials.values()]));
 $('#review-audio-tools').onclick=()=>{if(reviewNarration){$('#narration-review-audio').pause();materialAudio.open([reviewNarration]);}};
 function placeAudioAsset(asset,role,shot,track) {
   if (role==='music') {
@@ -5136,10 +5140,7 @@ tracksPanel.addEventListener('drop', (event) => {
 for (const button of document.querySelectorAll('[data-workflow]')) {
   button.addEventListener('click', () => showWorkflow(button.dataset.workflow));
 }
-$('#import-materials').addEventListener('click', importMaterials);
-$('#add-shot').addEventListener('click', () => {
-  if(insertShot(shots.length)) visualTrackLane.lastElementChild.querySelector('.add-candidate').focus();
-});
+bindWorkbenchButton('import-materials', importMaterials, () => mode === 'audio');
 $('#pick-music').addEventListener('click', importMusic);
 $('#music-start-shot').addEventListener('change', (event) => {
   musicStartFrom = event.target.value === '' ? null : shots[Number(event.target.value)] ?? null;
@@ -5165,31 +5166,28 @@ $('#pick-subtitles').addEventListener('click', importSubtitles);
 $('#remove-subtitles').addEventListener('click', removeSubtitles);
 $('#add-whole-track').addEventListener('click', addWholeTrack);
 $('#pick-subtitle-batch').addEventListener('click', importSubtitleBatch);
-$('#open-project').addEventListener('click', () => openProject());
-$('#save-project').addEventListener('click', saveProject);
 window.addEventListener('keydown', event => {
   if (mode !== 'montage' || $('dialog[open]') || window.cutShortcuts.actionFor(event) !== 'quick-save') return;
   if (!(event.ctrlKey || event.metaKey || event.altKey)
       && (event.target.isContentEditable || event.target.closest?.('input, textarea, select, [role="textbox"]'))) return;
   event.preventDefault();
   event.stopPropagation();
-  if (!event.repeat) void quickSaveProject();
+  if (!event.repeat) commandRegistry.execute('quick-save');
 }, true);
-$('#prepare-preview').addEventListener('click', () => preparePreview());
+bindWorkbenchButton('prepare-preview', () => preparePreview());
 $('#select-all-previews').addEventListener('click', () => selectPreviews(true));
 $('#clear-preview-selection').addEventListener('click', () => selectPreviews(false));
-$('#start-export').addEventListener('click', startExport);
-for (const action of ['reset', 'undo', 'redo']) $(`#track-${action}`).addEventListener('click', () => changeHistory(action));
-$('#track-slice').addEventListener('click', sliceTrack);
+bindWorkbenchButton('start-export', startExport, () => mode === 'montage' || mode === 'audio');
+bindWorkbenchButton('track-reset', () => changeHistory('reset'));
+bindWorkbenchButton('track-slice', sliceTrack);
 $('#track-slice-interval').addEventListener('input', updateTrackSelection);
-$('#track-delete').addEventListener('click', removeSelectedTrack);
-$('#track-clean').addEventListener('click', cleanEmptyShots);
+bindWorkbenchButton('track-clean', cleanEmptyShots);
 $('#track-playhead').addEventListener('input', (event) => {
   if (selected) seekTimelineVideo(selected,trackPreviewClock?.sourceAt(event.target.valueAsNumber) ?? event.target.valueAsNumber);
 });
 $('#track-preview-axis').addEventListener('change', updateTrackSelection);
-$('#tracks-expand-all').addEventListener('click', () => setAllTrackDisclosures(true));
-$('#tracks-collapse-all').addEventListener('click', () => setAllTrackDisclosures(false));
+bindWorkbenchButton('tracks-expand-all', () => setAllTrackDisclosures(true));
+bindWorkbenchButton('tracks-collapse-all', () => setAllTrackDisclosures(false));
 $('#track-height').addEventListener('change', (event) => { $('#shots').dataset.height = event.target.value; });
 const trackZoom = $('#track-zoom');
 function showTrackZoom(level, maximum) {
@@ -5206,10 +5204,11 @@ window.addEventListener('keydown', (event) => {
   if (mode !== 'montage' || operation || event.defaultPrevented || event.isComposing
       || !(event.ctrlKey || event.metaKey) || event.altKey || $('dialog[open]')
       || event.target.isContentEditable || event.target.closest?.('input, textarea, select')) return;
-  const key = event.key.toLowerCase();
-  if (key === 'z' || key === 'y') {
+  const chord = 'Ctrl+' + (event.shiftKey ? 'Shift+' : '') + event.key.toUpperCase();
+  const action = ['project-undo','project-redo'].find(id => commandRegistry.keysFor(id).includes(chord));
+  if (action) {
     event.preventDefault();
-    changeHistory(key === 'y' || event.shiftKey ? 'redo' : 'undo');
+    commandRegistry.execute(action);
   }
 });
 for (const id of ['cancel-export', 'cancel-preview']) {
@@ -5370,7 +5369,7 @@ async function matchNarrationDuration(shot,clip) {
   say(status.join(' · '));
 }
 
-$('#match-all-voice-duration').addEventListener('click',()=>matchNarrationDuration());
+bindWorkbenchButton('match-all-voice-duration', ()=>matchNarrationDuration());
 function currentCandidateActionTarget() {
   const clip = $('#timeline-view').value === 'time' ? timeline.selectedCandidate : selected;
   const shot = clip && shots.find(group => group.includes(clip));
@@ -5379,10 +5378,10 @@ function currentCandidateActionTarget() {
 $('#track-more-options').addEventListener('beforetoggle', event => {
   if (event.newState === 'open') $('#clip-actions').disabled = !currentCandidateActionTarget();
 });
-$('#clip-actions').addEventListener('click', () => {
+bindWorkbenchButton('clip-actions', () => {
   const target = currentCandidateActionTarget();
   if (target) timeline.openCandidateActions(target.shot, target.clip);
-});
+}, () => mode === 'montage', () => Boolean(currentCandidateActionTarget()));
 // Keep a secondary click from selecting or previewing a different picture.
 function isPictureLane(event) {
   if (event.target.closest('.sequence-video,#visual-track-lane')) return true;
@@ -5514,8 +5513,8 @@ function batchLevelRows(kind){
   }
   return rows;
 }
-window.mountBatchEdit({
-  material:$('#rename-materials'),outputs:$('#rename-outputs'),volume:$('#batch-levels'),warn:materialMessage,changed:renderLists,levels:batchLevelRows,
+const batchEditor = window.mountBatchEdit({
+  material:$('#rename-materials'),outputs:$('#rename-outputs'),warn:materialMessage,changed:renderLists,levels:batchLevelRows,
   async materials(){
     if(operation)return [];const items=[...selectedMaterials.values()];
     const assets=await Promise.all(items.map(item=>item.clip?.asset??api.loadMaterialFile(item.id)));
@@ -5579,7 +5578,7 @@ function editAppearance(clip) {
       renderLists();
     }});
 }
-$('#timeline-appearance').addEventListener('click',()=>{const clip=shots.find((s)=>s.includes(selected)) ? selected : shots[0]?.[0];if(clip)editAppearance(clip);else say('请先在轨道中添加视频或图片。');});
+bindWorkbenchButton('timeline-appearance', ()=>{const clip=shots.find((s)=>s.includes(selected)) ? selected : shots[0]?.[0];if(clip)editAppearance(clip);else say('请先在轨道中添加视频或图片。');});
 const coverEditor = window.createCoverEditor({
   get:()=>editCover, set:(value)=>{editCover=value;renderLists();}, assetFor:(id)=>editAssets.get(id),
   selection:()=>{
@@ -5589,7 +5588,7 @@ const coverEditor = window.createCoverEditor({
   detect:(id)=>api.detectSceneCuts(id),
   pickImage:(onPick)=>pick('image',1,([asset])=>{if(asset){editAssets.set(asset.id,asset);onPick(asset);}}),
 });
-$('#timeline-cover').addEventListener('click',()=>{if(!operation)coverEditor.open();});
+bindWorkbenchButton('timeline-cover', ()=>{if(!operation)coverEditor.open();});
 
 // The rendered file cuts on whole frames. Keep these boundaries in sync with
 // source-edit.cjs when translating inspector trims or asset-bound captions.
@@ -5971,7 +5970,7 @@ function setTrackView() {
 }
 $('#timeline-view').addEventListener('change',setTrackView);
 document.addEventListener('pointerdown',(event)=>{
-  if(timeline.selectionCount && !event.target.closest('#timeline-clock,.track-toolbar,#timeline-view-actions')) timeline.clearSelection();
+  if(timeline.selectionCount && !event.target.closest('#timeline-clock,.track-toolbar,#timeline-view-actions,#command-palette-entry,#command-palette,#video-track-menu')) timeline.clearSelection();
 },true);
 $('#shots').addEventListener('keydown',(event)=>{
   if (event.key !== 'Delete' || operation || event.target.closest('input,select,textarea,[contenteditable="true"]')) return;
@@ -5986,9 +5985,8 @@ function syncTimelinePlayButton() {
     button.ariaPressed = String(playing);
     document.body.toggleAttribute('data-timeline-playing', playing);
   }
-  const label=playing ? '暂停时间线' : '播放时间线';
-  button.setAttribute('aria-label',label);
-  button.title=label+'（空格）';
+  const title=playing ? window.editorMessages.commandTitles['pause-timeline'] : commandRegistry.get('play-timeline').title;
+  presentEditorCommand(button,'play-timeline',{title});
 }
 function toggleTimelinePlayback() {
   if(operation || mode!=='montage') return;
@@ -5999,7 +5997,6 @@ function toggleTimelinePlayback() {
   timeline.toggleDraftPlayback();
 }
 
-$('#timeline-play').addEventListener('click',()=>void toggleTimelinePlayback());
 player.addEventListener('play',()=>{if(!player.paused) timeline?.stopDraftPlayback();syncTimelinePlayButton();});
 player.addEventListener('pause',syncTimelinePlayButton);
 const editorWorkspace = $('#editor-workspace');
@@ -6025,7 +6022,7 @@ document.addEventListener('keydown', event => {
   playbackSpaceHeld = true;
   if (event.repeat || operation) return;
   if (target.closest('#timeline-cut-editor') && cutEditor.toggleLocalPlayback()) return;
-  if (!playerTools.monitoringCut && target.closest('#timeline-tracks-panel, .track-toolbar, #timeline-view-actions')) toggleTimelinePlayback();
+  if (!playerTools.monitoringCut && target.closest('#timeline-tracks-panel, .track-toolbar, #timeline-view-actions')) commandRegistry.execute('play-timeline');
   else void playerTools.togglePlay();
 });
 document.addEventListener('keyup', event => {
@@ -6038,8 +6035,8 @@ $('#timeline-clock').addEventListener('pointerdown',(event)=>{
   if(event.button===0 && !event.target.closest('button,input,select,textarea')) $('#timeline-clock').focus({preventScroll:true});
 },true);
 $('#timeline-more-menu').addEventListener('click',(event)=>{if(event.target.closest('button') && $('#timeline-more-menu').matches(':popover-open')) $('#timeline-more-menu').hidePopover();});
-$('#timeline-text-groups').addEventListener('click',()=>timeline.textSettings());
-$('#timeline-scenes').addEventListener('click',()=>{
+bindWorkbenchButton('timeline-text-groups', ()=>timeline.textSettings());
+bindWorkbenchButton('timeline-scenes', ()=>{
   if (selected?.asset.kind==='video' && $('#preview-heading').textContent!=='成片预览') {
     editAssets.set(selected.asset.id,selected.asset);cutEditor.openScenes(selected.asset);
   } else pick('video',1,([asset])=>{if(asset) cutEditor.openScenes(asset);});
@@ -6075,7 +6072,7 @@ for (const viewport of [$('#timeline-clock'), shotViewport]) {
     if (cards) updateTrackScrollbar();
   });
 }
-$('#timeline-fit').addEventListener('click', () => timeline.fit());
+bindWorkbenchButton('timeline-fit', () => timeline.fit());
 $('#track-height').addEventListener('change',()=>timeline.setHeight($('#track-height').value));
 $('#track-preview-axis').addEventListener('change',()=>timeline.refresh());
 player.addEventListener('timeupdate',()=>{if(selected?.asset.kind!=='image') timeline.syncPlayer(selected,player.currentTime);});
@@ -6102,8 +6099,8 @@ const editorTextTools=window.mountEditorTextTools({
   apply:(config)=>{if(mode==='script') scriptWorkspace.restore(config.script);else {restoreProject({name:projectName,config},{retainHistory:true});updateControls();}},
   importGroups:bringScriptTextGroups,
 });
-$('#timeline-text-tools').addEventListener('click',editorTextTools.open);
-window.addEventListener('keydown',(e)=>{if((e.ctrlKey || e.metaKey) && e.key.toLowerCase()==='f' && ['script','montage'].includes(mode)){e.preventDefault();editorTextTools.open();}});
+bindWorkbenchButton('timeline-text-tools', editorTextTools.open, () => ['script','montage'].includes(mode));
+window.addEventListener('keydown',(e)=>{if(!e.defaultPrevented && !document.querySelector('dialog:modal') && (e.ctrlKey || e.metaKey) && e.key.toLowerCase()==='f' && ['script','montage'].includes(mode)){e.preventDefault();commandRegistry.execute('timeline-text-tools');}});
 function syncVoiceFollow() {
   const current=$('#voice-follow-track'),target=$('#voice-follow-shot');
   const row=Math.min(extraWholeTracks.length,Math.max(0,Number(current.value)||0));
@@ -6119,7 +6116,7 @@ $('#voice-follow-shot').addEventListener('change',(event)=>{
   if(index>0) extraWholeTracks[index-1].follow=shot;else primaryVoiceFollow=shot;
   updateControls();
 });
-window.mountTrackOrganizer({trigger:$('#organize-tracks'),getConfig:montageConfig,getAsset:(id)=>editAssets.get(id),
+const trackOrganizer = window.mountTrackOrganizer({getConfig:montageConfig,getAsset:(id)=>editAssets.get(id),
   apply:(config)=>{restoreProject({name:projectName,config},{retainHistory:true});updateControls();},busy:()=>Boolean(operation),notify:say});
 async function editVideoCaptions(clip) {
   if(operation || clip?.asset.kind!=='video') return;
@@ -6139,6 +6136,147 @@ $('#recognize-voice-captions').addEventListener('click',async()=>{
     $('#narration-review').close();renderLists();
   }
 });
+
+function mountEditorCommands() {
+  const titles = window.editorMessages.commandTitles;
+  commandRegistry.bind('prepare-preview',{titleFor:() => operation === 'prepare-preview' ? titles['preview-generating'] :
+    previewBatch ? titles['preview-regenerate'] : titles['prepare-preview']});
+  commandRegistry.bind('start-export',{titleFor:() => mode === 'audio' ? titles['extract-audio'] :
+    previewBatch ? titles['export-selected'] : titles['start-export']});
+  bindWorkbenchButton('batch-levels', batchEditor.openVolume);
+  bindWorkbenchButton('organize-tracks', trackOrganizer.open);
+  const available = () => !operation;
+  const montage = () => mode === 'montage' && available();
+  const editingTimeline = context => montage() && (context?.source !== 'palette' || $('#timeline-cut-editor').hidden);
+  const palette = window.mountCommandPalette({
+    getRecentProjects: () => api.projects(),
+    openRecentProject: project => openProject(project.id),
+    getContext: target => ({target, source:'palette'}),
+    onError: error => sayProject(error.message),
+  });
+  commandRegistry.bind('palette', {palette:false, when:() => !document.querySelector('dialog:modal'), run:() => palette.open()});
+  commandRegistry.bind('settings.appearance', {when:available, run:() => openCloudTtsSettings({showAppearance:true})});
+  commandRegistry.bind('settings.shortcuts', {run:context => window.cutShortcuts.openSettings(context?.target ?? $('#cut-shortcuts-entry'))});
+  commandRegistry.bind('open-project', {when:available, run:() => openProject()});
+  commandRegistry.bind('save-project-as', {when:() => montage() && !$('#save-project').disabled, run:saveProject});
+  commandRegistry.bind('add-shot', {when:context => editingTimeline(context) && !insertShotError(shots.length), run:() => {
+    if (insertShot(shots.length)) visualTrackLane.lastElementChild.querySelector('.add-candidate').focus();
+  }});
+  commandRegistry.bind('quick-save', {when:montage, run:quickSaveProject});
+  commandRegistry.bind('play-timeline', {when:context => editingTimeline(context) && !$('#timeline-play').disabled, run:toggleTimelinePlayback});
+  for (const action of ['undo', 'redo']) {
+    const availableHistory = () => action === 'undo' ? editHistory?.canUndo() : editHistory?.canRedo();
+    commandRegistry.bind('project-' + action, {when:context => editingTimeline(context) && availableHistory(), run:() => changeHistory(action)});
+  }
+  for (const id of ['undo','redo','split','trim-left','trim-right','reverse','mirror','crop','rotate',
+    'frame-back','frame-forward','frames-back','frames-forward']) {
+    commandRegistry.bind(id, {when:() => montage() && cutEditor.canExecute(id), run:() => cutEditor.execute(id)});
+  }
+
+  // Menu clicks carry their exact clip; palette commands recheck the live selection.
+  function candidateFor(context) {
+    if (!editingTimeline(context)) return;
+    const target = context?.slot ?? currentCandidateActionTarget();
+    if (target && shots.includes(target.shot) && target.shot.includes(target.clip) && !videoLocked(target.shot,target.clip)) return target;
+  }
+  function bindVideo(id, priority, execute, supports = () => true) {
+    commandRegistry.bind(id, {priority, when:context => {
+      const target = candidateFor(context);
+      return target?.clip.asset.kind === 'video' && supports(target.clip);
+    }, run:context => execute(candidateFor(context))});
+  }
+  bindVideo('add-text', 104, ({shot, clip}) => timeline.addCandidateLayer(shot,clip,'text'));
+  bindVideo('add-sticker', 103, ({shot, clip}) => timeline.addCandidateLayer(shot,clip,'sticker'));
+  bindVideo('mute-video', 102, ({clip}) => timeline.toggleCandidateMute(clip), clip => clip.asset.hasAudio);
+  commandRegistry.bind('mute-video',{titleFor:context => candidateFor(context)?.clip.sourceMuted ?
+    window.editorMessages.commandTitles['unmute-video'] : commandRegistry.get('mute-video').title});
+  commandRegistry.bind('play-timeline',{titleFor:() => timeline.isDraftPlaying() ?
+    window.editorMessages.commandTitles['pause-timeline'] : commandRegistry.get('play-timeline').title});
+  bindVideo('video-speed', 101, ({clip}) => {
+    if (selected !== clip) preview(clip,'轨道预览');
+    activateInspectorTab($('#inspector-tab-visual'));
+    $('#track-speed').focus();
+    $('#track-speed').select();
+  });
+  commandRegistry.bind('edit-clip', {when:context => candidateFor(context)?.clip.asset.kind === 'video',
+    run:context => openCandidateCut(candidateFor(context).clip)});
+  commandRegistry.bind('delete-selection', {
+    when:context => editingTimeline(context) && (context?.slot ? Boolean(candidateFor(context)) :
+      timeline.selectionCount > 0 || (!context?.timelineSelection && (context?.source === 'palette' ? Boolean(candidateFor(context)) : !$('#track-delete').disabled))),
+    run:context => {
+      if (context?.slot) {
+        const {shot,clip} = candidateFor(context);
+        removeTrackCandidate(shot,clip);
+        finishTrackRemoval();
+      } else if (context?.timelineSelection) return timeline.removeSelected();
+      else removeSelectedTrack();
+      return true;
+    },
+  });
+  for (const [id, offset] of [['insert-shot-left',0],['insert-shot-right',1]]) {
+    const indexFor = context => {
+      const target = candidateFor(context);
+      return target ? shots.indexOf(target.shot) + offset : -1;
+    };
+    commandRegistry.bind(id, {when:context => !insertShotError(indexFor(context)), run:context => {
+      const index = indexFor(context);
+      if ($('#timeline-view').value === 'time') timeline.insertBesideCandidate(index);
+      else insertShot(index);
+    }});
+  }
+  for (const [id, direction] of [['move-shot-left',-1],['move-shot-right',1]]) {
+    const target = context => context?.shot ?? timeline.selectedShot;
+    commandRegistry.bind(id, {when:context => {
+      const index = shots.indexOf(target(context));
+      return editingTimeline(context) && !laneControls['shot-strip']?.locked && index >= 0 && Boolean(shots[index + direction]);
+    }, run:context => {
+      const shot = target(context);
+      return moveShot(shot,shots.indexOf(shot) + direction);
+    }});
+  }
+  for (const [id, selector] of [['material-import','#material-import'], ['track-more','#track-more'], ['timeline-more','#timeline-more'],
+    ['layout-controls','button[popovertarget="accessible-layout-controls"]']]) {
+    const buttons = [...document.querySelectorAll(selector)];
+    for (const item of buttons) presentEditorCommand(item,id,{visible:true});
+    const button = buttons[0];
+    // The button already toggles its native popover and restores focus on Escape.
+    commandRegistry.bind(id,{palette:id !== 'layout-controls', when:() => montage() && !button.disabled, run:() => button.click()});
+  }
+  for (const [id, action] of [['material-import-files',importLibraryFiles],['material-import-directory',addMaterialFolder]]) {
+    commandRegistry.bind(id,{when:montage,run:action});
+    presentEditorCommand($('#'+id),id,{visible:true});
+  }
+  for (const [id, action] of [['material-context-remove', removeLibraryItems],
+    ['material-context-rename', target => renameLibraryFolder(target.items[0])],
+    ['material-context-audio', target => openMaterialAudio(target.items)]]) {
+    const button = $('#'+id);
+    commandRegistry.bind(id,{palette:false, when:context => montage() && !!context?.libraryTarget, run:context => action(context.libraryTarget)});
+    presentEditorCommand(button,id,{visible:true});
+    const key = button.querySelector('kbd');
+    if (key) key.textContent = commandRegistry.labelFor(id);
+  }
+  commandRegistry.bind('material-context-remove',{titleFor:context => context?.libraryTarget?.items.length > 1 ?
+    window.editorMessages.commandMaterialRemoveCount(context.libraryTarget.items.length) : commandRegistry.get('material-context-remove').title});
+  const controls = [
+    ['command-palette-entry','palette'], ['app-settings','settings.appearance'], ['cut-shortcuts-entry','settings.shortcuts'],
+    ['home-open-project','open-project'], ['project-open-file','open-project'], ['open-project','open-project'],
+    ['add-shot','add-shot'], ['save-project','save-project-as'], ['track-undo','project-undo'], ['track-redo','project-redo'], ['timeline-play','play-timeline'], ['track-delete','delete-selection'],
+  ];
+  for (const [element, id] of controls) {
+    const button = $('#' + element);
+    presentEditorCommand(button,id,{visible:true});
+    button.addEventListener('click', () => commandRegistry.execute(id, {target:button}));
+  }
+  window.addEventListener('keydown', event => {
+    if (event.defaultPrevented || event.repeat || !commandRegistry.keysFor('palette').includes(window.cutShortcuts.chordFor(event)) ||
+        window.cutShortcuts.ownsPaletteKey(event) || !commandRegistry.get('palette').when()) return;
+    event.preventDefault();
+    event.stopPropagation();
+    commandRegistry.execute('palette', {target:event.target});
+  }, true);
+}
+mountEditorCommands();
+
 editBaseline = structuredClone(montageConfig());
 editHistory = window.createEditHistory(editBaseline);
 draftAutosave.reset(undefined, draftTitle(), JSON.stringify(editBaseline));

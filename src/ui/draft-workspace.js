@@ -134,13 +134,19 @@
         menuDelete.focus({ preventScroll: true });
       }
     });
-    menuDelete.addEventListener('click', () => {
-      if (busy || !menu.matches(':popover-open')) return;
-      menu.hidePopover();
-      cardFor(target.id)?.focus({ preventScroll: true });
-      $('#draft-delete-title').textContent = '删除“' + target.name + '”？';
-      dialog.showModal();
+    const deleteId = 'draft-context-delete';
+    presentEditorCommand(menuDelete, deleteId, {visible:true});
+    window.editorCommands.bind(deleteId, {
+      palette:false,
+      when:() => !busy && !dialog.open && target && menu.matches(':popover-open'),
+      run:() => {
+        menu.hidePopover();
+        cardFor(target.id)?.focus({ preventScroll: true });
+        $('#draft-delete-title').textContent = '删除“' + target.name + '”？';
+        dialog.showModal();
+      },
     });
+    menuDelete.addEventListener('click', () => window.editorCommands.execute(deleteId));
 
     cancel.addEventListener('click', () => dialog.close());
     dialog.addEventListener('cancel', event => { if (deleting) event.preventDefault(); });
