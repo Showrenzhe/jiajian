@@ -113,6 +113,15 @@ window.videoSpeedControls = (() => {
               <label><input type="radio" name="appearance" value="dark"><span class="appearance-preview" aria-hidden="true"></span><span>深色</span></label>
               <label><input type="radio" name="appearance" value="system"><span class="appearance-preview" aria-hidden="true"></span><span>跟随系统</span></label>
             </div>
+            <div class="cloud-settings-field glass-effect-field">
+              <label for="glass-effect">${window.editorMessages.glassEffect.label}</label>
+              <select id="glass-effect" aria-describedby="glass-effect-note">
+                <option value="full">${window.editorMessages.glassEffect.full}</option>
+                <option value="lite">${window.editorMessages.glassEffect.lite}</option>
+                <option value="off">${window.editorMessages.glassEffect.off}</option>
+              </select>
+              <small id="glass-effect-note" role="status" hidden></small>
+            </div>
           </fieldset>
           <fieldset id="auto-speed-settings" hidden>
             <legend>${window.editorMessages.videoSpeed.settings}</legend>
@@ -212,6 +221,7 @@ window.videoSpeedControls = (() => {
     const dialog = $('dialog');
     const appearance = container.querySelector('#appearance-settings');
     window.bindAppearancePicker(appearance);
+    window.bindGlassEffectPicker(appearance.querySelector('#glass-effect'), appearance.querySelector('#glass-effect-note'));
     const speedSettings=container.querySelector('#auto-speed-settings');
     const resetSpeedSettings=window.videoSpeedControls.bindSettings(speedSettings);
     const provider = $('provider');

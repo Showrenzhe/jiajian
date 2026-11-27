@@ -4,6 +4,11 @@
   if (typeof window !== 'undefined') window.editorMessages = messages;
   if (typeof module === 'object' && module.exports) module.exports = messages;
 })(Object.freeze({
+  glassEffect: {
+    label: '玻璃效果', full: '完整', lite: '精简', off: '关闭',
+    compatibility: '软件渲染兼容模式已关闭玻璃效果。退出兼容模式并重启佳剪后，将恢复你的选择。',
+    storageError: '无法保存玻璃效果，请重试。',
+  },
   speedPlanningErrors:{
     invalidPictureRange:'裁剪片段超出素材范围，或终点未晚于起点。',
     invalidWindow:'请检查素材保留时长、目标时长和自动倍速范围。',

@@ -69,15 +69,20 @@ async function run() {
     const motion = button(layer, '调整关键帧'), child = q('.layer-motion-dialog');
     await mouse(motion);
     assert.ok((await state(child)).opacity < 1);
+    assert.equal(await read(child + '.classList.contains("glass")'),true);
+    assert.equal(await read('getComputedStyle(' + layer + ').backdropFilter'), 'none', '下层弹窗回落实底');
+    assert.notEqual(await read('getComputedStyle(' + child + ').backdropFilter'), 'none');
     await settle();
     const childTop = (await state(child)).top;
     await key('Escape',27);
     const exit = await state(child);
     assert.ok(exit && !exit.modal && exit.opacity > 0 && exit.scrim > 0 && exit.pointer === 'none', '退出动画保留内容并释放命中');
+    assert.equal(await read(child + '.classList.contains("glass")'), true, '退出中保留前层材质');
     assert.equal(exit.top, childTop, '关闭时保留原有位置');
     assert.equal(await read('document.activeElement === '+motion),true);
     await settle();
     assert.equal(await read(child),null);
+    assert.equal(await read(layer + '.classList.contains("glass")'),true, '关闭子层后恢复父弹窗材质');
 
     const details = q('.sequence-dialog[open] .text-presets');
     await mouse(details + '.querySelector("summary")');
@@ -147,6 +152,23 @@ async function run() {
     await key('Escape',27);
     await settle();
 
+    for (const [entry, panel] of [['#software-update-entry','#update-dialog'], ['#editing-help-entry','#editing-help-dialog']]) {
+      await mouse(q(entry));
+      const material = await read(`(() => {
+        const dialog = ${q(panel)}, style = getComputedStyle(dialog);
+        return { glass:dialog.classList.contains("glass"), filter:style.backdropFilter,
+          duration:parseFloat(style.transitionDuration)*1000, ease:style.transitionTimingFunction };
+      })()`);
+      assert.ok(material.glass && material.filter !== 'none');
+      assert.ok(material.duration >= 180 && material.duration <= 240);
+      assert.match(material.ease, /^cubic-bezier\(0.2, 0.8, 0.2, 1\)/);
+      await settle();
+      await key('Escape',27);
+      const exitTime = await read('parseFloat(getComputedStyle(' + q(panel) + ').transitionDuration)*1000');
+      assert.ok(exitTime >= 120 && exitTime <= 160);
+      await settle();
+      assert.equal(await read('document.activeElement.id'), entry.slice(1));
+    }
     await media('reduce');
     await mouse(trigger,2);
     assert.equal((await state(layer)).opacity,1);

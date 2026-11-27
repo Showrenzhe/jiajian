@@ -1,0 +1,89 @@
+/* Keep the existing theme clock and its ink/surface pair during theme changes. */
+:root {
+  --surface-solid: var(--surface);
+  --lg-blur: 22px;
+  --lg-saturate: 145%;
+  --lg-tint: var(--sheet-surface);
+  --lg-tint-thick: --appearance-color(rgb(252 252 253 / 93%), rgb(32 34 39 / 94%));
+  --lg-rim: var(--glass-edge);
+  --lg-rim-hi: --appearance-color(rgb(255 255 255 / 84%), rgb(255 255 255 / 25%));
+  --lg-inner: inset 0 1px 0 var(--lg-rim-hi);
+  --lg-shadow: var(--sheet-shadow);
+  --r-card: 16px;
+  --r-control: 10px;
+  --r-pill: 999px;
+}
+
+/* The three menu IDs also match legacy ID-based surface rules. All sheets,
+   including dynamically created ones, retain their geometry while exiting. */
+:is(.glass, dialog, #draft-context-menu, #material-context-menu, #video-track-menu) {
+  color: var(--ink);
+  background: var(--lg-fill, var(--lg-tint));
+  backdrop-filter: var(--lg-filter, blur(var(--lg-blur)) saturate(var(--lg-saturate)));
+  border: 1px solid var(--lg-rim);
+  border-radius: var(--lg-radius, var(--r-card));
+  box-shadow: var(--lg-elevation, var(--lg-inner), var(--lg-shadow));
+}
+.glass--thick {
+  --lg-tint: var(--lg-tint-thick);
+  --lg-blur: 32px;
+  --lg-radius: 14px;
+}
+.glass--pill {
+  --lg-radius: var(--r-pill);
+  --lg-shadow: 0 1px 3px --appearance-color(#19212e1a, #0005);
+}
+:is(dialog:not(.color-wheel-panel), #draft-context-menu, #material-context-menu, #video-track-menu)
+  :is(button, select, textarea, input:not([type]), input:is([type="text"], [type="number"], [type="url"], [type="password"], [type="search"])) {
+  border-radius: var(--r-control);
+}
+.titlebar .glass {
+  --ink-surface: --over(var(--lg-tint), var(--titlebar-base), calc(87% + .07 * var(--appearance-mix)));
+  padding-inline: 10px;
+  transition-property: scale;
+}
+.titlebar .glass:hover:enabled { --lg-fill: var(--control-hover); --ink-surface: var(--lg-fill); }
+dialog::backdrop { backdrop-filter: none; }
+dialog:not(.glass), .glass--thick:not(:popover-open) { --lg-filter: none; }
+dialog:not(.glass) { --lg-fill: var(--surface-solid); }
+body:has(:is(#player-play, #timeline-play)[aria-pressed="true"]) dialog {
+  --lg-filter: none;
+  --lg-fill: var(--surface-solid);
+}
+
+/* Two title buttons share the window with at most two other sampled surfaces.
+   Avoid double-sampling their parent. The three persistent editing tool groups
+   sit on opaque panels and keep their existing fills and hit targets. */
+.titlebar, .app-frame[data-mode="montage"] :is(.workbench-actions, .material-entry-actions, .timeline-header .track-toolbar) {
+  backdrop-filter: none;
+}
+/* The sidebar, home action, preview readout and script header relinquish their
+   slots to an open overlay. Other existing tool popovers keep their material. */
+body:has(dialog.glass, [popover]:popover-open) :is(.tabs, #home-open-project, .preview-readout, .script-workspace-header) {
+  backdrop-filter: none;
+}
+body:has(dialog.glass) .titlebar .glass { --lg-filter: none; }
+
+:root:is([data-glass="lite"], [data-glass="off"]) {
+  --glass-filter: none;
+  --clear-optics: none;
+  --lg-filter: none;
+}
+:root:is([data-glass="lite"], [data-glass="off"]) .script-workspace-header { backdrop-filter: none; }
+:root[data-glass="off"] :is(.glass, dialog) {
+  --lg-fill: var(--surface-solid);
+  --lg-elevation: none;
+  --lg-rim: var(--hairline);
+}
+:root[data-glass="off"] .titlebar .glass { --ink-surface: var(--surface-solid); }
+@media (prefers-reduced-transparency: reduce), (prefers-contrast: more), (forced-colors: active) {
+  :root :is(.glass, dialog) {
+    --lg-filter: none;
+    --lg-fill: var(--surface-solid);
+    --lg-elevation: none;
+    --lg-rim: var(--hairline);
+  }
+}
+@media (forced-colors: active) {
+  :root :is(.glass, dialog) { --lg-rim: CanvasText; }
+}

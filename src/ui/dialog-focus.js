@@ -2,10 +2,36 @@
 
 const dialogInvokers = new WeakMap();
 const pendingDialogExits = new WeakMap();
+const openDialogs = new Set();
+let foremostDialog;
+let foregroundExit;
+
+function showGlassOn(dialog) {
+  foregroundExit = undefined;
+  foremostDialog?.classList.remove('glass');
+  foremostDialog = dialog;
+  foremostDialog?.classList.add('glass');
+}
+
+function displayTransition(dialog) {
+  return dialog.getAnimations().find(animation => animation.transitionProperty === 'display');
+}
 
 document.addEventListener('beforetoggle', event => {
   const dialog = event.target;
-  if (event.newState !== 'open' || !dialog.matches('dialog:not(.color-wheel-panel)')) return;
+  if (event.newState !== 'open' || !dialog.matches('dialog')) return;
+  // After the native toggle commits (or is cancelled), only the foremost
+  // sheet samples its backdrop. Underlying sheets keep their opaque fill.
+  queueMicrotask(() => {
+    if (!dialog.open) return;
+    for (const sheet of openDialogs) {
+      if (!sheet.isConnected || !sheet.open) openDialogs.delete(sheet);
+    }
+    openDialogs.delete(dialog);
+    openDialogs.add(dialog);
+    showGlassOn(dialog);
+  });
+  if (dialog.matches('.color-wheel-panel')) return;
   pendingDialogExits.delete(dialog);
   const source = event.source || document.activeElement;
   const anchor = source?.getBoundingClientRect();
@@ -27,6 +53,18 @@ document.addEventListener('beforetoggle', event => {
 document.addEventListener('close', event => {
   const dialog = event.target;
   if (dialog.open) return;
+  openDialogs.delete(dialog);
+  if (foremostDialog === dialog) {
+    const exit = displayTransition(dialog);
+    foregroundExit = exit;
+    const restore = () => {
+      if (!dialog.open && foremostDialog === dialog && foregroundExit === exit) {
+        showGlassOn([...openDialogs].filter(sheet => sheet.open && sheet.isConnected).at(-1));
+      }
+    };
+    if (exit) exit.finished.then(restore, restore);
+    else restore();
+  }
   // A menu action can disappear as its dialog opens. After native close,
   // repair focus only if the browser left it on a disappearing surface.
   const active = document.activeElement, invoker = dialogInvokers.get(dialog);
@@ -38,7 +76,7 @@ document.addEventListener('close', event => {
 // cleanup while the native display transition is keeping those pixels visible.
 window.afterDialogExit = function (dialog, cleanup = () => dialog.remove()) {
   if (dialog.open) return;
-  const exit = dialog.getAnimations().find(animation => animation.transitionProperty === 'display');
+  const exit = displayTransition(dialog);
   if (!exit) { cleanup(); return; }
   pendingDialogExits.set(dialog, exit);
   exit.finished.catch(() => {}).then(() => {

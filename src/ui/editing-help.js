@@ -64,6 +64,8 @@
     footer.className = 'cloud-settings-actions';
     const title = element('h2','剪辑帮助');
     title.id = 'editing-help-title';
+    title.tabIndex = -1;
+    title.autofocus = true;
     dialog.setAttribute('aria-labelledby',title.id);
     const list = element('dl');
     const entries = [['快捷键速查','? / Ctrl+/'],['调整分镜顺序','Alt+← / Alt+→'],['进入片段裁剪','双击视频片段'],['播放或暂停时间线','空格'],

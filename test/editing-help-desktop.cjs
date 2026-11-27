@@ -32,7 +32,8 @@ async function makeScenery(dir,index) {
   const name=['湖畔晨光','山脊落日','远山暮色'][index];
   const still=path.join(dir,name+'.png'), file=path.join(dir,name+'.mp4');
   await fs.writeFile(still,nativeImage.createFromBitmap(bitmap,{width,height}).toPNG());
-  await ffmpeg(['-loop','1','-i',still,'-t','2','-r','24','-pix_fmt','yuv420p','-threads','2',file]);
+  const audio = process.env.JIAJIAN_GLASS_SCREENSHOTS ? ['-f','lavfi','-i','anullsrc=r=48000:cl=mono','-c:a','aac'] : [];
+  await ffmpeg(['-loop','1','-i',still,...audio,'-t','2','-r','24','-pix_fmt','yuv420p','-threads','2',file]);
   return ['scene'+index,await inspectAsset(file,'video')];
 }
 
@@ -40,6 +41,14 @@ async function check() {
   const dir=mkdtempSync(path.join(os.tmpdir(),'jiajian-editing-guide-'));
   app.setPath('userData',path.join(dir,'electron'));
   const catalog=new Map(await Promise.all([0,1,2].map(i=>makeScenery(dir,i))));
+  const glassOutput = process.env.JIAJIAN_GLASS_SCREENSHOTS;
+  if (glassOutput) {
+    for (const [id, name] of [['black','纯黑校样'], ['white','纯白校样']]) {
+      const clip = path.join(dir, name+'.mp4');
+      await ffmpeg(['-f','lavfi','-i','color='+id+':s=480x270:r=24:d=2','-threads','2',clip]);
+      catalog.set(id, await inspectAsset(clip,'video'));
+    }
+  }
   const names=[...catalog.keys()], file=path.join(dir,'山野一日.sdworkbench');
   await saveProject(file,{
     ratio:'16:9',resolution:720,fps:24,fit:'fit',keepAudio:true,unordered:false,useOriginal:true,useMirrors:false,
@@ -149,13 +158,18 @@ async function check() {
   try {
     win.setContentSize(1366,768);
     await click('#home-open-project');
-    await wait('document.querySelectorAll(".sequence-shots [data-reorder-shot]").length===3 && !!document.querySelector("#editing-tour")');
+    await wait('document.querySelectorAll(".sequence-shots [data-reorder-shot]").length==='+names.length+' && !!document.querySelector("#editing-tour")');
     for (const title of ['导入素材','建分镜','加口播','生成预览','导出']) {
       assert.ok((await read(q('editing-tour')+'.textContent')).includes(title));
       await click('#editing-tour button:last-child');
     }
     await wait('!document.querySelector("#editing-tour")');
     await click('.sequence-video [data-move-candidate]');
+    if (glassOutput) {
+      await readyPicture();
+      await require('./glass-screenshots.cjs')({win,wc,read,click,wait,key,select,output:glassOutput});
+      return;
+    }
     const readme=process.env.JIAJIAN_README_SCREENSHOT;
     if (readme) {
       await wc.debugger.sendCommand('Emulation.setEmulatedMedia',{features:[{name:'prefers-color-scheme',value:'light'}]});
@@ -168,6 +182,17 @@ async function check() {
     }
     await key('/','Slash',2);
     await wait('document.querySelector("#editing-help-dialog:modal")');
+    const firstView = await read(`(() => {
+      const dialog = document.querySelector('#editing-help-dialog');
+      const body = dialog.querySelector('.cloud-settings-body'), title = document.querySelector('#editing-help-title');
+      const heading = title.getBoundingClientRect(), viewport = body.getBoundingClientRect();
+      const footer = dialog.querySelector('footer').getBoundingClientRect();
+      return { focused:document.activeElement === title, top:body.scrollTop, outerTop:dialog.scrollTop,
+        titleVisible:heading.top >= viewport.top && heading.bottom <= viewport.bottom,
+        footerVisible:footer.top >= viewport.bottom - 1 && footer.bottom <= innerHeight };
+    })()`);
+    assert.deepEqual(firstView,{focused:true,top:0,outerTop:0,titleVisible:true,footerVisible:true},
+      '1366 × 768 首开帮助时标题在正文顶部，底部操作可见');
     assert.ok((await read(q('editing-help-dialog')+'.textContent')).includes('Ctrl+S'));
     await click('#editing-help-dialog footer button:first-child');
     await click('#editing-tour button:first-child');
