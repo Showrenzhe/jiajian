@@ -49,17 +49,20 @@
   }
 
   function needsPictureTiming(clip, fixedDuration) {
-    return clip?.matchedDuration || (fixedDuration && clip?.asset?.kind === 'video' && clip.speed !== undefined && !usesPlacedVideoSource(clip,false));
+    return (clip && alignment.fixedSpeedPolicy(clip)) || clip?.matchedDuration || (fixedDuration && clip?.asset?.kind === 'video' && clip.speed !== undefined && !usesPlacedVideoSource(clip,false));
   }
 
   function retainedPicture(clip,shotDuration,useFullSource=false) {
-    if(clip.asset.kind==='image') return {clip,start:0,duration:shotDuration ?? clip.end,shotDuration};
+    const originalMaterialId=clip.sourceEdit?.asset?.id ?? clip.asset.id;
+    if(clip.asset.kind==='image') return {clip,originalMaterialId,start:0,duration:shotDuration ?? clip.end,shotDuration};
     const retained=waveformSource(clip.ranges ?? [{start:clip.start,end:clip.end}],clip.look?.head,clip.look?.tail);
     const speed=placedVideoSpeed(clip) || 1;
-    const length=Math.min(retained.duration,!useFullSource && !clip.matchedDuration && shotDuration ? shotDuration*speed : Infinity);
+    const length=Math.min(retained.duration,!useFullSource && !alignment.fixedSpeedPolicy(clip) && !clip.matchedDuration && shotDuration ? shotDuration*speed : Infinity);
     const ranges=[];
     retained.visit(0,length,false,(start,end)=>ranges.push({start,end}));
-    return {clip,speed,matchedDuration:clip.matchedDuration,start:ranges[0]?.start ?? clip.start,sourceDuration:length,duration:length/speed,
+    return {clip,originalMaterialId,speed,speedMode:clip.speedMode,speedOverflow:clip.speedOverflow,autoFitSpeed:clip.autoFitSpeed,
+      videoWindow:clip.videoWindow,videoDuration:clip.videoDuration,
+      matchedDuration:clip.matchedDuration,start:ranges[0]?.start ?? clip.start,sourceDuration:length,duration:length/speed,
       candidateStart:clip.start,retainedRanges:ranges.length>1 ? ranges : undefined,shotDuration};
   }
 
@@ -76,7 +79,7 @@
       const leaders=videoGroupLeaders(eligible,eligible.map(clip=>lanes[shot.indexOf(clip)]));
       return [first,...leaders.filter(clip=>clip!==first)].map(clip=>{
         const shotDuration=clip.videoFit==='hold' ? fixed ?? clip.matchedDuration : clip.matchedDuration ?? fixed;
-        return retainedPicture(clip,shotDuration,useFullSource);
+        return {...retainedPicture(clip,shotDuration,useFullSource),shotIndex:index,hiddenVideo:!controls.allows(state.trackControls,'vis'+lanes[shot.indexOf(clip)],'visual')};
       });
     });
     const clips=pools.map(([picture],i)=>{
@@ -87,13 +90,14 @@
         narrationSpeed:state.voiceSpeed?.(narration,shot,row),voiceOffset:state.voiceOffset(i,row)};
     });
     const fps=state.fps || 30;
+    const options={range:state.autoSpeedRange,choices:state.draftSpeedChoices,report:state.onSpeedChallenge};
     if(state.priority!=='voice' || !(state.segmented ? clips.some(clip=>clip.narration) : wholeDuration)) {
       return pools.map(pool=>needsPictureTiming(pool[0].clip,pool[0].shotDuration) ?
-        alignment.fitSegmentedVoice([pool[0]],[pool],fps,'fill',true)[0] : null);
+        alignment.fitSegmentedVoice([pool[0]],[pool],fps,'fill',true,options)[0] : null);
     }
-    if(state.segmented) return alignment.fitSegmentedVoice(clips,pools,fps,state.voiceAlignment ?? 'fill');
-    if(state.voiceAlignment==='reference') return alignment.fitReferenceWhole(clips,wholeDuration,fps);
-    return alignment.fitWholeVoice(clips,pools,wholeDuration,fps);
+    if(state.segmented) return alignment.fitSegmentedVoice(clips,pools,fps,state.voiceAlignment ?? 'fill',false,options);
+    if(state.voiceAlignment==='reference') return alignment.fitReferenceWhole(clips,wholeDuration,fps,pools,options);
+    return alignment.fitWholeVoice(clips,pools,wholeDuration,fps,options);
   }
 
   function timing(state,clipSpan,assetFor,focus) {
@@ -169,7 +173,7 @@
       if(!text || end<=start || start>=total || !controls.allows(s.trackControls,key,'visual')) return;
       entries.push({text,start,end:Math.min(end,total),appearance,highlights,visual:true});
     }
-    function add(lane,asset,start,span,{ranges,head,tail,volume=100,visual=false,loop=false,layer,speed=1,cycle,trackKey,hold=false}={}) {
+    function add(lane,asset,start,span,{ranges,head,tail,volume=100,visual=false,loop=false,layer,speed=1,cycle,cycleParts,trackKey,hold=false}={}) {
       if(!asset?.url || !(span>0) || start>=total || (!visual && !(volume>0))) return;
       const key=trackKey ?? controls.layerKey(layer);
       if (!controls.participates(s.trackControls,key)) return;
@@ -177,7 +181,7 @@
       if (!controls.allows(s.trackControls,key,'audio')) volume=0;
       const stop=Math.min(total,start+span);
       const base={lane,asset,volume,visual,layer};
-      if(cycle) { entries.push({...base,start,end:stop,source:ranges[0].start,rate:speed,cycle}); return; }
+      if(cycle) { entries.push({...base,start,end:stop,source:ranges[0].start,rate:speed,cycle,...(cycleParts && {cycleParts})}); return; }
       if(asset.kind==='image') {
         if(stop>start) entries.push({...base,start,end:stop,source:0,rate:1});
         return;
@@ -258,7 +262,16 @@
           const picture=retainedPicture(clip,visibleSpan);
           pictureTiming=alignment.fitSegmentedVoice([picture],[[picture]],s.fps || 30,'fill',true)[0];
         }
-        if(pictureTiming && clip && !placedSource) {
+        const chosenPolicy=pictureTiming?.clip===clip && pictureTiming?.speedOverflow ? pictureTiming : clip;
+        const fixedPicture=Boolean(chosenPolicy && alignment.fixedSpeedPolicy(chosenPolicy));
+        if(clip && placedSource && fixedPicture) {
+          const pool=[clip,...eligiblePictures(shot,s).filter(c=>c!==clip && controls.allows(s.trackControls,'vis'+lanes[shot.indexOf(c)],'visual'))]
+            .map(c=>retainedPicture(c,undefined,true));
+          const primary=chosenPolicy===clip ? pool[0] : {...pool[0],speed:chosenPolicy.speed,speedOverflow:chosenPolicy.speedOverflow,
+            duration:pool[0].sourceDuration/chosenPolicy.speed};
+          pictureTiming=alignment.fixedSpeedVisuals(primary,pool,visibleSpan,Math.max(1,Math.round(visibleSpan*(s.fps || 30))),s.fps || 30);
+        }
+        if(pictureTiming && clip && (!placedSource || fixedPicture)) {
           const parts=pictureTiming.visuals ?? [pictureTiming];
           let offset=pictureAt;
           for(const part of parts) {
@@ -269,16 +282,13 @@
             const source=part.sourceDuration ?? part.duration*speed;
             const volume=!fallback && s.keepAudio && !owner.sourceMuted && !s.muted.has(lanes[shot.indexOf(owner)]) ? (owner.volume ?? 100) : 0;
             add(pictureLane,owner.asset,offset,length,{ranges:[{start:part.start,end:part.start+source}],
-              speed,visual:true,volume,trackKey:'vis'+lanes[shot.indexOf(owner)],cycle:repeats>1 ? source : 0});
+              speed,visual:true,volume,trackKey:'vis'+lanes[shot.indexOf(owner)],hold:part.holdLast,
+              cycle:repeats>1 ? (part.cycleParts ? part.duration*speed : source) : 0,cycleParts:part.cycleParts});
             if(!fallback && (owner.layers?.length || owner.videoSubtitles)) {
-              for(let n=0;n<repeats;n++) {
-                const elapsed=n*source/speed;
-                const segment=Math.min(source/speed,length-elapsed);
-                if(segment>0) {
-                  layers(owner.layers,offset+elapsed,segment,part.start-owner.start,speed);
-                  pictureCaptions(owner,offset+elapsed,segment,part.start,speed);
-                }
-              }
+              alignment.visitVisualIntervals(part,length,(piece,elapsed,segment,rate)=>{
+                layers(owner.layers,offset+elapsed,segment,piece.start-owner.start,rate);
+                pictureCaptions(owner,offset+elapsed,segment,piece.start,rate);
+              });
             }
             offset+=length;
           }
@@ -559,10 +569,18 @@
         let source=entry.source+(at-entry.start)*entry.rate;
         if(entry.loop)source%=entry.asset.duration;
         if(entry.cycle) {
-          const cycleIndex=Math.floor((source-entry.source)/entry.cycle);
+          let cycleIndex=Math.floor((source-entry.source)/entry.cycle);
+          let offset=(source-entry.source)%entry.cycle;
+          if (entry.cycleParts) {
+            let index=0;
+            while (index+1<entry.cycleParts.length && offset>=entry.cycleParts[index].sourceDuration) {
+              offset-=entry.cycleParts[index++].sourceDuration;
+            }
+            source=entry.cycleParts[index].start+offset;
+            cycleIndex=cycleIndex*entry.cycleParts.length+index;
+          } else source=entry.source+offset;
           if(cycleIndex!==item.cycleIndex) item.targetSet=false;
           item.cycleIndex=cycleIndex;
-          source=entry.source+(source-entry.source)%entry.cycle;
         }
         // Outside Chromium's native rate range, sample on the composition
         // clock, allowing one outstanding seek while the other lanes continue playing.

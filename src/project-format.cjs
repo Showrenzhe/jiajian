@@ -15,21 +15,28 @@ const { normalizeSubtitles } = require('./subtitles.cjs');
 const { normalizeSubprojects } = require('./subprojects.cjs');
 const { normalizeLibraryFolders } = require('./library-folders.cjs');
 const { normalizeLayers, normalizeTransform, normalizePackaging } = require('./packaging.cjs');
-const { normalizeShotSettings, normalizeRanges, normalizeSegmentVoiceCuts, normalizeSceneCuts } = require('./shot-timing.cjs');
+const { normalizeShotSettings, normalizePictureRanges, normalizeSegmentVoiceCuts, normalizeSceneCuts } = require('./shot-timing.cjs');
 const { normalizeCover } = require('./cover.cjs');
 const { audioSpeed, normalizeMusicSpeeds, normalizeVolumeOverrides } = require('./shot-timing.cjs');
 const { normalizeLook, inspectLut } = require('./visual-style.cjs');
 const { candidateVideoLanes, normalizeVideoGaps, placedVideoSpeed, minVideoSpeed } = require('./ui/track-tools.js');
+const {projectSpeedFormat} = require('./ui/messages-zh-cn.js');
 
 const format = 'sdworkbench';
-const version = 2;
+const version = 3;
 /** @typedef {{start:number,end:number,reverse?:boolean,mirror?:boolean,rotation?:number,crop?:{x:number,y:number,width:number,height:number}}} EditRange */
 /** @typedef {{id:string,ranges:EditRange[]}} EditRecipe */
 /** @typedef {Map<string, Record<string, any>>} AssetCatalog */
-// Version 1 declarations omit size and duration. These remain unknown until the media can be inspected.
-const migrations = new Map([[1, project => ({ ...project, version:2 })]]);
+// v1 asset declarations may omit size and duration; inspection supplies them when possible.
+const migrations = new Map([
+  [1, project => ({ ...project, version: 2 })],
+  [2, project => ({ ...project, version: 3, config: cleanConfig(project.config, true).config })],
+]);
+function supportedProject(project) {
+  return project?.format === format && (project.version === version || migrations.has(project.version));
+}
 function migrateProject(project) {
-  if (project?.format !== format || !Number.isInteger(project.version)) throw Error('不支持此工程文件格式或版本。');
+  if (!supportedProject(project)) throw Error('不支持此工程文件格式或版本。');
   let current=project;
   while (migrations.has(current.version)) current=migrations.get(current.version)(current);
   if (current.version!==version) throw Error('不支持此工程文件格式或版本。');
@@ -81,7 +88,7 @@ function normalizeScriptModel(value) {
   return script;
 }
 
-function cleanConfig(config) {
+function cleanConfig(config, migrateOldSpeed = false) {
   if (!Array.isArray(config?.shots) || config.shots.length > maxShots
       || !Array.isArray(config.musicIds) || config.musicIds.length > maxCandidates) {
     throw new Error('工程中的分镜或配乐数量无效。');
@@ -131,6 +138,16 @@ function cleanConfig(config) {
       if (clip.autoFitSpeed !== undefined && typeof clip.autoFitSpeed !== 'boolean') {
         throw new Error(`第 ${index + 1} 组分镜的自动倍速设置无效。`);
       }
+      // Preserve the old playback rules, including automatic placement, narration matching,
+      // and a missing source rate. New alignment limits begin only after an explicit edit.
+      const speedMode = migrateOldSpeed ? 'legacy' : clip.speedMode;
+      const speedOverflow = migrateOldSpeed ? undefined : clip.speedOverflow;
+      if (speedMode !== undefined && !['auto', 'manual', 'legacy'].includes(speedMode)) {
+        throw new Error(projectSpeedFormat.invalidMode(index));
+      }
+      if (speedOverflow !== undefined && !['trim-start', 'trim-end', 'continue', 'loop', 'hold', 'group'].includes(speedOverflow)) {
+        throw new Error(projectSpeedFormat.invalidOverflow(index));
+      }
       if (clip.matchedDuration !== undefined && (!Number.isFinite(clip.matchedDuration) || clip.matchedDuration < 0.000001 || clip.matchedDuration > 86400)) {
         throw new Error(`第 ${index + 1} 组分镜的匹配时长无效。`);
       }
@@ -149,7 +166,7 @@ function cleanConfig(config) {
       if (clip.videoFit !== undefined && (clip.videoFit !== 'hold' || clip.videoStart === undefined || clip.videoDuration === undefined)) {
         throw new Error('视频片段的切点窗口无效。');
       }
-      const ranges = clip.ranges === undefined ? undefined : normalizeRanges(clip.ranges, clip.start, clip.end);
+      const ranges = clip.ranges === undefined ? undefined : normalizePictureRanges(clip.ranges, clip.start, clip.end);
       let sourceEdit;
       if (clip.sourceEdit !== undefined) {
         const original = record(clip.sourceEdit?.id, 'visual');
@@ -175,7 +192,9 @@ function cleanConfig(config) {
         ...(ranges && { ranges }),
         ...(clip.volume !== undefined && { volume: clip.volume }),
         ...(clip.sourceMuted && {sourceMuted:true}),
-        ...((clip.speed !== undefined || clip.autoFitSpeed) && { speed: placedVideoSpeed(clip) }),
+        ...((clip.speed !== undefined || clip.autoFitSpeed) && { speed: placedVideoSpeed({...clip, speedMode, speedOverflow}) }),
+        ...(speedMode !== undefined && { speedMode }),
+        ...(speedOverflow !== undefined && { speedOverflow }),
         ...(clip.autoFitSpeed && { autoFitSpeed: true }),
         ...(clip.matchedDuration !== undefined && { matchedDuration: clip.matchedDuration }),
       };
@@ -429,7 +448,7 @@ async function saveProject(file, config, catalog, { overwrite = false } = {}) {
   if (!assets.some(row => catalog.get(row.id)?.missing)) validateCuts(projectConfig, catalog);
   const thumbnail = await projectThumbnail(projectConfig, catalog, assets)
     ?? await (emptyCover ??= fs.readFile(path.join(__dirname, 'ui', 'assets', 'project-cover.jpg')).then((bytes) => 'data:image/jpeg;base64,' + bytes.toString('base64')));
-  const contents = Buffer.from(`${JSON.stringify({ thumbnail, format, version: path.extname(file).toLowerCase() === '.jiajian' ? version : 1, config: projectConfig, assets }, null, 2)}\n`, 'utf8');
+  const contents = Buffer.from(`${JSON.stringify({ thumbnail, format, version, config: projectConfig, assets }, null, 2)}\n`, 'utf8');
   if (contents.length - (thumbnail?.length ?? 0) > maxBytes) throw new Error('工程文件超过 1 MiB 的大小上限。');
 
   const temp = path.join(path.dirname(file), `.sdworkbench-${randomUUID()}.tmp`);
@@ -442,7 +461,7 @@ async function saveProject(file, config, catalog, { overwrite = false } = {}) {
       await writer.close();
     }
     // Linking a complete sibling file publishes it without replacing a concurrent save.
-    if (overwrite === true) await fs.rename(temp, file);
+    if (overwrite === true) await replaceProjectFile(temp, file);
     else await fs.link(temp, file);
   } catch (error) {
     if (error.code === 'EEXIST') {
@@ -458,7 +477,7 @@ async function saveProject(file, config, catalog, { overwrite = false } = {}) {
 }
 
 /** @param {string} file */
-async function readProject(file) {
+async function readProjectSnapshot(file) {
   const reader = await fs.open(file, 'r');
   try {
     const info = await reader.stat();
@@ -476,13 +495,88 @@ async function readProject(file) {
     try {
       const doc = JSON.parse(new TextDecoder('utf-8', { fatal: true }).decode(buffer.subarray(0, length)));
       if (length > maxBytes && (!embeddedThumbnail(doc) || length - doc.thumbnail.length > maxBytes)) throw new Error();
-      return doc;
+      return {doc, bytes:buffer.subarray(0, length)};
     } catch {
       throw new Error('工程文件内容无效或已损坏。');
     }
   } finally {
     await reader.close();
   }
+}
+
+async function readProject(file) {
+  return (await readProjectSnapshot(file)).doc;
+}
+
+// A sibling backup can be opened directly with the old application. Publish complete, independent
+// bytes without replacing an existing backup, including after a failed save or a concurrent retry.
+async function verifyUpgradeBackup(file, bytes) {
+  const existing = await readProjectSnapshot(file);
+  if (!bytes.equals(existing.bytes)) throw Error(projectSpeedFormat.backupConflict);
+}
+
+async function publishBackupDirectory(file, temp, bytes) {
+  // exFAT does not support hard links. Renaming a directory containing the complete, synced
+  // file is atomic and cannot replace another non-empty backup directory.
+  const directory = file + '.pre-v3';
+  const stage = await fs.mkdtemp(path.join(path.dirname(file),'.backup-dir-'));
+  const stagedFile = path.join(stage,path.basename(file));
+  try {
+    await fs.rename(temp,stagedFile);
+    try { await fs.rename(stage,directory); }
+    catch (error) {
+      if (!['EEXIST','ENOTEMPTY','EPERM','EACCES'].includes(error.code)) throw error;
+    }
+    await verifyUpgradeBackup(path.join(directory,path.basename(file)),bytes);
+  } finally {
+    await fs.rm(stagedFile,{force:true});
+    await fs.rmdir(stage).catch(error => { if (error.code !== 'ENOENT') throw error; });
+  }
+}
+
+async function backupBeforeUpgrade(file, snapshot) {
+  const ext = path.extname(file);
+  const backup = path.join(path.dirname(file), path.basename(file, ext) + '.pre-v3' + ext);
+  const temp = path.join(path.dirname(file), '.backup-' + randomUUID() + '.tmp');
+  const writer = await fs.open(temp, 'wx', 0o600);
+  try {
+    try {
+      await writer.writeFile(snapshot.bytes);
+      await writer.sync();
+    } finally { await writer.close(); }
+    try { await fs.link(temp, backup); }
+    catch (error) {
+      if (error.code === 'EEXIST') await verifyUpgradeBackup(backup,snapshot.bytes);
+      else if (['ENOTSUP','EOPNOTSUPP','ENOSYS','EPERM','EACCES','EINVAL','UNKNOWN'].includes(error.code)) {
+        await publishBackupDirectory(file,temp,snapshot.bytes);
+      } else throw error;
+    }
+  } finally { await fs.rm(temp, {force:true}); }
+}
+
+const pendingReplacements = new Map();
+async function replaceProjectFile(stage, file, expectedDraftRevision = undefined) {
+  const pathKey = process.platform === 'win32' ? path.resolve(file).toLowerCase() : path.resolve(file);
+  const previous = pendingReplacements.get(pathKey) ?? Promise.resolve();
+  const replacement = previous.catch(() => {}).then(async () => {
+    const original = await readProjectSnapshot(file).catch(error => {
+      if (error.code === 'ENOENT') return null;
+      throw error;
+    });
+    if (expectedDraftRevision !== undefined && expectedDraftRevision !== (original?.doc.draft?.revision ?? 0)) {
+      throw Error('草稿已更新，请重新打开后再保存。');
+    }
+    if (original && supportedProject(original.doc) && original.doc.version < version) {
+      try { await backupBeforeUpgrade(file, original); }
+      catch (error) {
+        throw new Error(projectSpeedFormat.backupFailed + ' ' + error.message, {cause:error});
+      }
+    }
+    await fs.rename(stage, file);
+  });
+  pendingReplacements.set(pathKey, replacement);
+  try { await replacement; }
+  finally { if (pendingReplacements.get(pathKey) === replacement) pendingReplacements.delete(pathKey); }
 }
 
 /** @param {Record<string, any>} project */
@@ -567,4 +661,4 @@ async function restoreLocatedEdits(config,catalog,found,directory,inspect) {
     found.set(id,await inspect(file,'video'));
   }
 }
-module.exports = { embeddedThumbnail, readProject, saveProject, loadProject, projectReferences, normalizeScriptModel, missingReferences, validateCuts, restoreLocatedEdits };
+module.exports = { embeddedThumbnail, readProject, saveProject, loadProject, projectReferences, normalizeScriptModel, missingReferences, validateCuts, restoreLocatedEdits, supportedProject, replaceProjectFile };

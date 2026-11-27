@@ -150,6 +150,10 @@
 .sequence-clip-label {position:absolute;inset:2px auto auto 2px;display:flex;align-items:center;gap:5px;z-index:1;max-width:calc(100% - 4px);width:max-content;background:#18202bdc;color:white;padding:1px 4px;border-radius:3px;font-size:10px;line-height:1.35;}
 .sequence-clip-name {overflow:hidden;text-overflow:ellipsis;min-width:0;}
 .sequence-clip-duration {flex:none;color:#d9e2eb;font-variant-numeric:tabular-nums;}
+.sequence-speed-badge {position:absolute;inset:auto 2px 2px auto;z-index:2;max-width:calc(100% - 4px);overflow:hidden;white-space:nowrap;padding:1px 4px;border-radius:4px;color:#fff;background:#18202bed;font:600 10px/1.35 var(--system-font,sans-serif);font-variant-numeric:tabular-nums;pointer-events:none;}
+.sequence-speed-badge[data-extreme] {background:#633b03;color:#ffde9c;}
+.sequence-folded .sequence-speed-badge {display:none;}
+@media (forced-colors:active) { .sequence-speed-badge {border:1px solid CanvasText;} }
 .sequence-clip-header {position:absolute;z-index:1;inset:2px 2px auto;display:flex;align-items:flex-start;justify-content:space-between;gap:2px;overflow:hidden;container:clip-header / inline-size;pointer-events:none;}
 .sequence-clip-header .sequence-clip-label {position:static;min-width:0;max-width:100%;overflow:hidden;}
 .sequence-clip-label .ui-icon {flex:none;width:11px;height:11px;}

@@ -3,7 +3,7 @@
 const { createHash, randomUUID } = require('node:crypto');
 const fs = require('node:fs/promises');
 const path = require('node:path');
-const { saveProject, loadProject, readProject, embeddedThumbnail, projectReferences } = require('./project-format.cjs');
+const { saveProject, loadProject, readProject, embeddedThumbnail, projectReferences, supportedProject, replaceProjectFile } = require('./project-format.cjs');
 const { imageExtensions, videoExtensions } = require('./media.cjs');
 const { withDraftFolderMirror } = require('./library-folders.cjs');
 const { isMaterialPath } = require('./material-path.cjs');
@@ -128,7 +128,7 @@ function createDraftStore(directory,resolvePath,inspect,sourceEditDirectory,load
   }
 
   async function recordDocument(id,doc,stamp) {
-    if(doc?.format!=='sdworkbench' || doc.version!==1) throw Error('草稿记录无效。');
+    if(!supportedProject(doc)) throw Error('草稿记录无效。');
     const meta=draftMeta(id,doc.draft);
     const jpeg=embeddedThumbnail(doc);
     if(jpeg) await cacheWrite(coverPath(id),jpeg);
@@ -192,7 +192,7 @@ function createDraftStore(directory,resolvePath,inspect,sourceEditDirectory,load
     await fs.mkdir(directory, { recursive: true, mode: 0o700 });
     const stage = path.join(directory, `.draft-${randomUUID()}.sdworkbench`);
     try {
-      await saveProject(stage, config, catalog, { overwrite: true });
+      await saveProject(stage, config, catalog, {overwrite:true});
       const document = await readProject(stage);
       const duration = estimateDuration(document.config);
       const draft = { ...meta, ...(duration !== undefined && { duration }) };
@@ -205,7 +205,7 @@ function createDraftStore(directory,resolvePath,inspect,sourceEditDirectory,load
         await writer.truncate(contents.length);
         await writer.sync();
       } finally { await writer.close(); }
-      await mirror(meta.id,document.config,() => fs.rename(stage, snapshotPath(meta.id)));
+      await mirror(meta.id,document.config,() => replaceProjectFile(stage, snapshotPath(meta.id), meta.revision - 1));
       records.set(meta.id,await recordDocument(meta.id,document,await fileStamp(snapshotPath(meta.id))));
       await persistIndex();
       return draft;

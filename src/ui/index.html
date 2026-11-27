@@ -591,6 +591,15 @@
               </div>
               <label id="background-color-row" class="line-field">留边背景<input type="color" id="background-color" value="#000000"></label>
               <label class="p-switch">保留视频原声<input type="checkbox" role="switch" id="keep-audio" checked><span aria-hidden="true"></span></label>
+              <fieldset id="track-speed-panel" class="track-volume-panel" hidden>
+                <legend data-speed-text="inspector"></legend>
+                <p id="track-speed-source" class="muted compact"></p>
+                <label class="line-field"><span data-speed-text="rate"></span><input id="track-speed" type="number" min="0.000001" step="any"></label>
+                <div class="speed-inspector-actions">
+                  <button type="button" id="track-speed-manual" class="secondary" data-speed-text="manualAction"></button>
+                  <button type="button" id="track-speed-auto" class="secondary" data-speed-text="autoAction"></button>
+                </div>
+              </fieldset>
               <fieldset id="track-volume-panel" class="track-volume-panel" hidden>
                 <legend>所选素材原声</legend>
                 <p id="track-volume-name" class="muted compact"></p>
@@ -1037,6 +1046,12 @@
     <canvas id="caption-zoom-canvas" aria-label="点按或拖动可设置字幕中心点"></canvas>
     <label><input type="checkbox" id="caption-guides" checked> 安全区与吸附线</label>
     <p class="muted compact">拖动设置字幕中心。靠近中心或 10% 安全边距时自动吸附。</p>
+  </dialog>
+  <dialog id="speed-overflow-dialog" class="speed-overflow-dialog" aria-labelledby="speed-overflow-title" aria-describedby="speed-overflow-detail">
+    <h2 id="speed-overflow-title" tabindex="-1" autofocus data-speed-text="title"></h2>
+    <p id="speed-overflow-detail"></p>
+    <div class="speed-overflow-actions"></div>
+    <button type="button" class="secondary" data-speed-cancel data-speed-text="cancel"></button>
   </dialog>
 </body>
 </html>

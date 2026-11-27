@@ -6,7 +6,7 @@ const os = require('node:os');
 const path = require('node:path');
 const { test } = require('node:test');
 const { inspectAsset, planMontage, exportBatch } = require('../src/media.cjs');
-const { saveProject, loadProject, normalizeScriptModel } = require('../src/project-format.cjs');
+const { saveProject, loadProject, projectReferences, normalizeScriptModel } = require('../src/project-format.cjs');
 const { isLocalPath, isMaterialPath, isSharedMaterialPath } = require('../src/material-path.cjs');
 const { createDraftStore } = require('../src/draft-store.cjs');
 const { fixtures, ffmpeg } = require('./fixtures.cjs');
@@ -589,6 +589,166 @@ test('allows empty drafts and atomically rejects unconfirmed same-name saves', a
   assert.deepEqual(await fs.readdir(root), ['draft.sdworkbench']);
 });
 
+test('v1 and v2 keep saved speeds across active and overridden shots and back up the original bytes once', async t => {
+  const root = await testDirectory(t);
+  const source = {id:'video', path:path.join(root, 'eight-seconds.mp4'), kind:'video', duration:8, width:32, height:32};
+  const base = {id:source.id, start:0, end:8};
+  const oldClips = [{...base, speed:1}, {...base, speed:12}, {...base, autoFitSpeed:true, speed:8,
+    videoStart:0, videoDuration:1, videoFit:'hold'}, {...base, matchedDuration:2, speed:5}, base];
+  const shots = oldClips.map(clip => [clip]);
+  const subprojects = {active:'child', main:[{index:0, clips:[oldClips[1]]}],
+    projects:[{id:'child', name:'子工程', shots:[{index:0, clips:[oldClips[3]]}]}]};
+  for (const [oldVersion, extension] of [[1, 'sdworkbench'], [2, 'jiajian']]) {
+    const file = path.join(root, 'old.' + extension);
+    const backup = path.join(root, 'old.pre-v3.' + extension);
+    const bytes = Buffer.from(JSON.stringify({format:'sdworkbench', version:oldVersion,
+      config:editingConfig({shots, subprojects}), assets:[source]}, null, 2) + '\r\n');
+    await fs.writeFile(file, bytes);
+    const opened = await loadProject(file, undefined, async () => source);
+    assert.deepEqual(opened.config.shots.flat().map(clip => [clip.speedMode, clip.speed]),
+      [['legacy',1], ['legacy',12], ['legacy',8], ['legacy',5], ['legacy',undefined]]);
+    assert.equal(opened.config.subprojects.main[0].clips[0].speedMode, 'legacy');
+    assert.equal(opened.config.subprojects.projects[0].shots[0].clips[0].speedMode, 'legacy');
+    assert.deepEqual(await fs.readFile(file), bytes);
+    await assert.rejects(fs.stat(backup), {code:'ENOENT'});
+    const rename = fs.rename;
+    const fault = t.mock.method(fs, 'rename', async (from,to) => {
+      if (to === file) throw Object.assign(new Error('simulated publication failure'), {code:'EIO'});
+      return rename(from,to);
+    });
+    await assert.rejects(saveProject(file, opened.config, opened.assets, {overwrite:true}), {code:'EIO'});
+    fault.mock.restore();
+    assert.deepEqual(await fs.readFile(file), bytes);
+    assert.deepEqual(await fs.readFile(backup), bytes);
+    await Promise.all([1,2].map(() => saveProject(file, opened.config, opened.assets, {overwrite:true})));
+    assert.deepEqual(await fs.readFile(backup), bytes);
+    assert.equal(JSON.parse(await fs.readFile(file)).version, 3);
+    assert.deepEqual((await loadProject(file, undefined, async () => source)).config, opened.config);
+    assert.deepEqual((await loadProject(backup, undefined, async () => source)).config, opened.config);
+    assert.deepEqual((await fs.readdir(root)).filter(item => item.endsWith('.' + extension)).sort(),
+      [path.basename(file), path.basename(backup)].sort());
+  }
+});
+
+test('v3 preserves all six clip decisions, locked 1x and resolved automatic speed in projects and cold drafts', async t => {
+  const root = await testDirectory(t), folder = path.join(root, 'drafts');
+  const source = {id:'video', kind:'video', path:path.join(root,'video.mp4'), duration:8, width:32, height:32};
+  const catalog = new Map([[source.id,source]]), inspect = async () => source;
+  const base = {id:source.id,start:0,end:8};
+  const choices = ['trim-start','trim-end','continue','loop','hold','group'];
+  const shots = choices.map(speedOverflow => [{...base, speedMode:'auto', speedOverflow, speed:4,
+    autoFitSpeed:true, videoStart:0, videoDuration:1, videoFit:'hold'}]);
+  shots.push([{...base,speed:1,speedMode:'manual'}], [{...base,speed:1}]);
+  const config = editingConfig({shots});
+  const store = createDraftStore(folder,undefined,inspect);
+  const draft = await store.create({name:'choices',config},catalog);
+  const file = path.join(root,'new.jiajian');
+  await saveProject(file, config, catalog);
+  const cold = createDraftStore(folder,undefined,inspect);
+  for (const reopened of [await loadProject(file,undefined,inspect), await cold.open(draft.id)]) {
+    assert.deepEqual(reopened.config.shots,shots);
+  }
+  for (const invalid of [{speedMode:'guessed'},{speedOverflow:'skip'}]) {
+    await assert.rejects(saveProject(file, editingConfig({shots:[[{...base,...invalid}]]}), catalog, {overwrite:true}), /无效/);
+  }
+});
+
+test('old matched narration, implicit speed and fitted placement keep their historic clocks when the window changes', async t => {
+  const directory = await testDirectory(t);
+  const video = {id:'v',kind:'video',path:path.join(directory,'eight.mp4'),width:32,height:32,duration:8};
+  const voice = {id:'n',kind:'audio',path:path.join(directory,'voice.wav')};
+  const base = {id:video.id,start:0,end:8};
+  const matched = {...base,speed:2,matchedDuration:4};
+  const placed = {...base,speed:1,autoFitSpeed:true,videoStart:0,videoFit:'hold',videoFollowsShot:true};
+  // Each row records the T12 output: source seconds, effective speed, repetition count.
+  const cases = [
+    [matched,1,'fill',[8,8,1]], [matched,1,'reference',[2,2,1]],
+    [matched,48,'fill',[8,2,12]], [matched,48,'reference',[8,2,12]],
+    [base,1,'fill',[8,8,1]], [base,48,'reference',[8,1/6,1]],
+    [{...placed,videoDuration:4},1,'fill',[8,2,1]],
+    [{...placed,videoDuration:1},1,'fill',[8,8,1]],
+    [{...placed,videoDuration:48},48,'reference',[8,1/6,1]],
+  ];
+  for (const version of [1,2]) for (const [clip,duration,voiceAlignment,expected] of cases) {
+    const old = {format:'sdworkbench',version,assets:[video,voice],
+      config:editingConfig({shots:[[clip]],priority:'voice',narrationMode:'segmented',segmentNarrationIds:[['n']],voiceAlignment})};
+    const {config} = projectReferences(old);
+    const catalog = new Map([['v',video],['n',{...voice,duration}]]);
+    const file = path.join(directory,'migrated.jiajian');
+    await saveProject(file,config,catalog,{overwrite:true});
+    const reopened = await loadProject(file,undefined,async file => file === video.path ? video : {...voice,duration});
+    for (const state of [config,reopened.config]) {
+      const [plan] = planMontage({...state,autoSpeedRange:{min:.25,max:4}},catalog,()=>0);
+      assert.equal(plan.speedChallenges?.length ?? 0,0,'重开和改动窗口应沿用旧工程的播放规则');
+      const [picture] = plan.clips;
+      assert.equal(picture.outputFrames,duration*state.fps);
+      assert.deepEqual(picture.visuals.map(part => [part.sourceDuration,part.speed,part.repeat ?? 1]),[expected]);
+    }
+  }
+});
+
+test('upgrading a cold draft aborts on a backup conflict and permits only one save of the same revision', async t => {
+  const directory = await testDirectory(t), config = editingConfig(), catalog = new Map();
+  const {id} = await createDraftStore(directory).create({name:'旧草稿',config},catalog);
+  const file = path.join(directory,id + '.sdworkbench'), backup = path.join(directory,id + '.pre-v3.sdworkbench');
+  const document = JSON.parse(await fs.readFile(file));
+  const old = Buffer.from(JSON.stringify({...document,version:1}));
+  await fs.writeFile(file,old);
+  const stores = [createDraftStore(directory),createDraftStore(directory)];
+  const [opened] = await Promise.all(stores.map(store => store.open(id)));
+  const request = {id, config:opened.config, expectedRevision:opened.revision};
+  const otherBackup = JSON.stringify({...document,version:1, draft:{...document.draft,name:'另一份备份'}});
+  await fs.writeFile(backup,otherBackup);
+  await assert.rejects(stores[0].save(request,catalog), /备份/);
+  assert.deepEqual(await fs.readFile(file),old);
+  assert.equal(await fs.readFile(backup,'utf8'),otherBackup);
+  await fs.unlink(backup);
+  const results = await Promise.allSettled(stores.map(store => store.save(request,catalog)));
+  assert.equal(results.filter(result => result.status === 'fulfilled').length,1);
+  assert.match(results.find(result => result.status === 'rejected').reason.message,/草稿已更新/);
+  assert.deepEqual(await fs.readFile(backup),old);
+  assert.equal(JSON.parse(await fs.readFile(file)).version,3);
+  const cold = createDraftStore(directory);
+  assert.deepEqual((await cold.list()).map(item => item.id),[id]);
+  assert.equal((await cold.open(id)).revision,opened.revision + 1);
+});
+
+test('on a volume without hard links, a complete backup survives a failed upgrade and draft removal and can be restored', async t => {
+  const directory = await testDirectory(t), config = editingConfig(), catalog = new Map();
+  const {id} = await createDraftStore(directory).create({name:'旧草稿',config},catalog);
+  const file = path.join(directory,id + '.sdworkbench');
+  const backup = path.join(file + '.pre-v3',path.basename(file));
+  const document = JSON.parse(await fs.readFile(file));
+  const original = Buffer.from(JSON.stringify({...document,version:1},null,2) + '\r\n');
+  await fs.writeFile(file,original);
+  const cold = createDraftStore(directory);
+  const opened = await cold.open(id);
+  const request = {id,config:opened.config,expectedRevision:opened.revision};
+  t.mock.method(fs,'link',async () => { throw Object.assign(new Error('hard links unsupported'),{code:'ENOTSUP'}); });
+  const rename = fs.rename;
+  const fault = t.mock.method(fs,'rename',async (from,to) => {
+    if (to === file) throw Object.assign(new Error('simulated publication failure'),{code:'EIO'});
+    return rename(from,to);
+  });
+  await assert.rejects(cold.save(request,catalog), {code:'EIO'});
+  fault.mock.restore();
+  assert.deepEqual(await fs.readFile(file),original);
+  assert.deepEqual(await fs.readFile(backup),original);
+  const saved = await cold.save(request,catalog);
+  assert.equal(saved.revision,opened.revision + 1);
+  assert.equal(JSON.parse(await fs.readFile(file)).version,3);
+  assert.deepEqual((await createDraftStore(directory).list()).map(row => row.id),[id]);
+  await cold.remove({id,expectedRevision:saved.revision});
+  assert.deepEqual(await createDraftStore(directory).list(),[]);
+  assert.deepEqual(await fs.readFile(backup),original);
+  assert.deepEqual((await loadProject(backup)).config,opened.config);
+  await fs.copyFile(backup,file,fs.constants.COPYFILE_EXCL);
+  const restored = await createDraftStore(directory).open(id);
+  assert.equal(restored.revision,opened.revision);
+  assert.equal(restored.name,opened.name);
+  assert.deepEqual(restored.config,opened.config);
+});
+
 test('restores script selections and plain text and rejects oversized script data', async (t) => {
   const root = await testDirectory(t);
   const file = path.join(root, '创作脚本.sdworkbench');
@@ -664,7 +824,7 @@ test('reports missing media and rejects incompatible or undeclared asset referen
   await assert.rejects(loadProject(file), /素材清单与引用不一致/);
   await fs.writeFile(file, JSON.stringify({ ...saved, assets: [{ ...saved.assets[0], path: '../relative.mp4' }] }));
   await assert.rejects(loadProject(file), /缺失或类型不匹配/);
-  await fs.writeFile(file, JSON.stringify({ ...saved, version: 3 }));
+  await fs.writeFile(file, JSON.stringify({ ...saved, version: 4 }));
   await assert.rejects(loadProject(file), /不支持此工程文件格式或版本/);
 });
 

@@ -301,21 +301,22 @@
       const next = record.points.filter((v) => v !== s.activePoint);
       s.activePoint = null; updatePoints(next, record);
     }
-    function applyScene(asset, range, shotIndex, targetLane, videoSlot) {
+    async function applyScene(asset,range,shotIndex,targetLane,videoSlot,dropped=false) {
       const record = recordFor(asset);
       if (!record || !sceneRanges(record, asset).some((r) => sameRange(r, range))) return false;
-      if (options.addCandidate(shotIndex, asset, { ...range }, targetLane, videoSlot) !== true) return false;
-      writeRecord({ ...record, used: record.used.some((r) => sameRange(r, range)) ? record.used : [...record.used, { ...range }] });
+      if (!await options.addCandidate(shotIndex,asset,{...range},targetLane,videoSlot,dropped)) return false;
+      const updated=recordFor(asset) ?? record;
+      writeRecord({...updated,used:updated.used.some(r=>sameRange(r,range)) ? updated.used : [...updated.used,{...range}]});
       if (current?.mode === 'scene') renderScenes();
       return true;
     }
-    function dropScene(event, shotIndex, targetLane, videoSlot) {
+    async function dropScene(event,shotIndex,targetLane,videoSlot) {
       if (!event.dataTransfer?.types.includes(mime)) return false;
       event.preventDefault(); event.stopPropagation();
       try {
         const { assetId, start, end } = JSON.parse(event.dataTransfer.getData(mime));
         const asset = current?.asset?.id === assetId ? current.asset : options.getAsset?.(assetId);
-        if (asset) return applyScene(asset, { start, end }, shotIndex, targetLane, videoSlot);
+        if(asset) return await applyScene(asset,{start,end},shotIndex,targetLane,videoSlot,true);
       } catch { status('无法读取拖入的片段。'); }
       return false;
     }
@@ -348,11 +349,12 @@
       dest.value = String(s.destination ?? -1);
       if (dest.selectedIndex < 0) dest.value = '-1';
       dest.onchange = () => { s.destination = Number(dest.value); };
-      const add = button('加入分镜', () => { if (!applyScene(s.asset, items[s.selected], Number(dest.value))) status('未能加入该分镜，请检查剩余候选数量。'); });
+      const add = button('加入分镜', async () => { if (!await applyScene(s.asset, items[s.selected], Number(dest.value))) status('未能加入该分镜，请检查剩余候选数量。'); });
       add.disabled = s.selected < 0;
-      const bulk = button('批量加入', () => {
+      const bulk = button('批量加入', async () => {
         const pending = visible.filter((row) => !(row.used || row.hidden));
-        const added = pending.filter(({r}) => options.addCandidate(Number(dest.value), s.asset, {...r}) === true).map(({r}) => ({...r}));
+        const added=[];
+        for(const {r} of pending) if(await options.addCandidate(Number(dest.value),s.asset,{...r})) added.push({...r});
         if (added.length) writeRecord({...record,used:[...record.used,...added]});
         renderScenes(); status(`已加入 ${added.length} 个片段，共 ${pending.length} 个待选片段。`);
       });

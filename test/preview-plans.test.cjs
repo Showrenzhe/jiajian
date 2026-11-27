@@ -23,6 +23,116 @@ const config = {
   useOriginal: true, useMirrors: false, musicIds: [], musicVolume: 35, count: 2,
 };
 
+test('alignments use inclusive speed limits and only explicit edits release a legacy rate',()=>{
+  const {videoSpeedDecision:decide,applyVideoSpeedDecision:apply,placedVideoSpeed}=require('../src/ui/track-tools.js');
+  const {matchCandidateDuration}=require('../src/ui/voice-alignment.js');
+  const clip={asset:{kind:'video'},start:0,end:4,speed:1};
+  assert.equal(decide(clip,1).status,'ready');
+  assert.equal(decide(clip,16).status,'ready');
+  assert.equal(decide(clip,.5).status,'choice');
+  assert.equal(decide(clip,32,{choice:'group'}).status,'choice');
+  assert.equal(decide(clip,32,{choice:'group',hasGroup:true}).status,'ready');
+  for(const [choice,ranges] of [['trim-start',[{start:0,end:2}]],['trim-end',[{start:2,end:4}]],['continue',undefined]]) {
+    const edited={...clip};
+    const decision=decide(edited,.5,{choice});
+    assert.equal(apply(edited,decision),true);
+    assert.equal(edited.speedOverflow,choice);
+    assert.equal(placedVideoSpeed({...edited,autoFitSpeed:true,videoWindow:.5}),4);
+    assert.deepEqual(edited.ranges,ranges);
+    assert.deepEqual([edited.start,edited.end],[0,4]);
+  }
+  const tiny={...clip,ranges:[{start:2,end:3},{start:0,end:1}],look:{head:.1,tail:.2}};
+  apply(tiny,decide(tiny,.02,{max:2,choice:'trim-end'}));
+  assert.ok(Math.abs(tiny.ranges[0].start-.76)<1e-7 && Math.abs(tiny.ranges[0].end-.8)<1e-7);
+  assert.deepEqual(require('../src/shot-timing.cjs').normalizePictureRanges(tiny.ranges,0,4),tiny.ranges);
+  assert.equal(placedVideoSpeed({...clip,speedMode:'legacy',autoFitSpeed:true,videoWindow:2}),2);
+  const manual={...clip,speedMode:'manual'};
+  const legacy={...clip,speedMode:'legacy'};
+  assert.equal(decide(manual,.5,{explicit:true,choice:'continue'}).status,'protected');
+  assert.equal(matchCandidateDuration(manual,.5),false);
+  assert.equal(decide(legacy,.5).status,'protected');
+  assert.equal(matchCandidateDuration(legacy,.5),false);
+  assert.equal(matchCandidateDuration(legacy,.5,decide(legacy,.5,{explicit:true,choice:'trim-end'})),true);
+  assert.equal(legacy.speedMode,'auto');
+  assert.equal(legacy.speed,4);
+});
+
+test('reapplying the same speed reports every persisted trim change and ignores an identical replay',()=>{
+  const {videoSpeedDecision:decide,applyVideoSpeedDecision:apply}=require('../src/ui/track-tools.js');
+  const clip={asset:{kind:'video'},start:0,end:12,speed:4,speedMode:'auto',speedOverflow:'trim-start',ranges:[{start:0,end:12}]};
+  const decision=decide(clip,2,{choice:'trim-start'});
+  assert.equal(apply(clip,decision),true);
+  assert.deepEqual(clip.ranges,[{start:0,end:8}]);
+  const ranges=clip.ranges;
+  assert.equal(apply(clip,decision),false);
+  assert.equal(clip.ranges,ranges);
+  // A sub-ULP tail on an eight-second range changes only the look's persisted fields.
+  clip.look={tail:Number.EPSILON,filter:'film'};
+  assert.equal(apply(clip,decision),true);
+  assert.equal(clip.ranges,ranges);
+  assert.deepEqual(clip.look,{filter:'film'});
+  assert.equal(apply(clip,decision),false);
+});
+
+test('draft playback follows an explicit trim, whole edited loop, silent hold, or sibling fill',()=>{
+  const {timing,makePlan}=require('../src/ui/draft-transport.js');
+  const {waveformSource}=require('../src/ui/waveform.js');
+  const source={kind:'video',id:'a',url:'test://a',duration:1};
+  const sibling={asset:{kind:'video',id:'b',url:'test://b',duration:1},start:0,end:1,speed:1};
+  function draft(strategy,speed,span,extra={}) {
+    const clip={asset:source,start:0,end:1,speed,videoFit:'hold',videoStart:0,videoDuration:span,
+      speedMode:'auto',speedOverflow:strategy,...extra};
+    const state={shots:[[clip,sibling]],settings:[{duration:span}],fps:24,keepAudio:true,whole:[],music:[],
+      segments:[],muted:new Set(),priority:'picture',pack:{global:[],composites:[],wholeNarration:[]}};
+    return makePlan(state,timing(state,()=>span,()=>null,clip),()=>null,waveformSource,clip);
+  }
+  assert.equal(draft('trim-start',2,.25)[0].source,0);
+  assert.equal(draft('trim-end',2,.25)[0].source,.5);
+  assert.equal(draft('continue',2,.25)[0].rate,2);
+  assert.deepEqual(draft('hold',1,1.5).map(p=>[p.start,p.end,p.volume,p.rate]),[[0,1,100,1],[1,1.5,0,0]]);
+  assert.deepEqual(draft('group',1,1.5).map(p=>[p.asset.id,p.start,p.end]),[['a',0,1],['b',1,1.5]]);
+  const [cycle]=draft('loop',1,1.5,{ranges:[{start:.5,end:1},{start:0,end:.5}]});
+  assert.equal(cycle.cycle,1);
+  assert.deepEqual(cycle.cycleParts.map(p=>p.start),[.5,0]);
+});
+
+test('a speed dialog retries the actual batch draw, including its selected picture and narration',async()=>{
+  const {createSpeedPlanningSession}=require('../src/preview-plans.cjs');
+  const prepare=createSpeedPlanningSession();
+  const assets=new Map(catalog);
+  assets.set('speech',{name:'voice',kind:'audio',duration:.1});
+  const input={...config,count:1,shots:[config.shots[0]],priority:'voice',narrationId:'speech',autoSpeedRange:{min:.25,max:4}};
+  const {speedChallenge}=await prepare(input,undefined,assets,{random:()=>.9});
+  assert.equal(speedChallenge.items.length,1);
+  const [issue]=speedChallenge.items;
+  assert.equal(issue.name,'b');
+  assert.equal(issue.direction,'high');
+  const response={token:speedChallenge.token,choices:{[issue.key]:'trim-end'}};
+  await assert.rejects(prepare({...input,count:2},undefined,assets,{response}),/设置已变化/);
+  assets.set('speech',{name:'unrelated replacement',kind:'audio',duration:.75});
+  const {plans}=await prepare(input,undefined,assets,{response,random:()=>assert.fail('must replay draws')});
+  const [shot]=plans[0].clips;
+  assert.equal(shot.asset.name,issue.name);
+  assert.equal(shot.visuals[0].speed,4);
+  assert.ok(Math.abs(shot.visuals[0].start-1)<1e-7);
+  assert.equal(plans[0].narration.name,'voice');
+});
+
+test('a supplementary visual exceeding the common narration tempo requests a choice',async()=>{
+  const {createSpeedPlanningSession}=require('../src/preview-plans.cjs');
+  const prepare=createSpeedPlanningSession();
+  const assets=new Map(catalog);
+  assets.set('b',{...assets.get('b'),duration:20});
+  assets.set('voice',{kind:'audio',name:'voice',duration:1});
+  const input={...config,count:1,shots:[[{id:'a',start:0,end:.6},{id:'b',start:0,end:20}]],
+    priority:'voice',narrationMode:'segmented',segmentNarrationIds:[['voice']],autoSpeedRange:{min:.25,max:4}};
+  const {speedChallenge}=await prepare(input,undefined,assets,{random:()=>0});
+  assert.ok(speedChallenge.items.some(item=>item.required>4));
+  const response={token:speedChallenge.token,choices:Object.fromEntries(speedChallenge.items.map(item=>[item.key,'trim-end']))};
+  const {plans}=await prepare(input,undefined,assets,{response});
+  assert.ok(plans[0].clips[0].visuals.every(part=>part.speed<=4));
+});
+
 test('large batches cover each candidate evenly and never repeat a combination', () => {
   const group = ['a', 'b', 'c'].map(id => ({ id, start: 0, end: 1 }));
   const settings = { ...config, shots: Array.from({length: 4}, () => group), count: 81 };

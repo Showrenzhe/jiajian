@@ -69,9 +69,12 @@ window.mountEditTimeline = function (host, ctx) {
       const button = el('button', 'sequence-primary', '保存');
       button.type = 'submit';
       foot.append(button);
-      form.addEventListener('submit', (event) => {
+      form.addEventListener('submit', async (event) => {
         event.preventDefault();
-        try { fn(); wrapper.close(); ctx.change(); } catch (error) { message.textContent = error.message; }
+        if(button.disabled) return;
+        button.disabled=true;
+        try { if(await fn()!==false) {wrapper.close(); ctx.change();} } catch(error) {message.textContent=error.message;}
+        finally {button.disabled=false;}
       });
     }
     return {wrapper, form, field, body, foot, save, message};
@@ -111,10 +114,35 @@ window.mountEditTimeline = function (host, ctx) {
     previewSource:ctx.previewSource, handoff:ctx.previewHandoff,
     tick:(time)=>{playTime=time;syncCursor();ctx.draftTick?.();}, changed:(playing)=>ctx.draftPlaybackChanged?.(playing),
   });
-  function draftPlan() {
-    const state=ctx.state();
-    const layout=window.draftTimeline.timing(state,clipSpan,ctx.asset,focusClip ?? state.selected);
-    return window.draftTimeline.makePlan(state,layout,ctx.asset,window.waveformSource,focusClip ?? state.selected);
+  let confirmedDraftSpeed, choosingDraftSpeed=false;
+  function draftPlan(report) {
+    const state=ctx.state(), focus=focusClip ?? state.selected;
+    if(confirmedDraftSpeed && confirmedDraftSpeed.key===lastKey && confirmedDraftSpeed.focus===focus
+        && confirmedDraftSpeed.min===state.autoSpeedRange.min && confirmedDraftSpeed.max===state.autoSpeedRange.max) {
+      state.draftSpeedChoices=confirmedDraftSpeed.choices;
+    }
+    state.onSpeedChallenge=report;
+    const layout=window.draftTimeline.timing(state,clipSpan,ctx.asset,focus);
+    return window.draftTimeline.makePlan(state,layout,ctx.asset,window.waveformSource,focus);
+  }
+  async function toggleDraftPlayback() {
+    if(draftTransport.playing()) {draftTransport.toggle([],playTime);return;}
+    if(choosingDraftSpeed) return;
+    const issues=new Map();
+    const proposed=draftPlan(issue=>{
+      const previous=issues.get(issue.key), count=(previous?.count ?? 0)+1;
+      const extreme=!previous || (issue.direction==='high' ? issue.required>previous.required : issue.required<previous.required);
+      issues.set(issue.key,{...(extreme ? issue : previous),count});
+    });
+    if(!issues.size) {draftTransport.toggle(proposed,playTime);return;}
+    const key=lastKey, focus=focusClip ?? ctx.state().selected, limits=window.videoSpeedControls.range;
+    choosingDraftSpeed=true;
+    try {
+      const choices=await window.videoSpeedControls.collectChoices(issues.values(),limits);
+      if(!choices || key!==lastKey || focus!==(focusClip ?? ctx.state().selected)) return;
+      confirmedDraftSpeed={key,focus,...limits,choices};
+      draftTransport.toggle(draftPlan(),playTime);
+    } finally {choosingDraftSpeed=false;}
   }
   function draftDuration() {
     cachedDraftDuration ??= draftPlan().reduce((max,entry)=>Math.max(max,entry.end),0);
@@ -340,7 +368,7 @@ window.mountEditTimeline = function (host, ctx) {
     clipboard={kind:entry.kind,data:entry.snapshot()};
     ctx.notify('已复制'+entry.kind+'。');
   }
-  function pasteItem(position=pastePosition ?? positionAt(playTime)) {
+  async function pasteItem(position=pastePosition ?? positionAt(playTime)) {
     if (!clipboard || ctx.busy()) return;
     const s=ctx.state(),shot=s.shots[position.index];
     try {
@@ -349,7 +377,7 @@ window.mountEditTimeline = function (host, ctx) {
       if(clipboard.kind==='视频') {
         const clip=ctx.pasteClip(clipboard.data);
         if(shot) {
-          if(!ctx.placeCandidate(clip,shot,undefined,undefined,position.videoLane,undefined,undefined,undefined,position.videoSlot)) return;
+          if(!await ctx.placeCandidate(clip,shot,undefined,undefined,position.videoLane,undefined,undefined,undefined,position.videoSlot)) return;
         } else {
           if(position.videoLane>0) clip.videoLane=position.videoLane;
           if(!ctx.insertShot(s.shots.length,[clip])) throw Error('已达到分镜上限或此处无法插入。');
@@ -816,7 +844,8 @@ window.mountEditTimeline = function (host, ctx) {
     const columns=s.shots.length || 3;
     layoutFocus=focusClip ?? s.selected;
     const layout=window.draftTimeline.timing(s,clipSpan,ctx.asset,layoutFocus);
-    scrubWithDraftPlan=Object.entries(s.trackControls ?? {}).some(([id,flags])=>flags.disabled || /^vis\d+$/.test(id) && (flags.hidden || flags.solo))
+    scrubWithDraftPlan=s.shots.some(group=>group.some(clip=>clip.speedOverflow))
+      || Object.entries(s.trackControls ?? {}).some(([id,flags])=>flags.disabled || /^vis\d+$/.test(id) && (flags.hidden || flags.solo))
       || layout.aligned?.some((part,i)=>part?.clip?.speed !== undefined && s.settings[i]?.duration
         && !window.usesPlacedVideoSource(part.clip,false) && Math.abs(candidateSourceSeconds(part.clip)-layout.widths[i])>1e-6);
     ({widths,starts:shotTimes,total:totalTime}=layout);
@@ -963,8 +992,10 @@ window.mountEditTimeline = function (host, ctx) {
     }
     function pictureRanges(clip,index) {
       const retained=window.waveformSource(clip.ranges ?? [{start:clip.start,end:clip.end}],clip.look?.head,clip.look?.tail);
-      const rate=retained.duration/pictureClockSpan(clip,index), ranges=[];
-      retained.visit(0,window.pictureSpan(clip,widths[index])*rate,false,(start,end)=>ranges.push({start,end}));
+      const span=window.pictureSpan(clip,widths[index]);
+      const rate=clip.speedOverflow ? clip.speed ?? 1 : retained.duration/pictureClockSpan(clip,index), ranges=[];
+      const begin=clip.speedOverflow==='trim-end' ? Math.max(0,retained.duration-span*rate) : 0;
+      retained.visit(begin,begin+span*rate,false,(start,end)=>ranges.push({start,end}));
       return {ranges,rate};
     }
     const ruler=row('时间标尺','sequence-ruler');
@@ -1026,8 +1057,15 @@ window.mountEditTimeline = function (host, ctx) {
         const source=clip.sourceEdit?.asset ?? clip.asset;
         const label=clipHeader(clip.asset.name,clip.asset.kind,source.duration,detail,clip.sourceMuted);
         b.replaceChildren(label);
+        if(clip.asset.kind==='video') {
+          const rate=clip.speed ?? 1, extreme=rate>2 || rate<.5;
+          const badge=el('span','sequence-speed-badge',(extreme ? '⚠ ' : '')+window.videoSpeedControls.rateLabel(rate));
+          badge.toggleAttribute('data-extreme',extreme);
+          badge.title=window.videoSpeedControls.describe(clip);
+          b.append(badge);
+        }
         const original=source.kind==='video' && Number.isFinite(source.duration) ? ' · 原片 '+source.duration.toFixed(2)+' 秒' : '';
-        b.title=clip.asset.name+original+' · 双击进入裁剪 · 轨道占用 '+summary(span)+' · '+(match ? detail : '候选时长 '+detail)+' · 拖至视频轨下方新建轨道，Alt＋上下键换轨，Alt＋左右键移动分镜中的候选';
+        b.title=clip.asset.name+original+(clip.asset.kind==='video' ? ' · '+window.videoSpeedControls.describe(clip) : '')+' · 双击进入裁剪 · 轨道占用 '+summary(span)+' · '+(match ? detail : '候选时长 '+detail)+' · 拖至视频轨下方新建轨道，Alt＋上下键换轨，Alt＋左右键移动分镜中的候选';
         b.setAttribute('aria-label',b.title);
         b.setAttribute('aria-haspopup','menu');
         b.setAttribute('aria-keyshortcuts','Shift+F10 Control+C Control+V Alt+ArrowLeft Alt+ArrowRight Alt+ArrowUp Alt+ArrowDown');
@@ -1038,7 +1076,7 @@ window.mountEditTimeline = function (host, ctx) {
         filmstrips.push(strip);
         sizeFilmstrip(strip,oldFrames);
         b.prepend(frames);
-        waveforms.add(b,clip.asset,{ranges,span:span*rate,
+        waveforms.add(b,clip.asset,{ranges,span:span*rate,loop:clip.speedOverflow==='loop',
           volume:clip.volume,muted:clip.sourceMuted || !s.keepAudio || s.muted.has(j) || !window.trackControls.allows(s.trackControls,'vis'+j,'audio')});
         b.ondblclick=()=>{if (clip.asset.kind==='video') ctx.cut(clip); else editShot(s,i);};
       }
@@ -1380,7 +1418,8 @@ window.mountEditTimeline = function (host, ctx) {
       let img=el('img','sequence-thumb');img.alt='';img.draggable=false;
       if(clip.asset.kind==='image') img.src=clip.asset.url;
       else {
-        let remaining=Math.min(Math.max(0,retained-1e-6),span*rate*(n+.5)/count);
+        const at=span*rate*(n+.5)/count;
+        let remaining=clip.speedOverflow==='loop' && retained>0 ? at%retained : Math.min(Math.max(0,retained-1e-6),at);
         let seconds=clip.start;
         for(const r of ranges){seconds=r.start+remaining;if(seconds<r.end) break;remaining-=r.end-r.start;}
         img.dataset.thumb=clip.asset.id;img.dataset.time=String(Math.max(0,seconds));
@@ -1614,6 +1653,13 @@ window.mountEditTimeline = function (host, ctx) {
       }
     }
     const hold=holdsPicture(clip,index),sourceSeconds=hold ? candidateSourceSeconds(clip) : clipSpan(clip);
+    if(clip.speedOverflow==='trim-end') {
+      const span=window.pictureSpan(clip,widths[index]);
+      const skip=Math.max(0,candidateSourceSeconds(clip)-span);
+      playTime=start+Math.max(0,Math.min(span,(elapsed-(clip.look?.head ?? 0))/(clip.speed || 1)-skip));
+      syncCursor();
+      return;
+    }
     const relative=Math.max(0,elapsed-(clip.look?.head??0))/(clip.speed||1);
     if(activeSeek===clip && hold && playTime>=start+sourceSeconds
       && playTime<=start+window.pictureSpan(clip,widths[index]) && Math.abs(relative-sourceSeconds)<.001) return;
@@ -2037,11 +2083,11 @@ window.mountEditTimeline = function (host, ctx) {
     for(const property of ['translate','transform-origin','--lift-left','--lift-top','--lift-width','--lift-height']) b.style.removeProperty(property);
     delete host.dataset.candidateDrag;
   }
-  function placeAtSlot(clip,owner,slot) {
+  async function placeAtSlot(clip,owner,slot) {
     if(!slot || ctx.busy()) return false;
     const i=ctx.state().shots.indexOf(slot.shot);
     const videoSlot=slot.gap ? {...slot,widths,starts:shotTimes} : undefined;
-    if(!ctx.placeCandidate(clip,slot.shot,owner,slot.clip,slot.lane,slot.videoStart,slot.videoDuration,widths,videoSlot)) return false;
+    if(!await ctx.placeCandidate(clip,slot.shot,owner,slot.clip,slot.lane,slot.videoStart,slot.videoDuration,widths,videoSlot)) return false;
     focusShot=slot.shot;focusClip=clip;voiceTarget=undefined;
     ctx.preview(clip);
     selection.selectOnly(clip);
@@ -2052,7 +2098,7 @@ window.mountEditTimeline = function (host, ctx) {
     else ctx.notify(slot.clip ? '已与分镜 '+(i+1)+' 的候选交换。' : '已移动至分镜 '+(i+1)+'。');
     return true;
   }
-  function nudgeCandidate(event,button,clip,owner) {
+  async function nudgeCandidate(event,button,clip,owner) {
     if(draggedCandidate || !event.altKey || event.shiftKey || event.ctrlKey || event.metaKey ||
       !['ArrowLeft','ArrowRight','ArrowUp','ArrowDown'].includes(event.key) || ctx.busy()) return;
     event.preventDefault();event.stopPropagation();
@@ -2077,12 +2123,12 @@ window.mountEditTimeline = function (host, ctx) {
     slot ??= freeVideoSlot({lane,track,newLane:!track},source,owner,pointer,referenceWindows(clip));
     if(slot.rejection) {ctx.notify(slot.rejection);return;}
     try {
-      if(placeAtSlot(clip,owner,slot)) {
+      if(await placeAtSlot(clip,owner,slot)) {
         requestAnimationFrame(()=>candidateNodes.get(clip)?.focus());
       }
     } catch(error) {ctx.notify(error.message);}
   }
-  function finishCandidateDrag(commit) {
+  async function finishCandidateDrag(commit) {
     const drag=draggedCandidate;
     if(!drag) return;
     const target=drag.target,slot=drag.slot,rejection=drag.rejection,displaced=slot?.clip;
@@ -2096,7 +2142,7 @@ window.mountEditTimeline = function (host, ctx) {
       try {
         const origin=candidateSlots.get(drag.button);
         if(rejection) ctx.notify(rejection);
-        else if(!(slot.lane===origin.lane && Math.abs(slot.videoStart-origin.start)<1e-7 && Math.abs(slot.span-origin.span)<1e-7) && placeAtSlot(drag.clip,drag.owner,slot)) {
+        else if(!(slot.lane===origin.lane && Math.abs(slot.videoStart-origin.start)<1e-7 && Math.abs(slot.span-origin.span)<1e-7) && await placeAtSlot(drag.clip,drag.owner,slot)) {
           candidateLandings=[{clip:drag.clip,from,reveal:slot.newLane || slot.videoStart!==undefined}];
           if(otherFrom) candidateLandings.push({clip:displaced,from:otherFrom});
           host.focus({preventScroll:true});
@@ -2309,7 +2355,7 @@ window.mountEditTimeline = function (host, ctx) {
   }
   return {refresh,refreshMonitoring,syncPlayer,selectClip,focusCandidate,locateMaterial,editCaptions,openCardMatchMenu,openCandidateActions,materialVideoDrop,showLibraryLane,clearLibraryLane,previewLibrarySlot,removeSelected:selection.removeSelection,clearSelection:selection.clear,get selectionCount(){return selection.size;},
     get selectedCandidate(){return candidateSlots.get(selection.single())?.clip;},textSettings:()=>textSettings(ctx.state()),
-    toggleDraftPlayback:()=>draftTransport.toggle(draftTransport.playing()?[]:draftPlan(),playTime),
+    toggleDraftPlayback,
     seekDraft:draftTransport.seek,draftState:draftTransport.state,
     stopDraftPlayback:draftTransport.stop,isDraftPlaying:draftTransport.playing,
     canPlayDraft:()=>draftDuration()>0,draftDuration,get playheadTime(){return playTime;},

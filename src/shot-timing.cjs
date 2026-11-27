@@ -1,6 +1,8 @@
 // @ts-check
 'use strict';
 
+const {speedPlanningErrors}=require('./ui/messages-zh-cn.js');
+
 /** @typedef {{start: number, end: number}} SourceRange */
 /** @typedef {{name?: string, description?: string, duration?: number, smartTrim?: boolean}} ShotSettings */
 
@@ -32,13 +34,20 @@ function normalizeShotSettings(rows, length) {
 }
 
 /** @param {unknown} ranges @param {number} start @param {number} end @returns {SourceRange[]} */
-function normalizeRanges(ranges, start, end) {
+function normalizeRanges(ranges, start, end, allowShortPieces=false) {
   if (!Array.isArray(ranges) || !ranges.length || ranges.length > 2000) throw new Error('候选需要有效的裁剪片段。');
   return Array.from(ranges, (range) => {
     if (!Number.isFinite(range?.start) || !Number.isFinite(range.end) || range.start < start - 1e-7
-        || range.end > end + 1e-7 || range.end - range.start < minimum - 1e-7) throw new Error('裁剪片段超出素材范围或短于 0.1 秒。');
+        || range.end > end + 1e-7 || range.end<=range.start || (!allowShortPieces && range.end-range.start<minimum-1e-7))
+      throw new Error(allowShortPieces ? speedPlanningErrors.invalidPictureRange : '裁剪片段超出素材范围或短于 0.1 秒。');
     return { start: range.start, end: range.end };
   });
+}
+
+// An intersection with an existing cut can retain a fraction of a source
+// frame. The candidate's enclosing in/out points still require 0.1 seconds.
+function normalizePictureRanges(ranges,start,end) {
+  return normalizeRanges(ranges,start,end,true);
 }
 
 function audioSpeed(value) {
@@ -119,4 +128,4 @@ function sliceSource(ranges, offset, length) {
   return result;
 }
 
-module.exports = { audioSpeed, normalizeMusicSpeeds, normalizeShotSettings, normalizeRanges, normalizeSegmentVoiceCuts, normalizeSceneCuts, normalizeVolumeOverrides, sliceSource };
+module.exports = { audioSpeed, normalizeMusicSpeeds, normalizeShotSettings, normalizeRanges, normalizePictureRanges, normalizeSegmentVoiceCuts, normalizeSceneCuts, normalizeVolumeOverrides, sliceSource };

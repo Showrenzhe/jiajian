@@ -76,7 +76,68 @@
   // A 0.1-second cut can occupy a project window of up to one day.
   const minVideoSpeed = 0.000001;
 
+  function videoSpeedDecision(clip, target, {min=.25,max=4,choice,hasGroup=false,explicit=false}={}) {
+    const length=(clip.ranges?.reduce((sum,r)=>sum+r.end-r.start,0) ?? clip.end-clip.start)
+      -(clip.look?.head ?? 0)-(clip.look?.tail ?? 0);
+    if (!(length>0 && target>0 && min>=minVideoSpeed && max>=min) || ![length,target,min,max].every(Number.isFinite))
+      throw RangeError((typeof module==='object' && module.exports ? require('./messages-zh-cn.js') : window.editorMessages).speedPlanningErrors.invalidWindow);
+    const required=clip.asset?.kind==='image' ? 1 : length/target;
+    const direction=clip.asset?.kind==='image' ? null : required>max+1e-9 ? 'high' : required<min-1e-9 ? 'low' : null;
+    const choices=direction==='high' ? ['trim-start','trim-end','continue'] : direction==='low' ? ['loop','hold','group'] : [];
+    const result={required,direction,choices,groupAvailable:hasGroup,target};
+    if (clip.speedMode==='manual' || (clip.speedMode==='legacy' && !explicit))
+      return {...result,status:'protected',speed:placedVideoSpeed(clip)};
+    if (direction && (!choices.includes(choice) || (choice==='group' && !hasGroup)))
+      return {...result,status:'choice',speed:required};
+    const speed=clip.asset?.kind==='image' ? 1 : Math.max(min,Math.min(max,required));
+    return {...result,status:'ready',speed,...(direction && {strategy:choice})};
+  }
+
+  function trimmedSpeedRanges(clip,decision) {
+    const ranges=clip.ranges ?? [{start:clip.start,end:clip.end}];
+    const length=ranges.reduce((sum,part)=>sum+part.end-part.start,0);
+    const head=clip.look?.head ?? 0, tail=clip.look?.tail ?? 0;
+    let remaining=Math.min(length-head-tail,decision.target*decision.speed);
+    let skip=decision.strategy==='trim-end' ? length-tail-remaining : head;
+    const kept=[];
+    for (const part of ranges) {
+      const span=part.end-part.start;
+      if (skip>=span) {skip-=span;continue;}
+      const start=part.start+skip;
+      const take=Math.min(part.end-start,remaining);
+      if (take>0) kept.push({start,end:Math.min(part.end,start+take)});
+      remaining-=take;
+      if (remaining<=1e-9) break;
+      skip=0;
+    }
+    return kept;
+  }
+
+  function applyVideoSpeedDecision(clip, decision) {
+    if (decision.status!=='ready' || clip.speedMode==='manual') return false;
+    let changed=clip.speed!==decision.speed || clip.speedMode!=='auto' || clip.speedOverflow!==decision.strategy;
+    if (decision.strategy==='trim-start' || decision.strategy==='trim-end') {
+      const ranges=trimmedSpeedRanges(clip,decision);
+      if (clip.ranges?.length!==ranges.length || ranges.some((range,i)=>range.start!==clip.ranges[i].start || range.end!==clip.ranges[i].end)) {
+        clip.ranges=ranges;
+        changed=true;
+      }
+      if (clip.look?.head || clip.look?.tail) {
+        const {head,tail,...look}=clip.look;
+        clip.look=look;
+        changed=true;
+      }
+    }
+    clip.speed=decision.speed;
+    clip.speedMode='auto';
+    if (decision.strategy) clip.speedOverflow=decision.strategy;
+    else delete clip.speedOverflow;
+    return changed;
+  }
+
   function placedVideoSpeed(clip) {
+    if (clip.speedMode==='manual' || clip.speedOverflow)
+      return clip.speed ?? 1;
     const span = clip.videoWindow ?? (clip.videoFit === 'hold' ? clip.videoDuration : undefined);
     if (!clip.autoFitSpeed || !span) return clip.speed === undefined ? 1 : clip.speed;
     const retained = clip.ranges?.reduce((seconds, r) => seconds + (r.end - r.start), 0) ?? (clip.end - clip.start);
@@ -187,7 +248,7 @@
     return !voicePriority && clip?.asset?.kind === 'video' && clip.videoStart !== undefined
       && clip.videoDuration !== undefined && clip.matchedDuration === undefined;
   }
-  const tools = { splitRanges, candidateVideoLanes, pinCandidateLanes, minVideoSpeed, fitVideoSpeed, placedVideoSpeed, sampleVideoRate, shouldRetimeVideo, nativeVideoRate, pictureSpan, videoLaneCells, emptyVideoCells,
+  const tools = { splitRanges, candidateVideoLanes, pinCandidateLanes, minVideoSpeed, fitVideoSpeed, videoSpeedDecision, applyVideoSpeedDecision, placedVideoSpeed, sampleVideoRate, shouldRetimeVideo, nativeVideoRate, pictureSpan, videoLaneCells, emptyVideoCells,
     reservedVideoCells, normalizeVideoGaps, videoGroupLeaders, joinedVideoSequence, soloLaneSequence, usesPlacedVideoSource };
   if (typeof module === 'object' && module.exports) module.exports = tools;
   else Object.assign(window, tools);
