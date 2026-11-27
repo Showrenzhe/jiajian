@@ -69,6 +69,11 @@ async function check() {
     }
     throw Error(label+' '+JSON.stringify(await read('['+order+','+query('#notice')+'.textContent,document.activeElement.outerHTML.slice(0,180),'+host+'.scrollLeft,'+host+'.clientWidth,'+host+'.scrollWidth]')));
   }
+  async function chooseOverflow(choice) {
+    const button='#speed-overflow-dialog:modal [data-speed-choice="'+choice+'"]';
+    await wait('!!'+query(button),'确认短片段时间窗的超限处理 '+choice);
+    await clickVisible(wc,button);
+  }
   const verify=(names)=>wait('JSON.stringify('+order+')==='+JSON.stringify(JSON.stringify(names)),'分镜顺序应为 '+names);
   const send=(method,params)=>wc.debugger.sendCommand('Input.'+method,params);
   const mouse=(type,{x,y})=>send('dispatchMouseEvent',{type,x,y,button:'left',
@@ -693,8 +698,7 @@ async function check() {
       await checkPlacement(scrollAxis,scrollScale,5.8,.6,'横向滚动后素材库片段吸附口播终点和字幕起点');
     });
     // Four source seconds in this 0.6-second drop exceed the default 4× limit.
-    await wait('!!document.querySelector("#speed-overflow-dialog:modal [data-speed-choice=continue]")','新轨落位前确认超限倍速');
-    await clickVisible(wc, '#speed-overflow-dialog [data-speed-choice="continue"]');
+    await chooseOverflow('continue');
     await wait(clipNamed(cell(1,3),longVideo),'横向滚动后的新轨落位');
     const cutWindow=(await loadProject(await saveAs('素材库滚动吸附'))).config.shots[1].at(-1);
     assert.deepEqual([cutWindow.speed,cutWindow.speedOverflow],[4,'continue'],'新轨按选择的上限继续');
@@ -717,11 +721,7 @@ async function check() {
         await mouse('mouseMoved',point(at));await checkPlacement(axis,scale,start,span,'返回原窗口');
       }
       await mouse('mouseReleased',point(at));await restored();
-      if(choice) {
-        const button='#speed-overflow-dialog:modal [data-speed-choice="'+choice+'"]';
-        await wait('!!'+query(button),'片段移至新窗口后确认超限处理 '+choice);
-        await clickVisible(wc,button);
-      }
+      if(choice) await chooseOverflow(choice);
       const targetLane=destination===secondLane ? 1 : 3;
       await wait(clipNamed(cell(shot,targetLane),file),'移动后保留素材及所属分镜');
       const after=(await loadProject(await saveAs('窗口落盘-'+shot+'-'+targetLane+'-'+at))).config;
@@ -944,11 +944,12 @@ async function check() {
     await mouse('mousePressed',beforeCut);await mouse('mouseMoved',land);
     await wait('!!'+query(placement)+' && !'+host+'.hasAttribute("data-drag-rejected")','视频拖回时可以按填好的口播结尾和字幕起点裁切');
     await mouse('mouseReleased',land);await restored();
+    await chooseOverflow('continue');
     await wait(clipNamed(cell(0,0),files.red),'裁切后只移动红片到原轨');
     const cutFile=await saveAs('按参考边界裁切后');
     const cutSaved=await loadProject(cutFile), cut=cutSaved.config.shots[0][0];
     assert.ok(Math.abs(cut.videoStart-.7)<.001 && Math.abs(cut.videoDuration-.28)<.001,'裁到 0.70–0.98 秒');
-    assert.deepEqual([cut.start,cut.end],[.1,1.3],'保留原素材入出点');
+    assert.deepEqual([cut.start,cut.end,cut.speed,cut.speedOverflow],[.1,1.3,4,'continue'],'保留原素材入出点和确认的倍速策略');
     const {shots:oldShots,...oldReference}=cutBaseline.config,{shots:newShots,...newReference}=cutSaved.config;
     assert.deepEqual(newReference,oldReference,'裁切保持分镜、口播、字幕和其他轨道数据');
     assert.deepEqual(newShots.slice(1),oldShots.slice(1),'未触碰相邻视频片段');
