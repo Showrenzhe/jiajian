@@ -133,6 +133,21 @@ async function check() {
     await click('#palette-option-0');
     await wait('document.querySelector(".sequence-dialog:modal h2")?.textContent.includes("蓝调渐变")');
     await escape();
+    for (const [title, kind] of [['加文字','text'], ['加贴纸','sticker']]) {
+      await open();
+      await type(title);
+      await wait(results + '[0] === ' + JSON.stringify(title));
+      await enter();
+      await wait('document.querySelector(".sequence-dialog:modal h2")?.textContent === "添加包装片段"');
+      const fields = await read(`Object.fromEntries([...document.querySelectorAll('.sequence-dialog:modal label')]
+        .filter(label => label.firstElementChild && label.querySelector(':scope > select'))
+        .map(label => [label.firstElementChild.textContent, label.querySelector('select').value]))`);
+      assert.equal(fields['类型'], kind);
+      assert.equal(fields['所属轨道'], 'local');
+      if (kind === 'text') await click('.sequence-dialog:modal textarea');
+      await escape();
+      assert.deepEqual(await read(`[...document.querySelectorAll('.sequence-video .sequence-marked')].map(el => el.dataset.dropShot)`), ['0']);
+    }
     await open();
     await type('静音片段');
     await enter();

@@ -5970,7 +5970,7 @@ function setTrackView() {
 }
 $('#timeline-view').addEventListener('change',setTrackView);
 document.addEventListener('pointerdown',(event)=>{
-  if(timeline.selectionCount && !event.target.closest('#timeline-clock,.track-toolbar,#timeline-view-actions,#command-palette-entry,#command-palette,#video-track-menu')) timeline.clearSelection();
+  if(timeline.selectionCount && !event.target.closest('#timeline-clock,.track-toolbar,#timeline-view-actions,#command-palette-entry,dialog:modal,#video-track-menu')) timeline.clearSelection();
 },true);
 $('#shots').addEventListener('keydown',(event)=>{
   if (event.key !== 'Delete' || operation || event.target.closest('input,select,textarea,[contenteditable="true"]')) return;
