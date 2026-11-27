@@ -162,21 +162,59 @@ window.mountEditTimeline = function (host, ctx) {
   let scrubPointer, scrubX, scrubFrame, activeSeek;
   let resizeDrag,layerDrag;
   let locatedMaterial, snapGeometry = [];
-  const snapGuide=el('i','timeline-snap-guide');
+  // Draw a single scanline stretched over the visible tracks. Crossing a snap
+  // boundary then touches pixels only, even with a software compositor.
+  const snapPanel=host.closest('#timeline-tracks-panel');
+  const snapGuide=el('canvas','timeline-snap-overlay');
   snapGuide.setAttribute('aria-hidden','true');
-  snapGuide.hidden=true;
-  let guideTimer, guidePixel;
-  function showSnap(at,flash=false) {
-    const pixel=at===undefined ? undefined : headWidth+at*timeScale;
-    if(pixel===guidePixel && !flash && guideTimer===undefined) return;
-    if(guideTimer!==undefined) {clearTimeout(guideTimer);guideTimer=undefined;}
-    if(pixel!==guidePixel) {
-      guidePixel=pixel;
-      if(snapGuide.hidden!==(pixel===undefined)) snapGuide.hidden=pixel===undefined;
-      if(pixel!==undefined) snapGuide.style.translate=pixel+'px 0';
+  snapGuide.width=snapGuide.height=1;
+  document.body.append(snapGuide);
+  const guideInk=snapGuide.getContext('2d');
+  let guideTimer, guideTime, guideColumn, guideWidth, guideColor, guideBox;
+  function clearGuide() {
+    if(guideColumn!==undefined) guideInk.clearRect(guideColumn-1,0,guideWidth+2,1);
+    guideColumn=undefined;
+  }
+  function paintGuide() {
+    if(guideTime===undefined) return;
+    const area=host.getBoundingClientRect(), panel=snapPanel.getBoundingClientRect();
+    const origin=area.left+host.clientLeft, panelLeft=panel.left+snapPanel.clientLeft;
+    const left=Math.max(0,origin+headWidth,panelLeft);
+    const top=Math.max(0,area.top+host.clientTop,panel.top+snapPanel.clientTop);
+    const right=Math.min(innerWidth,origin+host.clientWidth,panelLeft+snapPanel.clientWidth);
+    const bottom=Math.min(innerHeight,area.bottom,panel.top+snapPanel.clientTop+snapPanel.clientHeight);
+    const width=right-left,height=bottom-top;
+    const x=origin+headWidth+guideTime*timeScale-host.scrollLeft-left;
+    if(width<=0 || height<=0 || x<0 || x>width) {clearGuide();return;}
+    const ratio=devicePixelRatio, box=[left,top,width,height,ratio].join(',');
+    if(box!==guideBox) {
+      guideBox=box;
+      snapGuide.width=Math.ceil(width*ratio);
+      snapGuide.style.cssText='left:'+left+'px;top:'+top+'px;width:'+width+'px;height:'+height+'px';
+      guideWidth=Math.max(1,Math.round(2*ratio));
+      guideColor=getComputedStyle(snapGuide).color;
+      guideColumn=undefined;
     }
+    const column=Math.min(snapGuide.width-1,Math.round(x*snapGuide.width/width));
+    if(column===guideColumn) return;
+    clearGuide();
+    guideColumn=column;
+    guideInk.fillStyle='rgba(60,46,0,.45)';
+    guideInk.fillRect(column-1,0,guideWidth+2,1);
+    guideInk.fillStyle=guideColor;
+    guideInk.fillRect(column,0,guideWidth,1);
+  }
+  function showSnap(at,flash=false) {
+    if(at===guideTime && !flash && guideTimer===undefined) return;
+    if(guideTimer!==undefined) {clearTimeout(guideTimer);guideTimer=undefined;}
+    guideTime=at;
+    if(at===undefined) clearGuide(); else paintGuide();
     if(flash) guideTimer=setTimeout(()=>{guideTimer=undefined;showSnap();},320);
   }
+  window.addEventListener('scroll',paintGuide,{capture:true,passive:true});
+  window.addEventListener('resize',paintGuide);
+  matchMedia('(forced-colors: active)').addEventListener('change',()=>{guideBox=undefined;paintGuide();});
+  document.addEventListener('fullscreenchange',()=>showSnap());
   function snapAnchors(exclude) {
     const times=[...shotTimes,0,totalTime,playTime];
     for(const marker of ctx.getTimelineMarkers()) if(marker.time<=totalTime) times.push(marker.time);
@@ -1420,7 +1458,7 @@ window.mountEditTimeline = function (host, ctx) {
     else p.wholeNarration.forEach((items,i)=>layerRow({key:'voice',label:'整段口播 '+(i+1)},items,0,totalTime));
     snapGeometry=blocks.filter(({node})=>!node.classList.contains('sequence-empty'));
     editControls.attach(ruler,timeScale);
-    canvas.append(cursor,snapGuide);
+    canvas.append(cursor);
     canvas.onpointerdown=(e)=>{
       if(e.button!==0 || scrubPointer!=null || resizeDrag || e.target.closest('[data-timeline-marker]') || (!ruler.contains(e.target) && e.target!==cursor)) return;
       e.preventDefault();
@@ -1472,6 +1510,7 @@ window.mountEditTimeline = function (host, ctx) {
       }
       scaleRuler(ruler,width,viewportWidth,scroll);
       editControls.scale(timeScale);
+      paintGuide();
       ctx.showZoom(zoomScales.indexOf(timeScale)+1,zoomScales.length);
       syncCursor(scroll);
     };
@@ -2356,7 +2395,7 @@ window.mountEditTimeline = function (host, ctx) {
   window.addEventListener('keydown',event=>{
     if(event.key==='Escape' && layerDrag) {event.preventDefault();layerDrag.cancel();}
   },true);
-  window.addEventListener('blur',()=>{layerDrag?.cancel();finishCandidateDrag(false);});
+  window.addEventListener('blur',()=>{layerDrag?.cancel();finishCandidateDrag(false);showSnap();});
   host.ondragover=(e)=>{
     if(e.target.closest('[data-track-locked]')) return;
     const b=e.target.closest('[data-drop-shot]');
@@ -2377,6 +2416,7 @@ window.mountEditTimeline = function (host, ctx) {
   };
   let observedWidth;
   new ResizeObserver(([entry])=>{
+    paintGuide();
     if(observedWidth===entry.contentRect.width) return;
     observedWidth=entry.contentRect.width;
     // A temporary drop row can make the panel scrollbar appear during the gesture.
@@ -2550,6 +2590,7 @@ window.mountEditTimeline = function (host, ctx) {
     },
     fold(expanded){folded.clear();for(const node of host.querySelectorAll('[data-lane-key]')) setFold(node,node.dataset.laneKey,!expanded);ctx.scroll();},
     reset(newProject=false) {
+      showSnap();
       finishCandidateDrag(false);
       pastePosition=undefined;
       if(newProject) {clipboard=undefined;editControls.reset();}

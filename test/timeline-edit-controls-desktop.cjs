@@ -37,7 +37,7 @@ async function run() {
   const q = selector => 'document.querySelector('+JSON.stringify(selector)+')';
   const click = selector => clickVisible(wc,selector);
   const host = '#timeline-clock', ruler = '.sequence-ruler .sequence-content';
-  const mark = '[data-timeline-marker]', band = '[data-timeline-range]', guide = host+' .timeline-snap-guide';
+  const mark = '[data-timeline-marker]', band = '[data-timeline-range]', guide = '.timeline-snap-overlay';
   const first = '.sequence-video [data-move-candidate]', status = '#timeline-shuttle-status';
   const edge = '.sequence-layer.kind-text .sequence-block > .sequence-edge:last-child';
   const scale = 'parseFloat('+q(ruler)+'.style.getPropertyValue("--timeline-second"))';
@@ -142,15 +142,35 @@ async function run() {
     const start = await point(edge);
     const pxPerSecond = await read(scale);
     const target = {x:start.x+(markerTime-.6)*pxPerSecond+3,y:start.y};
+    const guideAtMarker = `(() => {
+      const canvas=${q(guide)}, rect=canvas.getBoundingClientRect();
+      if(!rect.width || rect.top>${target.y} || rect.bottom<${target.y}) return false;
+      const x=${q(ruler)}.getBoundingClientRect().left+${markerTime}*${scale};
+      const column=Math.round((x-rect.left)*canvas.width/rect.width);
+      const pixels=canvas.getContext('2d').getImageData(column-1,0,3,1).data;
+      const swatch=document.createElement('canvas').getContext('2d');
+      swatch.fillStyle=getComputedStyle(canvas).color;
+      swatch.fillRect(0,0,1,1);
+      const expected=swatch.getImageData(0,0,1,1).data;
+      return [0,4,8].some(start=>expected.every((value,i)=>pixels[start+i]===value));
+    })()`;
+    const guideCleared = `(() => {
+      const c=${q(guide)}, pixels=c.getContext('2d').getImageData(0,0,c.width,1).data;
+      return !pixels.some((v,i)=>i%4===3 && v>0);
+    })()`;
     await mouse('mousePressed',start);
     await mouse('mouseMoved',target);
-    await wait('!'+q(guide)+'.hidden','靠近标记显示吸附线');
+    await wait(guideAtMarker,'靠近标记时在标记的窗口坐标绘出吸附线');
     await keyEvent('rawKeyDown','Alt',1);
-    await wait(q(guide)+'.hidden','按 Alt 临时关闭');
+    await wait(guideCleared,'按 Alt 清除整条导线');
     await keyEvent('keyUp','Alt',0);
-    await wait('!'+q(guide)+'.hidden','松 Alt 恢复吸附');
+    await wait(guideAtMarker,'松 Alt 后在同一标记处恢复');
+    for(const value of ['active','none']) {
+      await wc.debugger.sendCommand('Emulation.setEmulatedMedia',{features:[{name:'forced-colors',value}]});
+      await wait(guideAtMarker,'强制颜色切换后重绘同一位置');
+    }
     await mouse('mouseReleased',target);
-    await wait(q(guide)+'.hidden');
+    await wait(guideCleared);
     stage = '正反向播放、换向与暂停';
     await seek(1.95);
     await key('l'); await wait(q(status)+'.textContent.includes("1×") && !'+q(status)+'.hidden');

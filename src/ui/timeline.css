@@ -399,15 +399,16 @@
 }
 .video-cut-sequence {position:relative;}
 .timeline-snap-guide[hidden],#timeline-clock [data-timeline-marker][hidden] {display:none;}
-/* Keep the track-height guide on its own compositor layer throughout a drag.
-   Crossing an edit edge changes its opacity without rebuilding canvas layout. */
-.sequence-canvas > .timeline-snap-guide {will-change:transform,opacity;}
-.sequence-canvas > .timeline-snap-guide[hidden] {display:block !important;opacity:0;}
+.timeline-snap-overlay {
+  position:fixed;left:0;top:0;width:0;height:0;z-index:5;pointer-events:none;
+  contain:strict;image-rendering:pixelated;color:var(--system-yellow,#ffcc32);
+}
 #timeline-snap[aria-pressed="true"],[data-timeline-snap][aria-pressed="true"],#timeline-loop[aria-pressed="true"] {
   color:var(--system-blue);box-shadow:inset 0 0 0 1px currentColor;
 }
 #track-more-options .timeline-edit-commands {display:grid;grid-template-columns:1fr 1fr;gap:4px;}
 @media (forced-colors:active) {
   .timeline-snap-guide,#timeline-clock [data-timeline-marker]::before {background:Highlight;}
+  .timeline-snap-overlay {color:Highlight;forced-color-adjust:none;}
   .timeline-ruler-edits [data-timeline-range] {border-color:Highlight;}
 }
