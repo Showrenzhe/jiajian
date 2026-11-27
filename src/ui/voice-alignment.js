@@ -26,6 +26,20 @@
     return { ...clip, outputFrames, outputDuration: outputFrames / fps };
   }
 
+  // Each cut shares its neighbour's boundary. Keep the last partial frame and
+  // the one-frame minimum for independently visible, very fast picture edits.
+  function pictureFrames(durations, fps) {
+    let elapsed = 0;
+    let assigned = 0;
+    return durations.map((duration, i) => {
+      elapsed += Math.max(1, duration * fps);
+      const end = i === durations.length - 1 ? Math.ceil(elapsed - 1e-7) : Math.round(elapsed + 1e-7);
+      const count = end - assigned;
+      assigned = end;
+      return count;
+    });
+  }
+
   function voiceLength(clip) {
     const source = clip.narrationRanges?.reduce((sum, range) => sum + range.end - range.start, 0) ?? clip.narration.duration;
     return source / (clip.narrationSpeed ?? 1);
@@ -117,7 +131,7 @@
         ? { narrationStart: 0, narrationDuration: voiceLength(clip) } : voiceRange(clips, index)) : null;
       const fixedClock = preserveFixedClock && !range ? clip.shotDuration : undefined;
       const target = range ? (clip.voiceOffset ?? 0) + range.narrationDuration
-        : fixedClock ?? withOutputFrames(clip, clip.shotDuration ?? clip.duration, fps).outputDuration;
+        : Math.max(1 / fps, clip.shotDuration ?? clip.duration);
       const clipSamples = Math.round(target * audioRate);
       const timelineDuration = fixedClock ?? clipSamples / audioRate;
       samples += clipSamples;
@@ -191,7 +205,7 @@
     return result;
   }
 
-  const api = { matchCandidateDuration, maxCandidates, minClipSeconds, minEdgeSilence, audioRate, withOutputFrames, voiceLength, pieces, repeatVisual, visualDuration, fitVisuals, placedVideoFrames, fitSegmentedVoice, fitWholeVoice, fitReferenceWhole };
+  const api = { matchCandidateDuration, maxCandidates, minClipSeconds, minEdgeSilence, audioRate, withOutputFrames, pictureFrames, voiceLength, pieces, repeatVisual, visualDuration, fitVisuals, placedVideoFrames, fitSegmentedVoice, fitWholeVoice, fitReferenceWhole };
   if (typeof module === "object" && module.exports) module.exports = api;
   else window.voiceAlignment = api;
 })();

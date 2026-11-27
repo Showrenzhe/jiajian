@@ -715,6 +715,44 @@ test('renders horizontal mirrors as independent candidate variants', async (t) =
   }
 });
 
+test('retains one visible frame for very fast edits and audio for a shot assigned zero video frames', async t => {
+  const { catalog, output } = await fixtureDirectory(t);
+  const ids = ['red', 'blue', 'green'];
+  const [pictures] = planMontage({ ...montage, musicIds:[], count:1,
+    shots:ids.map((id, index) => [{id, start:0, end:.2, speed:index === 1 ? 1 : 100}]) }, catalog);
+  assert.deepEqual(pictures.clips.map(clip => clip.outputFrames), [1, 5, 1]);
+
+  for (const [id, waveform] of [['silent','anullsrc=r=48000:cl=mono:d=0.1'], ['spoken','sine=f=880:r=48000:d=0.1']]) {
+    const file = path.join(output, id + '.wav');
+    await ffmpeg(['-f','lavfi','-i',waveform,'-c:a','pcm_s16le',file]);
+    catalog.set(id, await inspectAsset(file, 'audio'));
+  }
+  const voices = ['silent','silent','spoken','silent','silent'];
+  const [speech] = planMontage({ ...montage, musicIds:[], count:1, priority:'voice', narrationMode:'segmented',
+    shots:voices.map(() => [{id:'red',start:0,end:.2}]), segmentNarrationIds:voices.map(id => [id]),
+    segmentVoiceCuts:voices.map(() => [{speed:3}]), generatedCaptions:{spoken:'中间的口播'} }, catalog);
+  assert.deepEqual(speech.clips.map(clip => clip.outputFrames), [1, 1, 0, 1, 1]);
+  assert.deepEqual(speech.subtitles.cues, [{start:67,end:100,text:'中间的口播'}]);
+  const {results, failures} = await exportBatch([pictures,speech], output);
+  assert.deepEqual(failures, []);
+  const rgb = await ffmpeg(['-i',results[0].path,'-an','-vf','scale=1:1','-fps_mode','passthrough','-pix_fmt','rgb24','-f','rawvideo','pipe:1']);
+  assert.equal(rgb.length, 7 * 3);
+  for (const [i, channel] of [0,2,2,2,2,2,1].entries()) {
+    const sample = [...rgb.subarray(i * 3, i * 3 + 3)];
+    assert.ok(sample[channel] > 90 && sample[channel] === Math.max(...sample), `frame ${i}: ${sample}`);
+  }
+  const pcm = await ffmpeg(['-i',results[1].path,'-vn','-ac','1','-ar','48000','-f','s16le','pipe:1']);
+  function rms(start, count) {
+    let squares = 0;
+    for (let i = start; i < start + count; i++) squares += pcm.readInt16LE(i * 2) ** 2;
+    return Math.sqrt(squares / count);
+  }
+  // Each voice spans 1,600 samples. Only the third voice carries a tone.
+  assert.ok(rms(1900, 800) < 50);
+  assert.ok(rms(3500, 800) > 600);
+  assert.ok(rms(5400, 800) < 50);
+});
+
 test('renders colored padding and shot fades on the final retimed timeline', async (t) => {
   const { catalog, output } = await fixtureDirectory(t);
   const config = {
@@ -774,7 +812,8 @@ test('aligns whole narration with the chosen voice or picture priority', async (
   ];
   const plans = cases.map(({ expected, ...options }) => {
     const [plan] = planMontage({ ...config, ...options }, catalog);
-    assert.equal(plan.duration, expected);
+    assert.equal(plan.duration, Math.ceil(expected * config.fps) / config.fps);
+    assert.equal(plan.audioDuration ?? plan.duration, expected);
     assert.strictEqual(plan.narration, catalog.get(options.narrationId));
     return plan;
   });
@@ -901,7 +940,8 @@ test('exports adjusted narration, looped music and sound effects at the edited s
   const captions={name:'双音',cues:[{start:800,end:1600,text:'高音'}]};
   const pasted={name:'时间轴',cues:[{start:50,end:100,text:'复制的字幕'}]};
   const whole=planMontage({...config,narrationId:'tone',narrationSpeed:2,subtitles:captions,timelineCaptions:pasted},catalog)[0];
-  assert.equal(whole.duration,.8);
+  assert.equal(whole.duration,20/24);
+  assert.equal(whole.audioDuration,.8);
   assert.deepEqual(whole.subtitles.cues,[...pasted.cues,{start:400,end:800,text:'高音'}]);
   const segmented=planMontage({...config,narrationMode:'segmented',segmentNarrationIds:[['tone']],
     segmentVoiceCuts:[[{ranges:[{start:.8,end:1.6},{start:0,end:.8}],speed:2,offset:.2}]],generatedCaptions:{tone:captions}},catalog)[0];
@@ -937,11 +977,13 @@ test('renders per-row narration cuts in edit order and remaps the original SRT t
     ] } } };
   const voicePlan = planMontage(config, catalog)[0];
   assert.deepEqual(voicePlan.subtitles.cues, [{ start: 0, end: 200, text: '三' }, { start: 200, end: 400, text: '一' }]);
-  assert.equal(voicePlan.duration, 0.4);
+  assert.equal(voicePlan.duration, 10/24);
+  assert.equal(voicePlan.audioDuration, 0.4);
   const picture = planMontage({ ...config, priority: 'picture' }, catalog)[0];
   assert.deepEqual(picture.subtitles.cues.at(-1), { start: 200, end: 300, text: '一' });
   const delayed = planMontage({ ...config, segmentVoiceCuts: [[{ ranges, offset: 0.2 }]] }, catalog)[0];
-  assert.equal(delayed.duration, 0.6);
+  assert.equal(delayed.duration, 15/24);
+  assert.equal(delayed.audioDuration, 0.6);
   assert.deepEqual(delayed.subtitles.cues, [{ start: 200, end: 400, text: '三' }, { start: 400, end: 600, text: '一' }]);
   const batch = await exportBatch([voicePlan, picture, delayed], output);
   assert.deepEqual(batch.failures, []);
@@ -964,16 +1006,23 @@ test('publishes selected MP4 cover artwork, pins first shot and inserts a real r
   const first = source({mode:'first-shot',items:[],active:0});
   assert.equal(first.clips[0].shotIndex,0);
   assert.throws(()=>planMontage({...config,count:2,cover:{mode:'first-shot',items:[]}},catalog),/生成数量/);
-  const random = source({mode:'random',items:[],active:0});
+  const [random] = planMontage({...config,cover:{mode:'random',items:[],active:0},
+    priority:'voice', narrationId:'music', narrationSpeed:1.25},catalog,()=>0.75);
   assert.equal(random.cover.frames,10);
   assert.ok(Math.abs(random.duration-random.contentDuration-10/30)<1e-7);
   const batch=await exportBatch([library,first,random],output);
   assert.deepEqual(batch.failures,[]);
   const {promisify}=require('node:util');
   const probe=promisify(require('node:child_process').execFile);
-  for (const {path:file} of batch.results) {
+  for (const {path:file,index} of batch.results) {
     const {stdout}=await probe(mediaTool('ffprobe'),['-v','error','-show_streams','-of','json',file]);
-    assert.equal(JSON.parse(stdout).streams.filter((s)=>s.disposition.attached_pic===1 && s.codec_name==='mjpeg').length,1);
+    const {streams}=JSON.parse(stdout);
+    assert.equal(streams.filter((s)=>s.disposition.attached_pic===1 && s.codec_name==='mjpeg').length,1);
+    const plan=[library,first,random][index];
+    const sound = streams.find(stream => stream.codec_type === 'audio');
+    assert.equal(sound.time_base, '1/48000');
+    assert.equal(sound.duration_ts, Math.round((plan.audioDuration ?? plan.contentDuration) * 48000)
+      + (plan.cover.frames ?? 0) * (48000 / plan.fps));
   }
   const picture=await ffmpeg(['-i',batch.results[0].path,'-map','0:v:1','-frames:v','1','-vf','scale=1:1','-pix_fmt','rgb24','-f','rawvideo','pipe:1']);
   assert.ok(picture[2]>picture[0]+65,'MP4 中独立的封面图像来自蓝色选帧');
@@ -1055,7 +1104,8 @@ test('cuts only adjacent narration edge silence and keeps speech, internal pause
     assert.ok(Math.abs(edgeSilence.leading - leading) < 0.02 && Math.abs(edgeSilence.trailing - trailing) < 0.02, JSON.stringify(edgeSilence));
   }
   assert.ok([...catalog.values()].every((asset) => asset.edgeSilence === undefined), '预览分析不能修改项目原始素材');
-  assert.ok(Math.abs(voice.duration - 1.56) < 0.005, `缩短后的成片长度 ${voice.duration}`);
+  assert.ok(Math.abs(voice.audioDuration - 1.56) < 0.005, `缩短后的音轨长度 ${voice.audioDuration}`);
+  assert.equal(voice.duration, 47/30);
   assert.deepEqual(voice.subtitles.cues.slice(0, 2), config.generatedCaptions.left.cues);
   assert.ok(Math.abs(voice.subtitles.cues[2].start - 910) <= 2, '后段字幕应跟随精确剪去的开头静音');
   assert.equal(voice.subtitles.cues[2].end - voice.subtitles.cues[2].start, 450, '口播字幕的发声跨度不能因对齐而拉伸');
@@ -1064,7 +1114,8 @@ test('cuts only adjacent narration edge silence and keeps speech, internal pause
     ...config, priority: 'voice', shots: [config.shots[0], [{ id: 'still', start: 0, end: 0.3 }], config.shots[1]],
     segmentNarrationIds: [['left'], [], ['right']],
   }, catalog, { random });
-  assert.ok(Math.abs(separated.duration - 2.36) < 0.005 && separated.clips[2].narrationStart === 0, '有无口播分镜隔开时不裁两侧静音');
+  assert.ok(Math.abs(separated.audioDuration - 2.36) < 0.005 && separated.clips[2].narrationStart === 0, '有无口播分镜隔开时不裁两侧静音');
+  assert.equal(separated.duration, 71/30);
   const batch = await exportBatch([voice, picture], output);
   assert.deepEqual(batch.failures, []);
   const [voiceFile, pictureFile] = batch.results.map(({ path: file }) => file);
@@ -1213,7 +1264,9 @@ test('draws whole narration and subtitles together, including empty tracks', () 
   ];
   assert.equal(new Set(plans.map((plan) => `${plan.clips[0].asset.name}:${plan.wholeTrack}`)).size, 8);
   for (const plan of plans) {
-    assert.deepEqual([plan.narration?.name ?? null, plan.subtitles?.name ?? null, plan.duration], expected[plan.wholeTrack - 1]);
+    const [name, subtitle, seconds] = expected[plan.wholeTrack - 1];
+    assert.deepEqual([plan.narration?.name ?? null, plan.subtitles?.name ?? null, plan.audioDuration ?? plan.duration], [name, subtitle, seconds]);
+    assert.equal(plan.duration, Math.ceil(seconds * config.fps) / config.fps);
   }
   assert.throws(() => planMontage({ ...config, count: 9 }, catalog), /生成数量/);
   assert.throws(() => planMontage({ ...config, extraWholeTracks: Array(maxWholeTracks).fill(config.extraWholeTracks[0]) }, catalog), /最多可设置 250/);
