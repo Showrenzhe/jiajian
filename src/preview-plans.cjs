@@ -1,14 +1,16 @@
 'use strict';
 
 const { randomUUID } = require('node:crypto');
+const {normalizeSettings,planningRandom} = require('./ui/batch-variations.js');
 const {speedPlanningErrors,narrationTrim:trimMessages} = require('./ui/messages-zh-cn.js');
 const { estimatedBytes } = require('./export-preflight.cjs');
 const { planMontage, analyzeNarrationSilence, analyzeNarrationPauses } = require('./media.cjs');
 const { measureBatchReuse } = require('./visual-similarity.cjs');
 const { normalizeSubprojects, resolveSubprojectShots,projectVoiceConfig } = require('./subprojects.cjs');
 
-async function prepareMontagePlans(config, catalog, { signal, random = Math.random, batchLimit, silenceCache, pauseCache, analyzePauses=analyzeNarrationPauses } = {}) {
+async function prepareMontagePlans(config, catalog, { signal, random, batchLimit, silenceCache, pauseCache, analyzePauses=analyzeNarrationPauses } = {}) {
   signal?.throwIfAborted();
+  random ??= planningRandom(normalizeSettings(config?.batchRandom),config?.subprojects?.active);
   const seams = config?.priority === 'voice' && config.narrationMode === 'segmented' && config.voiceAlignment !== 'reference';
   const smart = config?.narrationTrim?.mode === 'smart';
   const picture = smart && (config.priority ?? 'picture') === 'picture';
@@ -87,19 +89,31 @@ async function prepareSubprojectPlans(config, scope, catalog, options) {
   }
   if (total > 1000) throw new Error('一次最多预览 1000 条子工程成片。');
   const plans = [];
+  const summaries = [];
+  const settings = config.batchRandom === undefined ? undefined : normalizeSettings(config.batchRandom);
   // Every subproject in one generation uses the same recording and trim settings.
   // A new invocation gets a fresh cache, including a confirmed speed-choice retry.
   const batchOptions = {...options,batchLimit:1000,pauseCache:new Map(),silenceCache:options?.silenceCache ?? new Map()};
   for (const { id, count } of scope) {
     const project = projects.get(id);
     try {
-      const batch = await prepareMontagePlans({ ...config, ...projectVoiceConfig(config,project,subprojects.mainVoice), shots: project.effective, count }, catalog, batchOptions);
+      const optionsForProject = settings === undefined ? batchOptions : {
+        ...batchOptions, random: planningRandom(settings, id)
+      };
+      const batch = await prepareMontagePlans({ ...config, ...projectVoiceConfig(config,project,subprojects.mainVoice), shots: project.effective, count }, catalog, optionsForProject);
+      summaries.push({ id, name:project.name, ...batch.batchSummary });
       for (const plan of batch) plans.push({ ...plan, subproject: { id, name: project.name } });
     } catch (error) {
       options?.signal?.throwIfAborted();
       throw new Error(`子工程「${project.name}」：${error.message}`, { cause: error });
     }
   }
+  Object.defineProperty(plans,'batchSummary',{value:{
+    totalSpace:summaries.reduce((sum,row)=>sum+BigInt(row.totalSpace),0n).toString(),
+    requested:total, actual:plans.length,
+    reason:summaries.some(row=>row.reason==='budget') ? 'budget' : summaries.find(row=>row.reason)?.reason ?? null,
+    subprojects:summaries,
+  }});
   return plans;
 }
 
@@ -107,7 +121,7 @@ async function prepareSubprojectPlans(config, scope, catalog, options) {
 // pictures, narration rows, ordering, cover and music through both seam passes.
 function createSpeedPlanningSession() {
   let pending;
-  return async function prepare(config,scope,catalog,{signal,response,random=Math.random,analyzePauses}={}) {
+  return async function prepare(config,scope,catalog,{signal,response,random,analyzePauses}={}) {
     if (!config.autoSpeedRange && !response) {
       pending=undefined;
       const options={signal,random,analyzePauses};
@@ -115,6 +129,7 @@ function createSpeedPlanningSession() {
         : await prepareSubprojectPlans(config,scope,catalog,options)};
     }
     const key=JSON.stringify([config,scope]);
+    random ??= planningRandom(normalizeSettings(config.batchRandom),config.subprojects?.active);
     let draws=[], choices, cursor=0;
     let silenceCache=new Map();
     if (response) {
@@ -181,6 +196,7 @@ function createPreviewBatch(config, catalog, plans = planMontage(config, catalog
     id,
     config: JSON.stringify(config),
     plans,
+    batchSummary: plans.batchSummary,
     entries: plans.map((plan, index) => ({
       index,
       reuse: reuse[index],

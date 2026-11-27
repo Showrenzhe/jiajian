@@ -51,6 +51,7 @@
   <script src="./waveform.js" defer></script>
   <script src="./narration-trim.js" defer></script>
   <script src="./music-mix.js" defer></script>
+  <script src="./batch-variations.js" defer></script>
   <script src="./draft-music.js" defer></script>
   <script src="./voice-alignment.js" defer></script>
   <script src="./draft-transport.js" defer></script>
@@ -448,6 +449,7 @@
           <div class="list-heading batch-heading">
             <div>
               <h2 id="preview-batch-heading">生成预览</h2>
+              <p id="batch-generation-summary" class="muted compact" role="status"></p>
               <p id="preview-batch-summary" class="muted compact" role="status"></p>
             </div>
             <div class="project-actions">
@@ -455,7 +457,7 @@
               <select id="batch-sort" aria-label="排序"><option value="index">编号顺序</option><option value="duration">时长从短到长</option><option value="reuse">重复度从低到高</option></select>
               <select id="batch-reuse-filter" aria-label="画面素材重复估值筛选">
                 <option value="low">重复度 0–70%</option><option value="medium">重复度 70%以上至95%以下</option><option value="high">重复度 95–99%</option>
-                <option value="same">画面素材完全相同</option><option value="none">无重复画面素材</option><option value="all">全部重复度</option>
+                <option value="same">画面素材完全相同</option><option value="none">无重复画面素材</option><option value="all" selected>全部重复度</option>
               </select>
               <select id="batch-project-filter" aria-label="按子工程筛选" hidden></select>
               <button type="button" id="select-all-previews" class="quiet">仅选筛选结果</button>
@@ -829,6 +831,17 @@
               </div>
               <label class="line-field">生成条数<input id="count" type="number" min="1" max="1" step="1" value="1"></label>
               <p id="combinations" class="muted compact"></p>
+              <section class="batch-random-settings" id="batch-random-settings">
+                <h3 class="inspector-section-title" data-batch-label="diversity"></h3>
+                <label class="line-field"><span data-batch-label="different"></span><input id="batch-min-shots" type="number" min="0" max="1000" step="1" value="0"></label>
+                <label class="p-switch"><span data-batch-label="opening"></span><input id="batch-avoid-opening" type="checkbox" role="switch"><span aria-hidden="true"></span></label>
+                <p id="batch-coverage" class="muted compact"></p>
+                <label class="batch-seed-field"><span data-batch-label="seed"></span><input id="batch-seed" type="text" readonly spellcheck="false"></label>
+                <div class="batch-seed-actions">
+                  <button type="button" id="batch-same-seed" class="secondary" data-batch-label="same"></button>
+                  <button type="button" id="batch-new-seed" class="secondary" data-batch-label="fresh"></button>
+                </div>
+              </section>
             </div>
           </fieldset>
           <p id="audio-settings" class="muted compact" hidden>提取视频的第一条音轨，按原片顺序导出。</p>
@@ -878,7 +891,7 @@
     <div class="subproject-batch-line"><label>统一数量 <input type="number" id="subproject-common-count" min="1" max="1000" step="1" value="1"></label><button type="button" id="subproject-apply-count" class="secondary">应用到已选</button></div>
     <div id="subproject-batch-list"></div>
     <p id="subproject-batch-status" class="muted compact" role="status"></p>
-    <div class="narration-review-actions"><button type="button" id="subproject-batch-close" class="secondary">取消</button><button type="button" id="subproject-batch-confirm" class="primary">生成预览</button></div>
+    <div class="narration-review-actions"><button type="button" id="subproject-batch-close" class="secondary">取消</button><button type="button" id="subproject-batch-new-seed" class="secondary" data-batch-label="fresh"></button><button type="button" id="subproject-batch-confirm" class="primary">生成预览</button></div>
   </dialog>
   <dialog id="material-remove-dialog" class="narration-review" aria-labelledby="material-remove-title" aria-describedby="material-remove-detail material-remove-scope">
     <h2 id="material-remove-title">移除正在使用的素材？</h2>

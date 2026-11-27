@@ -677,7 +677,8 @@ test('starts looping music at the selected source shot after shuffle and voice a
 
 test('mixes still images and video, honoring the shuffle and background music selection', async (t) => {
   const { catalog, output } = await fixtureDirectory(t);
-  const draws = [0, 0, 0, 0.9];
+  // Algorithm 1 draws music as a combination dimension before shuffling the shots.
+  const draws = [0, 0, 0.9, 0];
   const plans = planMontage({
     ...montage,
     shots: [[{ id: 'red', start: 0, end: 0.6 }], [{ id: 'still', start: 0, end: 0.5 }]],
@@ -1009,7 +1010,10 @@ test('publishes selected MP4 cover artwork, pins first shot and inserts a real r
   const library = source({mode:'library',items:[{id:'blue',time:0.8,title:'佳剪',style:'accent'}],active:0});
   const first = source({mode:'first-shot',items:[],active:0});
   assert.equal(first.clips[0].shotIndex,0);
-  assert.throws(()=>planMontage({...config,count:2,cover:{mode:'first-shot',items:[]}},catalog),/生成数量/);
+  const firstCandidates=planMontage({...config,count:2,cover:{mode:'first-shot',items:[]}},catalog);
+  assert.deepEqual(new Set(firstCandidates.map(plan=>plan.clips[0].asset)),new Set([catalog.get('red'),catalog.get('green')]));
+  assert.ok(firstCandidates.every(plan=>plan.clips[0].shotIndex===0));
+  assert.throws(()=>planMontage({...config,count:3,cover:{mode:'first-shot',items:[]}},catalog),/生成数量/);
   const [random] = planMontage({...config,cover:{mode:'random',items:[],active:0},
     priority:'voice', narrationId:'music', narrationSpeed:1.25},catalog,()=>0.75);
   assert.equal(random.cover.frames,10);

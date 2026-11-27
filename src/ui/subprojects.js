@@ -212,6 +212,22 @@ function createSubprojects({ shots, serialize, revive,voiceIO }) {
   return { select, create, revert, applyFallbacks, removeCandidate, removeMaterialReferences, pack, restore, fill, syncVoices, reorderVoiceFollows, reorderVideoPlacements, rebaseVideoTimes, category:(shot)=>categories.get(shot),
     inheritsVoice(shot) { return Boolean(active && (shot ? !active.localVoice?.segments.has(shot) : !active.localVoice?.whole)); },
     get projects() { return projects; }, get active() { return active; },
+    batchSources(project, baseVoice) {
+      const own = project.localVoice;
+      return {
+        pictures:shots.map(shot=>{
+          const clips=project.shots.get(shot);
+          return clips?.length || project.emptyShots?.has(shot) ? clips : (active ? main.get(shot) : shot) ?? [];
+        }),
+        whole:own?.whole ?? baseVoice.whole ?? [],
+        segments:shots.map((shot,i)=>own?.segments.get(shot) ?? baseVoice.segments.get(shot) ?? []),
+      };
+    },
+    batchBaseVoice() {
+      if (!active || !mainVoice) return keyVoice(voiceIO?.read());
+      if (mainVoice.whole !== undefined) return mainVoice;
+      return {...mainVoice,whole:voiceIO?.read().whole ?? []};
+    },
     ready(project) {
       return shots.length > 0 && shots.every((shot) => {
         const clips = project.shots.get(shot) ?? (active ? main.get(shot) : shot);

@@ -78,6 +78,18 @@ test('undoing a subproject clip swap preserves inherited captions and leaves the
   assert.deepEqual(history.redo().shots, [[{id:'blue'}], [{id:'red'}]]);
 });
 
+test('batch scope inherits legacy empty overrides and accepts a main voice with only segments', () => {
+  const shots=[[{id:'a'}],[{id:'b'}]], whole=[{id:'voiceA'},{id:'voiceB'}];
+  const voiceIO={read:()=>({whole,segments:[]})};
+  const state=createSubprojects({shots,serialize:clip=>clip,revive:structuredClone,voiceIO});
+  state.restore({active:'current',main:[],mainVoice:{segments:[]},projects:[
+    {id:'current',shots:[]},
+    {id:'old',shots:[{index:0,clips:[]},{index:1,clips:[],empty:true}]},
+  ]});
+  const sources=state.batchSources(state.projects[1],state.batchBaseVoice());
+  assert.deepEqual(sources,{pictures:[[{id:'a'}],[]],segments:[[],[]],whole});
+});
+
 test('inserting a shot splits legacy reserved gaps and rebases inactive project versions atomically', () => {
   const shots=[[{id:'A',videoGaps:[{start:2.5,span:1}]}],[{id:'B',videoStart:3}]];
   const state=createSubprojects({shots,serialize:clip=>clip,revive:structuredClone});

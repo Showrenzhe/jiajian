@@ -980,7 +980,11 @@ async function run() {
   assert.equal(await runInWindow('document.querySelector("#narration-review-caption").value'), '第一镜台词');
   await runInWindow('document.querySelector("#narration-review-close").click()');
   await runInWindow('document.querySelector("#prepare-preview").click()');
-  await openBatch(2);
+  assert.equal(await runInWindow('document.querySelector("#count").valueAsNumber'), 4);
+  await openBatch(4);
+  const variants = await runInWindow('previewBatch.entries.map(entry=>[entry.clips[0].name,entry.music])');
+  assert.equal(new Set(variants.map(pair=>JSON.stringify(pair))).size, 4, '两种镜头与两首配乐应生成四种组合');
+  assert.deepEqual([...new Set(variants.map(([,music])=>music))].sort(), [files.music,files.otherMusic].map(file=>path.basename(file)).sort());
   await waitFor('document.querySelector(".batch-clips")?.textContent.includes("无口播")', '应标明空口播分镜');
   assert.match(await runInWindow('document.querySelector(".batch-subtitles").textContent'), /口播字幕/);
   await runInWindow('document.querySelector(".preview-composition").click()');

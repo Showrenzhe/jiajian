@@ -13,6 +13,7 @@ const smoke = [
   'timeline-edit-controls-desktop.cjs',
   'narration-trim-desktop.cjs',
   'music-mix-desktop.cjs',
+  'seed-batch-desktop.cjs',
   'software-update-desktop.cjs',
   goldenFrames,
 ];
@@ -55,6 +56,9 @@ async function run() {
       } else if (name === 'music-mix-desktop.cjs') {
         scenarioTemp = await fs.mkdtemp(path.join(tempDirectory, 'jiajian-mix-'));
         Object.assign(env, {JIAJIAN_MUSIC_TEST_ROOT:scenarioTemp, TEMP:scenarioTemp, TMP:scenarioTemp, TMPDIR:scenarioTemp});
+      } else if (name === 'seed-batch-desktop.cjs') {
+        scenarioTemp = await fs.mkdtemp(path.join(tempDirectory, 'jiajian-seed-'));
+        Object.assign(env, { JIAJIAN_BATCH_SEED_TEST_ROOT: scenarioTemp, TEMP: scenarioTemp, TMP: scenarioTemp, TMPDIR: scenarioTemp });
       } else if (name === 'timeline-edit-controls-desktop.cjs') {
         scenarioTemp = await fs.mkdtemp(path.join(tempDirectory, 'jiajian-timeline-edits-'));
         env.JIAJIAN_TIMELINE_TEST_ROOT = scenarioTemp;

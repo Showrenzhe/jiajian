@@ -115,9 +115,8 @@ async function check() {
     await wait(query('#count')+'.value==="1000" && !'+query('#prepare-preview')+'.disabled','打开 1,000 条组合工程');
     await click('#prepare-preview');
     await wait(query('#preview-batch')+'.checkVisibility() && '+summary+'.includes(" / 1000 条")','批量预览生成完成');
-    await select('#batch-reuse-filter',5);
-    await wait(summary+'.endsWith("当前显示 1000 条")','取消默认重复度筛选');
-    if(!await read(query('#select-all-previews')+'.disabled')) await click('#select-all-previews');
+    assert.equal(await read(query('#batch-reuse-filter')+'.value'),'all');
+    await wait(summary+'.endsWith("当前显示 1000 条")','生成后直接展示全部组合');
     await totals(1000,1000);
     const first=await scrollWindow(0);
     assert.ok(first[0].id===0 && first.every(row=>row.checked));

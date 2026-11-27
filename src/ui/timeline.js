@@ -605,6 +605,14 @@ window.mountEditTimeline = function (host, ctx) {
     if (state.trackControls?.['vis'+lane]?.locked) return;
     focusShot=shot;focusClip=clip;voiceTarget=undefined;
     const d=dialog('候选 · '+clip.asset.name);
+    const labels=window.editorMessages.batchRandom;
+    const preferenceOwner=window.candidatePreferenceOwner(shot,clip);
+    const select=document.createElement('select');
+    select.id='candidate-batch-preference';
+    for (const value of ['normal','required','low']) select.add(new Option(labels[value],value));
+    select.value=preferenceOwner.batchPreference ?? 'normal';
+    select.addEventListener('change',()=>ctx.setBatchPreference(shot,preferenceOwner,select.value));
+    d.field(labels.preference,select);
     matchDurationButton(d,state,index,clip);
     if (host.clientWidth) clipboardButtons(d,candidateNodes.get(clip),{index,time:clip.videoStart ?? shotTimes[index]});
     d.body.append(btn(clip.enabled===false ? '参与混剪' : '排除此候选',()=>{ctx.toggleClip(clip);d.wrapper.close();}),
