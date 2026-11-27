@@ -415,18 +415,20 @@ async function run() {
     }).map(button => button.id || button.textContent.trim())`);
     assert.deepEqual(broken, [], '可见按钮应引用有实际绘制范围的图标');
   }
-  const toolIds = ['home-import', 'tab-montage', 'tab-scene-split', 'tab-script', 'tab-audio'];
+  const toolIds = ['home-import', 'home-montage', 'tab-montage', 'tab-scene-split', 'tab-script', 'tab-audio'];
   const workflowIds = ['replicate', 'ai-video', 'smart-slice', 'assets', 'digital-avatar', 'voice-clone',
     'face-fusion', 'distribution', 'analytics', 'tasks', 'teams'];
   await waitFor('document.querySelector("#draft-status-title").textContent === "还没有本地草稿"', '空草稿首页应载入');
   assert.deepEqual(await runInWindow('[...document.querySelectorAll("#home-local-tools button")].map(b => b.id)'), toolIds);
+  assert.deepEqual(await runInWindow('[...document.querySelectorAll("#home-local-tools .home-entry-card")].map(b => b.textContent.trim())'),
+    ['视频混剪', '工程管理', '场景 AI 分割', '脚本创作']);
   assert.deepEqual(await runInWindow('[...document.querySelectorAll("#workspace-navigation [data-workflow]")].map(b => b.dataset.workflow)'), workflowIds);
   assert.ok(await runInWindow(`!document.querySelector('#workspace-navigation details, #workspace-navigation summary') &&
     [...document.querySelectorAll('#workspace-navigation [data-workflow]')].every(b => b.checkVisibility()) &&
     [...document.querySelectorAll('#home-local-tools button')].every(b =>
       [...document.querySelectorAll('#workspace-navigation button, #home button')].filter(other =>
         other.checkVisibility() && other.textContent.trim() === b.textContent.trim()).length === 1)`),
-  '侧栏应直接展示全部业务入口，首页五项本地创作各出现一次');
+  '侧栏应直接展示全部业务入口，首页本地创作各出现一次');
   const homeSize = win.getSize();
   for (const [width, height] of [[850, 600], homeSize]) {
     win.setSize(width, height);
@@ -438,7 +440,7 @@ async function run() {
       return drafts.width > 0 && rail.left >= drafts.right && rail.right <= innerWidth &&
         Math.abs(rail.top - drafts.top) <= 1 && document.documentElement.scrollWidth <= innerWidth &&
         buttons.every(button => button.checkVisibility() && button.scrollWidth <= button.clientWidth + 1);
-    })()`), width + 'px 首页应在草稿右侧显示五个完整入口');
+    })()`), width + 'px 首页应在草稿右侧显示完整入口');
     await navigate('#tab-audio');
     await waitFor('document.querySelector(".app-frame").dataset.mode === "audio"', '应从右侧工具打开音频提取');
     await goHome();
@@ -479,6 +481,9 @@ async function run() {
     document.querySelector('#draft-status-action').checkVisibility() &&
     document.querySelector('#draft-status-action').textContent === '导入素材'`, '空草稿专页应保留自己的导入入口');
   await navigate('#tab-home');
+  await navigate('#home-montage');
+  await waitFor('document.querySelector(".app-frame").dataset.mode === "montage" && document.querySelector("#title-tab").textContent === "视频混剪"', '视频混剪卡片应直接打开剪辑台');
+  await goHome();
   await navigate('#tab-scene-split');
   await waitFor('document.querySelector("#scene-split-workspace").checkVisibility()', '场景分割入口应可点击');
   await goHome();
@@ -502,8 +507,8 @@ async function run() {
   await waitFor('!document.querySelector("#editor-workspace").hidden', '新工程应进入剪辑台');
   await checkButtonIcons('#material-import, #material-folder-import, #material-audio-open');
   await waitForInspector('visual');
-  const tabHighlight = () => runInWindow("parseFloat(getComputedStyle(document.querySelector('#inspector-tabs'), '::before').left)");
-  const initialHighlight = await tabHighlight();
+  const tabHighlight = "new DOMMatrixReadOnly(getComputedStyle(document.querySelector('#inspector-tabs'), '::before').transform).e";
+  const initialHighlight = await runInWindow(tabHighlight);
   assert.equal(await runInWindow("document.querySelector('#keep-audio').getAttribute('role')"), 'switch');
   const initialKeepAudio = await runInWindow("document.querySelector('#keep-audio').checked");
   await click('label:has(> #keep-audio)');
@@ -512,7 +517,7 @@ async function run() {
   const scheme = (selector) => runInWindow(`getComputedStyle(document.querySelector(${JSON.stringify(selector)})).colorScheme`);
   assert.equal(await scheme('#editor-workspace'), await scheme('.titlebar'), '编辑器和全局工具栏应使用同一外观');
   await openInspector('narration');
-  await waitFor(`parseFloat(getComputedStyle(document.querySelector('#inspector-tabs'), '::before').left) > ${initialHighlight} + 10`, '属性页的选中底色应随标签移动');
+  await waitFor(`${tabHighlight} > ${initialHighlight} + 10`, '属性页的选中底色应随标签移动');
   await checkNavigation(win.webContents, 'montage');
   await waitForInspector('narration');
   await openInspector('visual');
@@ -566,7 +571,8 @@ async function run() {
   }
   const materialInPlayerSlot = `Math.abs((${materialBox}).x - ${defaultPlayer.x}) < 2
     && Math.abs((${materialBox}).width - ${defaultPlayer.width}) < 2`;
-  await waitFor(materialInPlayerSlot, '素材库应取得原播放器的位置和宽度');
+  await waitFor(`Math.abs((${materialBox}).x - ${defaultPlayer.x + defaultPlayer.width * .01}) < 2
+    && Math.abs((${materialBox}).width - ${defaultPlayer.width * .98}) < 2`, '布局调整中的素材库应缩放到播放器槽位的 98%');
   await navigate('#panel-layout-toggle');
   const layoutReload = once(win.webContents, 'did-finish-load');
   win.webContents.reload();

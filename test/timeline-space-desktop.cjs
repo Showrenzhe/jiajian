@@ -83,8 +83,9 @@ async function check() {
   async function click(selector, offset, clicks = 1) {
     const point = await read('(() => {const e=' + q(selector) + ';e.scrollIntoView({block:"nearest",inline:"nearest"});'
       + 'const r=e.getBoundingClientRect(), x=r.left+' + (offset || 'r.width*.5') + ',y=r.top+r.height*.45;'
-      + 'return {x,y,hit:e.contains(document.elementFromPoint(x,y))};})()');
-    assert.ok(point.hit, selector + ' 可点击');
+      + 'return {x,y};})()');
+    await send('dispatchMouseEvent', { type:'mouseMoved', ...point });
+    assert.ok(await read(q(selector) + '.contains(document.elementFromPoint(' + point.x + ',' + point.y + '))'), selector + ' 可点击');
     for (let clickCount = 1; clickCount <= clicks; clickCount++) {
       for (const type of ['mousePressed', 'mouseReleased']) {
         await send('dispatchMouseEvent', { type, x: point.x, y: point.y, button: 'left',
@@ -107,14 +108,18 @@ async function check() {
         return {left,right,x:(left+right)/2,y:(top+bottom)/2};
       };
       const ids = ['time','duration','more','play','quality','zoom','ratio','fullscreen'];
-      return {row:rect(document.querySelector('.player-control-row')),
+      const capsule = document.querySelector('#player-transport').getBoundingClientRect();
+      const stage = document.querySelector('.preview-stage').getBoundingClientRect();
+      return {floating:capsule.bottom <= stage.bottom && capsule.top > stage.top && capsule.width < stage.width,
+        row:rect(document.querySelector('.player-control-row')),
         controls:ids.map(id=>rect(document.getElementById('player-'+id)))};
     })()`);
     const {row,controls} = layout, play = controls[3];
+    assert.ok(layout.floating, '悬浮控制条位于画面内部且不占满画面宽度');
     assert.ok(Math.abs(play.x-row.x)<2, '播放图标应位于控制栏正中央');
     for (const [i,control] of controls.entries()) {
       assert.ok(control.right>control.left && control.left>=row.left-1 && control.right<=row.right+1, '播放器控件应完整可见');
-      assert.ok(Math.abs(control.y-play.y)<2, '时间码、播放键与右侧控件应位于同一行');
+      assert.ok(Math.abs(control.y-play.y)<2, '时间码、播放键与右侧控件应位于同一行 ' + JSON.stringify(layout));
       if (i) assert.ok(control.left>=controls[i-1].right-1, '相邻控件不能重叠');
     }
   }
@@ -272,6 +277,35 @@ async function check() {
     await wait(meter+'[1]>0','解除静音后电平随声恢复');
     await click('#player-play');
     await wait(live+'.paused','验证键盘命令前应暂停时间线');
+    const opacity = 'getComputedStyle(' + q('#player-transport') + ').opacity';
+    await seek(0);
+    await space();
+    await wait(opacity+'==="0"', '播放时闲置控制条应完全淡出');
+    const stagePoint = await read(`(() => {
+      const r = document.querySelector('.preview-stage').getBoundingClientRect();
+      return {x:r.left + r.width / 2, y:r.top + r.height / 2};
+    })()`);
+    await send('dispatchMouseEvent', {type:'mouseMoved', ...stagePoint});
+    await wait(opacity+'==="1"', '移动鼠标应唤出播放控制条');
+    await wait(opacity+'==="0"', '鼠标停止移动后继续淡出');
+    await win.webContents.debugger.sendCommand('Emulation.setTouchEmulationEnabled',{enabled:true});
+    try {
+      await send('dispatchTouchEvent', {type:'touchStart',touchPoints:[stagePoint]});
+      await send('dispatchTouchEvent', {type:'touchEnd',touchPoints:[]});
+      await wait(opacity+'==="1"', '触摸画面应唤出控制条');
+    } finally {
+      await win.webContents.debugger.sendCommand('Emulation.setTouchEmulationEnabled',{enabled:false});
+    }
+    await click('#player-play');
+    await wait(live+'.paused && '+opacity+'==="1"', '暂停时保持控制条可见');
+    await seek(0);
+    await space();
+    await wait(opacity+'==="0"', '再次播放也会淡出');
+    await read(q('#player-play')+'.focus({focusVisible:true})');
+    await wait(opacity+'==="1"', '键盘焦点应唤出播放控制条');
+    await wait(q('#player-transport')+'.hasAttribute("data-idle") && '+opacity+'==="1"', '键盘操作时控制条应持续可见');
+    await click('#player-play');
+    await wait(live+'.paused', '继续键盘测试前应暂停');
     await read(q('#add-shot')+'.focus()');
     await tabBackTo('#add-shot');
     const candidateButtons = 'document.querySelectorAll(".add-candidate").length';

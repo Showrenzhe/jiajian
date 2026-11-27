@@ -9,6 +9,7 @@ const {setTimeout:delay} = require('node:timers/promises');
 const {app,nativeImage} = require('electron');
 const {launchDesktop} = require('../src/desktop.cjs');
 const {saveProject} = require('../src/project-format.cjs');
+const {createDraftStore} = require('../src/draft-store.cjs');
 const {inspectAsset} = require('../src/media.cjs');
 const {createAppUpdates} = require('../src/app-updates.cjs');
 const {ffmpeg} = require('./fixtures.cjs');
@@ -50,12 +51,18 @@ async function check() {
     }
   }
   const names=[...catalog.keys()], file=path.join(dir,'山野一日.sdworkbench');
-  await saveProject(file,{
+  const config={
     ratio:'16:9',resolution:720,fps:24,fit:'fit',keepAudio:true,unordered:false,useOriginal:true,useMirrors:false,
     count:1,priority:'picture',musicVolume:35,musicIds:[],
     shots:names.map(id=>[{id,start:0,end:2}]), shotSettings:names.map(id=>({name:path.basename(catalog.get(id).path,'.mp4'),duration:2})),
-  },catalog);
-  const win=await launchDesktop({show:false,dataDirectory:path.join(dir,'drafts'),
+  };
+  await saveProject(file,config,catalog);
+  const dataDirectory=path.join(dir,'drafts');
+  let screenshotDraft;
+  if (glassOutput) {
+    screenshotDraft=await createDraftStore(path.join(dataDirectory,'drafts')).create({name:'山野一日',config},catalog);
+  }
+  const win=await launchDesktop({show:false,dataDirectory,
     updateFactory:options=>createAppUpdates({...options,app:{isPackaged:false,getVersion:()=>require('../package.json').version}}),dialogs:{
     showOpenDialog:async()=>({canceled:false,filePaths:[file]}),
   }});
@@ -167,7 +174,7 @@ async function check() {
     await click('.sequence-video [data-move-candidate]');
     if (glassOutput) {
       await readyPicture();
-      await require('./glass-screenshots.cjs')({win,wc,read,click,wait,key,select,output:glassOutput});
+      await require('./glass-screenshots.cjs')({win,wc,read,click,wait,key,select,readyPicture,draft:screenshotDraft,output:glassOutput});
       return;
     }
     const readme=process.env.JIAJIAN_README_SCREENSHOT;

@@ -229,6 +229,13 @@ function createTrackPreviewClock(clip) {
   return {duration,rate,sourceAt,timeAt,...(trim && {sourceEnd:parts.at(-1).end})};
 }
 
+function playbackTimecode(seconds, rate) {
+  const total = Math.max(0, Math.floor(seconds));
+  const frames = Math.floor((seconds - total) * rate + 1e-5);
+  return [Math.floor(total / 3600), Math.floor(total / 60) % 60, total % 60, frames]
+    .map((part) => String(part).padStart(2, '0')).join(':');
+}
+
 window.mountPlayerTools = ({ panel, getClip, getTrackClock, seekTrackSource, isLibraryVideo, isEditor, isTrack, validClip, notify, onImageTime,
   getDraft, getIdleDraft, toggleDraft, seekDraft, canProxy, changeQuality }) => {
   const find = (selector) => panel.querySelector(selector);
@@ -255,10 +262,32 @@ window.mountPlayerTools = ({ panel, getClip, getTrackClock, seekTrackSource, isL
   const seekClock = find('#player-seek-time');
   const row = find('.player-control-row');
   const display = find('.player-display');
+  transport.dataset.glassSurface = 'transport';
+  const fadeDelay = 1500;
+  let fadeTimer, lastActivity = 0;
+  function fadeWhenIdle() {
+    const remaining = fadeDelay - (performance.now() - lastActivity);
+    if (remaining > 0) {
+      fadeTimer = setTimeout(fadeWhenIdle, remaining);
+    } else {
+      fadeTimer = undefined;
+      transport.toggleAttribute('data-idle', true);
+    }
+  }
+  function showTransport() {
+    transport.removeAttribute('data-idle');
+    if (transport.hidden || play.ariaPressed !== 'true') return;
+    lastActivity = performance.now();
+    if (fadeTimer === undefined) fadeTimer = setTimeout(fadeWhenIdle, fadeDelay);
+  }
+  for (const type of ['pointermove', 'pointerdown', 'focusin', 'keydown']) {
+    panel.addEventListener(type, showTransport, { passive: true });
+  }
+  menu.addEventListener('toggle', showTransport);
   new ResizeObserver(([entry]) => {
     const width = entry.contentRect.width;
     if (!width) return;
-    const parent = width < 270 ? menu : row;
+    const parent = width < 350 ? menu : row;
     if (display.parentElement !== parent) parent.append(display);
   }).observe(transport);
   let imageTime = 0;
@@ -277,12 +306,6 @@ window.mountPlayerTools = ({ panel, getClip, getTrackClock, seekTrackSource, isL
         && (video.currentSrc === clip.asset.url || video.dataset.proxyFor === clip.asset.id);
   }
   function fps(clip) { return clip?.asset.fps > 0 ? clip.asset.fps : Number(document.querySelector('#fps').value); }
-  function timecode(seconds, rate) {
-    const total = Math.max(0, Math.floor(seconds));
-    const frames = Math.floor((seconds - total) * rate + 1e-5);
-    return [Math.floor(total / 3600), Math.floor(total / 60) % 60, total % 60, frames]
-      .map((part) => String(part).padStart(2, '0')).join(':');
-  }
   function updatePosition(draft = cut || getDraft(), idle = draft ? null : getIdleDraft()) {
     const clip = getClip();
     const active = !draft && ready(clip);
@@ -296,7 +319,7 @@ window.mountPlayerTools = ({ panel, getClip, getTrackClock, seekTrackSource, isL
     const timedClip = !draft && clip && validClip(clip) && (clip.asset.kind !== 'image' || isTrack());
     const length = draft?.end ?? idle?.end ?? trackClock?.duration ?? (timedClip ? clip.end - clip.start : 0);
     const elapsed = timeline || trackClock ? seconds : Math.max(0, seconds - (clip?.start ?? 0));
-    const currentText = timecode(elapsed, rate), endText = timecode(length, rate);
+    const currentText = playbackTimecode(elapsed, rate), endText = playbackTimecode(length, rate);
     if (clock.textContent !== currentText) {
       clock.textContent = currentText;
       seekClock.textContent = currentText;
@@ -364,6 +387,9 @@ window.mountPlayerTools = ({ panel, getClip, getTrackClock, seekTrackSource, isL
     if (play.ariaPressed !== String(playing)) {
       play.ariaPressed = String(playing);
       document.body.toggleAttribute('data-preview-playing', Boolean(playing));
+      clearTimeout(fadeTimer);
+      fadeTimer = undefined;
+      showTransport();
     }
     play.setAttribute('aria-label', playing ? '暂停' : '播放');
     play.title = `${play.getAttribute('aria-label')}${cut ? '片段' : timelineView ? '时间线' : ''}（空格）`;

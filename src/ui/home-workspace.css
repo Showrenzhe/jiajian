@@ -1,0 +1,112 @@
+/* The four entry cards share a stationary optical backing. Their own surfaces
+   are simple fills, including while the home page is scrolling. */
+#home-local-tools {
+  gap: 6px;
+  padding: 10px;
+  border-color: var(--lg-rim);
+  border-radius: 16px;
+  background: var(--lg-fill, var(--lg-tint));
+  box-shadow: var(--lg-inner), var(--glass-shadow);
+  backdrop-filter: var(--workspace-filter, none);
+}
+#home-local-tools h2 { margin: 1px 4px 2px; }
+#home-local-tools .home-entry-card {
+  min-height: 44px;
+  padding: 9px 10px;
+  border: 1px solid var(--hairline);
+  border-radius: var(--r-control);
+  background: var(--glass-surface);
+  box-shadow: var(--lg-inner);
+  font-weight: 580;
+}
+#home-local-tools .home-entry-card:is(:hover:enabled, :focus-visible) { background: var(--control-hover); }
+#home-local-tools .home-entry-primary {
+  color: white;
+  background: var(--action-fill);
+  border-color: transparent;
+}
+#home-local-tools .home-entry-primary .ui-icon { color: currentColor; }
+#home-local-tools .home-entry-primary:is(:hover:enabled, :focus-visible) { background: var(--blue-hover); }
+#home-local-tools > button:not(.home-entry-card) { min-height: 30px; }
+
+.draft-open { grid-template-rows: auto auto; }
+.draft-open .draft-cover { grid-area: 1 / 1; }
+.draft-open .draft-card-copy { grid-area: 2 / 1; }
+.draft-meta {
+  position: relative;
+  grid-area: 1 / 1;
+  justify-self: end;
+  align-self: end;
+  max-width: calc(100% - 10px);
+  margin: 5px;
+  padding: 2px 7px;
+  border: 1px solid rgb(255 255 255 / 22%);
+  border-radius: var(--r-pill);
+  background: rgb(16 20 27 / 85%);
+  color: white;
+  text-align: end;
+  font-size: 11px;
+  line-height: 1.45;
+  font-variant-numeric: tabular-nums;
+  pointer-events: none;
+}
+.draft-meta time { white-space: nowrap; }
+.draft-list[data-view="list"] .draft-open { grid-template-columns: 55px minmax(0, 1fr) auto; grid-template-rows: auto; }
+.draft-list[data-view="list"] .draft-card-copy { grid-area: 1 / 2; }
+.draft-list[data-view="list"] .draft-meta {
+  grid-area: 1 / 3;
+  align-self: center;
+  margin: 0;
+  max-width: none;
+  border-color: var(--hairline);
+  background: var(--well);
+  color: var(--secondary-ink);
+}
+@container (max-width: 400px) {
+  .draft-list[data-view="list"] .draft-open { grid-template-columns: 55px minmax(0, 1fr); gap: 3px 10px; }
+  .draft-list[data-view="list"] .draft-cover { grid-row: span 2; }
+  .draft-list[data-view="list"] .draft-meta { grid-area: 2 / 2; justify-self: start; }
+}
+
+#workspace-toast {
+  position: fixed;
+  z-index: 30;
+  inset: auto auto 24px 50%;
+  transform: translateX(-50%);
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  max-width: calc(100vw - 32px);
+  width: max-content;
+  min-height: 38px;
+  padding: 5px 15px;
+  border: 1px solid var(--lg-rim);
+  border-radius: var(--r-pill);
+  background: var(--lg-fill, var(--lg-tint-thick));
+  color: var(--ink);
+  box-shadow: var(--lg-inner), var(--glass-shadow);
+  backdrop-filter: var(--workspace-filter, none);
+}
+#workspace-toast[hidden] { display: none; }
+#workspace-toast:has(#workspace-toast-undo[hidden]) { pointer-events: none; }
+#workspace-toast-message { overflow-wrap: anywhere; }
+#workspace-toast-undo {
+  flex: none;
+  color: var(--system-blue);
+  border-radius: var(--r-pill);
+  background: var(--control-fill);
+  font-weight: 600;
+}
+:root[data-glass="off"] :is(#home-local-tools, #workspace-toast) {
+  background: var(--surface-solid);
+  border-color: var(--hairline);
+  box-shadow: none;
+}
+:root[data-glass="off"] #home-local-tools .home-entry-card:not(.home-entry-primary) { background: var(--well); }
+:root[data-glass="off"] #home-local-tools .home-entry-card { box-shadow: none; }
+:root[data-glass="off"] .draft-list[data-view="grid"] .draft-meta { background: #161a21; }
+@media (prefers-reduced-transparency: reduce), (prefers-contrast: more), (forced-colors: active) {
+  :is(#home-local-tools, #workspace-toast) { background: var(--surface-solid); box-shadow: none; backdrop-filter: none; }
+  #home-local-tools .home-entry-card:not(.home-entry-primary) { background: var(--well); box-shadow: none; }
+  .draft-list[data-view="grid"] .draft-meta { background: #161a21; }
+}

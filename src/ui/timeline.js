@@ -150,6 +150,10 @@ window.mountEditTimeline = function (host, ctx) {
   }
   const folded = new Set();
   const heights = new Map();
+  const cursor=el('i','sequence-cursor');
+  const cursorClock=el('span','sequence-cursor-clock');
+  cursorClock.setAttribute('aria-hidden','true');
+  cursor.append(cursorClock);
   let scrubPointer, scrubX, scrubFrame, activeSeek;
   let resizeDrag,layerDrag;
   let locatedMaterial;
@@ -1322,7 +1326,7 @@ window.mountEditTimeline = function (host, ctx) {
     s.shots.forEach((shot,i)=>shot.forEach((clip,j)=>layerRow({key:'local',label:'候选 '+(i+1)+'-'+(j+1),clip},clip.layers,clip.videoStart ?? shotTimes[i],window.pictureSpan(clip,widths[i]))));
     if(s.segmented) p.segmentNarration.forEach((tracks,i)=>tracks.forEach((items,j)=>layerRow({key:'voice',label:'口播 '+(i+1)+'-'+(j+1)},items,shotTimes[i] ?? 0,widths[i] ?? 0)));
     else p.wholeNarration.forEach((items,i)=>layerRow({key:'voice',label:'整段口播 '+(i+1)},items,0,totalTime));
-    const cursor=el('i','sequence-cursor');canvas.append(cursor);
+    canvas.append(cursor);
     canvas.onpointerdown=(e)=>{
       if(e.button!==0 || scrubPointer!=null || resizeDrag || (!ruler.contains(e.target) && e.target!==cursor)) return;
       e.preventDefault();
@@ -1472,12 +1476,21 @@ window.mountEditTimeline = function (host, ctx) {
     });
   }
   function syncCursor(scroll=host.scrollLeft) {
-    const cursor=host.querySelector('.sequence-cursor');
-    if(!cursor) return;
+    if(!lastState) return;
     const time=Math.min(totalTime,playTime);
-    const hidden=!ctx.showAxis() || time<scroll/timeScale;
+    const x=time*timeScale;
+    const visibleWidth=(observedWidth ?? host.clientWidth)-headWidth;
+    const hidden=!ctx.showAxis() || x<scroll || x-scroll>visibleWidth;
     if(cursor.hidden!==hidden) cursor.hidden=hidden;
-    cursor.style.translate=(headWidth+time*timeScale)+'px 0';
+    cursor.style.translate=(headWidth+x)+'px 0';
+    if(hidden) return;
+    const rate=lastState.fps || 30;
+    const frame=Math.floor(time*rate+1e-5);
+    const clock=window.playbackTimecode(frame/rate,rate);
+    const label=scrubPointer==null ? clock : clock+' · '+window.editorMessages.timelineFrame(frame);
+    if(cursorClock.textContent!==label) cursorClock.textContent=label;
+    // Keep the label on the roomy side without measuring its width while scrubbing.
+    cursorClock.toggleAttribute('data-before',x-scroll>visibleWidth/2);
   }
   host.addEventListener('scroll',()=>{
     syncCursor();
@@ -1627,13 +1640,24 @@ window.mountEditTimeline = function (host, ctx) {
       if(event.type==='pointerup') scrubAt(event.clientX);
       scrubPointer=undefined;
       cancelAnimationFrame(scrubFrame);scrubFrame=undefined;
+      syncCursor();
     }
     if(resizeDrag?.id===event.pointerId) endResize(event.type==='pointerup',event.clientY);
     if(host.hasPointerCapture(event.pointerId)) host.releasePointerCapture(event.pointerId);
   }
   for(const type of ['pointerup','pointercancel']) window.addEventListener(type,endDrag,true);
+  host.addEventListener('lostpointercapture',event=>{
+    // Chromium can drop capture before dispatching a still-pressed pointermove
+    // over another clip. Continue scrubbing via the window listeners.
+    if(event.target===host && !(event.buttons&1)) endDrag(event);
+  });
   window.addEventListener('blur',()=>{
-    scrubPointer=undefined;endResize(false);cancelAnimationFrame(scrubFrame);scrubFrame=undefined;
+    if(scrubPointer!=null) {
+      scrubPointer=undefined;
+      cancelAnimationFrame(scrubFrame);scrubFrame=undefined;
+      syncCursor();
+    }
+    endResize(false);
   });
   function syncPlayer(clip,sourceTime) {
     if(draftTransport.state()) return;

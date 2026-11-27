@@ -19,11 +19,35 @@ module.exports = async function checkTimelineInteraction(win, read, waitFor, che
       buttons: type === 'mouseReleased' ? 0 : 1, clickCount: type === 'mouseMoved' ? 0 : 1,
     });
   }
+  async function checkClock(clientX, dragging) {
+    const state = await read(`(() => {
+      const cursor=document.querySelector('.sequence-cursor');
+      const label=cursor.querySelector('.sequence-cursor-clock');
+      const line=cursor.getBoundingClientRect(), bubble=label.getBoundingClientRect();
+      const head=document.querySelector('.sequence-ruler .sequence-head').getBoundingClientRect();
+      const viewport=document.querySelector('#timeline-clock').getBoundingClientRect();
+      return {seconds:timeline.playheadTime, fps:Number(document.querySelector('#fps').value),
+        x:line.left+line.width/2, text:label.textContent, lineWidth:getComputedStyle(cursor,'::after').width,
+        inside:bubble.width>0 && bubble.left>=head.right-1 && bubble.right<=viewport.right+1,
+        sampling:[cursor,label].some(node=>getComputedStyle(node).backdropFilter!=='none')};
+    })()`);
+    const frame = Math.floor(state.seconds * state.fps + 1e-5);
+    const seconds = Math.floor(frame / state.fps);
+    const clock = [Math.floor(seconds / 3600), Math.floor(seconds / 60) % 60, seconds % 60, frame % state.fps]
+      .map(part => String(part).padStart(2, '0')).join(':');
+    assert.equal(state.text, dragging ? clock + ' · 第 ' + frame + ' 帧' : clock);
+    assert.ok(Math.abs(state.x-clientX)<=2, '播放头应落在当前指针位置');
+    assert.ok(state.inside, '时间码气泡应完整显示在轨道内');
+    assert.equal(state.lineWidth, '2px');
+    assert.equal(state.sampling, false, '播放头与气泡不采样底层素材');
+    return frame;
+  }
   try {
     const x = left.left + left.width / 2;
     await mouse('mousePressed', x, ruler.top + 9);
     await mouse('mouseReleased', x, ruler.top + 9);
     await waitFor('document.querySelector("#preview-name").textContent.includes("红色") && Math.abs(document.querySelector("#preview").currentTime-.75)<.08', '点标尺应定位到第一条素材中部');
+    await checkClock(x,false);
     const linePoint = await read(`(() => {
       const cursor=document.querySelector('.sequence-cursor');
       const line=cursor.getBoundingClientRect(),first=document.querySelector('${clip}').getBoundingClientRect();
@@ -35,10 +59,14 @@ module.exports = async function checkTimelineInteraction(win, read, waitFor, che
     await mouse('mousePressed', linePoint.x, linePoint.y);
     await mouse('mouseMoved', to, linePoint.y);
     await waitFor('document.querySelector("#preview-name").textContent.includes("绿色") && Math.abs(document.querySelector("#preview").currentTime-.75)<.08', '拖住播放线期间应跨分镜实时预览下一段');
+    const greenFrame = await checkClock(to,true);
     const imageX = still.left + still.width / 2;
     await mouse('mouseMoved', imageX, linePoint.y);
     await waitFor('document.querySelector("#preview-name").textContent.includes("静帧") && Math.abs(document.querySelector("#player-position").valueAsNumber-1.5)<.08', '经过图片时播放器应显示图片并同步停留时间');
-    await mouse('mouseReleased', imageX, linePoint.y);
+    assert.ok(await checkClock(imageX,true)>greenFrame, '跨分镜后气泡显示递增的工程帧号');
+    const finalX = imageX-5;
+    await mouse('mouseReleased', finalX, linePoint.y);
+    await checkClock(finalX,false);
     const original = await trackHeight(lane);
     const other = await trackHeight('.sequence-shots');
     const grip = await rect(lane + ' .sequence-height-handle');

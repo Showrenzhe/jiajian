@@ -77,6 +77,19 @@ body:is([data-glass-dialog], [data-candidate-lifted]) .titlebar .glass { --lg-fi
   --lg-rim: var(--hairline);
 }
 :root[data-glass="off"] .titlebar .glass { --ink-surface: var(--surface-solid); }
+
+/* Home and the monitor never appear together. Give their functional controls
+   the optical surface previously occupied by the open button and readout.
+   While an overlay is open, it takes priority over background controls. */
+#home-open-project, #player-pane .preview-readout { backdrop-filter: none; }
+@media (prefers-reduced-transparency: no-preference) and (prefers-contrast: no-preference) and (forced-colors: none) {
+  :root[data-glass="full"] body:not([data-tool-popover-open], [data-glass-dialog], [data-candidate-lifted], [data-workspace-toast])
+    :is([data-glass-surface="home"], [data-glass-surface="transport"]:not([data-idle])),
+  :root[data-glass="full"] body[data-workspace-toast]:not([data-tool-popover-open], [data-glass-dialog], [data-candidate-lifted])
+    [data-glass-surface="toast"] {
+    --workspace-filter: blur(var(--lg-blur)) saturate(var(--lg-saturate));
+  }
+}
 @media (prefers-reduced-transparency: reduce), (prefers-contrast: more), (forced-colors: active) {
   :root :is(.glass, dialog) {
     --lg-filter: none;

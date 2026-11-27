@@ -85,7 +85,8 @@
     const toolbar = workspace.querySelector('.editor-heading');
     const notice = workspace.querySelector('#notice');
     const controls = create('div', { className: 'panel-layout-controls' });
-    const toggle = create('button', { id: 'panel-layout-toggle', type: 'button', className: 'secondary', textContent: '调整布局' });
+    const messages = window.editorMessages.layoutEdit;
+    const toggle = create('button', { id: 'panel-layout-toggle', type: 'button', className: 'secondary', textContent: messages.start });
     const resetButton = create('button', { id: 'panel-layout-reset', type: 'button', className: 'secondary', textContent: '恢复默认布局' });
     const choose = create('select', { id: 'panel-layout-target', title: '选择要移动的面板' });
     choose.setAttribute('aria-label', '选择要移动的面板');
@@ -99,10 +100,12 @@
     const preset = create('select',{id:'panel-layout-preset',title:'选择布局预设'});
     preset.setAttribute('aria-label','选择布局预设');
     preset.append(new Option('布局预设',''),...Object.keys(presets).map(name=>new Option(name,name)));
-    const banner = create('span',{className:'layout-editing-banner',textContent:'布局调整中 · Esc 撤销',hidden:true});
+    const banner = create('span',{id:'layout-editing-hint',className:'layout-editing-banner',textContent:messages.hint,hidden:true});
+    const editAction = create('div', { className:'layout-edit-action' });
+    editAction.append(banner,toggle);
     const access=create('button',{type:'button',id:'panel-layout-access',textContent:'面板尺寸…',hidden:true});
     access.setAttribute('popovertarget','accessible-layout-controls');
-    controls.append(preset,toggle,banner,choose,access,resetButton,live);
+    controls.append(preset,editAction,choose,access,resetButton,live);
     actions.append(controls);
 
     const layer = create('div', { id: 'panel-layout-layer' });
@@ -248,7 +251,9 @@
 
     function refreshControls() {
       toggle.setAttribute('aria-pressed', String(editing));
-      toggle.textContent = editing ? '完成布局' : '调整布局';
+      toggle.textContent = editing ? messages.done : messages.start;
+      if (editing) toggle.setAttribute('aria-describedby', banner.id);
+      else toggle.removeAttribute('aria-describedby');
       toggle.title = editing ? '保留本次调整并退出。按 Esc 可取消本次调整。' : '拖动面板交换位置，拖动分隔线调大小。拖动上下两行两侧的箭头可跨列展开或收回。';
       choose.hidden = !editing;
       banner.hidden = !editing;
@@ -369,7 +374,7 @@
       if (foreground) pane.element.dataset.floating = 'front';
       const dx = from.left - to.left, dy = from.top - to.top;
       const start = `translate(${dx}px, ${dy}px) scale(${from.width / to.width}, ${from.height / to.height})`;
-      const arrival = pane.element.animate([{ transform: start }, { transform: 'none' }], {
+      const arrival = pane.element.animate([{ transform: start }, { transform: 'var(--layout-edit-transform)' }], {
         id: 'panel-slot-arrival', duration: 240, easing: 'cubic-bezier(.2,.75,.25,1)',
       });
       pane.arrival = arrival;
@@ -463,12 +468,12 @@
       if (edge === 'move') {
         drag.boxes = measureSlots();
         const box = drag.boxes.get(pane);
-        const visual = visibleBox ?? box;
+        const visual = visibleBox ?? pane.element.getBoundingClientRect();
         const scaleX = visual.width / box.width, scaleY = visual.height / box.height;
         const grabX = (event.clientX - visual.left) / scaleX, grabY = (event.clientY - visual.top) / scaleY;
         floatAt(pane, { width: box.width, height: box.height, left: event.clientX - grabX, top: event.clientY - grabY });
         pane.element.dataset.floating = 'front';
-        if (visibleBox) pane.element.style.scale = `${scaleX} ${scaleY}`;
+        pane.element.style.scale = `${scaleX} ${scaleY}`;
         const expansion = Math.min(.014, 3 / Math.max(1, box.width, box.height));
         pane.element.style.setProperty('--panel-lift-scale', String(1 + expansion));
         pane.element.style.transformOrigin = `${grabX}px ${grabY}px`;

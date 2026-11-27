@@ -403,7 +403,12 @@ test('cold draft lists reuse their index and JPEG and recover from external edit
   const directory=await testDirectory(t), catalog=new Map(), config=editingConfig();
   const initial=createDraftStore(directory);
   const first=await initial.create({name:'旧稿甲',config},catalog);
-  const second=await initial.create({name:'旧稿乙',config},catalog);
+  const empty=await initial.create({name:'旧稿乙',config},catalog);
+  const firstShotCover={mode:'first-shot',active:0,items:[]};
+  const second=await initial.save({id:empty.id,expectedRevision:1,config:{...config,cover:firstShotCover}},catalog);
+  assert.equal(second.revision,2);
+  assert.equal(initial.cover(second.id,2),null,'空分镜暂时没有可取帧的素材');
+  assert.deepEqual((await initial.open(second.id)).config.cover,firstShotCover);
   const file=path.join(directory,first.id+'.sdworkbench');
   const jpeg=await initial.thumbnail(first.id,1);
   assert.ok(jpeg?.length);
@@ -427,7 +432,10 @@ test('cold draft lists reuse their index and JPEG and recover from external edit
   source.config.shots=[[{id:'clip',start:.25,end:1}]];
   source.config.cover={mode:'first-shot'};
   await fs.writeFile(file,JSON.stringify(source));
-  assert.equal((await cold.list()).find(r=>r.id===first.id).name,'外改甲');
+  const changedDraft = (await cold.list()).find(r=>r.id===first.id);
+  assert.equal(changedDraft.name,'外改甲');
+  assert.equal(changedDraft.shotCount,1,'列表应从正文计算实际分镜数');
+  assert.equal(changedDraft.duration,.75,'缺少时长元数据的旧草稿从现有片段估算时长');
   assert.deepEqual(cold.cover(first.id,1),{path:assetPath,kind:'video',time:.25});
   assert.equal(reads,1,'只重读外改的草稿');
   const before=await fs.stat(file);
@@ -465,6 +473,42 @@ test('cold draft lists reuse their index and JPEG and recover from external edit
   assert.equal(await legacy.thumbnail(first.id,1),null);
   assert.deepEqual(legacy.cover(first.id,1),rebuilt.cover(first.id,1));
   assert.equal(reads,8,'旧格式封面路径和无内嵌封面标记可从索引加载');
+  const oldIndex=JSON.parse(await fs.readFile(index,'utf8'));
+  oldIndex.version=1;
+  for(const row of oldIndex.entries) delete row.meta.shotCount;
+  oldIndex.checksum=require('node:crypto').createHash('sha256').update(JSON.stringify(oldIndex.entries)).digest('hex');
+  await fs.writeFile(index,JSON.stringify(oldIndex));
+  const upgraded=createDraftStore(directory);
+  const rows=await upgraded.list();
+  assert.equal(rows.find(row=>row.id===first.id).shotCount,1);
+  assert.deepEqual(rows.find(row=>row.id===second.id),second,'旧版索引重建后应保留空分镜的首镜封面草稿');
+  assert.equal(upgraded.cover(second.id,2),null);
+  assert.equal(reads,10,'旧版索引应一次重建，并在随后的启动中复用');
+  await createDraftStore(directory).list();
+  assert.equal(reads,10);
+});
+
+test('incomplete legacy shots keep readable draft metadata and the project validation error',async t=>{
+  const directory=await testDirectory(t);
+  const store=createDraftStore(directory);
+  const cases=[
+    [undefined,/分镜或配乐数量无效/],
+    [[null],/候选素材数量无效/],
+    [[[null]],/无效的素材编号/],
+  ];
+  for (const [shots,validationError] of cases) {
+    const id=require('node:crypto').randomUUID();
+    const config=editingConfig({shots});
+    const doc={format:'sdworkbench',version:1,assets:[],config,draft:{id,name:'待修复',revision:1,updatedAt:new Date().toISOString()}};
+    await fs.writeFile(path.join(directory,id+'.sdworkbench'),JSON.stringify(doc));
+    const row=(await store.list()).find(item=>item.id===id);
+    assert.equal(row.name,'待修复');
+    assert.equal(row.shotCount,shots?.length);
+    assert.equal(row.duration,undefined);
+    const cold=createDraftStore(directory);
+    assert.deepEqual((await cold.list()).find(item=>item.id===id),row);
+    await assert.rejects(cold.open(id),validationError);
+  }
 });
 
 test('draft folders follow nested renames and deletions without touching external or unmanaged files', async t => {
