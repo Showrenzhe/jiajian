@@ -25,6 +25,17 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 */
 
+#music-mix-settings .music-mix-heading {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  margin: 10px 0 6px;
+}
+#music-mix-settings .music-mix-heading h3 { margin: 0; }
+#music-mix-settings .line-field, #music-mix-values .p-switch { margin: 3px 0; min-height: 26px; }
+#music-mix-settings :is(input[type=number], select) { min-height: 26px; padding-block: 2px; }
+
 /* The selected segment moves on the common track. Keyboard and pointer selection
    both update aria-selected through the app's existing tablist implementation. */
 #inspector-tabs.p-segmented {

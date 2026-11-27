@@ -23,8 +23,10 @@ const { candidateVideoLanes, normalizeVideoGaps, normalizeTimelineMarkers, place
 const {projectSpeedFormat, timelineMarkerErrors} = require('./ui/messages-zh-cn.js');
 const { normalizeSettings: normalizeNarrationTrim, smartDefaults, legacyDefaults } = require('./ui/narration-trim.js');
 
+const musicMix = require('./ui/music-mix.js');
+
 const format = 'sdworkbench';
-const version = 5;
+const version = 6;
 /** @typedef {{start:number,end:number,reverse?:boolean,mirror?:boolean,rotation?:number,crop?:{x:number,y:number,width:number,height:number}}} EditRange */
 /** @typedef {{id:string,ranges:EditRange[]}} EditRecipe */
 /** @typedef {Map<string, Record<string, any>>} AssetCatalog */
@@ -34,6 +36,7 @@ const migrations = new Map([
   [2, project => ({ ...project, version: 3, config: cleanConfig(project.config, true).config })],
   [3, project => ({ ...project, version: 4, config: {...project.config, timelineMarkers:[]} })],
   [4, project => ({ ...project, version: 5, config: {...project.config, narrationTrim: legacyDefaults} })],
+  [5, project => ({ ...project, version: 6, config: {...project.config, musicMix: musicMix.legacyDefaults} })],
 ]);
 function supportedProject(project) {
   return project?.format === format && (project.version === version || migrations.has(project.version));
@@ -211,6 +214,7 @@ function cleanConfig(config, migrateOldSpeed = false) {
   if (!migrateOldSpeed) {
     const trim = config.narrationTrim === undefined ? smartDefaults : config.narrationTrim;
     projectConfig.narrationTrim = normalizeNarrationTrim(trim);
+    projectConfig.musicMix = musicMix.normalizeSettings(config.musicMix === undefined ? musicMix.smartDefaults : config.musicMix);
   }
   if (!migrateOldSpeed && config.timelineMarkers !== undefined) {
     projectConfig.timelineMarkers = normalizeTimelineMarkers(config.timelineMarkers, timelineMarkerErrors);

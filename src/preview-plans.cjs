@@ -7,7 +7,7 @@ const { planMontage, analyzeNarrationSilence, analyzeNarrationPauses } = require
 const { measureBatchReuse } = require('./visual-similarity.cjs');
 const { normalizeSubprojects, resolveSubprojectShots,projectVoiceConfig } = require('./subprojects.cjs');
 
-async function prepareMontagePlans(config, catalog, { signal, random = Math.random, batchLimit, silenceCache, analyzePauses=analyzeNarrationPauses } = {}) {
+async function prepareMontagePlans(config, catalog, { signal, random = Math.random, batchLimit, silenceCache, pauseCache, analyzePauses=analyzeNarrationPauses } = {}) {
   signal?.throwIfAborted();
   const seams = config?.priority === 'voice' && config.narrationMode === 'segmented' && config.voiceAlignment !== 'reference';
   const smart = config?.narrationTrim?.mode === 'smart';
@@ -42,7 +42,7 @@ async function prepareMontagePlans(config, catalog, { signal, random = Math.rand
   const measured = new Map();
   for (let index = 0; index < voices.length; index += 4) {
     const group = voices.slice(index, index + 4);
-    const results = await Promise.allSettled(group.map((asset) => smart ? analyzePauses(asset,config.narrationTrim,{signal})
+    const results = await Promise.allSettled(group.map((asset) => smart ? pauseCache?.get(asset) ?? analyzePauses(asset,config.narrationTrim,{signal})
       : silenceCache?.get(asset) ?? analyzeNarrationSilence(asset, { signal })));
     signal?.throwIfAborted();
     for (const [position, result] of results.entries()) {
@@ -50,6 +50,7 @@ async function prepareMontagePlans(config, catalog, { signal, random = Math.rand
       if (result.status === 'rejected') throw new Error(`无法检查口播「${asset.name}」的接缝，请确认音频可以正常读取。`, { cause: result.reason });
       if (smart) {
         if (!Array.isArray(result.value)) throw new Error(trimMessages.analysisExpired(asset.name));
+        pauseCache?.set(asset,result.value);
         if (result.value.length) measured.set(asset,result.value);
         continue;
       }
@@ -86,10 +87,13 @@ async function prepareSubprojectPlans(config, scope, catalog, options) {
   }
   if (total > 1000) throw new Error('一次最多预览 1000 条子工程成片。');
   const plans = [];
+  // Every subproject in one generation uses the same recording and trim settings.
+  // A new invocation gets a fresh cache, including a confirmed speed-choice retry.
+  const batchOptions = {...options,batchLimit:1000,pauseCache:new Map(),silenceCache:options?.silenceCache ?? new Map()};
   for (const { id, count } of scope) {
     const project = projects.get(id);
     try {
-      const batch = await prepareMontagePlans({ ...config, ...projectVoiceConfig(config,project,subprojects.mainVoice), shots: project.effective, count }, catalog, { ...options, batchLimit: 1000 });
+      const batch = await prepareMontagePlans({ ...config, ...projectVoiceConfig(config,project,subprojects.mainVoice), shots: project.effective, count }, catalog, batchOptions);
       for (const plan of batch) plans.push({ ...plan, subproject: { id, name: project.name } });
     } catch (error) {
       options?.signal?.throwIfAborted();

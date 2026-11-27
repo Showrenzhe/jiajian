@@ -4,6 +4,20 @@
   if (typeof window !== 'undefined') window.editorMessages = messages;
   if (typeof module === 'object' && module.exports) module.exports = messages;
 })(Object.freeze({
+  musicMix: {
+    title:'混音', mode:'混音方式', smart:'智能混音', legacy:'沿用旧工程混音',
+    ducking:'口播时压低配乐', duckDb:'压低幅度（dB）', releaseMs:'恢复时间（ms）',
+    crossfadeMs:'循环接缝（ms）', compensateManual:'单首配乐也补偿响度',
+    normalizeLufs:'成片响度', off:'保持原响度', finalListen:'成片试听',
+    listenSelected:index=>'试听已选的第 '+index+' 条，使用导出时的混音。',
+    listenFirst:'生成组合并试听第一条已选成片。', listenNone:'先勾选一个预览组合。',
+    measurementFailed:'配乐响度暂时无法测量，按原音量播放。',
+    finalMeasurementFailed:'无法测量成片响度。请检查 FFmpeg，或关闭成片响度归一后重试。',
+    preparing:'正在准备时间线音频…', peakOnly:'音频过短，已按真峰值上限处理。',
+    playbackFailed:'配乐暂时无法播放。可检查音频文件后重新试听。', singleTrack:'1 首 · 使用此曲',
+    invalid:'配乐混音设置无效。', sourceChanged:'配乐素材已更换。', invalidLibrary:'配乐库设置无效。',
+    normalizationFailed:(target,measured,peak)=>`未达到 ${target} LUFS。成片实测 ${measured} LUFS，真峰值 ${peak} dBTP。`,
+  },
   narrationTrim: {
     invalidMode:'口播裁剪策略无效。', invalidParameters:'口播静音或淡出参数超出范围。', invalidAsset:'无法分析口播音频。',
     fileChanged:'口播文件已变化，请重新分析。', analysisExpired:name=>`口播「${name}」的静音分析已失效，请重新生成预览。`,
