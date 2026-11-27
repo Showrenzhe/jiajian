@@ -24,6 +24,7 @@ const vendorPath = require('./vendor-path.cjs');
 const { isMaterialPath } = require('./material-path.cjs');
 
 const { mediaTool } = require('./media-tool.cjs');
+const { hdrTransfers, supportsHdrToneMap, colorOutput, colorFilters, encoderColor, setColorTags, planAssets, normalizedInput } = require('./media-color.cjs');
 const ffmpeg = mediaTool('ffmpeg');
 const ffprobe = mediaTool('ffprobe');
 const execFileAsync = promisify(execFile);
@@ -109,6 +110,23 @@ function runTool(executable, args, { signal, timeout = 0, onProgress, onLine, cw
   });
 }
 
+// Packets have decode order, so compare their presentation timestamps in order.
+// Ignore the B-frame reorder tail of a bounded sample and one tick of container rounding.
+function variableFrameRate(video, packets) {
+  const rate = value => {
+    const [num, den] = String(value).split('/').map(Number);
+    return den > 0 ? num / den : 0;
+  };
+  const timestamps = (packets ?? []).filter(p => p.stream_index === video.index && Number.isSafeInteger(p.pts))
+    .map(p => p.pts).sort((a, b) => a - b);
+  const deltas = timestamps.slice(1, Math.max(1, timestamps.length - (video.has_b_frames ?? 0) - 1))
+    .map((pts, i) => pts - timestamps[i]);
+  if (deltas.length >= 2 && Math.max(...deltas) - Math.min(...deltas) > 1) return true;
+  const nominal = rate(video.r_frame_rate), average = rate(video.avg_frame_rate);
+  // The container-wide estimate catches changes beyond the initial packet sample.
+  return nominal > 0 && average > 0 && Math.abs(nominal / average - 1) > 0.01;
+}
+
 /** @param {string} file @param {string} kind @param {MediaReadOptions} [options] */
 async function inspectAsset(file, kind, { signal } = {}) {
   const extensions = { video: videoExtensions, audio: audioExtensions, image: imageExtensions };
@@ -121,7 +139,9 @@ async function inspectAsset(file, kind, { signal } = {}) {
 
   const data = JSON.parse(await runTool(ffprobe, [
     '-v', 'error', ...(kind === 'image' ? stillInput : mediaInput),
-    '-show_entries', 'format=duration:stream=index,codec_type,codec_name,pix_fmt,width,height,duration,avg_frame_rate:stream_tags=alpha_mode:stream_disposition=attached_pic:stream_side_data=rotation',
+    ...(kind === 'audio' ? [] : ['-read_intervals', kind === 'image' ? '%+#1' : '%+#160']),
+    '-show_entries', 'format=start_time,duration:stream=index,codec_type,codec_name,pix_fmt,width,height,start_time,duration,avg_frame_rate,r_frame_rate,has_b_frames,color_space,color_primaries,color_transfer,color_range:stream_tags=alpha_mode:stream_disposition=attached_pic:stream_side_data=rotation'
+      + (kind === 'video' ? ':packet=stream_index,pts' : kind === 'image' ? ':frame_tags=Orientation:frame_side_data=rotation' : ''),
     '-of', 'json', '-i', file,
   ], { signal, timeout: 15000 }));
 
@@ -131,13 +151,18 @@ async function inspectAsset(file, kind, { signal } = {}) {
   if (!stream) throw new Error(kind === 'audio' ? '没有可用的音轨。' : '没有可用的视频帧。');
   if (kind !== 'audio' && (!video.width || !video.height)) throw new Error('无法读取素材尺寸。');
 
-  const duration = [stream.duration, data.format?.duration]
+  const offset = Number(stream.start_time) - Number(data.format?.start_time);
+  const videoDelay = kind === 'video' && Number.isFinite(offset) ? Math.max(0, offset) : 0;
+  const duration = [Number(stream.duration) + videoDelay, data.format?.duration]
     .map(Number)
     .find((value) => Number.isFinite(value) && value >= minClipSeconds);
   if (!duration && kind !== 'image') throw new Error('无法读取有效时长，素材至少需要 0.1 秒。');
 
-  const rotation = Number(video?.side_data_list?.find((item) => item.rotation !== undefined)?.rotation || 0);
-  const portraitRotation = Math.abs(rotation % 180) === 90;
+  const frame = data.frames?.[0];
+  const rotation = video?.side_data_list?.find(item => item.rotation !== undefined)?.rotation
+    ?? frame?.side_data_list?.find(item => item.rotation !== undefined)?.rotation;
+  const portraitRotation = rotation !== undefined ? Math.abs(rotation % 180) === 90
+    : [5, 6, 7, 8].includes(Number(frame?.tags?.Orientation));
   const [frames, seconds] = (video?.avg_frame_rate || '').split('/').map(Number);
   return {
     path: file,
@@ -145,6 +170,13 @@ async function inspectAsset(file, kind, { signal } = {}) {
     kind,
     duration: kind === 'image' ? null : Math.floor((duration + 1e-9) * 1000) / 1000,
     codec: stream.codec_name || '',
+    ...(videoDelay > 0 && { videoDelay }),
+    ...(kind === 'video' && variableFrameRate(video, data.packets) && { vfr: true }),
+    ...(kind !== 'audio' && hdrTransfers.has(video.color_transfer) && { hdr: video.color_transfer, pixelFormat: video.pix_fmt }),
+    ...(kind !== 'audio' && video.color_transfer && { colorTransfer: video.color_transfer }),
+    ...(kind !== 'audio' && video.color_space && { colorSpace: video.color_space }),
+    ...(kind !== 'audio' && video.color_primaries && { colorPrimaries: video.color_primaries }),
+    ...(kind !== 'audio' && video.color_range === 'pc' && { fullRange: true }),
     ...((video?.tags?.alpha_mode === '1' || /^(?:rgba|bgra|argb|abgr|yuva|gbrap|ya8|pal8)/.test(video?.pix_fmt ?? '')) && { alpha: true }),
     width: kind === 'audio' ? null : (portraitRotation ? video.height : video.width),
     height: kind === 'audio' ? null : (portraitRotation ? video.width : video.height),
@@ -208,30 +240,43 @@ async function createFrameThumbnail(asset, { signal, time: requestedTime } = {})
   const start = Number.isFinite(requestedTime) && Number.isFinite(asset.duration)
     ? Math.max(0,Math.min(requestedTime,asset.duration-1/(asset.fps||30)))
     : Number.isFinite(asset.duration) && asset.duration >= 0.25 ? Math.min(1, asset.duration / 10) : 0;
+  const output = await colorOutput([asset], 'sdr');
+  const toneMap = output?.zscale ? colorFilters(asset, output) : [];
   const { stdout } = await execFileAsync(ffmpeg, [
     '-hide_banner', '-loglevel', 'error', '-nostdin', ...(asset.kind === 'image' ? stillInput : mediaInput),
     '-ss', String(start), '-threads', '1', '-i', file, '-map', `0:${asset.videoIndex}`, '-frames:v', '1',
-    '-filter_threads', '1', '-vf', 'scale=320:180:force_original_aspect_ratio=decrease:force_divisible_by=2:reset_sar=1',
+    '-filter_threads', '1', '-vf', [...toneMap, 'scale=320:180:force_original_aspect_ratio=decrease:force_divisible_by=2:reset_sar=1'].join(','),
     '-an', '-sn', '-dn', '-c:v', 'mjpeg', '-q:v', '4', '-threads', '1', '-f', 'image2pipe', 'pipe:1',
   ], { signal, timeout: 6000, maxBuffer: 512 * 1024, encoding: 'buffer', windowsHide: true });
   return stdout.length > 4 && stdout[0] === 0xff && stdout[1] === 0xd8
     && stdout.at(-2) === 0xff && stdout.at(-1) === 0xd9 ? stdout : null;
 }
 
-async function createTrackProxy(asset, output, signal, edge = 640, retime) {
-  const filters = [];
-  if (retime) filters.push('settb=AVTB', `setpts=(PTS-STARTPTS)/${retime.rate}`, `fps=${retime.fps}`,
+async function createTrackProxy(asset, output, signal, edge = 640, retime, {fps = 30, hdrMode = 'sdr'} = {}) {
+  const color = await colorOutput([asset], hdrMode);
+  const filters = colorFilters(asset, color);
+  const origin = asset.videoDelay ? `PTS-STARTPTS+${time(asset.videoDelay)}/TB` : 'PTS-STARTPTS';
+  if (retime) filters.push('settb=AVTB', `setpts=(${origin})/${retime.rate}`, `fps=${retime.fps}:start_time=0`,
     'tpad=stop_mode=clone:stop=1', `trim=end_frame=${Math.ceil(asset.duration * retime.fps / retime.rate - 1e-7)}`);
-  filters.push(`scale=${edge}:${edge}:force_original_aspect_ratio=decrease:force_divisible_by=2:reset_sar=1`);
-  const args = ['-hide_banner', '-loglevel', 'error', '-nostdin', '-threads', '2', ...mediaInput, '-i', asset.path,
-    '-map', `0:${asset.videoIndex}`, '-filter_threads', '1', '-vf', filters.join(','),
-    '-c:v', 'libx264', '-threads', '2', '-preset', 'veryfast', '-crf', '26', '-pix_fmt', 'yuv420p', '-fps_mode', 'passthrough'];
-  if (asset.audioIndex !== null) {
-    if (retime) args.push('-af', ['asetpts=PTS-STARTPTS', ...audioTempo(retime.rate)].join(','),
-      '-t', time(asset.duration / retime.rate));
-    args.push('-map', `0:${asset.audioIndex}`, '-c:a', 'aac', '-ac', '2', '-b:a', '96k');
+  else if (asset.vfr || asset.videoDelay) {
+    const projectFps = [24,25,30,60].includes(fps) ? fps : 30;
+    filters.push(`fps=${asset.vfr ? projectFps : asset.fps || projectFps}:start_time=0:eof_action=pass`);
   }
-  else args.push('-an');
+  filters.push(`scale=${edge}:${edge}:force_original_aspect_ratio=decrease:force_divisible_by=2:reset_sar=1`);
+  const span = asset.duration / (retime?.rate ?? 1);
+  const samples = Math.round(span * audioRate);
+  const audio = asset.audioIndex === null ? ['anullsrc=r=48000:cl=stereo']
+    : [`[0:${asset.audioIndex}]aresample=48000:async=1:first_pts=0`, ...(retime ? audioTempo(retime.rate) : []),
+      `apad=whole_len=${samples}`];
+  audio.push(`atrim=end_sample=${samples}[a]`);
+  // One graph schedules both streams from the same demuxer, including MOVs
+  // whose audio starts late or whose video trim finishes before its audio trim.
+  const graph = `[0:${asset.videoIndex}]${filters.join(',')}[v];${audio.join(',')}`;
+  const args = ['-hide_banner', '-loglevel', 'error', '-nostdin', '-threads', '2', ...mediaInput, '-i', asset.path,
+    '-filter_complex_threads', '1', '-filter_complex', graph, '-map', '[v]', '-map', '[a]',
+    '-c:v', 'libx264', '-threads', '2', '-preset', 'veryfast', '-crf', '26', '-pix_fmt', color?.format ?? 'yuv420p',
+    ...encoderColor(color), '-fps_mode', 'passthrough', '-c:a', 'aac', '-ar', '48000', '-ac', '2', '-b:a', '96k'];
+  if (retime) args.push('-t', time(span));
   args.push('-sn', '-dn', '-map_metadata', '-1', '-movflags', '+faststart', output);
   await runTool(ffmpeg, args, { signal, timeout: retime ? Math.min(300000,Math.max(30000,asset.duration * 1000)) : 0 });
 }
@@ -937,6 +982,7 @@ function planMontage(config, catalog, random = Math.random, batchLimit = maxMont
     const voiceId=wholeTrackIndex?config.extraWholeTracks?.[wholeTrackIndex-1]?.narrationId:config.narrationId;
     return {
       kind: 'montage', clips, size, fps: config.fps, fit: config.fit, backgroundColor,
+      ...(config.hdrMode === 'preserve' && {hdrMode: 'preserve'}),
       ...(layers.length && { layers }), ...(selection.composite !== undefined && { composite: selection.composite }),
       keepAudio: config.keepAudio, music: musicPool[musicIndex] ?? null, musicVolume:audible('music'+musicIndex) ? gain('music',config.musicIds[musicIndex])??musicVolume : 0, musicStart,
       ...(musicSpeeds[musicIndex] && {musicSpeed:musicSpeeds[musicIndex]}), ...(narrationSpeed!==1 && {narrationSpeed}),
@@ -1085,6 +1131,9 @@ function montageArgs(plan, { intermediate = false } = {}) {
   const pictureRows = [];
   let pictureTime = 0, speechTime = 0;
   let inputCount = 0;
+  const color = plan.colorOutput;
+  const overlayFormat = color?.hdr ? 'format=yuv420p10:' : '';
+  const pictureInput = (asset, index) => normalizedInput(asset, index, color, filters);
   const background = `0x${(plan.backgroundColor ?? '#000000').slice(1)}`;
   const fitFilter = fit === 'fit'
     ? `scale=${width}:${height}:force_original_aspect_ratio=decrease:force_divisible_by=2:reset_sar=1,pad=${width}:${height}:(ow-iw)/2:(oh-ih)/2:color=${background}`
@@ -1133,32 +1182,38 @@ function montageArgs(plan, { intermediate = false } = {}) {
     const renderClock=clip.videoFit==='hold' ? clip.visuals[0] : clip;
     const {outputFrames,outputDuration}=renderClock;
     const seconds = time(sourceDuration);
+    // FFmpeg seeks on the container clock. Keep the interval before a late
+    // first picture; otherwise resetting both streams separately advances video.
+    const delay = Math.max(0, (asset.videoDelay ?? 0) - start);
+    const origin = delay ? `PTS-STARTPTS+${time(delay)}/TB` : 'PTS-STARTPTS';
     const visualInput = inputCount++;
     if (asset.kind === 'image') {
       args.push(...stillInput, '-loop', '1', '-framerate', String(fps), '-threads', '2', '-t', seconds, '-i', asset.path);
     } else {
       args.push(...mediaInput, ...(asset.alpha && asset.codec === 'vp9' ? ['-c:v', 'libvpx-vp9'] : []),
-        ...(looped ? ['-stream_loop', '-1'] : []), '-threads', '2', '-ss', time(start), '-t', seconds, '-i', asset.path);
+        ...(looped ? ['-stream_loop', '-1'] : []), '-threads', '2', '-ss', time(start),
+        '-t', delay ? time(Math.max(sourceDuration, delay + 1 / (asset.fps || fps))) : seconds, '-i', asset.path);
     }
     const originalAudible = keepAudio && volume > 0 && asset.audioIndex !== null;
-    const source = lookGraph({part:clip.visuals?.[0] ?? clip,source:`[${visualInput}:${asset.videoIndex}]`,index,width,height,fps,duration:seconds,graph:filters,
+    const source = lookGraph({part:clip.visuals?.[0] ?? clip,source:pictureInput(asset, visualInput),index,width,height,fps,duration:seconds,graph:filters,overlayFormat,
       addBackground:(bg)=>{
         const input=inputCount++;
         args.push(...(bg.kind==='image'?[...stillInput,'-loop','1','-framerate',String(fps)]:[...mediaInput,'-stream_loop','-1']),
           '-t',seconds,'-threads','2','-i',bg.path);
-        return `[${input}:${bg.videoIndex}]`;
+        return pictureInput(bg, input);
       }});
     const audio = originalAudible
-      ? `[${visualInput}:${asset.audioIndex}]asetpts=PTS-STARTPTS,aresample=48000,aformat=channel_layouts=stereo${volumeFilter(volume)},apad`
+      ? `[${visualInput}:${asset.audioIndex}]aresample=48000:async=1:first_pts=0,aformat=channel_layouts=stereo${volumeFilter(volume)},apad`
       : 'anullsrc=r=48000:cl=stereo';
-    const shape = `${fitFilter}${mirror ? ',hflip' : ''},format=${asset.alpha ? 'rgba' : 'yuv420p'}`;
+    const pixelFormat = asset.alpha ? (color?.hdr ? 'yuva420p10le' : 'rgba') : color?.format ?? 'yuv420p';
+    const shape = `${fitFilter}${mirror ? ',hflip' : ''},format=${pixelFormat}`;
     if (frameAligned || clip.videoFit==='hold') {
       const outputSeconds = time(outputDuration);
       // A very fast edit can collapse every input timestamp to zero. Decode
       // its first frame before resampling so its reserved frame stays visible.
       const retime = outputFrames === 1 && sourceDuration / speed < 1 / fps
-        ? 'trim=end_frame=1,setpts=PTS-STARTPTS' : `setpts=(PTS-STARTPTS)/${speed}`;
-      filters.push(`${source}settb=AVTB,${retime},fps=${fps}:eof_action=pass,${shape},tpad=stop_mode=clone:stop=${outputFrames},trim=end_frame=${outputFrames}[v${index}]`);
+        ? 'trim=end_frame=1,setpts=PTS-STARTPTS' : `setpts=(${origin})/${speed}`;
+      filters.push(`${source}settb=AVTB,${retime},fps=${fps}:start_time=0:eof_action=pass,${shape},tpad=stop_mode=clone:stop=${outputFrames},trim=end_frame=${outputFrames}[v${index}]`);
       const tempo = originalAudible ? audioTempo(speed) : [];
       const hasVoice = voice && segmentSpeechDuration(clip) > 1e-7;
       const bed = hasVoice && !alignVoices && !positioned ? `[bed${index}]` : `[a${index}]`;
@@ -1171,7 +1226,7 @@ function montageArgs(plan, { intermediate = false } = {}) {
         voices.push(`[voice${index}]`);
       }
     } else {
-      filters.push(`${source}setpts=PTS-STARTPTS,fps=${fps},${shape}[v${index}]`);
+      filters.push(`${source}settb=AVTB,setpts=${origin},fps=${fps}:start_time=0,${shape}[v${index}]`);
       filters.push(`${audio},atrim=duration=${seconds},asetpts=PTS-STARTPTS[a${index}]`);
     }
     const part = clip.visuals?.[0] ?? clip;
@@ -1179,7 +1234,7 @@ function montageArgs(plan, { intermediate = false } = {}) {
     if (asset.alpha) {
       const span = part.outputDuration ?? part.duration;
       filters.push(`color=c=${background}:s=${width}x${height}:r=${fps}:d=${time(span)}[under${index}]`);
-      filters.push(`[under${index}]${video}overlay=shortest=1[opaque${index}]`);
+      filters.push(`[under${index}]${video}overlay=${overlayFormat}shortest=1[opaque${index}]`);
       video = `[opaque${index}]`;
     }
     if (part.transform) {
@@ -1188,7 +1243,7 @@ function montageArgs(plan, { intermediate = false } = {}) {
       filters.push(`color=c=${background}:s=${width}x${height}:r=${fps}:d=${time(seconds)}${base}`);
       video = visualMotion({ layer: { ...part.transform, kind: 'candidate', start: 0, end: seconds,
         mediaStart: part.layerStart ?? 0, tempo: part.speed ?? 1 }, index: 'clip' + index, canvas: plan.size, fps,
-        source: video, filters, video: base, active: 'enable=1' });
+        source: video, filters, video: base, active: 'enable=1', overlayFormat });
     }
     if (positioned) {
       const start = clip.videoStart ?? pictureTime;
@@ -1227,7 +1282,7 @@ function montageArgs(plan, { intermediate = false } = {}) {
         }).join('+');
         const position = `settb=1/${fps},setpts=N+${firstFrame}`;
         filters.push(`${video}${position}[placed${index}]`,
-          `${canvas}[placed${index}]overlay=eof_action=${row.hold?'repeat:repeatlast=1':'pass:repeatlast=0'}:enable='${active}'[placedCanvas${index}]`);
+          `${canvas}[placed${index}]overlay=${overlayFormat}eof_action=${row.hold?'repeat:repeatlast=1':'pass:repeatlast=0'}:enable='${active}'[placedCanvas${index}]`);
         canvas = `[placedCanvas${index}]`;
       }
       filters.push(`[a${index}]atrim=duration=${time(span)},adelay=${Math.round(start*audioRate)}S:all=1[placedSound${index}]`);
@@ -1262,7 +1317,7 @@ function montageArgs(plan, { intermediate = false } = {}) {
   }
   if (plan.layers?.length) {
     ({ videoOutput, inputCount } = composeLayers(plan, args, filters, audioTracks, videoOutput, inputCount,
-      { mediaInput, stillInput, audioTempo }));
+      { mediaInput, stillInput, audioTempo, pictureInput, overlayFormat }));
   }
   if (plan.videoSubtitles) {
     filters.push(`${videoOutput}subtitles=filename=video-captions.srt:charenc=UTF-8:force_style='${subtitleRenderStyle(plan.subtitleStyle)}'[sourceCaptioned]`);
@@ -1301,10 +1356,14 @@ function montageArgs(plan, { intermediate = false } = {}) {
     audioOutput = '[timedAudio]';
   }
 
+  if (color) {
+    filters.push(`${videoOutput}${setColorTags(color.hdr)}[colored]`);
+    videoOutput = '[colored]';
+  }
   return args.concat([
     '-filter_complex', filters.join(';'), '-map', videoOutput, '-map', audioOutput,
     '-c:v', 'libx264', '-preset', 'veryfast', '-crf', intermediate ? '16' : '20', '-threads', '4',
-    '-pix_fmt', 'yuv420p', '-ar', '48000', '-ac', '2',
+    '-pix_fmt', color?.format ?? 'yuv420p', ...encoderColor(color), '-ar', '48000', '-ac', '2',
     '-movie_timescale', String(audioRate),
     ...(intermediate ? ['-c:a', 'pcm_s16le'] : ['-c:a', 'aac', '-b:a', '160k', '-movflags', '+faststart']),
   ]);
@@ -1352,7 +1411,9 @@ async function prepareVisualTracks(plan, temporaryDirectory, temporaryFiles, { s
       intermediate: true, signal, onProgress: onProgress && ((seconds) => onProgress(plan.duration * 0.3 * (rendered + Math.min(1, seconds / duration)) / stageCount)),
     });
     rendered += 1;
-    return { asset: { kind: 'video', path: output, videoIndex: 0, audioIndex: 1 }, start: 0, duration, volume: 1, outputFrames, outputDuration: duration };
+    return { asset: { kind: 'video', path: output, videoIndex: 0, audioIndex: 1,
+      ...(plan.colorOutput && {hdr:plan.colorOutput.hdr, colorSpace:plan.colorOutput.hdr ? 'bt2020nc' : 'bt709'}) },
+      start: 0, duration, volume: 1, outputFrames, outputDuration: duration };
   };
 
   const clips = [];
@@ -1418,6 +1479,7 @@ async function exportOne(plan, directory, stem, { signal, onProgress }) {
   const captions = plan.subtitles ? path.join(temporaryDirectory, subtitleFileName) : null;
   const temporaryFiles = captions ? [temp, captions] : [temp];
   try {
+    if (plan.kind === 'montage') plan = {...plan, colorOutput: await colorOutput(planAssets(plan), plan.hdrMode)};
     if (captions) await fs.writeFile(captions, formatSubtitles(plan.subtitles,plan.subtitleStyle), { encoding: 'utf8', flag: 'wx' });
     if (plan.videoSubtitles) {
       const file=path.join(temporaryDirectory,'video-captions.srt');
@@ -1506,6 +1568,7 @@ async function recognizeLocalSpeech(asset, {signal} = {}) {
 
 module.exports = {
   runTool,
+  supportsHdrToneMap,
   extractAudioWaveform,
   recognizeLocalSpeech,
   createTrackProxy,

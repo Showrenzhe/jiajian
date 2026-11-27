@@ -2,6 +2,7 @@
 
 const fs = require('node:fs/promises');
 const path = require('node:path');
+const {colorOutput, colorFilters, encoderColor, setColorTags} = require('./media-color.cjs');
 
 function normalizeCover(value, mapId) {
   if (value === undefined) return undefined;
@@ -43,14 +44,19 @@ async function publishCover(plan, rendered, directory, files, run, signal) {
     const sw = Math.ceil(w*zoom/2)*2, sh = Math.ceil(h*zoom/2)*2;
     const x = Math.round((sw-w)*cover.shift), y = Math.round((sh-h)*(1-cover.shift));
     const bodySamples = Math.round((plan.audioDuration ?? plan.contentDuration) * 48000);
-    const filter = `[0:v:0]fps=${fps},tpad=stop_mode=clone:stop=${cover.frames},trim=end_frame=${cover.frames},scale=${sw}:${sh},crop=${w}:${h}:${x}:${y},setsar=1,setpts=PTS-STARTPTS[p];[1:v:0]fps=${fps},setsar=1,setpts=PTS-STARTPTS[b];[p][b]concat=n=2:v=1:a=0[v];[1:a:0]atrim=end_sample=${bodySamples},adelay=${Math.round(intro*48000)}S:all=1[a]`;
+    const color = plan.colorOutput;
+    const tags = color ? ',' + setColorTags(color.hdr) : '';
+    const filter = `[0:v:0]fps=${fps},tpad=stop_mode=clone:stop=${cover.frames},trim=end_frame=${cover.frames},scale=${sw}:${sh},crop=${w}:${h}:${x}:${y},setsar=1,setpts=PTS-STARTPTS[p];[1:v:0]fps=${fps},setsar=1,setpts=PTS-STARTPTS[b];[p][b]concat=n=2:v=1:a=0${tags}[v];[1:a:0]atrim=end_sample=${bodySamples},adelay=${Math.round(intro*48000)}S:all=1[a]`;
     await job(['-ss',cover.start.toFixed(6),'-t',intro.toFixed(6),'-i',rendered,'-i',rendered,'-filter_complex_threads','2','-filter_complex',filter,
-      '-map','[v]','-map','[a]','-c:v','libx264','-threads','2','-preset','veryfast','-crf','18','-c:a','aac','-ar','48000','-movie_timescale','48000','-t',plan.duration.toFixed(6),body]);
+      '-map','[v]','-map','[a]','-c:v','libx264','-threads','2','-preset','veryfast','-crf','18',...encoderColor(color),'-c:a','aac','-ar','48000','-movie_timescale','48000','-t',plan.duration.toFixed(6),body]);
   }
   const image = output('selected-cover.jpg');
   const source = cover.asset;
   const input = source && source.kind === 'video' ? ['-ss',Math.max(0,Math.min(cover.time,source.duration - 1/(source.fps || fps))).toFixed(6)] : [];
-  const filters = [`scale=${w}:${h}:force_original_aspect_ratio=decrease:force_divisible_by=2,pad=${w}:${h}:(ow-iw)/2:(oh-ih)/2,setsar=1`];
+  const imageAsset = source ?? {hdr:plan.colorOutput?.hdr};
+  const jpegColor = await colorOutput([imageAsset], 'sdr');
+  const filters = [...(jpegColor?.zscale ? colorFilters(imageAsset, jpegColor) : []),
+    `scale=${w}:${h}:force_original_aspect_ratio=decrease:force_divisible_by=2,pad=${w}:${h}:(ow-iw)/2:(oh-ih)/2,setsar=1`];
   if (cover.title) {
     await fs.writeFile(output('cover-title.txt'), cover.title, {encoding:'utf8',flag:'wx'});
     const font = process.platform === 'win32' ? "font='Microsoft YaHei':" : '';

@@ -324,7 +324,7 @@ function createDraftStore(directory,resolvePath,inspect,sourceEditDirectory,load
     for (const id of records.keys()) {
       let project;
       try { project = projectReferences(await readProject(snapshotPath(id))); } catch { continue; }
-      for (const row of project.rows) yield {...row, proxyEnabled:project.config.proxyEnabled};
+      for (const row of project.rows) yield {...row, proxyEnabled:project.config.proxyEnabled, fps:project.config.fps};
     }
   }
   return { list, create, save, open, remove, cover, thumbnail, assetReferences };

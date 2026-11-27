@@ -640,6 +640,19 @@
   pointer-events: none;
 }
 .material-duration:empty { display: none; }
+.app-frame[data-mode="montage"] .material-tile > .material-hdr {
+  position: absolute;
+  right: 6px;
+  top: 24px;
+  padding: 1px 4px;
+  border-radius: 4px;
+  color: white;
+  background: #131518de;
+  font-size: 10px;
+  font-weight: 600;
+  line-height: 1.35;
+  pointer-events: none;
+}
 .app-frame[data-mode="montage"] .material-thumbnail { background: #24262a; }
 .app-frame[data-mode="montage"] .material-tile { background: var(--control); }
 .app-frame[data-mode="montage"] #materials-pane[data-material-drop],

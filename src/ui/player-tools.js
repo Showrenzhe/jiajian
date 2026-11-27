@@ -301,7 +301,7 @@ window.mountPlayerTools = ({ panel, getClip, getTrackClock, seekTrackSource, isL
       duration.textContent = endText;
       find('#player-seek-end').textContent = endText;
     }
-    const proxy = draft ? draft.proxy : !video.hidden && video.dataset.proxyFor && video.currentSrc === video.getAttribute('src') && video.readyState >= 1;
+    const proxy = draft ? draft.proxy : !video.hidden && video.dataset.proxyFor && video.dataset.originalProxy!=='true' && video.currentSrc === video.getAttribute('src') && video.readyState >= 1;
     const label = proxy ? '流畅' : '原画';
     if (qualityLabel.textContent !== label) qualityLabel.textContent = label;
     if (cut && position.max !== String(cut.end)) position.max = cut.end;

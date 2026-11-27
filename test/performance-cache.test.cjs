@@ -51,9 +51,80 @@ test('loading a legacy GPU preference preserves proxy settings and drops the obs
   const file = path.join(dir, 'performance.json');
   const prefs = { defaultProxy: false, optimization: 'quality', location: path.join(dir, '代理') };
   await fs.writeFile(file, JSON.stringify({ ...prefs, gpu: false }));
-  assert.deepEqual(readPerformance(dir), prefs);
+  assert.deepEqual(readPerformance(dir), { ...prefs, hdrMode:'sdr' });
   const cache = createPerformanceCache(dir, {});
   await assert.rejects(cache.change({ gpu: false }), /性能设置无效/);
   await cache.change({ optimization: 'smooth' });
-  assert.deepEqual(JSON.parse(await fs.readFile(file, 'utf8')), { ...prefs, optimization: 'smooth' });
+  assert.deepEqual(JSON.parse(await fs.readFile(file, 'utf8')), { ...prefs, optimization: 'smooth',hdrMode:'sdr' });
+});
+
+test('small HDR and VFR proxies follow project fps, color capability and saved preferences', async t=>{
+  const dir=await fs.mkdtemp(path.join(os.tmpdir(),'jiajian-color-cache-'));
+  t.after(()=>fs.rm(dir,{recursive:true,force:true}));
+  const file=path.join(dir,'素材.mp4');
+  await fs.writeFile(file,'fixture');
+  const asset={path:file,kind:'video',width:256,height:144,duration:4,hdr:'smpte2084',vfr:true};
+  let available=true;
+  const cache=createPerformanceCache(dir,{supportsHdrToneMap:async()=>available,
+    encode:async(_asset,out,_signal,edge,retime,options)=>fs.writeFile(out,JSON.stringify({edge,retime,...options}))});
+  const proxy=await cache.proxy(asset,{fps:25});
+  assert.deepEqual(JSON.parse(await fs.readFile(proxy,'utf8')),{edge:256,fps:25,hdrMode:'sdr'});
+  assert.notEqual(await cache.proxy(asset,{fps:60}),proxy);
+  assert.equal(await cache.proxy(asset,{fps:0}),null);
+  const retime={rate:4,original:true,fps:25};
+  const retimed=await cache.proxy(asset,{retime});
+  await assert.rejects(cache.change({hdrMode:'bad'}),/性能设置无效/);
+  await cache.change({hdrMode:'preserve'});
+  assert.equal(readPerformance(dir).hdrMode,'preserve');
+  const preserved=await cache.proxy(asset,{fps:25});
+  assert.notEqual(preserved,proxy);
+  assert.notEqual(await cache.proxy(asset,{retime}),retimed);
+  await cache.change({hdrMode:'sdr'});
+  available=false;
+  assert.equal(await cache.proxy(asset,{fps:25}),preserved);
+  assert.equal(await cache.proxy({...asset,hdr:undefined,vfr:false},{fps:25}),null);
+  cache.close();
+});
+
+test('媒体任务的设置快照等待已开始的保存，旧导出保留启动时的策略', async t => {
+  const directory=await fs.mkdtemp(path.join(os.tmpdir(),'jiajian-settings-race-'));
+  t.after(()=>fs.rm(directory,{recursive:true,force:true}));
+  const file=path.join(directory,'input.mp4');
+  await fs.writeFile(file,'fixture');
+  const asset={kind:'video',path:file,width:256,height:144,duration:1,hdr:'smpte2084'};
+  const started=Promise.withResolvers(), stopping=Promise.withResolvers(), release=Promise.withResolvers();
+  const changes=[];
+  const cache=createPerformanceCache(directory,{
+    supportsHdrToneMap:async()=>true,
+    onSettingsChanged:(before,after)=>changes.push([before.hdrMode,after.hdrMode]),
+    async encode(_asset,out,signal,_edge,_retime,{hdrMode}) {
+      if (hdrMode==='sdr') {
+        signal.addEventListener('abort',()=>stopping.resolve(),{once:true});
+        started.resolve();
+        await release.promise;
+        signal.throwIfAborted();
+      }
+      await fs.writeFile(out,hdrMode);
+    },
+  });
+  t.after(()=>cache.close());
+  const oldExport=await cache.settledSettings();
+  const cancelled=assert.rejects(cache.proxy(asset), {name:'AbortError'});
+  await started.promise;
+  const saving=cache.change({hdrMode:'preserve'});
+  await stopping.promise;
+  let ready=false;
+  const newExport=cache.settledSettings().then(snapshot=>{ready=true;return snapshot;});
+  const newProxy=cache.proxy(asset);
+  await new Promise(done=>setImmediate(done));
+  assert.equal(ready,false);
+  release.resolve();
+  await Promise.all([cancelled,saving]);
+  assert.equal((await newExport).hdrMode,'preserve');
+  assert.equal(await fs.readFile(await newProxy,'utf8'),'preserve');
+  assert.equal(oldExport.hdrMode,'sdr');
+  await Promise.all([cache.change({hdrMode:'sdr'}),cache.change({hdrMode:'preserve'})]);
+  assert.deepEqual(changes,[['sdr','preserve'],['preserve','sdr'],['sdr','preserve']]);
+  await assert.rejects(cache.change({hdrMode:'invalid'}));
+  assert.equal((await cache.settledSettings()).hdrMode,'preserve');
 });
