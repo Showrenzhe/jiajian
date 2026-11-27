@@ -1003,7 +1003,7 @@ async function check() {
     await mouse('mouseMoved',fullHeader);
     await expectRejected(shotCell(1),'每个分镜最多可添加 100 条候选。');await mouse('mouseReleased',fullHeader);await restored();
 
-    const rulerElement=query(ruler);
+    const rulerElement=query(ruler), visibleTicks=rulerElement+'.querySelectorAll(".sequence-tick")';
     async function openLongTimeline(name,videoStart) {
       const file=path.join(root,name+'.sdworkbench');
       const shots=[...config.shots.slice(0,2),[{...config.shots[2][0],videoLane:1,videoStart}]];
@@ -1020,7 +1020,7 @@ async function check() {
     const daySource=await center(cell(0,0));
     await mouse('mousePressed',daySource);await mouse('mouseMoved',{x:daySource.x+8,y:daySource.y});
     await read(host+'.scrollLeft='+host+'.scrollWidth');
-    await wait('parseFloat('+rulerElement+'.firstElementChild.style.left)>100000','滚到片尾后只绘制视窗附近的刻度');
+    await wait('parseFloat('+visibleTicks+'[0]?.style.left)>100000','滚到片尾后只绘制视窗附近的刻度');
     const dayEdge={x:await read(host+'.getBoundingClientRect().right-2'),y:daySource.y};
     await mouse('mouseMoved',dayEdge);
     await wait(host+'.hasAttribute("data-drag-rejected") && !'+query(placement),'超长旧工程尾端超过所有参考切点时禁止放置');
@@ -1029,7 +1029,7 @@ async function check() {
     await read('new Promise(done=>setTimeout(()=>done(true),0))');
     await wait('Number('+rulerElement+'.dataset.width)==='+dayWidth,'取消后恢复超长工程的原始宽度');
     await openLongTimeline('极远落点',Number.MAX_SAFE_INTEGER);
-    await wait('Number('+rulerElement+'.dataset.width)>1e13 && '+rulerElement+'.childElementCount<200','极远落点的时间尺仅绘制有界数量的刻度');
+    await wait('Number('+rulerElement+'.dataset.width)>1e13 && '+visibleTicks+'.length>0 && '+visibleTicks+'.length<200','极远落点的时间尺仅绘制有界数量的刻度');
     const fittedFile=path.join(root,'分镜槽内的自动倍速素材.sdworkbench');
     const reorderedFile=path.join(root,'自动倍速分镜重排.sdworkbench');
     await saveProject(fittedFile,{...config,priority:'picture',
