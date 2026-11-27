@@ -4,13 +4,21 @@ const { spawn } = require('node:child_process');
 const fs = require('node:fs/promises');
 const os = require('node:os');
 const path = require('node:path');
-const smoke = ['desktop.cjs', 'draft-delete-desktop.cjs', 'cut-shortcuts-desktop.cjs', 'software-update-desktop.cjs'];
+const goldenFrames = 'golden-frames-desktop.cjs';
+const smoke = [
+  'desktop.cjs',
+  'draft-delete-desktop.cjs',
+  'cut-shortcuts-desktop.cjs',
+  'software-update-desktop.cjs',
+  goldenFrames,
+];
 
 async function run() {
   const all = (await fs.readdir(__dirname))
     .filter((name) => name !== path.basename(__filename) && (name === 'desktop.cjs' || name.endsWith('-desktop.cjs')))
     .sort();
-  const names = process.argv.includes('--smoke') ? smoke : all;
+  const isSmoke = process.argv.includes('--smoke');
+  const names = isSmoke ? smoke : all;
   const tempDirectory = await fs.realpath(os.tmpdir());
   const parent = path.resolve(process.env.JIAJIAN_TEST_ARTIFACTS || 'run-data/test-artifacts');
   await fs.mkdir(parent, { recursive: true });
@@ -22,14 +30,25 @@ async function run() {
       ...process.env,
       ...(process.platform === 'win32' ? { TEMP: tempDirectory, TMP: tempDirectory } : {}),
       JIAJIAN_DESKTOP_SCENARIO: name,
+      JIAJIAN_GOLDEN_SMOKE: isSmoke && name === goldenFrames ? '1' : '0',
       JIAJIAN_TEST_SCREENSHOT: path.join(root, name + '.png'),
     };
     delete env.ELECTRON_RUN_AS_NODE;
-    const bench =
-      name === 'interaction-frames-desktop.cjs' ? await fs.mkdtemp(path.join(tempDirectory, 'jiajian-bench-')) : null;
-    if (bench) env.JIAJIAN_FRAME_BENCH_ROOT = bench;
+    let scenarioTemp;
     let status;
     try {
+      if (name === goldenFrames) {
+        scenarioTemp = await fs.mkdtemp(path.join(tempDirectory, 'jiajian-golden-'));
+        Object.assign(env, {
+          JIAJIAN_GOLDEN_ROOT: scenarioTemp,
+          TEMP: scenarioTemp,
+          TMP: scenarioTemp,
+          TMPDIR: scenarioTemp,
+        });
+      } else if (name === 'interaction-frames-desktop.cjs') {
+        scenarioTemp = await fs.mkdtemp(path.join(tempDirectory, 'jiajian-bench-'));
+        env.JIAJIAN_FRAME_BENCH_ROOT = scenarioTemp;
+      }
       status = await new Promise((resolve) => {
         const child = spawn(require('electron'), [path.join(__dirname, 'desktop-scenario.cjs')], {
           env,
@@ -41,7 +60,7 @@ async function run() {
       });
     } finally {
       await log.close();
-      if (bench) await fs.rm(bench, { recursive: true, force: true, maxRetries: 10, retryDelay: 150 });
+      if (scenarioTemp) await fs.rm(scenarioTemp, { recursive: true, force: true, maxRetries: 10, retryDelay: 150 });
     }
     result.push({ name, status });
     console.log(status ? '失败' : '通过', name);
