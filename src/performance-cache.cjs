@@ -12,6 +12,7 @@ function readPerformance(directory) {
   try { data = JSON.parse(readFileSync(path.join(directory, filename), 'utf8')); } catch {}
   return {
     defaultProxy: data?.defaultProxy !== false,
+    hdrMode: data?.hdrMode === 'preserve' ? 'preserve' : 'sdr',
     optimization: ['smooth','quality'].includes(data?.optimization) ? data.optimization : 'smart',
     location: typeof data?.location === 'string' && path.isAbsolute(data.location)
       ? data.location : path.join(directory, '佳剪代理'),
@@ -32,7 +33,7 @@ async function fingerprint(file, variant) {
   return createHash('sha256').update(JSON.stringify([normalized,info.size,info.mtimeMs,info.ctimeMs,variant])).digest('hex');
 }
 
-function createPerformanceCache(directory, {inspect,thumbnail,encode,bootTime=readBootIdentity}) {
+function createPerformanceCache(directory, {inspect,thumbnail,encode,supportsHdrToneMap,onSettingsChanged,bootTime=readBootIdentity}) {
   let state = readPerformance(directory), writes = Promise.resolve();
   const meta = path.join(directory,'material-cache-v1'), pending = new Map();
   const budget = require('./cache-budget.cjs').createCacheBudget(meta);
@@ -45,6 +46,10 @@ function createPerformanceCache(directory, {inspect,thumbnail,encode,bootTime=re
     const update = writes.then(fn);
     writes = update.catch(() => {});
     return update;
+  }
+  async function settledSettings() {
+    await writes;
+    return {...state};
   }
   function once(key, fn) {
     if (!pending.has(key)) pending.set(key, Promise.resolve().then(fn).finally(()=>pending.delete(key)));
@@ -67,12 +72,14 @@ function createPerformanceCache(directory, {inspect,thumbnail,encode,bootTime=re
     return serializeChange(async()=>{
       if (!patch || Object.keys(patch).some(key => !Object.hasOwn(state, key))) throw new Error('性能设置无效。');
       const next={...state,...patch};
-      if (typeof next.defaultProxy !== 'boolean' ||
+      if (typeof next.defaultProxy !== 'boolean' || !['sdr','preserve'].includes(next.hdrMode) ||
           !['smooth','quality','smart'].includes(next.optimization) || !path.isAbsolute(next.location)) throw new Error('性能设置无效。');
       if (next.location !== state.location) await fs.mkdir(next.location,{recursive:true});
       await atomicWrite(path.join(directory,filename),JSON.stringify(next));
-      if (next.location !== state.location || next.optimization !== state.optimization) await resetProxies();
+      if (next.location !== state.location || next.optimization !== state.optimization || next.hdrMode !== state.hdrMode) await resetProxies();
+      const previous=state;
       state=next;
+      onSettingsChanged?.(previous, next);
       return view();
     });
   }
@@ -112,7 +119,8 @@ function createPerformanceCache(directory, {inspect,thumbnail,encode,bootTime=re
   async function inspectCached(file,kind,{signal}={}) {
     signal?.throwIfAborted();
     const epoch=metadataEpoch;
-    const key=await fingerprint(file,kind), dest=path.join(meta,key+'.json');
+    const variant=['inspect-v2',kind];
+    const key=await fingerprint(file,variant), dest=path.join(meta,key+'.json');
     const asset=await once(dest,async()=>{
       try {
         const cached=JSON.parse(await fs.readFile(dest,'utf8'));
@@ -121,7 +129,7 @@ function createPerformanceCache(directory, {inspect,thumbnail,encode,bootTime=re
       // Preloading and opening a draft can share this probe. Cancelling one caller
       // must not cancel the other caller's metadata read.
       const probed=await inspect(file,kind,{signal:lifetime.signal});
-      if (await fingerprint(file,kind) === key && epoch===metadataEpoch) await atomicWrite(dest,JSON.stringify(probed)).then(()=>budget.track(state.location,dest)).catch(()=>{});
+      if (await fingerprint(file,variant) === key && epoch===metadataEpoch) await atomicWrite(dest,JSON.stringify(probed)).then(()=>budget.track(state.location,dest)).catch(()=>{});
       return probed;
     });
     signal?.throwIfAborted();
@@ -130,30 +138,34 @@ function createPerformanceCache(directory, {inspect,thumbnail,encode,bootTime=re
   async function poster(asset,options={}) {
     if(asset.kind!=='video') return null;
     const epoch=metadataEpoch;
-    const key=await fingerprint(asset.path,['poster',options.time ?? null]);
+    const variant=['poster-v2',options.time ?? null,asset.hdr ? await supportsHdrToneMap() : false];
+    const key=await fingerprint(asset.path,variant);
     const dest=path.join(meta,key+'.jpg');
     options.signal?.throwIfAborted();
     const posterBytes = await once(dest,async()=>{
       try { return await fs.readFile(dest); } catch {}
       const bytes=await thumbnail(asset,{...options,signal:lifetime.signal});
-      if(bytes && await fingerprint(asset.path,['poster',options.time ?? null]) === key && epoch===metadataEpoch) await atomicWrite(dest,bytes).then(()=>budget.track(state.location,dest)).catch(()=>{});
+      if(bytes && await fingerprint(asset.path,variant) === key && epoch===metadataEpoch) await atomicWrite(dest,bytes).then(()=>budget.track(state.location,dest)).catch(()=>{});
       return bytes;
     });
     options.signal?.throwIfAborted();
     return posterBytes;
   }
-  async function proxy(asset, {readyOnly=false,background=false,retime}={}) {
+  async function proxy(asset, {readyOnly=false,background=false,retime,fps=retime?.fps ?? 30,original=retime?.original ?? false}={}) {
     const order = ++sequence;
     await writes;
     const sourceEdge=Math.max(asset.width,asset.height);
-    const edge=retime?.original ? sourceEdge : {smart:640,smooth:480,quality:1280}[state.optimization];
+    const edge=original ? sourceEdge : {smart:640,smooth:480,quality:1280}[state.optimization];
     if(closing || (background && warmScope.signal.aborted) || asset.kind!=='video' || asset.alpha) return null;
+    if (![24,25,30,60].includes(fps) || typeof original !== 'boolean') return null;
     if (retime) {
       if (typeof retime.original !== 'boolean' || !Number.isFinite(retime.rate) || retime.rate < 4 || retime.rate > 16
         || ![24,25,30,60].includes(retime.fps) || !(asset.duration / retime.rate >= 1/retime.fps)) return null;
-    } else if (sourceEdge<=edge) return null;
+    } else if (!asset.hdr && !asset.vfr && sourceEdge<=edge) return null;
     const dir=state.location, signal=proxyScope.signal;
-    const variant=retime ? ['retimed-v1',edge,retime.rate,retime.fps,retime.original] : ['proxy-v1',edge];
+    const outputEdge=Math.min(sourceEdge,edge);
+    const hdrMode=asset.hdr && (state.hdrMode==='preserve' || !await supportsHdrToneMap()) ? 'preserve' : 'sdr';
+    const variant=['proxy-v2',outputEdge,fps,hdrMode,retime?.rate,original];
     const key=await fingerprint(asset.path,variant), file=path.join(dir,'jj-'+key+'.mp4');
     const cached = (await fs.stat(file).catch(()=>null))?.size;
     if (closing || signal.aborted) return null;
@@ -164,7 +176,7 @@ function createPerformanceCache(directory, {inspect,thumbnail,encode,bootTime=re
       await fs.mkdir(dir,{recursive:true});
       const temp=path.join(dir,'.jj-'+randomUUID()+'.mp4');
       try {
-        await encode(asset,temp,signal,retime ? Math.min(sourceEdge,edge) : edge,retime);
+        await encode(asset,temp,signal,outputEdge,retime,{fps,hdrMode});
         signal.throwIfAborted();
         if (await fingerprint(asset.path,variant)!==key) return null;
         signal.throwIfAborted();
@@ -198,7 +210,7 @@ function createPerformanceCache(directory, {inspect,thumbnail,encode,bootTime=re
     for await (const row of references()) {
       signal.throwIfAborted();
       const useProxy=row.proxyEnabled ?? true;
-      const key=JSON.stringify([row.kind,row.path,useProxy]);
+      const key=JSON.stringify([row.kind,row.path,useProxy,row.fps]);
       if(seen.has(key)) continue;
       seen.add(key);
       try {
@@ -206,7 +218,7 @@ function createPerformanceCache(directory, {inspect,thumbnail,encode,bootTime=re
         if(asset.kind==='video') {
           await poster(asset,{signal});
           signal.throwIfAborted();
-          if(useProxy) await proxy(asset,{background:true});
+          if(useProxy || asset.hdr || asset.vfr) await proxy(asset,{background:true,fps:row.fps,original:!useProxy});
         }
       } catch { signal.throwIfAborted(); } // Other drafts may still have available media.
     }
@@ -215,6 +227,6 @@ function createPerformanceCache(directory, {inspect,thumbnail,encode,bootTime=re
     return true;
   }
   function close() { closing=true;lifetime.abort();warmScope.abort();void resetProxies(); }
-  return {view,change,clear,inspectCached,poster,proxy,preload,close,get settings(){return {...state};}};
+  return {view,settledSettings,change,clear,inspectCached,poster,proxy,preload,close,get settings(){return {...state};}};
 }
 module.exports={createPerformanceCache,readPerformance};

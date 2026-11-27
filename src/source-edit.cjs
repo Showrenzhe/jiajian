@@ -10,6 +10,7 @@ const pending = new Map();
 const digests = new Map();
 let renderQueue = Promise.resolve();
 const { mediaTool } = require('./media-tool.cjs');
+const { colorOutput, colorFilters, encoderColor } = require('./media-color.cjs');
 const ffmpeg = mediaTool('ffmpeg');
 
 /** @typedef {{start:number,end:number,reverse?:boolean,mirror?:boolean,rotation?:number,crop?:{x:number,y:number,width:number,height:number}}} SourceRange */
@@ -43,7 +44,7 @@ function normalizeSourceEditRanges(ranges, duration) {
   return normalized;
 }
 
-function transform(range,width,height) {
+function transform(range,width,height,pixelFormat) {
   const filters=[];
   if (range.crop) {
     const {x,y,width:w,height:h}=range.crop;
@@ -55,7 +56,7 @@ function transform(range,width,height) {
   if (range.rotation===180) filters.push('hflip','vflip');
   if (range.rotation===270) filters.push('transpose=cclock');
   filters.push(`scale=${width}:${height}:force_original_aspect_ratio=decrease:force_divisible_by=2:reset_sar=1`,
-    `pad=${width}:${height}:(ow-iw)/2:(oh-ih)/2:black`,'format=yuv420p');
+    `pad=${width}:${height}:(ow-iw)/2:(oh-ih)/2:black`,'format='+pixelFormat);
   return filters;
 }
 
@@ -82,7 +83,10 @@ async function render(asset,ranges,directory,sourceSignature,{signal}) {
   const { runTool,inspectAsset } = require('./media.cjs');
   signal?.throwIfAborted();
   const digest=await sourceDigest(asset.path,sourceSignature,signal);
-  const key=createHash('sha256').update(JSON.stringify(['source-edit-v3',digest,ranges])).digest('hex');
+  // The editable master stays HDR. Only its playback proxy follows the display preference.
+  const color=await colorOutput([asset],'preserve');
+  const pixelFormat=color?.format ?? 'yuv420p';
+  const key=createHash('sha256').update(JSON.stringify([color ? 'source-edit-hdr-v4' : 'source-edit-v3',digest,ranges])).digest('hex');
   const final=path.join(directory,key+'.mp4');
   await fs.mkdir(directory,{recursive:true});
   const fps=asset.fps>0 ? Number(asset.fps.toFixed(8)) : 30;
@@ -93,7 +97,7 @@ async function render(asset,ranges,directory,sourceSignature,{signal}) {
   async function validate(file) {
     const result=await inspectAsset(file,'video',{signal});
     if (Math.abs(result.duration-framesExpected/fps)>1/fps+.01 || result.width!==width || result.height!==height ||
-        Number.isInteger(result.audioIndex)!==audio) throw Error('素材剪辑文件不完整，请重试。');
+        Number.isInteger(result.audioIndex)!==audio || (color && (result.hdr!==color.hdr || result.pixelFormat!==pixelFormat))) throw Error('素材剪辑文件不完整，请重试。');
   }
   let cached=false;
   try { await validate(final); cached=true; }
@@ -120,7 +124,8 @@ async function render(asset,ranges,directory,sourceSignature,{signal}) {
     }
   }
   // reverse retains decoded frames. Bound its input by both bytes and duration, even for 4K+ video.
-  const maxFrames=Math.max(1,Math.min(Math.ceil(fps*8),Math.floor(160*1024*1024/(width*height*1.5))));
+  const bytesPerPixel=color ? 3 : 1.5;
+  const maxFrames=Math.max(1,Math.min(Math.ceil(fps*8),Math.floor(160*1024*1024/(width*height*bytesPerPixel))));
   const list=[];
   let totalSeconds=0,totalFrames=0;
   try {
@@ -140,7 +145,7 @@ async function render(asset,ranges,directory,sourceSignature,{signal}) {
         // its in-point, including at end of file. Trim the audio with sample precision.
         const seek=seconds<1/fps ? Math.max(0,Math.min(Math.floor(start*fps)/fps,asset.duration-1/fps)) : start;
         const length=count/fps;
-        const videoFilters=['setpts=PTS-STARTPTS',`fps=${fps}:start_time=0`,...transform(range,width,height),
+        const videoFilters=['setpts=PTS-STARTPTS',`fps=${fps}:start_time=0`,...colorFilters(asset,color),...transform(range,width,height,pixelFormat),
           `tpad=stop_mode=clone:stop_duration=${length+1/fps}`,`trim=end_frame=${count}`];
         if (range.reverse) videoFilters.push('reverse');
         videoFilters.push('setpts=PTS-STARTPTS');
@@ -159,7 +164,7 @@ async function render(asset,ranges,directory,sourceSignature,{signal}) {
           '-ss',String(seek),'-t',String(start-seek+Math.max(seconds,1.5/fps)),'-i',asset.path,...streams,
           // A one-frame part has no B-frame delay. Use the same zero reordering delay
           // on every part so the concat demuxer cannot overlap their initial DTS.
-          '-c:v','libx264','-threads','2','-bf','0','-preset','veryfast','-crf','16','-map_metadata','-1','-sn','-dn','-n',part]);
+          '-c:v','libx264','-threads','2','-bf','0','-preset','veryfast','-crf','16',...encoderColor(color),'-map_metadata','-1','-sn','-dn','-n',part]);
         list.push(`file ${part}\nduration ${length.toFixed(9)}`);
       }
     }

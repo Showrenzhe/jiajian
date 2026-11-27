@@ -33,7 +33,7 @@ function maskAlpha(mask, clock) {
   return mask.invert ? `(1-${visible})` : visible;
 }
 
-function visualMotion({ layer, index, canvas, fps, source, font = undefined, filters, video, active }) {
+function visualMotion({ layer, index, canvas, fps, source, font = undefined, filters, video, active, overlayFormat = '' }) {
   const [width, height] = canvas;
   const { asset, start, end, mediaStart, tempo } = layer;
   // Crop/priority fitting can enter the middle of an animation. All keyframes
@@ -57,7 +57,7 @@ function visualMotion({ layer, index, canvas, fps, source, font = undefined, fil
     source = `color=c=black@0:s=${width}x${height}:r=${fps}:d=${(end - start).toFixed(6)},format=rgba,`;
     chain.push(`drawtext=${font}:textfile=layer-${index}.txt:expansion=none:fontsize=${fontSize}:fontcolor=${layer.color}:x=(w-text_w)/2:y=(h-text_h)/2`);
   }
-  chain.push('settb=AVTB', `setpts=(PTS-STARTPTS)/${asset?.kind === 'video' ? tempo : 1}`, `fps=${fps}`, 'format=rgba');
+  chain.push('settb=AVTB', `setpts=(PTS-STARTPTS)/${asset?.kind === 'video' ? tempo : 1}`, `fps=${fps}`, overlayFormat ? 'format=gbrap16le' : 'format=rgba');
   if (layer.mask) {
     chain.push(`geq=r='r(X,Y)':g='g(X,Y)':b='b(X,Y)':a='alpha(X,Y)*${maskAlpha(layer.mask, clock('T'))}':interpolation=nearest`);
   }
@@ -76,7 +76,7 @@ function visualMotion({ layer, index, canvas, fps, source, font = undefined, fil
   }
   chain.push(`setpts=PTS+${start}/TB`);
   filters.push(`${source}${chain.join(',')}${picture}`);
-  filters.push(`${video}${picture}overlay=x='main_w*${x}-overlay_w/2':y='main_h*${y}-overlay_h/2':eval=frame:eof_action=pass:repeatlast=0:${active}${next}`);
+  filters.push(`${video}${picture}overlay=${overlayFormat}x='main_w*${x}-overlay_w/2':y='main_h*${y}-overlay_h/2':eval=frame:eof_action=pass:repeatlast=0:${active}${next}`);
   return next;
 }
 

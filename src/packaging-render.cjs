@@ -15,7 +15,7 @@ async function writeLayerTexts(layers, directory, temporaryFiles) {
   }
 }
 
-function composeLayers(plan, args, filters, audioTracks, videoOutput, inputCount, { mediaInput, stillInput, audioTempo }) {
+function composeLayers(plan, args, filters, audioTracks, videoOutput, inputCount, { mediaInput, stillInput, audioTempo, pictureInput, overlayFormat }) {
   const [width] = plan.size;
   const seconds = (value) => value.toFixed(6);
   for (const [index, layer] of (plan.layers ?? []).entries()) {
@@ -24,7 +24,7 @@ function composeLayers(plan, args, filters, audioTracks, videoOutput, inputCount
     const active = `enable='gte(t,${seconds(start)})*lt(t,${seconds(end)})'`;
     const next = `[layerVideo${index}]`;
     const motion = layer.keyframes?.length || layer.rotation || layer.mask || (layer.opacity ?? 1) < 1;
-    const transform = (source) => visualMotion({ layer, index, canvas: plan.size, fps: plan.fps, source, font, filters, video: videoOutput, active });
+    const transform = (source) => visualMotion({ layer, index, canvas: plan.size, fps: plan.fps, source, font, filters, video: videoOutput, active, overlayFormat });
     if (kind === 'text') {
       if (motion) {
         videoOutput = transform('');
@@ -45,14 +45,14 @@ function composeLayers(plan, args, filters, audioTracks, videoOutput, inputCount
       args.push(...mediaInput, ...(asset.alpha && asset.codec === 'vp9' ? ['-c:v', 'libvpx-vp9'] : []),
         '-threads', '2', '-ss', seconds(mediaStart), '-t', sourceLength, '-i', asset.path);
     }
-    let source=`[${input}:${asset.videoIndex}]`;
+    let source=kind === 'sound' ? '' : pictureInput(asset, input);
     if(kind==='pip' && layer.look) {
       const dimension=(n)=>Math.max(2,Math.round(n/2)*2);
-      source=lookGraph({part:{look:layer.look,layerStart:mediaStart},source,index:'pip'+index,width:dimension(asset.width||plan.size[0]),height:dimension(asset.height||plan.size[1]),fps:plan.fps,duration:sourceLength,graph:filters,
+      source=lookGraph({part:{look:layer.look,layerStart:mediaStart},source,index:'pip'+index,width:dimension(asset.width||plan.size[0]),height:dimension(asset.height||plan.size[1]),fps:plan.fps,duration:sourceLength,graph:filters,overlayFormat,
         addBackground(bg){
           const n=inputCount++;
           args.push(...(bg.kind==='image'?[...stillInput,'-loop','1','-framerate',String(plan.fps)]:[...mediaInput,'-stream_loop','-1']),'-t',sourceLength,'-threads','2','-i',bg.path);
-          return `[${n}:${bg.videoIndex}]`;
+          return pictureInput(bg, n);
         }});
     }
     if (kind !== 'sound' && motion) {
@@ -60,12 +60,13 @@ function composeLayers(plan, args, filters, audioTracks, videoOutput, inputCount
     } else if (kind !== 'sound') {
       const size = Math.max(2, Math.round(width * layer.scale / 2) * 2);
       const visualTempo = asset.kind === 'image' ? 1 : tempo;
-      filters.push(`${source}scale=${size}:-2,setsar=1,format=rgba,settb=AVTB,setpts=(PTS-STARTPTS)/${visualTempo}+${seconds(start)}/TB[layerSource${index}]`);
-      filters.push(`${videoOutput}[layerSource${index}]overlay=x=main_w*${layer.x}-overlay_w/2:y=main_h*${layer.y}-overlay_h/2:eof_action=pass:repeatlast=0:${active}${next}`);
+      filters.push(`${source}scale=${size}:-2,setsar=1,format=${overlayFormat ? 'yuva420p10le' : 'rgba'},settb=AVTB,setpts=(PTS-STARTPTS)/${visualTempo}+${seconds(start)}/TB[layerSource${index}]`);
+      filters.push(`${videoOutput}[layerSource${index}]overlay=${overlayFormat}x=main_w*${layer.x}-overlay_w/2:y=main_h*${layer.y}-overlay_h/2:eof_action=pass:repeatlast=0:${active}${next}`);
       videoOutput = next;
     }
     if (layer.volume > 0 && asset.audioIndex != null) {
-      const chain = ['asetpts=PTS-STARTPTS', 'aresample=48000', 'aformat=channel_layouts=stereo', ...audioTempo(tempo),
+      const sourceAudio = asset.kind === 'video' ? 'aresample=48000:async=1:first_pts=0' : 'asetpts=PTS-STARTPTS,aresample=48000';
+      const chain = [sourceAudio, 'aformat=channel_layouts=stereo', ...audioTempo(tempo),
         `atrim=duration=${seconds(length)}`, `volume=${layer.volume / 100}`, `adelay=${Math.round(start * 48000)}S:all=1`];
       filters.push(`[${input}:${asset.audioIndex}]${chain.join(',')}[layerAudio${index}]`);
       audioTracks.push(`[layerAudio${index}]`);

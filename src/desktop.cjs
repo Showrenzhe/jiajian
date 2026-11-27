@@ -11,7 +11,7 @@ const { Readable } = require('node:stream');
 const { pathToFileURL } = require('node:url');
 const {
   audioExtensions, imageExtensions, videoExtensions, maxShots, maxCandidates, maxWholeTracks,
-  inspectAsset, createVideoThumbnail, createTrackProxy, extractAudioWaveform, previewSubtitleStyle, planExtraction, exportBatch,
+  inspectAsset, createVideoThumbnail, createTrackProxy, supportsHdrToneMap, extractAudioWaveform, previewSubtitleStyle, planExtraction, exportBatch,
 } = require('./media.cjs');
 const { readHistory, remember, renameOutputs, resolveOutput } = require('./history.cjs');
 const { createPreviewBatch, selectPreviewPlans, prepareMontagePlans, prepareSubprojectPlans } = require('./preview-plans.cjs');
@@ -82,7 +82,8 @@ try {
 function describeAsset(id, asset) {
   if (asset.missing) return {id, missing:true, name:'缺失 · '+asset.name, kind:asset.kind, duration:asset.duration, width:0, height:0, hasAudio:false, url:'',sourceKey:materialSourceKey(asset.missingPath)};
   const { kind, name, duration, width, height, codec, fps, audioIndex } = asset;
-  return { id, kind, name, duration, width, height, codec, fps, ...(asset.path && {sourceKey: materialSourceKey(asset.path)}), ...(asset.alpha && { alpha: true }), hasAudio: audioIndex !== null, url: `${scheme}://asset/${id}` };
+  return { id, kind, name, duration, width, height, codec, fps, ...(asset.hdr && {hdr:asset.hdr}), ...(asset.vfr && {vfr:true}),
+    ...(asset.path && {sourceKey: materialSourceKey(asset.path)}), ...(asset.alpha && { alpha: true }), hasAudio: audioIndex !== null, url: `${scheme}://asset/${id}` };
 }
 
 function materialSourceKey(file) {
@@ -200,7 +201,11 @@ async function launchDesktop({
     if (!selected || materialPathKey(selected) !== materialPathKey(file)) throw new Error('请先将这项共享素材拖入素材库，再重新打开工程。');
     return checkedMaterialPath({path:selected, root:selected, kind:materialKind(selected)});
   }
-  const performanceCache = createPerformanceCache(dataDirectory, {inspect:inspectAsset, thumbnail:createVideoThumbnail, encode:createTrackProxy});
+  const performanceCache = createPerformanceCache(dataDirectory, {inspect:inspectAsset, thumbnail:createVideoThumbnail, encode:createTrackProxy, supportsHdrToneMap,
+    onSettingsChanged(previous, next) {
+      if (previous.optimization!==next.optimization || previous.hdrMode!==next.hdrMode) clearTrackProxies();
+      if (previous.hdrMode!==next.hdrMode) previewBatch=undefined;
+    }});
   const sourceEditDirectory = path.join(dataDirectory, 'source-edits');
   const drafts = createDraftStore(path.join(dataDirectory, 'drafts'),resolveOutputFile,performanceCache.inspectCached,sourceEditDirectory,{allowMissing:true});
   const published = new Set(recent.map((item) => item.path));
@@ -399,17 +404,18 @@ async function launchDesktop({
   let proxyGeneration = 0;
   function clearTrackProxies() { proxyGeneration++; trackProxies.clear(); }
 
-  async function trackProxyUrl(id, readyOnly=false, retime) {
+  async function trackProxyUrl(id, {readyOnly=false, retime, fps, original}={}) {
     const asset = catalog.get(id);
-    const generation = proxyGeneration;
     if (asset?.kind !== 'video') return null;
+    await performanceCache.settledSettings();
+    const generation = proxyGeneration;
     try {
       const record = folderAssetOrigins.get(asset);
       if (record) await checkedMaterialPath(record);
       if (generation !== proxyGeneration) return null;
-      const file = await performanceCache.proxy(asset,{readyOnly,retime});
+      const file = await performanceCache.proxy(asset,{readyOnly,retime,fps,original});
       if (!file || generation !== proxyGeneration || catalog.get(id) !== asset) return null;
-      const key = retime ? id + '/' + path.basename(file, '.mp4') : id;
+      const key = id + '/' + path.basename(file, '.mp4');
       trackProxies.set(key,{file});
       return `${scheme}://asset/track-proxy/${key}`;
     } catch { return null; }
@@ -444,7 +450,7 @@ async function launchDesktop({
           const draftSource = draftThumbnailSource(task.id);
           const file = record ? await checkedMaterialPath(record) : draftSource ? await checkedDraftCover(draftSource) : null;
           const asset = task.asset.root || draftSource ? await inspectFolderFile(file, task.asset.kind, task.signal) : task.asset;
-          if (task.asset.root) Object.assign(task.asset, { duration: asset.duration, width: asset.width, height: asset.height });
+          if (task.asset.root) Object.assign(task.asset, { duration: asset.duration, width: asset.width, height: asset.height, hdr:asset.hdr });
           const bytes = await performanceCache.poster(asset, { signal: task.signal, time:task.time ?? draftSource?.time });
           if (bytes && !task.signal.aborted && thumbnailSource(task.id) === task.asset) {
             thumbnails.set(task.key, bytes);
@@ -808,7 +814,8 @@ async function launchDesktop({
       return {};
     }
     const source = catalog.get(id) ?? materialFiles.get(id);
-    return source ? { url: await videoThumbnail(id), duration: source.duration, width: source.width, height: source.height } : {};
+    return source ? { url: await videoThumbnail(id), duration: source.duration, width: source.width, height: source.height,
+      ...(source.hdr && {hdr:source.hdr}) } : {};
   }
 
   handle('workbench:material-tile-preview', materialTilePreview);
@@ -837,17 +844,20 @@ async function launchDesktop({
     return describeAsset(outputId,result);
   });
   handle('workbench:audio-waveform', audioWaveform);
-  handle('workbench:track-proxy', trackProxyUrl);
-  handle('workbench:retimed-preview', ({id,options}) => options ? trackProxyUrl(id,false,options) : null);
-  handle('workbench:playback-proxy', async (id) => {
+  handle('workbench:track-proxy', ({id,fps,original}) => trackProxyUrl(id,{fps,original}));
+  handle('workbench:retimed-preview', ({id,options}) => options ? trackProxyUrl(id,{retime:options}) : null);
+  handle('workbench:playback-proxy', async ({id,fps}) => {
+    await performanceCache.settledSettings();
     const generation = proxyGeneration;
-    const url = await trackProxyUrl(id,true);
-    if (!url && generation === proxyGeneration) void trackProxyUrl(id);
+    const url = await trackProxyUrl(id,{readyOnly:true,fps});
+    if (!url && generation === proxyGeneration) void trackProxyUrl(id,{fps});
     return url;
   });
   handle('workbench:proxy-default', () => performanceCache.settings.defaultProxy);
+  const hdrPolicy = async () => ({hdrMode:(await performanceCache.settledSettings()).hdrMode,toneMapAvailable:await supportsHdrToneMap()});
+  handle('workbench:hdr-policy', hdrPolicy);
   const withRendering = data => ({ ...data, softwareRendering: rendering.software });
-  handle('workbench:performance-settings', async () => withRendering(await performanceCache.view()));
+  handle('workbench:performance-settings', async () => ({...withRendering(await performanceCache.view()),...await hdrPolicy()}));
   handle('workbench:diagnostic-summary', () => diagnostics.snapshot(app));
   handle('workbench:copy-export-diagnostics', async () => {
     const summary = await diagnostics.snapshot(app);
@@ -864,9 +874,8 @@ async function launchDesktop({
     rendering.set(value);
     return withRendering(await performanceCache.view());
   });
-  handle('workbench:performance-save', (patch) => {
-    if (!patch || Object.keys(patch).some(key => !['optimization','defaultProxy'].includes(key))) throw new Error('性能设置无效。');
-    if (patch.optimization && patch.optimization !== performanceCache.settings.optimization) clearTrackProxies();
+  handle('workbench:performance-save', async (patch) => {
+    if (!patch || Object.keys(patch).some(key => !['optimization','defaultProxy','hdrMode'].includes(key))) throw new Error('性能设置无效。');
     return performanceCache.change(patch);
   });
   handle('workbench:performance-folder', async () => {
@@ -1313,14 +1322,18 @@ async function launchDesktop({
 
   async function restoreCatalog(config, assets) {
     const ids = new Map([...assets.keys()].map((id) => [id, randomUUID()]));
+    const legacyHdrEdits=new Map();
     const remap = (id) => ids.get(id);
-    const remapShot = (shot) => shot.map((clip) => ({
-      ...clip, id: remap(clip.id), ...(clip.layers && { layers: normalizeLayers(clip.layers, remap) }),
-      ...(clip.sourceEdit && {sourceEdit:{...clip.sourceEdit,id:remap(clip.sourceEdit.id)}}),
-      ...(clip.look && {look:normalizeLook(clip.look,remap)}),
-    }));
-    const descriptions = [...assets].map(([id, asset]) => describeAsset(ids.get(id), asset));
-    await clearTrackProxies();
+    const remapShot = (shot) => shot.map((clip) => {
+      if (clip.sourceEdit && assets.get(clip.sourceEdit.id)?.hdr && assets.get(clip.id)?.pixelFormat==='yuv420p') {
+        legacyHdrEdits.set(clip.id,clip.sourceEdit);
+      }
+      return {
+        ...clip, id: remap(clip.id), ...(clip.layers && { layers: normalizeLayers(clip.layers, remap) }),
+        ...(clip.sourceEdit && {sourceEdit:{...clip.sourceEdit,id:remap(clip.sourceEdit.id)}}),
+        ...(clip.look && {look:normalizeLook(clip.look,remap)}),
+      };
+    });
     const restoredConfig = {
       ...config,
       shots: config.shots.map(remapShot),
@@ -1344,6 +1357,21 @@ async function launchDesktop({
       generatedCaptions: config.generatedCaptions && Object.fromEntries(
         Object.entries(config.generatedCaptions).map(([id, caption]) => [ids.get(id), caption])),
     };
+    // Older edits kept PQ/HLG tags on an eight-bit file. Recover from the original recipe when available.
+    let retainedLegacyHdrEdits=0;
+    for (const [id,recipe] of legacyHdrEdits) {
+      const source=assets.get(recipe.id);
+      try {
+        await resolveOutputFile(source.path);
+        const file=await prepareSourceEdit(source,recipe.ranges,sourceEditDirectory);
+        assets.set(id,await performanceCache.inspectCached(file,'video'));
+      } catch {
+        // The validated eight-bit edit can still be opened if the original or cache is unavailable.
+        retainedLegacyHdrEdits++;
+      }
+    }
+    const descriptions = [...assets].map(([id, asset]) => describeAsset(ids.get(id), asset));
+    clearTrackProxies();
     resetThumbnails();
     catalog.clear();
     lookupByPath.clear();
@@ -1364,7 +1392,7 @@ async function launchDesktop({
         folders.push({ id, name, sourceKey });
       } catch { /* A moved folder can be added again without blocking the project. */ }
     }
-    return { config: restoredConfig, assets: descriptions, folders };
+    return { config: restoredConfig, assets: descriptions, folders, retainedLegacyHdrEdits };
   }
 
   handle('workbench:relink-materials', async config => {
@@ -1673,6 +1701,11 @@ async function launchDesktop({
     if (closing && !win.isDestroyed()) setImmediate(() => win.close());
   }
 
+  async function renderConfigFor(config) {
+    const {hdrMode}=await performanceCache.settledSettings();
+    return {...config,hdrMode};
+  }
+
   handle('workbench:prepare-preview', async (request) => {
     if (job || pickerOpen) throw new Error('请先完成当前操作。');
     job = new AbortController();
@@ -1680,10 +1713,12 @@ async function launchDesktop({
     try {
       const { config, scope } = request?.scope === undefined ? { config: request } : request;
       requireOnline(config);
-      const plans = scope === undefined ? await prepareMontagePlans(config, catalog, { signal })
-        : await prepareSubprojectPlans(config, scope, catalog, { signal });
-      if (signal.aborted) return null;
-      previewBatch = createPreviewBatch(config, catalog, plans);
+      const renderConfig=await renderConfigFor(config);
+      const plans = scope === undefined ? await prepareMontagePlans(renderConfig, catalog, { signal })
+        : await prepareSubprojectPlans(renderConfig, scope, catalog, { signal });
+      const settings=await performanceCache.settledSettings();
+      if (signal.aborted || settings.hdrMode!==renderConfig.hdrMode) return null;
+      previewBatch = createPreviewBatch(renderConfig, catalog, plans);
       return { id: previewBatch.id, entries: previewBatch.entries };
     } catch (error) {
       if (signal.aborted) return null;
@@ -1696,11 +1731,13 @@ async function launchDesktop({
   handle('workbench:render-preview', async (value) => {
     if (job || pickerOpen) throw new Error('请先完成当前操作。');
     const { id, index, config } = value || {};
-    const plans = selectPreviewPlans(previewBatch, config, { id, indices: [index] });
     job = new AbortController();
     let directory;
     let file;
     try {
+      const renderConfig=await renderConfigFor(config);
+      const batch=previewBatch;
+      const plans=selectPreviewPlans(batch, renderConfig, {id, indices:[index]});
       await checkPlanFolderFiles(plans, job.signal);
       if (job.signal.aborted) return null;
       await discardPreview();
@@ -1715,7 +1752,8 @@ async function launchDesktop({
       if (result.cancelled || job.signal.aborted) return null;
       if (!file) throw new Error(result.failures[0]?.message ?? '生成预览失败。');
       const asset = await inspectAsset(file, 'video', { signal: job.signal });
-      if (job.signal.aborted) return null;
+      const settings=await performanceCache.settledSettings();
+      if (job.signal.aborted || batch!==previewBatch || settings.hdrMode!==renderConfig.hdrMode) return null;
       asset.name = `混剪预览 ${index + 1}`;
       activePreview = { id: randomUUID(), asset, directory };
       return describeAsset(activePreview.id, asset);
@@ -1737,8 +1775,9 @@ async function launchDesktop({
     job = new AbortController();
     const { signal } = job;
     try {
+      const renderConfig=mode==='montage' ? await renderConfigFor(config) : null;
       const plans = mode === 'audio' ? planExtraction(config, catalog)
-        : chosen ? selectPreviewPlans(previewBatch, config, chosen) : await prepareMontagePlans(config, catalog, { signal });
+        : chosen ? selectPreviewPlans(previewBatch, renderConfig, chosen) : await prepareMontagePlans(renderConfig, catalog, { signal });
       if (signal.aborted) return null;
       const selection = await dialogs.showOpenDialog(win, { title: '选择导出目录', properties: ['openDirectory', 'createDirectory'] });
       if (selection.canceled) return null;
@@ -1805,7 +1844,7 @@ async function launchDesktop({
           let manifest;
           try { manifest=projectReferences(await readProject(recentProject.path)); } catch { continue; }
           for await (const row of preloadMaterials(manifest.rows)) {
-            yield {...row, proxyEnabled:manifest.config.proxyEnabled};
+            yield {...row, proxyEnabled:manifest.config.proxyEnabled, fps:manifest.config.fps};
           }
         }
       }).catch(() => {});

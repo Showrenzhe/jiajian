@@ -33,6 +33,11 @@
                 <select id="performance-optimization"><option value="smart">智能</option><option value="smooth">优先流畅</option><option value="quality">优先画质</option></select>
               </div>
               <label class="cloud-settings-check"><input id="performance-default-proxy" type="checkbox">新草稿默认开启代理</label>
+              <div class="cloud-settings-field">
+                <label for="performance-hdr-mode">${window.editorMessages.hdr.setting}</label>
+                <select id="performance-hdr-mode" aria-describedby="performance-hdr-note"><option value="sdr">${window.editorMessages.hdr.sdr}</option><option value="preserve">${window.editorMessages.hdr.preserve}</option></select>
+                <small id="performance-hdr-note" role="status" hidden>${window.editorMessages.hdr.fallback}</small>
+              </div>
               <label class="cloud-settings-check"><input id="performance-software" type="checkbox">兼容模式（软件渲染）</label>
               <small>画面闪烁、黑屏或卡顿时可开启，重启佳剪后生效。</small>
               <div class="cloud-settings-field">
@@ -118,6 +123,8 @@
     function showPerformance(data) {
       if (typeof data.softwareRendering === 'boolean') perf('software').checked = data.softwareRendering;
       perf('optimization').value = data.optimization;
+      perf('hdr-mode').value = data.hdrMode;
+      perf('hdr-note').hidden = data.hdrMode !== 'sdr' || data.toneMapAvailable !== false;
       perf('default-proxy').checked = data.defaultProxy;
       perf('location').textContent = data.location;
       const bytes=data.cacheBytes ?? data.bytes;
@@ -141,7 +148,7 @@
         const data = await performance[action](value);
         if (session !== state) return;
         state.performance = {...state.performance,...data};
-        showPerformance(data);
+        showPerformance(state.performance);
         perf('status').textContent = action === 'rendering' ? '兼容模式已保存，重启佳剪后生效。' : action === 'clear' ? '缓存已清理。' : action === 'save' ? '已保存。' : '';
       } catch (error) {
         if (session !== state) return;
@@ -167,6 +174,7 @@
       perf('status').hidden=false;
     });
     perf('software').addEventListener('change', () => changePerformance('rendering', perf('software').checked));
+    perf('hdr-mode').addEventListener('change', () => changePerformance('save', {hdrMode:perf('hdr-mode').value}));
     for (const [id, key] of [['default-proxy', 'defaultProxy'], ['optimization', 'optimization']]) {
       perf(id).addEventListener('change', () => changePerformance('save', { [key]: key === 'optimization' ? perf(id).value : perf(id).checked }));
     }

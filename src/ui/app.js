@@ -323,7 +323,8 @@ function loadMaterialThumbnails() {
     const id = target.dataset.previewId ?? target.dataset.folderId ?? target.dataset.materialId;
     const tile = target.matches('.material-tile, .material-folder');
     const result = tile ? api.materialTilePreview(id) : api.videoThumbnail(id).then((url) => ({ url }));
-    result.then(({ url, duration, width, height }) => {
+    result.then(({ url, duration, width, height, hdr }) => {
+      if (hdr && target.isConnected) markHdrMaterial(target);
       const detail = target.querySelector('.material-duration');
       if (detail && Number.isFinite(duration)) {
         detail.textContent = libraryTime(duration);
@@ -361,6 +362,20 @@ const shotThumbnailObserver = new IntersectionObserver(queueVisibleThumbnails, {
 function say(message) {
   notice.textContent = message;
   notice.hidden = !message;
+}
+
+let hdrPolicy, hdrPolicyRequest;
+function updateHdrNotice() {
+  const notice=$('#material-hdr-notice');
+  const hasHdr=Boolean(materialList.querySelector('.material-hdr'));
+  notice.hidden=!hasHdr || hdrPolicy?.toneMapAvailable!==false || hdrPolicy.hdrMode!=='sdr';
+  if (!notice.hidden) notice.textContent=window.editorMessages.hdr.fallback;
+  if (hasHdr && !hdrPolicy && !hdrPolicyRequest) {
+    hdrPolicyRequest=api.hdrPolicy().then(policy=>{
+      hdrPolicy ??= policy;
+      updateHdrNotice();
+    }).catch(()=>{}).finally(()=>{hdrPolicyRequest=undefined;});
+  }
 }
 
 function candidate(asset) {
@@ -404,7 +419,8 @@ function syncPreviewClock(clip, heading) {
 }
 
 function updatePreviewMetadata(clip) {
-  const label = clip.asset.kind === 'audio' ? '音频' : player.dataset.proxyFor === clip.asset.id ? '流畅预览' : '原片';
+  const label = clip.asset.kind === 'audio' ? '音频' : player.dataset.proxyFor !== clip.asset.id ? '原片'
+    : player.dataset.originalProxy === 'true' ? window.editorMessages.hdr.normalized : '流畅预览';
   const seconds = trackPreviewClock?.duration ?? clip.asset.duration;
   $('#preview-meta').textContent = clip.asset.kind === 'image' ? '图片' : `${label} · ${seconds.toFixed(2)} 秒`;
 }
@@ -431,6 +447,16 @@ function canProxyPreview(asset) {
   return asset?.kind === 'video' && !asset.alpha && Math.max(asset.width,asset.height) > 480;
 }
 
+function needsNormalizedPreview(asset) {
+  return asset?.kind==='video' && !asset.alpha && Boolean(asset.vfr || asset.hdr);
+}
+
+function previewFps() { return Number($('#fps').value); }
+
+function previewProxy(asset,reduced) {
+  return reduced || needsNormalizedPreview(asset) ? api.trackProxy(asset.id,previewFps(),!reduced) : null;
+}
+
 function usePreviewProxy(asset, track) {
   if (mode !== 'montage' || !canProxyPreview(asset)) return false;
   const quality = $('#player-quality').value;
@@ -440,9 +466,10 @@ function usePreviewProxy(asset, track) {
 function timelinePreviewSource(asset, retimeRate, playing) {
   const reduced=usePreviewProxy(asset,true);
   function standardSource() {
-    if(!reduced) return null;
-    const proxy=$('#player-quality').value==='proxy' ? api.trackProxy(asset.id) : api.playbackProxy(asset.id);
-    return proxy.then(url=>url && {url,reduced:true});
+    const fps=previewFps();
+    const proxy=needsNormalizedPreview(asset) || $('#player-quality').value==='proxy'
+      ? previewProxy(asset,reduced) : reduced ? api.playbackProxy(asset.id,fps) : null;
+    return proxy?.then(url=>url && {url,reduced,fps:asset.vfr ? fps : asset.fps});
   }
   if(retimeRate>1) {
     const fps=Number($('#fps').value);
@@ -453,7 +480,7 @@ function timelinePreviewSource(asset, retimeRate, playing) {
   return standardSource();
 }
 
-function switchPreviewSource(clip, url, proxy) {
+function switchPreviewSource(clip, url, proxy, original=false) {
   if (player.getAttribute('src') === url) return;
   if (!timeline?.draftState()) previewHandoff.capture();
   const time = pendingTimelineSeek?.time ?? proxyResume?.time ?? (player.readyState ? player.currentTime : clip.start);
@@ -461,6 +488,7 @@ function switchPreviewSource(clip, url, proxy) {
   pendingTimelineSeek = undefined;
   if (proxy) player.dataset.proxyFor = clip.asset.id;
   else delete player.dataset.proxyFor;
+  player.dataset.originalProxy=String(original);
   player.src = url;
   if (!timeline?.draftState()) previewHandoff.revealWhen(player);
   player.hidden = false;
@@ -469,10 +497,10 @@ function switchPreviewSource(clip, url, proxy) {
   updatePreviewMetadata(clip);
 }
 
-async function loadPreviewProxy(clip, request) {
-  const url = await api.trackProxy(clip.asset.id).catch(()=>null);
+async function loadPreviewProxy(clip, request, reduced) {
+  const url = await previewProxy(clip.asset,reduced)?.catch(()=>null);
   if (selected !== clip || materialPreviewRequest !== request) return;
-  if (url) switchPreviewSource(clip,url,true);
+  if (url) switchPreviewSource(clip,url,true,!reduced);
   else if ($('#player-quality').value === 'proxy') say('此素材当前使用原画预览。');
 }
 
@@ -480,9 +508,10 @@ function changePreviewQuality() {
   const draft = timeline?.draftState();
   if (draft) timeline.seekDraft(draft.time,true);
   const clip = selected;
-  if (!canProxyPreview(clip?.asset)) return;
+  if (!canProxyPreview(clip?.asset) && !needsNormalizedPreview(clip?.asset)) return;
   const request = ++materialPreviewRequest;
-  if (usePreviewProxy(clip.asset,$('#preview-heading').textContent === '轨道预览')) void loadPreviewProxy(clip,request);
+  const reduced=usePreviewProxy(clip.asset,$('#preview-heading').textContent === '轨道预览');
+  if (reduced || needsNormalizedPreview(clip.asset)) void loadPreviewProxy(clip,request,reduced);
   else switchPreviewSource(clip,clip.asset.url,false);
 }
 
@@ -507,8 +536,9 @@ function preview(clip, heading, materialId) {
   const isImage = clip.asset.kind === 'image';
   if (isImage && document.pictureInPictureElement === player) playerTools.closeFloating();
   syncPreviewClock(clip, heading);
-  const wantProxy = usePreviewProxy(clip.asset, heading === '轨道预览');
-  const usingProxy = wantProxy && player.dataset.proxyFor === clip.asset.id && !player.error;
+  const reduced=usePreviewProxy(clip.asset, heading === '轨道预览');
+  const wantProxy = reduced || needsNormalizedPreview(clip.asset);
+  const usingProxy = wantProxy && player.dataset.proxyFor === clip.asset.id && player.dataset.originalProxy===String(!reduced) && !player.error;
   if (!usingProxy) delete player.dataset.proxyFor;
   if (isImage) {
     still.src = clip.asset.url;
@@ -525,7 +555,7 @@ function preview(clip, heading, materialId) {
   $('#preview-hint').hidden = true;
   $('#preview-heading').textContent = heading;
   updatePreviewMetadata(clip);
-  if (wantProxy && !usingProxy) void loadPreviewProxy(clip,request);
+  if (wantProxy && !usingProxy) void loadPreviewProxy(clip,request,reduced);
   $('#preview-name').textContent = clip.asset.name;
   $('#preview-name').hidden = false;
   $('.preview-readout-name').textContent = clip.asset.name;
@@ -3139,12 +3169,29 @@ function openCloudTtsSettings({ showAppearance = false } = {}) {
   cloudTtsSettingsDialog ??= window.mountCloudTtsSettings($('#cloud-tts-settings-workspace'), {
     load: api.cloudTtsSettings,
     save: api.saveCloudTtsSettings,
-    performance: { load: api.performanceSettings, rendering: api.setRenderingMode, save: api.savePerformanceSettings, folder: api.chooseProxyFolder, clear: api.clearProxyCache },
+    performance: { load: api.performanceSettings, rendering: api.setRenderingMode, save: savePreviewSettings, folder: api.chooseProxyFolder, clear: api.clearProxyCache },
     verify: api.verifyBreezeAccess,
     openKeys: api.openBreezeKeys,
     onSaved: () => cloudTtsDialog?.refreshVoices(),
   });
   cloudTtsSettingsDialog.open({ showAppearance });
+}
+
+async function savePreviewSettings(patch) {
+  const saved=await api.savePerformanceSettings(patch);
+  if (patch.hdrMode) {
+    hdrPolicy=await api.hdrPolicy();
+    updateHdrNotice();
+    if (previewBatch) discardPreviewBatch();
+    updateControls();
+  }
+  if (patch.hdrMode || patch.optimization) refreshPreviewSources();
+  return saved;
+}
+
+function refreshPreviewSources() {
+  changePreviewQuality();
+  window.dispatchEvent(new Event('previewsourcechange'));
 }
 
 function openCloudTts(options) {
@@ -4232,7 +4279,8 @@ async function openEditorProject(load, { fromDraft = false } = {}) {
         restoreProject(result, { draft: fromDraft ? result : undefined });
         const firstShot = shots.findIndex((shot) => shot.length);
         if (firstShot >= 0 && !shots[firstShot][0].asset.missing) preview(shots[firstShot][0]);
-        sayProject([`已打开${fromDraft ? '草稿' : '工程'}：${result.name}`, result.libraryWarning].filter(Boolean).join(' · '));
+        sayProject([`已打开${fromDraft ? '草稿' : '工程'}：${result.name}`,result.libraryWarning,
+          result.retainedLegacyHdrEdits && window.editorMessages.hdr.legacyEdit].filter(Boolean).join(' · '));
       });
       if (opened && mode === 'montage') return result;
     }
@@ -5015,10 +5063,14 @@ $('#apply-narration-recommendation').addEventListener('click',()=>{
   sayProject('已应用口播推荐设置。');
 });
 $('#montage-settings').addEventListener('input', (event) => {
-  if(!event.target.closest('#voice-follow-settings')) updateControls(event.target.type === 'number' ? event.target : undefined, event.target.id === 'ratio');
+  if(!event.target.closest('#voice-follow-settings')) updateControls(event.target.type === 'number' ? event.target : undefined, ['ratio','fps'].includes(event.target.id));
 }, true);
 $('#montage-settings').addEventListener('change', (event) => {
-  if(!event.target.closest('#voice-follow-settings')) updateControls(undefined, event.target.id === 'ratio');
+  if(!event.target.closest('#voice-follow-settings')) updateControls(undefined, ['ratio','fps'].includes(event.target.id));
+  if (event.target.id==='fps') {
+    timeline?.refreshMonitoring();
+    refreshPreviewSources();
+  }
 }, true);
 $('#montage-settings').addEventListener('focusout', () => updateControls());
 function copyTimelineVoice({asset,shot,row,subtitles:imported}) {
@@ -5485,7 +5537,7 @@ function createSourceCommit(clip, sessionActive) {
 cutEditor = window.createCutTrackEditor({
   container: $('#timeline-cut-editor'), getSceneCuts:()=>sceneCuts, getShots:()=>shots.map((_,i)=>({name:shotLabel(i)})),
   mountMonitor: playerTools.mountCutMonitor,
-  previewProxy:asset=>usePreviewProxy(asset,true) ? api.trackProxy(asset.id) : null,
+  previewProxy:asset=>previewProxy(asset,usePreviewProxy(asset,true)),
   retimedPreview:async(asset,rate)=>{
     const original=!usePreviewProxy(asset,true);
     const url=await api.retimedPreview(asset.id,{rate,fps:Number($('#fps').value),original});

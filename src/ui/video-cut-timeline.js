@@ -26,7 +26,7 @@ window.mountVideoCutTimeline = function mountVideoCutTimeline(host, clip, option
   let starts, total, selected = 0, head = 0, drag;
   let disposed = false, pendingApply, playing = false, preparing = false, playIndex = 0;
   let renderKey = 0, run = 0, raf, renderedAsset, usingRender = false, pendingSeek, cropDialog, monitor;
-  let proxyUrl, baked, bakeRequest, requestedRate, mediaScale = 1;
+  let proxyUrl, proxyRequest, baked, bakeRequest, requestedRate, mediaScale = 1;
   let scanStart, scanHead, scanTimer;
 
   const header = node('header');
@@ -291,7 +291,7 @@ window.mountVideoCutTimeline = function mountVideoCutTimeline(host, clip, option
   }
   function setSource(transformed, timed = false) {
     const fast = timed && baked?.rate === speed ? baked : undefined;
-    const url = transformed ? renderedAsset.url : fast?.url ?? proxyUrl ?? asset.url;
+    const url = transformed ? renderedAsset.previewUrl ?? renderedAsset.url : fast?.url ?? proxyUrl ?? asset.url;
     if (video.getAttribute('src') === url) return;
     usingRender = transformed;
     mediaScale = fast?.rate ?? 1;
@@ -656,9 +656,16 @@ window.mountVideoCutTimeline = function mountVideoCutTimeline(host, clip, option
           const rendered = await options.prepareSourceEdit(asset, structuredClone(ranges));
           if (disposed || revision !== renderKey) return;
           if (!rendered?.url) throw new Error('未生成可播放的视频。');
-          renderedAsset = rendered;
+          renderedAsset = {...rendered};
         }
         if (token !== run) return;
+        if (renderedAsset.hdr) {
+          preparing=true;
+          showTransport();
+          const url=await options.previewProxy(renderedAsset);
+          if (disposed || token!==run || revision!==renderKey) return;
+          renderedAsset.previewUrl=url;
+        }
         setSource(true);
       } else {
         if (bakeRequest) {
@@ -708,7 +715,12 @@ window.mountVideoCutTimeline = function mountVideoCutTimeline(host, clip, option
   watch(video, 'ended', advanceNative);
   watch(video, 'timeupdate', advanceNative);
   watch(video, 'error', () => {
-    if ((baked && video.src === baked.url) || (proxyUrl && video.src === proxyUrl)) {
+    if (usingRender && renderedAsset?.previewUrl && video.src===renderedAsset.previewUrl) {
+      renderedAsset.previewUrl=undefined;
+      setSource(true);
+      previewAt();
+      if (playing && !window.sampleVideoRate(speed)) startMedia(run);
+    } else if ((baked && video.src === baked.url) || (proxyUrl && video.src === proxyUrl)) {
       if (baked && video.src === baked.url) baked = undefined;
       else proxyUrl = undefined;
       setSource(false);
@@ -900,15 +912,34 @@ window.mountVideoCutTimeline = function mountVideoCutTimeline(host, clip, option
   refreshShortcuts();
   showTransport();
   previewAt();
-  Promise.resolve(!window.shouldRetimeVideo(asset,speed) && options.previewProxy?.(asset)).then(url => {
-    if (!url || disposed) return;
-    proxyUrl = url;
-    // Keep the current decoder running until the next playback if the proxy arrives mid-shot.
+  async function refreshSource(changed=false) {
+    const resume=changed && (playing || preparing);
+    if (changed) {
+      pause();
+      requestSpeedPreview();
+    }
+    const revision=run;
+    const request=Promise.resolve(!window.shouldRetimeVideo(asset,speed) && options.previewProxy?.(asset)).catch(()=>null);
+    proxyRequest=request;
+    const url=await request;
+    if (disposed || proxyRequest!==request) return;
+    proxyUrl=url || undefined;
+    if (changed && !resume && usingRender && renderedAsset?.hdr) {
+      const rendered=renderedAsset;
+      const transformed=await options.previewProxy(rendered).catch(()=>null);
+      if (disposed || proxyRequest!==request || renderedAsset!==rendered || !usingRender || revision!==run) return;
+      rendered.previewUrl=transformed;
+      setSource(true);
+      previewAt();
+    }
     if (!playing && !preparing && !usingRender && !drag) {
       setSource(false);
       previewAt();
     }
-  }).catch(() => {});
+    if (resume && revision===run) void togglePlay();
+  }
+  void refreshSource();
+  watch(window,'previewsourcechange',()=>{void refreshSource(true);});
   watch(video, 'loadedmetadata', () => monitor?.updatePosition());
   playhead.focus({preventScroll: true});
   return {

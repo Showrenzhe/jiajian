@@ -5,6 +5,15 @@ function libraryTime(duration) {
   return Math.floor(seconds / 60) + ':' + String(seconds % 60).padStart(2, '0');
 }
 
+function markHdrMaterial(tile) {
+  if (!tile.matches('.material-tile') || tile.querySelector('.material-hdr')) return;
+  const badge=document.createElement('span');
+  badge.className='material-hdr';
+  badge.textContent=window.editorMessages.hdr.badge;
+  tile.append(badge);
+  if (tile.isConnected) updateHdrNotice();
+}
+
 function updateMaterialUsage(button, used) {
   const old = button.querySelector('.material-used');
   if (!used) {
@@ -177,6 +186,7 @@ function renderMaterials() {
       thumbnail.append(image);
     } else thumbnail.textContent = missing ? '⚠' : kind === 'video' ? '▶' : kind === 'audio' ? '♫' : '▧';
     button.append(thumbnail, name, detail);
+    if (clip?.asset.hdr) markHdrMaterial(button);
     updateMaterialUsage(button, used);
     button.addEventListener('click', (event) => {
       const item = materialItems.get(button);
@@ -223,6 +233,7 @@ function renderMaterials() {
     if (kind === 'video' && !missing) thumbnailObserver.observe(button);
     return row;
   }));
+  updateHdrNotice();
   updateMaterialSelection();
   updateMaterialBatchControls();
 }

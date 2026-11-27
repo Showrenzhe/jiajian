@@ -4,6 +4,7 @@ const fs = require('node:fs/promises');
 const path = require('node:path');
 const os = require('node:os');
 const {promisify} = require('node:util');
+const {colorOutput, normalizedInput} = require('./media-color.cjs');
 const execFile = promisify(require('node:child_process').execFile);
 const grades = ['temperature','tint','saturation','lightness','brightness','contrast','highlights','glow'];
 const colors = { red:0, orange:30, yellow:60, green:120, cyan:180, blue:235, purple:275, magenta:315 };
@@ -148,7 +149,7 @@ async function prepareLooks(plan,dir,files) {
   return {...plan,clips,...(plan.layers&&{layers})};
 }
 
-function lookGraph({part, source, index, width, height, fps, duration, graph, addBackground}) {
+function lookGraph({part, source, index, width, height, fps, duration, graph, addBackground, overlayFormat = ''}) {
   const look=part.look;if(!look)return source;
   const chain=['setpts=PTS-STARTPTS'];
   for(const file of [look.externalLut,look.gradeLut])if(file)chain.push('lut3d=file='+file);
@@ -178,7 +179,7 @@ function lookGraph({part, source, index, width, height, fps, duration, graph, ad
      `color=c=${bg.pattern==='dots'?'0x25344b':'0x312a42'}:s=${width}x${height}:r=${fps},drawgrid=w=${bg.pattern==='dots'?16:48}:h=${bg.pattern==='dots'?16:48}:t=1:c=white@0.12`;
     graph.push(style+',trim=duration='+duration+back);
   }
-  graph.push(pic+fit+front);graph.push(back+front+'overlay=(W-w)/2:(H-h)/2:shortest=1'+output);
+  graph.push(pic+fit+front);graph.push(back+front+'overlay=x=(W-w)/2:y=(H-h)/2:'+overlayFormat+'shortest=1'+output);
   return output;
 }
 async function previewLook(ffmpeg,asset,look,catalog,time,ratio,signal,origin=0) {
@@ -190,8 +191,10 @@ async function previewLook(ffmpeg,asset,look,catalog,time,ratio,signal,origin=0)
     const [rw,rh]=ratio.split(':').map(Number), width=Math.round(480*Math.min(1,rw/rh)/2)*2, height=Math.round(480*Math.min(1,rh/rw)/2)*2;
     const args=['-hide_banner','-loglevel','error','-nostdin','-threads','1','-ss',String(time),'-i',asset.path];
     const graph=[];
-    const source=lookGraph({part:p,source:`[0:${asset.videoIndex}]`,index:0,width,height,fps:25,duration:0.2,graph,
-      addBackground(bg){args.push('-threads','1','-i',bg.path);return `[1:${bg.videoIndex}]`;}});
+    const color = await colorOutput([asset,p.look?.backgroundAsset], 'sdr');
+    const picture = (media, index) => normalizedInput(media, index, color?.zscale ? color : null, graph);
+    const source=lookGraph({part:p,source:picture(asset,0),index:0,width,height,fps:25,duration:0.2,graph,
+      addBackground(bg){args.push('-threads','1','-i',bg.path);return picture(bg,1);}});
     graph.push(source+`scale=${width}:${height}:force_original_aspect_ratio=decrease:force_divisible_by=2,pad=${width}:${height}:(ow-iw)/2:(oh-ih)/2[out]`);
     args.push('-filter_complex_threads','1','-filter_complex',graph.join(';'),'-map','[out]','-frames:v','1','-c:v','mjpeg','-threads','1','-f','image2pipe','pipe:1');
     const result=await execFile(ffmpeg,args,{cwd:dir,windowsHide:true,encoding:'buffer',maxBuffer:2*1024*1024,timeout:15000,signal});
